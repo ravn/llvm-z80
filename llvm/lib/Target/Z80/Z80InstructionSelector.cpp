@@ -1683,14 +1683,20 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         (*MI.memoperands_begin())->getAddrSpace() == Z80::AS_IO) {
       if (DstTy.getSizeInBits() > 8)
         return false; // Only 8-bit port reads supported
-      // Extract constant port address from G_INTTOPTR(G_CONSTANT n)
+      // Extract constant port address from:
+      //   G_INTTOPTR(G_CONSTANT n)  — normal case
+      //   G_CONSTANT p2 n           — when optimizer folds inttoptr(n) to ptr
       MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
       int64_t PortAddr = -1;
-      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
-        Register SrcReg = AddrDef->getOperand(1).getReg();
-        MachineInstr *SrcDef = MRI.getVRegDef(SrcReg);
-        if (SrcDef && SrcDef->getOpcode() == TargetOpcode::G_CONSTANT)
-          PortAddr = SrcDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+      if (AddrDef) {
+        if (AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+          Register SrcReg = AddrDef->getOperand(1).getReg();
+          MachineInstr *SrcDef = MRI.getVRegDef(SrcReg);
+          if (SrcDef && SrcDef->getOpcode() == TargetOpcode::G_CONSTANT)
+            PortAddr = SrcDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+        } else if (AddrDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          PortAddr = AddrDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+        }
       }
       if (PortAddr < 0)
         return false; // Non-constant port address not yet supported
@@ -1887,11 +1893,15 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         return false; // Only 8-bit port writes supported
       MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
       int64_t PortAddr = -1;
-      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
-        Register IntReg = AddrDef->getOperand(1).getReg();
-        MachineInstr *IntDef = MRI.getVRegDef(IntReg);
-        if (IntDef && IntDef->getOpcode() == TargetOpcode::G_CONSTANT)
-          PortAddr = IntDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+      if (AddrDef) {
+        if (AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+          Register IntReg = AddrDef->getOperand(1).getReg();
+          MachineInstr *IntDef = MRI.getVRegDef(IntReg);
+          if (IntDef && IntDef->getOpcode() == TargetOpcode::G_CONSTANT)
+            PortAddr = IntDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+        } else if (AddrDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          PortAddr = AddrDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+        }
       }
       if (PortAddr < 0)
         return false;

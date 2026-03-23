@@ -86,7 +86,7 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
 
   // Constants - clamp to legal sizes, narrow larger
   getActionDefinitionsBuilder(G_CONSTANT)
-      .legalFor({S8, S16, P0})
+      .legalFor({S8, S16, P0, P2})
       .widenScalarToNextPow2(0, 8)
       .clampScalar(0, S8, S16);
 
