@@ -22,6 +22,7 @@
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/StringSet.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -83,8 +84,13 @@ public:
   void emitEndOfAsmFile(Module &M) override;
 
 private:
-  // Static stack: track per-function BSS allocations needed.
-  SmallVector<std::pair<MCSymbol *, uint64_t>> StaticFrames;
+  // Static stack: per-function BSS allocations {base, end, size}.
+  struct StaticFrame {
+    MCSymbol *BaseSym;
+    MCSymbol *EndSym;
+    uint64_t Size;
+  };
+  SmallVector<StaticFrame> StaticFrames;
 };
 
 // Simple pseudo-instructions have their lowering (with expansion to real
@@ -314,15 +320,26 @@ void Z80AsmPrinter::emitFunctionBodyEnd() {
   if (STI.staticStack() && MFI.getStackSize() > 0 &&
       MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects() &&
       TFI->hasFP(*MF)) {
-    MCSymbol *Sym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
-    StaticFrames.push_back({Sym, MFI.getStackSize()});
+    MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
+    MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
+    StaticFrames.push_back(StaticFrame{BaseSym, EndSym, MFI.getStackSize()});
   }
 }
 
 void Z80AsmPrinter::emitEndOfAsmFile(Module &M) {
   // Emit BSS allocations for static stack frames.
-  for (auto &[Sym, Size] : StaticFrames) {
-    OutStreamer->emitCommonSymbol(Sym, Size, Align(1));
+  // Each frame has a base symbol and an end symbol (base+size).
+  // The prologue loads the end symbol into IX so that negative offsets
+  // land within the allocated area.
+  if (!StaticFrames.empty()) {
+    // Switch to BSS section for static frame allocations.
+    OutStreamer->switchSection(
+        OutContext.getELFSection(".bss", ELF::SHT_NOBITS, ELF::SHF_ALLOC | ELF::SHF_WRITE));
+    for (const auto &SF : StaticFrames) {
+      OutStreamer->emitLabel(SF.BaseSym);
+      OutStreamer->emitZeros(SF.Size);
+      OutStreamer->emitLabel(SF.EndSym);
+    }
   }
 }
 

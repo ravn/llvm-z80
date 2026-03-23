@@ -160,12 +160,12 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
     BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_IX));
 
     if (UseStaticFrame) {
-      // IX points to __sframe_<name> + StackSize so negative offsets
-      // (same as normal frame) land within the BSS area.
-      MCSymbol *Sym = MF.getContext().getOrCreateSymbol(
-          "__sframe_" + MF.getName());
-      BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_IX_nn))
-          .addSym(Sym, /*Offset=*/StackSize);
+      // IX points to end of the static frame so negative offsets
+      // (same as normal IX frame convention) land within the BSS area.
+      // Use __sfrend_<name> which is emitted at __sframe_<name>+size.
+      MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
+          "__sfrend_" + MF.getName());
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_IX_nn)).addSym(EndSym);
       // No SP adjustment — locals live in BSS.
     } else {
       // Standard: IX = SP, then adjust SP for locals.
