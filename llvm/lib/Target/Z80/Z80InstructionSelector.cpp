@@ -734,14 +734,46 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(RHS);
       }
     } else {
-      // Signed: XOR 0x80 converts signed to unsigned domain, then CP.
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
-      BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
-      Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), ModRHS).addReg(Z80::A);
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
-      BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
-      BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(ModRHS);
+      // Signed 8-bit comparison: XOR 0x80 converts to unsigned domain.
+      MachineInstr *RHSDef = MRI.getVRegDef(RHS);
+      int64_t C = 0;
+      bool RHSIsConst = RHSDef &&
+                         RHSDef->getOpcode() == TargetOpcode::G_CONSTANT;
+      if (RHSIsConst)
+        C = RHSDef->getOperand(1).getCImm()->getSExtValue();
+
+      if (RHSIsConst && C == 0 &&
+          (Pred == CmpInst::ICMP_SLT || Pred == CmpInst::ICMP_SGE)) {
+        // slt X, 0: test sign bit.  RLCA rotates bit 7 into carry.
+        // slt → JR C (bit7 set); sge → JR NC (bit7 clear).
+        // 2 bytes: RLCA + JR C/NC (vs 5 bytes: XOR 0x80; CP 0x80)
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::RLCA));
+        // Carry flag is now bit 7.  Use JR C for SLT, JR NC for SGE.
+        JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_C_nn : Z80::JP_NC_nn;
+      } else if (RHSIsConst) {
+        // Constant RHS: precompute RHS^0x80 to save 4 bytes.
+        //   LD A,LHS; XOR 0x80; CP (RHS^0x80)   — 5 bytes
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+        BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm((C ^ 0x80) & 0xFF);
+      } else {
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+        Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), ModRHS)
+            .addReg(Z80::A);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+        BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(ModRHS);
+      }
     }
   } else if (LHSTy.getSizeInBits() <= 16) {
     const auto &STI = MBB.getParent()->getSubtarget<Z80Subtarget>();
