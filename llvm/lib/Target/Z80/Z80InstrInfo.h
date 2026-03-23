@@ -87,7 +87,7 @@ private:
 
 namespace Z80 {
 
-enum AddressSpace : unsigned { AS_Memory = 0, NumAddrSpaces };
+enum AddressSpace : unsigned { AS_Memory = 0, AS_IO = 2, NumAddrSpaces };
 
 enum TOF {
   MO_NO_FLAGS = 0,

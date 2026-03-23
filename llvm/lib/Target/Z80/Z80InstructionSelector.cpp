@@ -14,6 +14,7 @@
 
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
+#include "Z80InstrInfo.h"
 #include "Z80RegisterInfo.h"
 #include "Z80Subtarget.h"
 
@@ -1677,6 +1678,30 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     const LLT DstTy = MRI.getType(DstReg);
     const DebugLoc &DL = MI.getDebugLoc();
 
+    // Port I/O: address_space(2) → IN A,(n)
+    if (MI.hasOneMemOperand() &&
+        (*MI.memoperands_begin())->getAddrSpace() == Z80::AS_IO) {
+      if (DstTy.getSizeInBits() > 8)
+        return false; // Only 8-bit port reads supported
+      // Extract constant port address from G_INTTOPTR(G_CONSTANT n)
+      MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
+      int64_t PortAddr = -1;
+      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+        Register SrcReg = AddrDef->getOperand(1).getReg();
+        MachineInstr *SrcDef = MRI.getVRegDef(SrcReg);
+        if (SrcDef && SrcDef->getOpcode() == TargetOpcode::G_CONSTANT)
+          PortAddr = SrcDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+      }
+      if (PortAddr < 0)
+        return false; // Non-constant port address not yet supported
+      if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+        return false;
+      BuildMI(MBB, MI, DL, TII.get(Z80::IN_A_n)).addImm(PortAddr);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg).addReg(Z80::A);
+      MI.eraseFromParent();
+      return true;
+    }
+
     // Try IX-indexed addressing: match G_PTR_ADD(COPY $ix, G_CONSTANT d)
     // This produces LD r,(IX+d) instead of the multi-instruction HL-indirect
     // sequence, which is much more efficient for stack argument access.
@@ -1854,6 +1879,29 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     Register AddrReg = MI.getOperand(1).getReg();
     const LLT SrcTy = MRI.getType(SrcReg);
     const DebugLoc &DL = MI.getDebugLoc();
+
+    // Port I/O: address_space(2) → OUT (n),A
+    if (MI.hasOneMemOperand() &&
+        (*MI.memoperands_begin())->getAddrSpace() == Z80::AS_IO) {
+      if (SrcTy.getSizeInBits() > 8)
+        return false; // Only 8-bit port writes supported
+      MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
+      int64_t PortAddr = -1;
+      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+        Register IntReg = AddrDef->getOperand(1).getReg();
+        MachineInstr *IntDef = MRI.getVRegDef(IntReg);
+        if (IntDef && IntDef->getOpcode() == TargetOpcode::G_CONSTANT)
+          PortAddr = IntDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+      }
+      if (PortAddr < 0)
+        return false;
+      if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+        return false;
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(SrcReg);
+      BuildMI(MBB, MI, DL, TII.get(Z80::OUT_n_A)).addImm(PortAddr);
+      MI.eraseFromParent();
+      return true;
+    }
 
     // Try IX-indexed addressing from G_FRAME_INDEX or
     // G_PTR_ADD(G_FRAME_INDEX, G_CONSTANT)
