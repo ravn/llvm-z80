@@ -201,6 +201,11 @@ public:
 } // namespace
 
 TargetPassConfig *Z80TargetMachine::createPassConfig(PassManagerBase &PM) {
+  // Disable the machine outliner.  On Z80, CALL is 3 bytes + RET is 1 byte
+  // = 4 bytes overhead per outlined sequence.  Most Z80 instructions are
+  // 1-3 bytes, so outlining short sequences (like port I/O) makes code
+  // LARGER, not smaller.
+  this->Options.EnableMachineOutliner = false;
   return new Z80PassConfig(*this, PM);
 }
 
