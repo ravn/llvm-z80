@@ -49,6 +49,17 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
 
 bool Z80TargetInfo::validateAsmConstraint(
     const char *&Name, TargetInfo::ConstraintInfo &Info) const {
+  // Multi-character register pair constraints (bc, de, hl, af, ix, iy, sp).
+  // Name points to the first char; advance past the second on success.
+  if (Name[0] && Name[1]) {
+    StringRef R(Name, 2);
+    if (R == "bc" || R == "de" || R == "hl" || R == "af" ||
+        R == "ix" || R == "iy" || R == "sp") {
+      ++Name; // advance past second char (caller advances past first)
+      Info.setAllowsRegister();
+      return true;
+    }
+  }
   switch (*Name) {
   default:
     return false;

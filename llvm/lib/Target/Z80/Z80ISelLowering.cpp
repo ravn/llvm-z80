@@ -83,6 +83,13 @@ Z80TargetLowering::getNumRegisters(LLVMContext &Context, EVT VT,
 
 TargetLowering::ConstraintType
 Z80TargetLowering::getConstraintType(StringRef Constraint) const {
+  if (Constraint.size() == 2) {
+    // 16-bit register pair constraints
+    if (Constraint == "bc" || Constraint == "de" || Constraint == "hl" ||
+        Constraint == "af" || Constraint == "ix" || Constraint == "iy" ||
+        Constraint == "sp")
+      return C_Register;
+  }
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:
@@ -106,6 +113,19 @@ std::pair<unsigned, const TargetRegisterClass *>
 Z80TargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
                                                 StringRef Constraint,
                                                 MVT VT) const {
+  if (Constraint.size() == 2) {
+    // 16-bit register pair constraints
+    return StringSwitch<std::pair<unsigned, const TargetRegisterClass *>>(
+               Constraint)
+        .Case("bc", {Z80::BC, &Z80::GR16RegClass})
+        .Case("de", {Z80::DE, &Z80::GR16RegClass})
+        .Case("hl", {Z80::HL, &Z80::GR16RegClass})
+        .Case("af", {Z80::AF, &Z80::GR16_AFRegClass})
+        .Case("ix", {Z80::IX, &Z80::IR16RegClass})
+        .Case("iy", {Z80::IY, &Z80::IR16RegClass})
+        .Case("sp", {Z80::SP, &Z80::Ptr16RegClass})
+        .Default({0, nullptr});
+  }
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:
