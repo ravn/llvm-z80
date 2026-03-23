@@ -32,6 +32,8 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #define DEBUG_TYPE "z80-framelowering"
@@ -150,15 +152,29 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
     if (!StackSize && !NeedsFP)
       return;
 
-    // Z80 prologue:
-    // 1. PUSH IX          - Save old frame pointer
-    // 2. LD IX,0; ADD IX,SP - IX = SP (frame pointer)
-    // 3. Adjust SP for locals (only if StackSize > 0)
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_IX));
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_IX_nn)).addImm(0);
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_IX_SP));
+    // Static stack: locals in BSS instead of the stack.
+    const auto &STI = MF.getSubtarget<Z80Subtarget>();
+    bool UseStaticFrame =
+        STI.staticStack() && StackSize > 0 &&
+        MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
 
-    if (StackSize > 0) {
+    BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_IX));
+
+    if (UseStaticFrame) {
+      // IX points to __sframe_<name> + StackSize so negative offsets
+      // (same as normal frame) land within the BSS area.
+      MCSymbol *Sym = MF.getContext().getOrCreateSymbol(
+          "__sframe_" + MF.getName());
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_IX_nn))
+          .addSym(Sym, /*Offset=*/StackSize);
+      // No SP adjustment — locals live in BSS.
+    } else {
+      // Standard: IX = SP, then adjust SP for locals.
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_IX_nn)).addImm(0);
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_IX_SP));
+    }
+
+    if (StackSize > 0 && !UseStaticFrame) {
       unsigned PushCount = StackSize / 2;
       if (PushCount <= 4) {
         for (unsigned i = 0; i < PushCount; ++i)
@@ -237,11 +253,19 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
                    MFI.hasVarSizedObjects();
 
     if (StackSize || NeedsFP) {
-      // Z80 epilogue (before RET):
-      // 1. LD SP,IX   - Restore stack pointer from frame pointer
-      // 2. POP IX     - Restore old frame pointer
-      BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_IX));
-      BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_IX));
+      const auto &STI = MF.getSubtarget<Z80Subtarget>();
+      bool UseStaticFrame =
+          STI.staticStack() && StackSize > 0 &&
+          MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
+
+      if (UseStaticFrame) {
+        // Static stack: IX pointed to BSS, SP never adjusted.
+        BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_IX));
+      } else {
+        // Standard: restore SP from IX, then pop IX.
+        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_IX));
+        BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_IX));
+      }
     }
   } else {
     // No frame pointer: deallocate locals only.

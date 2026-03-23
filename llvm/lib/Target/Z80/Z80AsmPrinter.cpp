@@ -78,6 +78,13 @@ public:
   void emitGlobalVariable(const GlobalVariable *GV) override;
 
   void emitJumpTableInfo() override;
+
+  void emitFunctionBodyEnd() override;
+  void emitEndOfAsmFile(Module &M) override;
+
+private:
+  // Static stack: track per-function BSS allocations needed.
+  SmallVector<std::pair<MCSymbol *, uint64_t>> StaticFrames;
 };
 
 // Simple pseudo-instructions have their lowering (with expansion to real
@@ -297,6 +304,26 @@ void Z80AsmPrinter::emitJumpTableInfo() {
   }
   if (!JTInDiffSection)
     OutStreamer->emitDataRegion(MCDR_DataRegionEnd);
+}
+
+void Z80AsmPrinter::emitFunctionBodyEnd() {
+  // If this function uses static stack, record it for BSS emission.
+  const auto &STI = MF->getSubtarget<Z80Subtarget>();
+  const MachineFrameInfo &MFI = MF->getFrameInfo();
+  const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
+  if (STI.staticStack() && MFI.getStackSize() > 0 &&
+      MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects() &&
+      TFI->hasFP(*MF)) {
+    MCSymbol *Sym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
+    StaticFrames.push_back({Sym, MFI.getStackSize()});
+  }
+}
+
+void Z80AsmPrinter::emitEndOfAsmFile(Module &M) {
+  // Emit BSS allocations for static stack frames.
+  for (auto &[Sym, Size] : StaticFrames) {
+    OutStreamer->emitCommonSymbol(Sym, Size, Align(1));
+  }
 }
 
 } // namespace
