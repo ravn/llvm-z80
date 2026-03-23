@@ -49,6 +49,25 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
 
 bool Z80TargetInfo::validateAsmConstraint(
     const char *&Name, TargetInfo::ConstraintInfo &Info) const {
+  // Braced register constraints: {bc}, {de}, {hl}, {af}, {ix}, {iy}, {sp}.
+  // The caller iterates Name character by character; we must consume the
+  // entire {regname} sequence including the closing brace.
+  if (*Name == '{') {
+    const char *End = strchr(Name, '}');
+    if (End) {
+      StringRef RegName(Name + 1, End - Name - 1);
+      if (RegName == "bc" || RegName == "de" || RegName == "hl" ||
+          RegName == "af" || RegName == "ix" || RegName == "iy" ||
+          RegName == "sp" ||
+          RegName == "a" || RegName == "b" || RegName == "c" ||
+          RegName == "d" || RegName == "e" || RegName == "h" ||
+          RegName == "l") {
+        Name = End; // advance past closing brace (caller advances past first)
+        Info.setAllowsRegister();
+        return true;
+      }
+    }
+  }
   // Multi-character register pair constraints (bc, de, hl, af, ix, iy, sp).
   // Name points to the first char; advance past the second on success.
   if (Name[0] && Name[1]) {

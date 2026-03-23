@@ -113,18 +113,24 @@ std::pair<unsigned, const TargetRegisterClass *>
 Z80TargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
                                                 StringRef Constraint,
                                                 MVT VT) const {
-  if (Constraint.size() == 2) {
-    // 16-bit register pair constraints
-    return StringSwitch<std::pair<unsigned, const TargetRegisterClass *>>(
-               Constraint)
-        .Case("bc", {Z80::BC, &Z80::GR16RegClass})
-        .Case("de", {Z80::DE, &Z80::GR16RegClass})
-        .Case("hl", {Z80::HL, &Z80::GR16RegClass})
-        .Case("af", {Z80::AF, &Z80::GR16_AFRegClass})
-        .Case("ix", {Z80::IX, &Z80::IR16RegClass})
-        .Case("iy", {Z80::IY, &Z80::IR16RegClass})
-        .Case("sp", {Z80::SP, &Z80::Ptr16RegClass})
-        .Default({0, nullptr});
+  // Handle both bare "hl" and braced "{hl}" constraint forms.
+  StringRef RegName = Constraint;
+  if (RegName.starts_with("{") && RegName.ends_with("}"))
+    RegName = RegName.drop_front().drop_back();
+
+  if (RegName.size() == 2) {
+    auto Result =
+        StringSwitch<std::pair<unsigned, const TargetRegisterClass *>>(RegName)
+            .Case("bc", {Z80::BC, &Z80::GR16RegClass})
+            .Case("de", {Z80::DE, &Z80::GR16RegClass})
+            .Case("hl", {Z80::HL, &Z80::GR16RegClass})
+            .Case("af", {Z80::AF, &Z80::GR16_AFRegClass})
+            .Case("ix", {Z80::IX, &Z80::IR16RegClass})
+            .Case("iy", {Z80::IY, &Z80::IR16RegClass})
+            .Case("sp", {Z80::SP, &Z80::Ptr16RegClass})
+            .Default({0, nullptr});
+    if (Result.second)
+      return Result;
   }
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
