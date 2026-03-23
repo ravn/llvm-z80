@@ -122,6 +122,13 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
   uint64_t StackSize = MFI.getStackSize();
 
+  // __critical functions: emit DI at entry to disable interrupts.
+  // For interrupt handlers, the Z80 hardware already disables interrupts.
+  bool IsCritical = MF.getFunction().hasFnAttribute("z80_critical");
+  if (IsCritical && !MF.getFunction().hasFnAttribute("interrupt")) {
+    BuildMI(MBB, MBBI, DL, TII.get(Z80::DI));
+  }
+
   if (hasFP(MF)) {
     // --- Frame pointer mode (IX = frame pointer) ---
     bool NeedsFP = MFI.getNumFixedObjects() > 0 || MFI.isFrameAddressTaken() ||
@@ -295,8 +302,18 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
   // effect after the NEXT instruction, which is RETI.  This means no
   // nested interrupt can fire between EI and RETI.
   // (SM83 RETI atomically enables interrupts, so no EI needed.)
+  // Emit EI before the return instruction for:
+  // - Interrupt handlers (Z80 only, not SM83): re-enable interrupts
+  // - __critical functions: restore interrupts that were disabled at entry
+  bool NeedsEI = false;
   if (MF.getFunction().hasFnAttribute("interrupt") &&
-      !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
+      !MF.getSubtarget<Z80Subtarget>().hasSM83())
+    NeedsEI = true;
+  if (MF.getFunction().hasFnAttribute("z80_critical") &&
+      !MF.getFunction().hasFnAttribute("interrupt"))
+    NeedsEI = true;
+
+  if (NeedsEI) {
     MachineBasicBlock::iterator RetI = MBB.getLastNonDebugInstr();
     BuildMI(MBB, RetI, DL, TII.get(Z80::EI));
   }
