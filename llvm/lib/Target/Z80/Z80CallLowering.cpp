@@ -197,8 +197,14 @@ bool Z80CallLoweringCommon::lowerReturn(MachineIRBuilder &MIRBuilder,
         MachineInstrBuilder RetMI;
         if (IsInterrupt) {
           const auto &STI = MF.getSubtarget<Z80Subtarget>();
-          unsigned RetiOpc = STI.hasSM83() ? Z80::SM83_RETI : Z80::RETI;
-          RetMI = MIRBuilder.buildInstr(RetiOpc);
+          if (STI.hasSM83()) {
+            // SM83 RETI (0xD9) atomically enables interrupts (IME=1).
+            RetMI = MIRBuilder.buildInstr(Z80::SM83_RETI);
+          } else {
+            // Z80: emit just RETI here.  The frame epilogue inserts EI
+            // immediately before RETI after all register restores are done.
+            RetMI = MIRBuilder.buildInstr(Z80::RETI);
+          }
         } else if (CleanupBytes > 0)
           RetMI = MIRBuilder.buildInstr(Z80::RET_CLEANUP).addImm(CleanupBytes);
         else

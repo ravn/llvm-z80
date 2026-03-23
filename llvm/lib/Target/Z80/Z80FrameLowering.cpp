@@ -212,6 +212,14 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
   uint64_t StackSize = MFI.getStackSize();
 
+  // Z80 interrupt handlers: emit EI immediately before RETI so that
+  // interrupts are re-enabled only after all registers are restored.
+  // (SM83 RETI atomically enables interrupts, so no EI needed.)
+  bool IsInterrupt = MF.getFunction().hasFnAttribute("interrupt");
+  if (IsInterrupt && !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
+    BuildMI(MBB, MBBI, DL, TII.get(Z80::EI));
+  }
+
   if (hasFP(MF)) {
     bool NeedsFP = MFI.getNumFixedObjects() > 0 || MFI.isFrameAddressTaken() ||
                    MFI.hasVarSizedObjects();
