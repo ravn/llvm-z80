@@ -212,26 +212,17 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
   uint64_t StackSize = MFI.getStackSize();
 
-  // Z80 interrupt handlers: emit EI immediately before RETI so that
-  // interrupts are re-enabled only after all registers are restored.
-  // (SM83 RETI atomically enables interrupts, so no EI needed.)
-  bool IsInterrupt = MF.getFunction().hasFnAttribute("interrupt");
-  if (IsInterrupt && !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::EI));
-  }
-
   if (hasFP(MF)) {
     bool NeedsFP = MFI.getNumFixedObjects() > 0 || MFI.isFrameAddressTaken() ||
                    MFI.hasVarSizedObjects();
 
-    if (!StackSize && !NeedsFP)
-      return;
-
-    // Z80 epilogue (before RET):
-    // 1. LD SP,IX   - Restore stack pointer from frame pointer
-    // 2. POP IX     - Restore old frame pointer
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_IX));
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_IX));
+    if (StackSize || NeedsFP) {
+      // Z80 epilogue (before RET):
+      // 1. LD SP,IX   - Restore stack pointer from frame pointer
+      // 2. POP IX     - Restore old frame pointer
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_IX));
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_IX));
+    }
   } else {
     // No frame pointer: deallocate locals only.
     // Callee-saved registers are restored by restoreCalleeSavedRegisters,
@@ -241,63 +232,73 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
     const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
     uint64_t LocalSize = StackSize - FI->getCalleeSavedFrameSize();
 
-    if (LocalSize == 0)
-      return;
-
-    // Walk MBBI backwards past callee-save restore POPs (FrameDestroy flag)
-    // so we insert local deallocation before them.
-    while (MBBI != MBB.begin()) {
-      auto Prev = std::prev(MBBI);
-      if (Prev->getFlag(MachineInstr::FrameDestroy))
-        MBBI = Prev;
-      else
-        break;
-    }
-
-    const auto &STI = MF.getSubtarget<Z80Subtarget>();
-    if (STI.hasSM83() && LocalSize <= 127) {
-      // SM83: ADD SP,e (2 bytes, doesn't clobber HL)
-      BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_SP_e)).addImm(LocalSize & 0xFF);
-    } else if (LocalSize <= 4) {
-      // Small: INC SP loop (1 byte each, no clobber).
-      for (unsigned i = 0; i < LocalSize; ++i)
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::INC_SP));
-    } else {
-      // Check which registers are live at return to pick the best strategy.
-      // Return instruction adds implicit uses for return value registers.
-      auto RetIt = MBB.getLastNonDebugInstr();
-      bool HLLive = false, ALive = false;
-      if (RetIt != MBB.end()) {
-        for (const auto &MO : RetIt->operands()) {
-          if (!MO.isReg() || !MO.isUse())
-            continue;
-          Register Reg = MO.getReg();
-          if (Reg == Z80::HL || Reg == Z80::H || Reg == Z80::L)
-            HLLive = true;
-          if (Reg == Z80::A || Reg == Z80::AF)
-            ALive = true;
-        }
+    if (LocalSize > 0) {
+      // Walk MBBI backwards past callee-save restore POPs (FrameDestroy flag)
+      // so we insert local deallocation before them.
+      while (MBBI != MBB.begin()) {
+        auto Prev = std::prev(MBBI);
+        if (Prev->getFlag(MachineInstr::FrameDestroy))
+          MBBI = Prev;
+        else
+          break;
       }
 
-      if (!HLLive) {
-        // HL free: LD HL,LocalSize; ADD HL,SP; LD SP,HL (5 bytes total).
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_HL_nn))
-            .addImm(LocalSize & 0xFFFF);
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_HL_SP));
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_HL));
-      } else if (!ALive) {
-        // A free: POP AF loop (1 byte per 2 bytes).
-        unsigned PopCount = LocalSize / 2;
-        for (unsigned i = 0; i < PopCount; ++i)
-          BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_AF));
-        if (LocalSize % 2)
-          BuildMI(MBB, MBBI, DL, TII.get(Z80::INC_SP));
-      } else {
-        // Both A and HL live (i32 return): INC SP loop as last resort.
+      const auto &STI = MF.getSubtarget<Z80Subtarget>();
+      if (STI.hasSM83() && LocalSize <= 127) {
+        // SM83: ADD SP,e (2 bytes, doesn't clobber HL)
+        BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_SP_e)).addImm(LocalSize & 0xFF);
+      } else if (LocalSize <= 4) {
+        // Small: INC SP loop (1 byte each, no clobber).
         for (unsigned i = 0; i < LocalSize; ++i)
           BuildMI(MBB, MBBI, DL, TII.get(Z80::INC_SP));
+      } else {
+        // Check which registers are live at return to pick the best strategy.
+        // Return instruction adds implicit uses for return value registers.
+        auto RetIt = MBB.getLastNonDebugInstr();
+        bool HLLive = false, ALive = false;
+        if (RetIt != MBB.end()) {
+          for (const auto &MO : RetIt->operands()) {
+            if (!MO.isReg() || !MO.isUse())
+              continue;
+            Register Reg = MO.getReg();
+            if (Reg == Z80::HL || Reg == Z80::H || Reg == Z80::L)
+              HLLive = true;
+            if (Reg == Z80::A || Reg == Z80::AF)
+              ALive = true;
+          }
+        }
+
+        if (!HLLive) {
+          // HL free: LD HL,LocalSize; ADD HL,SP; LD SP,HL (5 bytes total).
+          BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_HL_nn))
+              .addImm(LocalSize & 0xFFFF);
+          BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_HL_SP));
+          BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_HL));
+        } else if (!ALive) {
+          // A free: POP AF loop (1 byte per 2 bytes).
+          unsigned PopCount = LocalSize / 2;
+          for (unsigned i = 0; i < PopCount; ++i)
+            BuildMI(MBB, MBBI, DL, TII.get(Z80::POP_AF));
+          if (LocalSize % 2)
+            BuildMI(MBB, MBBI, DL, TII.get(Z80::INC_SP));
+        } else {
+          // Both A and HL live (i32 return): INC SP loop as last resort.
+          for (unsigned i = 0; i < LocalSize; ++i)
+            BuildMI(MBB, MBBI, DL, TII.get(Z80::INC_SP));
+        }
       }
     }
+  }
+
+  // Z80 interrupt handlers: emit EI immediately before RETI, after all
+  // register restores and frame teardown.  Z80's EI is delayed — it takes
+  // effect after the NEXT instruction, which is RETI.  This means no
+  // nested interrupt can fire between EI and RETI.
+  // (SM83 RETI atomically enables interrupts, so no EI needed.)
+  if (MF.getFunction().hasFnAttribute("interrupt") &&
+      !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
+    MachineBasicBlock::iterator RetI = MBB.getLastNonDebugInstr();
+    BuildMI(MBB, RetI, DL, TII.get(Z80::EI));
   }
 }
 
