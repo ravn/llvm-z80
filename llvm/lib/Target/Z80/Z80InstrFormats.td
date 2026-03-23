@@ -213,10 +213,22 @@ def Imm16Mode : AddressingMode {
   let InOperandList = (ins imm16:$imm);
 }
 
+// DD/FD-prefixed 16-bit immediate: offset 2 (after prefix + opcode bytes)
+def DDImm16Mode : AddressingMode {
+  let OperandsStr = "$imm";
+  let InOperandList = (ins imm16at2:$imm);
+}
+
 // DirectMode uses 'imm' for encoding compatibility (printed as address)
 def DirectMode : AddressingMode {
   let OperandsStr = "( $imm )";
   let InOperandList = (ins addr16:$imm);
+}
+
+// DD/FD/ED-prefixed direct addressing: offset 2 (after prefix + opcode)
+def DDDirectMode : AddressingMode {
+  let OperandsStr = "( $imm )";
+  let InOperandList = (ins addr16at2:$imm);
 }
 
 // RelativeMode uses 'imm' for encoding compatibility
@@ -400,7 +412,7 @@ class InstDD16Imm<string asmstr, bits<8> opcode> : Z80Inst<asmstr> {
 }
 
 /// 4-byte DD-prefixed instruction with 16-bit operand
-class InstDD24<string asmstr, bits<8> opcode, AddressingMode mode = Imm16Mode>
+class InstDD24<string asmstr, bits<8> opcode, AddressingMode mode = DDImm16Mode>
     : Z80Inst<asmstr> {
   let Size = 4;
   bits<16> imm;
@@ -453,7 +465,7 @@ class InstFD16Imm<string asmstr, bits<8> opcode> : Z80Inst<asmstr> {
 }
 
 /// 4-byte FD-prefixed instruction with 16-bit operand
-class InstFD24<string asmstr, bits<8> opcode, AddressingMode mode = Imm16Mode>
+class InstFD24<string asmstr, bits<8> opcode, AddressingMode mode = DDImm16Mode>
     : Z80Inst<asmstr> {
   let Size = 4;
   bits<16> imm;
@@ -479,7 +491,7 @@ class InstED8<string asmstr, bits<8> opcode> : Z80Inst<asmstr> {
 }
 
 /// 4-byte ED-prefixed instruction with 16-bit operand
-class InstED24<string asmstr, bits<8> opcode, AddressingMode mode = DirectMode>
+class InstED24<string asmstr, bits<8> opcode, AddressingMode mode = DDDirectMode>
     : Z80Inst<asmstr> {
   let Size = 4;
   bits<16> imm;
