@@ -52,10 +52,13 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
     return false;
 
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  // On Z80, IX-indexed addressing (ld (ix+d),r = 3 bytes) is more compact
-  // than SP-relative (ld hl,off; add hl,sp; ld (hl),r = 5+ bytes).
-  // Use IX as frame pointer when the function has stack objects.
-  // Skip IX for functions with no stack (saves 12 bytes of push/pop/setup).
+
+  // Static stack: always use IX frame pointer.  IX will point to a BSS
+  // area instead of the stack, making ld (ix+d),r (3 bytes) cheaper than
+  // SP-relative (5+ bytes) — and the prologue is smaller too (no ADD IX,SP).
+  if (STI.staticStack())
+    return true;
+
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
   if (MF.getTarget().Options.DisableFramePointerElim(MF))
@@ -63,14 +66,10 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   // Use frame pointer when the function has local stack allocations
   // or accesses incoming stack arguments.  Skip it for functions that
   // only need callee-saved register push/pop (like simple ISRs).
-  //
-  // Check the IR for alloca instructions as a proxy for "needs stack."
-  // At hasFP time, MachineFrameInfo isn't fully populated yet.
   for (const auto &BB : MF.getFunction())
     for (const auto &I : BB)
       if (isa<AllocaInst>(&I))
         return true;
-  // Also need FP if the function takes stack arguments (has fixed objects).
   return MFI.getNumFixedObjects() > 0;
 }
 

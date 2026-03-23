@@ -977,7 +977,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   //   [local var 2]    <- SP
 
   if (UseFP) {
-    Offset += 2; // Skip saved IX
+    Offset += 2; // Skip saved IX (also needed for static stack: IX = base+size)
   } else {
     // For callee-cleanup calls, if regalloc inserted this frame-index
     // instruction between CALL and ADJCALLSTACKUP, PEI's SPAdj still
