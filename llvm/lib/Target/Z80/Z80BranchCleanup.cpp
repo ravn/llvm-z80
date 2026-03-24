@@ -166,75 +166,82 @@ bool Z80BranchCleanup::runOnMachineFunction(MachineFunction &MF) {
   ToRemove.clear();
 
   // --- Conditional RET with epilogue duplication ---
-  // Pattern: conditional branch targets a shared exit block with small
-  // epilogue + RET. Replace branch with duplicated epilogue + conditional RET.
-  // JR cond, exit (2B) → epilogue_copy + RET cond (epilogue+1B).
-  // Profitable when epilogue is 0 bytes (saves 1B per JR, 2B per JP) or
-  // 1 byte (saves 0B per JR, 1B per JP).
-  for (auto &MBB : MF) {
-    auto LastI = MBB.getLastNonDebugInstr();
-    if (LastI == MBB.end())
-      continue;
-
-    unsigned BrOpc = LastI->getOpcode();
-    unsigned CondRETOpc = invertBranchToCondRET(BrOpc);
-    if (!CondRETOpc)
-      continue;
-    // invertBranchToCondRET inverts, but for branch-TO-exit we want
-    // the SAME condition: JR Z,exit → RET Z (return when Z set).
-    // Use the non-inverted mapping:
-    unsigned SameCondRETOpc = 0;
-    switch (BrOpc) {
-    case Z80::JR_Z_e:  case Z80::JP_Z_nn:  SameCondRETOpc = Z80::RET_Z; break;
-    case Z80::JR_NZ_e: case Z80::JP_NZ_nn: SameCondRETOpc = Z80::RET_NZ; break;
-    case Z80::JR_C_e:  case Z80::JP_C_nn:  SameCondRETOpc = Z80::RET_C; break;
-    case Z80::JR_NC_e: case Z80::JP_NC_nn: SameCondRETOpc = Z80::RET_NC; break;
-    default: continue;
-    }
-
-    MachineBasicBlock *ExitMBB = LastI->getOperand(0).getMBB();
-
-    // Check: exit block must end with RET (not RETI).
-    auto ExitLast = ExitMBB->getLastNonDebugInstr();
-    if (ExitLast == ExitMBB->end() || ExitLast->getOpcode() != Z80::RET)
-      continue;
-
-    // Measure epilogue size (all instructions before RET in exit block).
-    unsigned EpilogueBytes = 0;
-    SmallVector<MachineInstr *, 4> EpilogueInstrs;
-    for (auto &MI : *ExitMBB) {
-      if (MI.isDebugInstr())
+  // Pattern: conditional branch targets a block ending in RET with small
+  // epilogue. Replace branch with duplicated epilogue + conditional RET.
+  // Only process when the conditional branch is NOT the only terminator
+  // (i.e., there must be a fallthrough path after it).
+  {
+    SmallVector<std::tuple<MachineBasicBlock *, MachineInstr *, unsigned,
+                           MachineBasicBlock *>, 4> CondRETCandidates;
+    for (auto &MBB : MF) {
+      auto LastI = MBB.getLastNonDebugInstr();
+      if (LastI == MBB.end())
         continue;
-      if (&MI == &*ExitLast)
-        break; // don't count the RET itself
-      EpilogueBytes += TII->getInstSizeInBytes(MI);
-      EpilogueInstrs.push_back(&MI);
+
+      unsigned BrOpc = LastI->getOpcode();
+      unsigned SameCondRETOpc = 0;
+      switch (BrOpc) {
+      case Z80::JR_Z_e:  case Z80::JP_Z_nn:  SameCondRETOpc = Z80::RET_Z; break;
+      case Z80::JR_NZ_e: case Z80::JP_NZ_nn: SameCondRETOpc = Z80::RET_NZ; break;
+      case Z80::JR_C_e:  case Z80::JP_C_nn:  SameCondRETOpc = Z80::RET_C; break;
+      case Z80::JR_NC_e: case Z80::JP_NC_nn: SameCondRETOpc = Z80::RET_NC; break;
+      default: continue;
+      }
+
+      MachineBasicBlock *ExitMBB = LastI->getOperand(0).getMBB();
+
+      // Exit block must end with RET.
+      auto ExitLast = ExitMBB->getLastNonDebugInstr();
+      if (ExitLast == ExitMBB->end() || ExitLast->getOpcode() != Z80::RET)
+        continue;
+
+      // Measure epilogue (instructions before RET).
+      unsigned EpilogueBytes = 0;
+      for (auto &MI : *ExitMBB) {
+        if (MI.isDebugInstr()) continue;
+        if (&MI == &*ExitLast) break;
+        EpilogueBytes += TII->getInstSizeInBytes(MI);
+      }
+
+      unsigned BranchBytes = TII->getInstSizeInBytes(*LastI);
+      if (BranchBytes <= EpilogueBytes + 1)
+        continue;
+
+      // The block must have a fallthrough successor (not end the function).
+      if (MBB.succ_size() < 2)
+        continue; // conditional branch must have 2 successors
+
+      CondRETCandidates.emplace_back(&MBB, &*LastI, SameCondRETOpc, ExitMBB);
     }
 
-    // Branch cost: JR = 2 bytes, JP = 3 bytes.
-    unsigned BranchBytes = TII->getInstSizeInBytes(*LastI);
-    // Conditional RET = 1 byte. Net saving = branch - (epilogue + 1).
-    if (BranchBytes <= EpilogueBytes + 1)
-      continue; // not profitable
+    // Apply collected candidates.
+    for (auto &[MBBPtr, BranchMI, CondOpc, ExitMBB] : CondRETCandidates) {
+      // Re-verify exit block (may have been modified by earlier candidate).
+      auto ExitLast = ExitMBB->getLastNonDebugInstr();
+      if (ExitLast == ExitMBB->end() || ExitLast->getOpcode() != Z80::RET)
+        continue;
 
-    LLVM_DEBUG(dbgs() << "Z80BranchCleanup: cond RET with epilogue dup ("
-                      << EpilogueBytes << "B epilogue) in "
-                      << printMBBReference(MBB) << "\n");
+      // Collect epilogue instructions.
+      SmallVector<MachineInstr *, 4> EpilogueInstrs;
+      for (auto &MI : *ExitMBB) {
+        if (MI.isDebugInstr()) continue;
+        if (&MI == &*ExitLast) break;
+        EpilogueInstrs.push_back(&MI);
+      }
 
-    DebugLoc DL = LastI->getDebugLoc();
-    // Remove the conditional branch.
-    LastI->eraseFromParent();
-    // Duplicate epilogue instructions before the conditional RET.
-    for (MachineInstr *EpiMI : EpilogueInstrs) {
-      MachineInstr *Clone = MF.CloneMachineInstr(EpiMI);
-      MBB.insert(MBB.end(), Clone);
+      DebugLoc DL = BranchMI->getDebugLoc();
+      BranchMI->eraseFromParent();
+
+      // Duplicate epilogue + conditional RET.
+      for (MachineInstr *EpiMI : EpilogueInstrs) {
+        MachineInstr *Clone = MF.CloneMachineInstr(EpiMI);
+        MBBPtr->insert(MBBPtr->end(), Clone);
+      }
+      BuildMI(*MBBPtr, MBBPtr->end(), DL, TII->get(CondOpc));
+
+      MBBPtr->removeSuccessor(ExitMBB);
+      Changed = true;
     }
-    // Emit conditional RET.
-    BuildMI(MBB, MBB.end(), DL, TII->get(SameCondRETOpc));
-
-    // Update CFG: remove edge to exit block.
-    MBB.removeSuccessor(ExitMBB);
-    Changed = true;
   }
 
   // --- Trampoline collapsing ---
