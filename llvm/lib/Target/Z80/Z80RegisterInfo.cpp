@@ -1441,12 +1441,29 @@ bool Z80RegisterInfo::getRegAllocationHints(
     ++It;
     if (It == End || It->getOpcode() != Z80::DEC_A)
       continue;
-    // Found COPY vreg→A; DEC A pattern. This vreg is a loop counter.
-    // Hint B so the late optimization peephole can convert to DJNZ.
+    // Check that this DEC feeds a conditional NZ branch (not unconditional).
+    // Only conditional NZ branches benefit from DJNZ. Outer loop counters
+    // that use unconditional JR should NOT get the B hint — freeing B
+    // for inner loop counters that DO benefit from DJNZ.
+    bool FeedsCondNZ = false;
+    for (auto It2 = std::next(It); It2 != End; ++It2) {
+      unsigned Opc = It2->getOpcode();
+      if (Opc == Z80::JR_NZ_e || Opc == Z80::JP_NZ_nn) {
+        FeedsCondNZ = true;
+        break;
+      }
+      // If we hit another instruction that defines FLAGS, the DEC's
+      // flags are dead — this isn't a conditional branch pattern.
+      if (It2->modifiesRegister(Z80::FLAGS, this))
+        break;
+    }
+    if (!FeedsCondNZ)
+      continue;
+    // Found COPY vreg→A; DEC A; ...; JR NZ pattern. This is an inner
+    // loop counter that benefits from DJNZ.
     LLVM_DEBUG(dbgs() << "  DJNZ hint: " << printReg(VirtReg, this)
-                      << " is a loop counter, hinting B\n");
+                      << " is an inner loop counter, hinting B\n");
     if (is_contained(Order, Z80::B) && !is_contained(Hints, Z80::B)) {
-      // Insert at front for highest priority.
       Hints.insert(Hints.begin(), Z80::B);
     }
     break;
