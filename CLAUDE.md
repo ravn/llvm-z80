@@ -151,6 +151,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - Unused IX/IY setup removal
 - BC last in 16-bit allocation order
 - Conditional RET (branch-over-RET pattern)
+- IX/IY allocatable as general 16-bit registers (see below)
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
 With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit pairs:
@@ -161,11 +162,20 @@ With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit 
 - Requires changing eliminateFrameIndex to emit direct addressing instead of IX-relative
 - Caution: `LD HL,(addr)` destroys HL; `EX DE,HL` destroys both (see EXX warning)
 
+### IX/IY as Allocatable Registers
+IX and IY are in GR16 (last, least preferred — each access costs +1 byte DD/FD prefix). This gives the register allocator 5 pairs (DE, HL, BC, IX, IY) instead of 3.
+- With `+static-stack` and no stack arguments: `hasFP=false`, IX is free for allocation
+- IY is always allocatable on Z80 (never used as frame pointer)
+- Functions with stack arguments (fixed objects) still use IX as frame pointer
+- All ~440 undocumented Z80 instructions defined (gated by `+undocumented`): IXH/IXL/IYH/IYL 8-bit ops, SLL, DDCB/FDCB register-copy variants, IN (C), OUT (C),0
+- All pseudo expansions handle IX/IY sub-registers (IXH/IXL/IYH/IYL)
+- MAME fully supports all undocumented Z80 instructions — safe for testing
+- Verified: CP/M boots in MAME with IX/IY-allocatable clang-built PROM
+
 ### Known Non-Working / Deferred
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
 - Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
-- IX/IY as allocatable registers: **WORKING**. IX/IY are in GR16 (last, least preferred). With `+static-stack` and no stack arguments, `hasFP=false` frees IX for allocation. IY is always allocatable. All pseudo expansions handle IXH/IXL/IYH/IYL. Functions with stack arguments (fixed objects) still use IX as frame pointer.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
