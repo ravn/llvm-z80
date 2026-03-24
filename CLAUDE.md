@@ -102,6 +102,52 @@ Three crates: `test-runner` (integration test harness), `elf2rel` (ELF→SDCC .r
 - `llvm/lib/Target/Z80/Z80CallLowering.cpp` — calling convention implementation
 - `clang/cmake/caches/Z80.cmake` — build configuration cache
 
+## Lessons Learned (from bugs and failed approaches)
+
+### Z80 Exchange Instructions Destroy Multiple Registers
+- **EX DE,HL** modifies BOTH DE and HL. Cannot be used as a one-way copy — use two LDs instead when the source must survive.
+- **EXX** swaps ALL THREE pairs (BC, DE, HL) simultaneously. Cannot be inserted between instructions with live values in any of these registers. Safe only at function entry/exit or after CALL.
+- Both have caused runtime bugs when inserted by peephole passes that didn't account for the global effect.
+
+### PUSH/POP as Register Borrowing
+PUSH rr (1B, 11T) + POP rr (1B, 10T) = 2 bytes to temporarily free a register pair. Cheaper than IX-indexed save/restore (3 bytes per access). Useful for borrowing a register for a specific instruction (DJNZ needs B, LDIR needs HL/DE/BC).
+
+### IX-Indexed Access is Expensive
+Each `LD r,(IX+d)` or `LD (IX+d),r` is 3 bytes, 19 T-states. The register allocator's spill decisions should reflect this cost. On architectures with cheap stack access, spilling is nearly free — on Z80, each spill/reload costs 3 bytes.
+
+### Loop Strength Reduction (LSR) is Harmful
+LSR widens 8-bit loop counters to 16-bit and creates extra induction variables, causing massive spills on Z80's 3-pair register file. Disabled via `-mllvm -disable-lsr`.
+
+### Debugging: DISKETTE ERROR means check delay timing
+The FDC needs ~260ms after power-on. If delay timing is wrong (wrong DELAY_T constant for the compiler), the FDC Specify command fails and all disk operations fail with DISKETTE ERROR.
+
+### The compiler is experimental — never assume generated code is correct
+Always test in MAME. The compiler has known bugs (branch relaxation crashes with simple do-while loops + `-disable-lsr`, pre-existing test failures in calling-conv.ll and large-frame.ll).
+
+## Project Status
+
+### Feature Flags
+- `+static-stack` — allocate function locals in BSS instead of stack. Non-reentrant.
+- `+shadow-regs` — enable EXX shadow register infrastructure (not yet functional for spill reduction).
+
+### Known Working Optimizations
+- CP (HL) fusion in instruction selector
+- LDIR/LDDR for memcpy/memset
+- RLCA bit-7 test for signed comparisons (slt X,0 / sgt X,-1)
+- 16-bit right shift by 5-7 via byte swap + ADD HL,HL
+- Static stack with overlay (call-graph-based BSS sharing)
+- BC last in 16-bit allocation order
+- Conditional RET (branch-over-RET pattern)
+
+### Known Non-Working / Deferred
+- DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
+- EXX spill conversion: swaps all registers, cannot be inserted at arbitrary points
+- Conditional RET with epilogue duplication: crashes with -ffunction-sections
+- Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
+
+### Bug Reports
+File bugs in `ravn/llvm-z80` only, never upstream LLVM. Collect crash artifacts (preprocessed source, run script) into a zip.
+
 ## Code Review Notes
 
 When modifying control flow in `llvm/` code, verify that performance profile data and debug information (especially for branches and calls) remain valid.
