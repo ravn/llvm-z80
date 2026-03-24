@@ -91,7 +91,12 @@ static unsigned getSUBOpcode(Register Reg) {
   static const unsigned T[] = {Z80::SUB_A, Z80::SUB_B, Z80::SUB_C, Z80::SUB_D,
                                Z80::SUB_E, Z80::SUB_H, Z80::SUB_L};
   int I = Z80::gr8RegToIndex(Reg);
-  return I >= 0 ? T[I] : 0;
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::SUB_IXH; case Z80::IXL: return Z80::SUB_IXL;
+  case Z80::IYH: return Z80::SUB_IYH; case Z80::IYL: return Z80::SUB_IYL;
+  default: return 0;
+  }
 }
 
 static unsigned getSBCOpcode(Register Reg) {
@@ -99,7 +104,12 @@ static unsigned getSBCOpcode(Register Reg) {
                                Z80::SBC_A_D, Z80::SBC_A_E, Z80::SBC_A_H,
                                Z80::SBC_A_L};
   int I = Z80::gr8RegToIndex(Reg);
-  return I >= 0 ? T[I] : 0;
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::SBC_A_IXH; case Z80::IXL: return Z80::SBC_A_IXL;
+  case Z80::IYH: return Z80::SBC_A_IYH; case Z80::IYL: return Z80::SBC_A_IYL;
+  default: return 0;
+  }
 }
 
 static unsigned getADCOpcode(Register Reg) {
@@ -107,7 +117,12 @@ static unsigned getADCOpcode(Register Reg) {
                                Z80::ADC_A_D, Z80::ADC_A_E, Z80::ADC_A_H,
                                Z80::ADC_A_L};
   int I = Z80::gr8RegToIndex(Reg);
-  return I >= 0 ? T[I] : 0;
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::ADC_A_IXH; case Z80::IXL: return Z80::ADC_A_IXL;
+  case Z80::IYH: return Z80::ADC_A_IYH; case Z80::IYL: return Z80::ADC_A_IYL;
+  default: return 0;
+  }
 }
 
 static unsigned getADD8Opcode(Register Reg) {
@@ -115,10 +130,73 @@ static unsigned getADD8Opcode(Register Reg) {
                                Z80::ADD_A_D, Z80::ADD_A_E, Z80::ADD_A_H,
                                Z80::ADD_A_L};
   int I = Z80::gr8RegToIndex(Reg);
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::ADD_A_IXH; case Z80::IXL: return Z80::ADD_A_IXL;
+  case Z80::IYH: return Z80::ADD_A_IYH; case Z80::IYL: return Z80::ADD_A_IYL;
+  default: return 0;
+  }
+}
+
+static unsigned getXOROpcode(Register Reg) {
+  static const unsigned T[] = {Z80::XOR_A, Z80::XOR_B, Z80::XOR_C, Z80::XOR_D,
+                               Z80::XOR_E, Z80::XOR_H, Z80::XOR_L};
+  int I = Z80::gr8RegToIndex(Reg);
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::XOR_IXH; case Z80::IXL: return Z80::XOR_IXL;
+  case Z80::IYH: return Z80::XOR_IYH; case Z80::IYL: return Z80::XOR_IYL;
+  default: return 0;
+  }
+}
+
+static unsigned getOROpcode(Register Reg) {
+  static const unsigned T[] = {Z80::OR_A, Z80::OR_B, Z80::OR_C, Z80::OR_D,
+                               Z80::OR_E, Z80::OR_H, Z80::OR_L};
+  int I = Z80::gr8RegToIndex(Reg);
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::OR_IXH; case Z80::IXL: return Z80::OR_IXL;
+  case Z80::IYH: return Z80::OR_IYH; case Z80::IYL: return Z80::OR_IYL;
+  default: return 0;
+  }
+}
+
+static unsigned getCPOpcode(Register Reg) {
+  static const unsigned T[] = {Z80::CP_A, Z80::CP_B, Z80::CP_C, Z80::CP_D,
+                               Z80::CP_E, Z80::CP_H, Z80::CP_L};
+  int I = Z80::gr8RegToIndex(Reg);
+  if (I >= 0) return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH: return Z80::CP_IXH; case Z80::IXL: return Z80::CP_IXL;
+  case Z80::IYH: return Z80::CP_IYH; case Z80::IYL: return Z80::CP_IYL;
+  default: return 0;
+  }
+}
+
+static unsigned getSRLOpcode(Register Reg) {
+  static const unsigned T[] = {Z80::SRL_A, Z80::SRL_B, Z80::SRL_C, Z80::SRL_D,
+                               Z80::SRL_E, Z80::SRL_H, Z80::SRL_L};
+  int I = Z80::gr8RegToIndex(Reg);
+  return I >= 0 ? T[I] : 0;
+}
+
+static unsigned getSRAOpcode(Register Reg) {
+  static const unsigned T[] = {Z80::SRA_A, Z80::SRA_B, Z80::SRA_C, Z80::SRA_D,
+                               Z80::SRA_E, Z80::SRA_H, Z80::SRA_L};
+  int I = Z80::gr8RegToIndex(Reg);
+  return I >= 0 ? T[I] : 0;
+}
+
+static unsigned getRROpcode(Register Reg) {
+  static const unsigned T[] = {Z80::RR_A, Z80::RR_B, Z80::RR_C, Z80::RR_D,
+                               Z80::RR_E, Z80::RR_H, Z80::RR_L};
+  int I = Z80::gr8RegToIndex(Reg);
   return I >= 0 ? T[I] : 0;
 }
 
 // Get low and high 8-bit sub-registers of a 16-bit register pair.
+// Includes undocumented IX/IY halves for +undocumented target.
 static std::pair<Register, Register> getSubRegs16(Register Reg) {
   switch (Reg.id()) {
   case Z80::BC:
@@ -127,6 +205,10 @@ static std::pair<Register, Register> getSubRegs16(Register Reg) {
     return {Z80::E, Z80::D};
   case Z80::HL:
     return {Z80::L, Z80::H};
+  case Z80::IX:
+    return {Z80::IXL, Z80::IXH};
+  case Z80::IY:
+    return {Z80::IYL, Z80::IYH};
   default:
     llvm_unreachable("Not a GR16 register pair");
   }
@@ -1023,18 +1105,13 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register RHS_hi = TRI->getSubReg(RHSReg, Z80::sub_hi);
     Register RHS_lo = TRI->getSubReg(RHSReg, Z80::sub_lo);
 
-    // XOR opcode table indexed by gr8RegToIndex
-    static const unsigned XorOpcodes[] = {Z80::XOR_A, Z80::XOR_B, Z80::XOR_C,
-                                          Z80::XOR_D, Z80::XOR_E, Z80::XOR_H,
-                                          Z80::XOR_L};
-
     // XOR high bytes, save to B
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_hi)));
-    BuildMI(MBB, MI, DL, get(XorOpcodes[Z80::gr8RegToIndex(RHS_hi)]));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_hi)));
     BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
     // XOR low bytes, OR with saved high result
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_lo)));
-    BuildMI(MBB, MI, DL, get(XorOpcodes[Z80::gr8RegToIndex(RHS_lo)]));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_lo)));
     BuildMI(MBB, MI, DL, get(Z80::OR_B));
 
     // Normalize to 0/1
@@ -1059,12 +1136,8 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register Lo = TRI->getSubReg(SrcReg, Z80::sub_lo);
     Register Hi = TRI->getSubReg(SrcReg, Z80::sub_hi);
 
-    static const unsigned OrOpcodes[] = {Z80::OR_A, Z80::OR_B, Z80::OR_C,
-                                         Z80::OR_D, Z80::OR_E, Z80::OR_H,
-                                         Z80::OR_L};
-
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, Lo)));
-    BuildMI(MBB, MI, DL, get(OrOpcodes[Z80::gr8RegToIndex(Hi)]));
+    BuildMI(MBB, MI, DL, get(getOROpcode(Hi)));
 
     MI.eraseFromParent();
     return true;
@@ -1081,15 +1154,11 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register RHS_hi = TRI->getSubReg(RHSReg, Z80::sub_hi);
     Register RHS_lo = TRI->getSubReg(RHSReg, Z80::sub_lo);
 
-    static const unsigned XorOpcodes[] = {Z80::XOR_A, Z80::XOR_B, Z80::XOR_C,
-                                          Z80::XOR_D, Z80::XOR_E, Z80::XOR_H,
-                                          Z80::XOR_L};
-
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_hi)));
-    BuildMI(MBB, MI, DL, get(XorOpcodes[Z80::gr8RegToIndex(RHS_hi)]));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_hi)));
     BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_lo)));
-    BuildMI(MBB, MI, DL, get(XorOpcodes[Z80::gr8RegToIndex(RHS_lo)]));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_lo)));
     BuildMI(MBB, MI, DL, get(Z80::OR_B));
 
     MI.eraseFromParent();
@@ -1313,8 +1382,43 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       llvm_unreachable("unexpected 8-bit ALU pseudo");
     }
     int RegIdx = Z80::gr8RegToIndex(Register(RHS));
-    assert(RegIdx >= 0 && "unexpected register for 8-bit ALU pseudo");
-    BuildMI(MBB, MI, DL, get(AluOpcodes[TableIdx][RegIdx]));
+    if (RegIdx >= 0) {
+      BuildMI(MBB, MI, DL, get(AluOpcodes[TableIdx][RegIdx]));
+    } else {
+      // Undocumented IXH/IXL/IYH/IYL: lookup via individual helper
+      unsigned Opc = 0;
+      switch (MI.getOpcode()) {
+      case Z80::ADD_A_r: Opc = getADD8Opcode(Register(RHS)); break;
+      case Z80::SUB_r:   Opc = getSUBOpcode(Register(RHS)); break;
+      case Z80::AND_r:
+        switch (RHS.id()) {
+        case Z80::IXH: Opc = Z80::AND_IXH; break; case Z80::IXL: Opc = Z80::AND_IXL; break;
+        case Z80::IYH: Opc = Z80::AND_IYH; break; case Z80::IYL: Opc = Z80::AND_IYL; break;
+        default: break;
+        } break;
+      case Z80::OR_r:
+        switch (RHS.id()) {
+        case Z80::IXH: Opc = Z80::OR_IXH; break; case Z80::IXL: Opc = Z80::OR_IXL; break;
+        case Z80::IYH: Opc = Z80::OR_IYH; break; case Z80::IYL: Opc = Z80::OR_IYL; break;
+        default: break;
+        } break;
+      case Z80::XOR_r:
+        switch (RHS.id()) {
+        case Z80::IXH: Opc = Z80::XOR_IXH; break; case Z80::IXL: Opc = Z80::XOR_IXL; break;
+        case Z80::IYH: Opc = Z80::XOR_IYH; break; case Z80::IYL: Opc = Z80::XOR_IYL; break;
+        default: break;
+        } break;
+      case Z80::CP_r:
+        switch (RHS.id()) {
+        case Z80::IXH: Opc = Z80::CP_IXH; break; case Z80::IXL: Opc = Z80::CP_IXL; break;
+        case Z80::IYH: Opc = Z80::CP_IYH; break; case Z80::IYL: Opc = Z80::CP_IYL; break;
+        default: break;
+        } break;
+      default: break;
+      }
+      assert(Opc && "unexpected register for 8-bit ALU pseudo");
+      BuildMI(MBB, MI, DL, get(Opc));
+    }
     MI.eraseFromParent();
     return true;
   }
@@ -1417,21 +1521,9 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register Hi = TRI->getSubReg(Reg, Z80::sub_hi);
     Register Lo = TRI->getSubReg(Reg, Z80::sub_lo);
 
-    static const unsigned SrlOps[] = {Z80::SRL_A, Z80::SRL_B, Z80::SRL_C,
-                                      Z80::SRL_D, Z80::SRL_E, Z80::SRL_H,
-                                      Z80::SRL_L};
-    static const unsigned SraOps[] = {Z80::SRA_A, Z80::SRA_B, Z80::SRA_C,
-                                      Z80::SRA_D, Z80::SRA_E, Z80::SRA_H,
-                                      Z80::SRA_L};
-    static const unsigned RrOps[] = {Z80::RR_A, Z80::RR_B, Z80::RR_C, Z80::RR_D,
-                                     Z80::RR_E, Z80::RR_H, Z80::RR_L};
-    auto getSrlOp = [](Register R) { return SrlOps[Z80::gr8RegToIndex(R)]; };
-    auto getSraOp = [](Register R) { return SraOps[Z80::gr8RegToIndex(R)]; };
-    auto getRrOp = [](Register R) { return RrOps[Z80::gr8RegToIndex(R)]; };
-
     bool IsLogical = (MI.getOpcode() == Z80::LSHR16);
-    BuildMI(MBB, MI, DL, get(IsLogical ? getSrlOp(Hi) : getSraOp(Hi)));
-    BuildMI(MBB, MI, DL, get(getRrOp(Lo)));
+    BuildMI(MBB, MI, DL, get(IsLogical ? getSRLOpcode(Hi) : getSRAOpcode(Hi)));
+    BuildMI(MBB, MI, DL, get(getRROpcode(Lo)));
     MI.eraseFromParent();
     return true;
   }
