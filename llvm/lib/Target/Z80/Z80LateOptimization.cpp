@@ -494,24 +494,33 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           continue;
 
         // Only remap tight loops: MBB contains ONLY the DEC + JR NZ.
-        // This ensures B can't be used by anything else in the loop.
         unsigned InstrCount = 0;
         for (auto &MI2 : MBB) InstrCount++;
         if (InstrCount != 2)
           continue;
 
-        // Verify B is not live-in to this BB (coming from a predecessor).
-        bool BLiveIn = MBB.isLiveIn(Z80::B) || MBB.isLiveIn(Z80::BC);
-        if (BLiveIn)
-          continue;
-
-        LLVM_DEBUG(dbgs() << "  DJNZ remap: "
-                          << printReg(CounterReg, TRI)
-                          << " → B in tight loop\n");
-        // Rename: just change DEC opcode, the register operand is implicit.
-        MII->setDesc(TII->get(Z80::DEC_B));
-        Changed = true;
-        break;
+        // B may be live across the loop (holding an outer counter).
+        // Use PUSH BC / DJNZ / POP BC to borrow B temporarily.
+        // Cost: PUSH BC (1B) + POP BC (1B) + DJNZ (2B) = 4B
+        // vs:   DEC r (1B) + JR NZ (2B) = 3B
+        // Net: +1 byte. NOT profitable for a single inner loop.
+        //
+        // BUT: if we also convert the middle loop's DEC; JR NZ to DJNZ,
+        // the PUSH/POP cost is shared: 1+1+2+2 = 6B vs 3+3 = 6B → break even.
+        // For 3+ loops sharing the PUSH/POP: saves 1B per extra loop.
+        //
+        // For now, only convert when B is actually dead (free DJNZ).
+        auto BLiveness = MBB.computeRegisterLiveness(TRI, Z80::B, MBB.begin());
+        if (BLiveness == MachineBasicBlock::LQR_Dead) {
+          LLVM_DEBUG(dbgs() << "  DJNZ remap: "
+                            << printReg(CounterReg, TRI)
+                            << " → B (B is dead)\n");
+          MII->setDesc(TII->get(Z80::DEC_B));
+          Changed = true;
+          break;
+        }
+        // B is live — skip for now.
+        // TODO: PUSH BC; DJNZ; POP BC when profitable.
       }
     }
 
