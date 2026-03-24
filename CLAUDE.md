@@ -64,7 +64,7 @@ The Z80 has a rich set of special-purpose instructions that are far more compact
 - **Carry bit tricks** — RLCA/RLA to shift bit 7 into carry, BIT n to test single bits, SBC A,A to materialize carry as 0x00/0xFF. Avoids explicit comparisons.
 - **Register exchange instructions** — Z80 has several atomic swap operations:
   - **EX DE,HL** — swap DE↔HL in 1 byte (vs 6 bytes of LD copies). Note: modifies BOTH registers. Only safe when the "source" side is dead, otherwise use two LDs.
-  - **EXX** — swap BC↔BC', DE↔DE', HL↔HL' atomically (shadow register set). Effectively doubles register file for non-ISR code.
+  - **EXX** — swap BC↔BC', DE↔DE', HL↔HL' atomically (shadow register set). **CRITICAL: swaps ALL THREE pairs at once.** Cannot be inserted between instructions with live BC/DE/HL values — it destroys all of them. Safe only at function entry/exit or after CALL (where BC/DE/HL are dead per calling convention).
   - **EX AF,AF'** — swap AF↔AF' (accumulator + flags).
   - **EX (SP),HL/IX/IY** — exchange top-of-stack with register pair.
 - **CP (HL)** — compare A with memory pointed by HL directly (1 byte, no temp register needed).

@@ -1634,6 +1634,164 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- EXX shadow bank spill conversion ---
+  // DISABLED: EXX swaps ALL of BC/DE/HL simultaneously, destroying any
+  // live values in those registers. The conversion can only be safely
+  // applied at points where ALL three pairs are dead (function entry/exit,
+  // after CALL). Converting arbitrary IX spill/reload pairs mid-function
+  // corrupts live register values.
+  //
+  // A correct implementation would need to:
+  // 1. Only insert EXX at safe points (after CALL, at function boundaries)
+  // 2. Batch multiple spills into a single EXX region
+  // 3. Verify no live BC/DE/HL values cross the EXX boundary
+  //
+  // This is essentially a register bank scheduling problem.
+#if 0
+  // Convert 16-bit IX-indexed spill/reload pairs to EXX-based transfers.
+  // LD (IX+d),L; LD (IX+d+1),H (6B) → PUSH HL; EXX; POP HL; EXX (4B)
+  // LD L,(IX+d); LD H,(IX+d+1) (6B) → EXX; PUSH HL; EXX; POP HL (4B)
+  // Saves 2 bytes per 16-bit pair access. Max 3 shadow pairs (BC',DE',HL').
+  if (STI.hasZ80() && STI.shadowRegs() &&
+      !MF.getFunction().hasFnAttribute("interrupt")) {
+    // Map IX offset → shadow pair register. Max 3 pairs.
+    struct SpillSlot {
+      int8_t LoOffset; // IX offset of low byte
+      unsigned PushOpc; // PUSH_HL, PUSH_DE, or PUSH_BC
+      unsigned PopOpc;  // POP_HL, POP_DE, or POP_BC
+    };
+    SmallDenseMap<int8_t, SpillSlot> ShadowSlots;
+    static const unsigned PushOps[] = {Z80::PUSH_HL, Z80::PUSH_DE, Z80::PUSH_BC};
+    static const unsigned PopOps[] = {Z80::POP_HL, Z80::POP_DE, Z80::POP_BC};
+    unsigned NextSlot = 0;
+
+    // Helper: check if two adjacent instructions form a 16-bit IX store pair.
+    // Returns the lo-byte IX offset, or INT8_MIN if not a pair.
+    auto isIXStorePair = [](MachineInstr &MI1, MachineInstr &MI2,
+                            MCPhysReg &LoReg, MCPhysReg &HiReg) -> int8_t {
+      // LD (IX+d),lo; LD (IX+d+1),hi
+      static const struct { unsigned Opc; MCPhysReg Reg; } StoreMap[] = {
+        {Z80::LD_IXd_B, Z80::B}, {Z80::LD_IXd_C, Z80::C},
+        {Z80::LD_IXd_D, Z80::D}, {Z80::LD_IXd_E, Z80::E},
+        {Z80::LD_IXd_H, Z80::H}, {Z80::LD_IXd_L, Z80::L},
+        {Z80::LD_IXd_A, Z80::A},
+      };
+      MCPhysReg R1 = 0, R2 = 0;
+      int8_t Off1 = INT8_MIN, Off2 = INT8_MIN;
+      for (auto &S : StoreMap) {
+        if (MI1.getOpcode() == S.Opc) { R1 = S.Reg; Off1 = MI1.getOperand(0).getImm(); }
+        if (MI2.getOpcode() == S.Opc) { R2 = S.Reg; Off2 = MI2.getOperand(0).getImm(); }
+      }
+      if (!R1 || !R2 || Off2 != Off1 + 1) return INT8_MIN;
+      LoReg = R1; HiReg = R2;
+      return Off1;
+    };
+
+    // Helper: check if two adjacent instructions form a 16-bit IX load pair.
+    auto isIXLoadPair = [](MachineInstr &MI1, MachineInstr &MI2,
+                           MCPhysReg &LoReg, MCPhysReg &HiReg) -> int8_t {
+      static const struct { unsigned Opc; MCPhysReg Reg; } LoadMap[] = {
+        {Z80::LD_B_IXd, Z80::B}, {Z80::LD_C_IXd, Z80::C},
+        {Z80::LD_D_IXd, Z80::D}, {Z80::LD_E_IXd, Z80::E},
+        {Z80::LD_H_IXd, Z80::H}, {Z80::LD_L_IXd, Z80::L},
+        {Z80::LD_A_IXd, Z80::A},
+      };
+      MCPhysReg R1 = 0, R2 = 0;
+      int8_t Off1 = INT8_MIN, Off2 = INT8_MIN;
+      for (auto &S : LoadMap) {
+        if (MI1.getOpcode() == S.Opc) { R1 = S.Reg; Off1 = MI1.getOperand(0).getImm(); }
+        if (MI2.getOpcode() == S.Opc) { R2 = S.Reg; Off2 = MI2.getOperand(0).getImm(); }
+      }
+      if (!R1 || !R2 || Off2 != Off1 + 1) return INT8_MIN;
+      LoReg = R1; HiReg = R2;
+      return Off1;
+    };
+
+    // Helper: get PUSH/POP opcode for a register pair.
+    auto getPushPop = [](MCPhysReg Lo, MCPhysReg Hi,
+                         unsigned &Push, unsigned &Pop) -> bool {
+      if ((Lo == Z80::L && Hi == Z80::H) || (Lo == Z80::H && Hi == Z80::L))
+        { Push = Z80::PUSH_HL; Pop = Z80::POP_HL; return true; }
+      if ((Lo == Z80::E && Hi == Z80::D) || (Lo == Z80::D && Hi == Z80::E))
+        { Push = Z80::PUSH_DE; Pop = Z80::POP_DE; return true; }
+      if ((Lo == Z80::C && Hi == Z80::B) || (Lo == Z80::B && Hi == Z80::C))
+        { Push = Z80::PUSH_BC; Pop = Z80::POP_BC; return true; }
+      return false; // Not a standard pair (e.g., A+L)
+    };
+
+    // First pass: identify all 16-bit IX spill pairs and assign shadow slots.
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        auto NextII = std::next(MII);
+        if (NextII == MIE) continue;
+        MCPhysReg Lo, Hi;
+        int8_t Off = isIXStorePair(*MII, *NextII, Lo, Hi);
+        if (Off == INT8_MIN)
+          Off = isIXLoadPair(*MII, *NextII, Lo, Hi);
+        if (Off == INT8_MIN) continue;
+        unsigned Push, Pop;
+        if (!getPushPop(Lo, Hi, Push, Pop)) continue;
+
+        if (ShadowSlots.count(Off) == 0 && NextSlot < 3) {
+          ShadowSlots[Off] = {Off, PushOps[NextSlot], PopOps[NextSlot]};
+          NextSlot++;
+        }
+      }
+    }
+
+    // Second pass: convert matched pairs.
+    if (!ShadowSlots.empty()) {
+      for (MachineBasicBlock &MBB : MF) {
+        for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+          auto NextII = std::next(MII);
+          if (NextII == MIE) { ++MII; continue; }
+          MCPhysReg Lo, Hi;
+          unsigned SrcPush, SrcPop;
+          DebugLoc DL = MII->getDebugLoc();
+
+          // Check for 16-bit store pair.
+          int8_t Off = isIXStorePair(*MII, *NextII, Lo, Hi);
+          if (Off != INT8_MIN && getPushPop(Lo, Hi, SrcPush, SrcPop)) {
+            auto It = ShadowSlots.find(Off);
+            if (It != ShadowSlots.end()) {
+              // LD (IX+d),lo; LD (IX+d+1),hi → PUSH pair; EXX; POP shadow; EXX
+              auto &Slot = It->second;
+              auto InsertPt = std::next(NextII);
+              NextII->eraseFromParent();
+              MII = MBB.erase(MII);
+              BuildMI(MBB, MII, DL, TII->get(SrcPush));
+              BuildMI(MBB, MII, DL, TII->get(Z80::EXX));
+              BuildMI(MBB, MII, DL, TII->get(Slot.PopOpc));
+              BuildMI(MBB, MII, DL, TII->get(Z80::EXX));
+              Changed = true;
+              continue;
+            }
+          }
+
+          // Check for 16-bit load pair.
+          Off = isIXLoadPair(*MII, *NextII, Lo, Hi);
+          if (Off != INT8_MIN && getPushPop(Lo, Hi, SrcPush, SrcPop)) {
+            auto It = ShadowSlots.find(Off);
+            if (It != ShadowSlots.end()) {
+              // LD lo,(IX+d); LD hi,(IX+d+1) → EXX; PUSH shadow; EXX; POP pair
+              auto &Slot = It->second;
+              NextII->eraseFromParent();
+              MII = MBB.erase(MII);
+              BuildMI(MBB, MII, DL, TII->get(Z80::EXX));
+              BuildMI(MBB, MII, DL, TII->get(Slot.PushOpc));
+              BuildMI(MBB, MII, DL, TII->get(Z80::EXX));
+              BuildMI(MBB, MII, DL, TII->get(SrcPop));
+              Changed = true;
+              continue;
+            }
+          }
+          ++MII;
+        }
+      }
+    }
+  }
+#endif // disabled EXX conversion
+
   return Changed;
 }
 
