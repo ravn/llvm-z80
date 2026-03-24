@@ -169,6 +169,8 @@ def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;
 
 // General 16-bit registers: DE, HL preferred over BC.
 // BC is last because B is needed for DJNZ (loop counter).
+// IX/IY are NOT in GR16 — they need DD/FD prefix for all operations and many
+// pseudo expansions don't handle them yet. They remain in IR16/HLI/Ptr16.
 def GR16 : Z80Reg16Class<(add DE, HL, BC)>;
 
 // Shadow-only register class

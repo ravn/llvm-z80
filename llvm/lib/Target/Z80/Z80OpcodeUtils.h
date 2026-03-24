@@ -114,6 +114,69 @@ inline unsigned getLD8RegOpcode(Register Dest, Register Src) {
   int SrcIdx = gr8RegToIndex(Src);
   if (DstIdx >= 0 && SrcIdx >= 0)
     return LDOpcodes[DstIdx][SrcIdx];
+
+  // Undocumented IXH/IXL/IYH/IYL: these can copy to/from {A,B,C,D,E}
+  // and between themselves (IXH↔IXL, IYH↔IYL), but NOT to/from H,L.
+  // DD/FD prefix replaces H→IXH/IYH, L→IXL/IYL in the opcode encoding.
+  switch (Dest.id()) {
+  case Z80::IXH:
+    switch (Src.id()) {
+    case Z80::A: return Z80::LD_IXH_A; case Z80::B: return Z80::LD_IXH_B;
+    case Z80::C: return Z80::LD_IXH_C; case Z80::D: return Z80::LD_IXH_D;
+    case Z80::E: return Z80::LD_IXH_E; case Z80::IXH: return Z80::LD_IXH_IXH;
+    case Z80::IXL: return Z80::LD_IXH_IXL; default: return 0;
+    }
+  case Z80::IXL:
+    switch (Src.id()) {
+    case Z80::A: return Z80::LD_IXL_A; case Z80::B: return Z80::LD_IXL_B;
+    case Z80::C: return Z80::LD_IXL_C; case Z80::D: return Z80::LD_IXL_D;
+    case Z80::E: return Z80::LD_IXL_E; case Z80::IXH: return Z80::LD_IXL_IXH;
+    case Z80::IXL: return Z80::LD_IXL_IXL; default: return 0;
+    }
+  case Z80::IYH:
+    switch (Src.id()) {
+    case Z80::A: return Z80::LD_IYH_A; case Z80::B: return Z80::LD_IYH_B;
+    case Z80::C: return Z80::LD_IYH_C; case Z80::D: return Z80::LD_IYH_D;
+    case Z80::E: return Z80::LD_IYH_E; case Z80::IYH: return Z80::LD_IYH_IYH;
+    case Z80::IYL: return Z80::LD_IYH_IYL; default: return 0;
+    }
+  case Z80::IYL:
+    switch (Src.id()) {
+    case Z80::A: return Z80::LD_IYL_A; case Z80::B: return Z80::LD_IYL_B;
+    case Z80::C: return Z80::LD_IYL_C; case Z80::D: return Z80::LD_IYL_D;
+    case Z80::E: return Z80::LD_IYL_E; case Z80::IYH: return Z80::LD_IYL_IYH;
+    case Z80::IYL: return Z80::LD_IYL_IYL; default: return 0;
+    }
+  default: break;
+  }
+  // Also handle: LD {A,B,C,D,E},IXH/IXL/IYH/IYL (reverse direction)
+  switch (Src.id()) {
+  case Z80::IXH:
+    switch (Dest.id()) {
+    case Z80::A: return Z80::LD_A_IXH; case Z80::B: return Z80::LD_B_IXH;
+    case Z80::C: return Z80::LD_C_IXH; case Z80::D: return Z80::LD_D_IXH;
+    case Z80::E: return Z80::LD_E_IXH; default: return 0;
+    }
+  case Z80::IXL:
+    switch (Dest.id()) {
+    case Z80::A: return Z80::LD_A_IXL; case Z80::B: return Z80::LD_B_IXL;
+    case Z80::C: return Z80::LD_C_IXL; case Z80::D: return Z80::LD_D_IXL;
+    case Z80::E: return Z80::LD_E_IXL; default: return 0;
+    }
+  case Z80::IYH:
+    switch (Dest.id()) {
+    case Z80::A: return Z80::LD_A_IYH; case Z80::B: return Z80::LD_B_IYH;
+    case Z80::C: return Z80::LD_C_IYH; case Z80::D: return Z80::LD_D_IYH;
+    case Z80::E: return Z80::LD_E_IYH; default: return 0;
+    }
+  case Z80::IYL:
+    switch (Dest.id()) {
+    case Z80::A: return Z80::LD_A_IYL; case Z80::B: return Z80::LD_B_IYL;
+    case Z80::C: return Z80::LD_C_IYL; case Z80::D: return Z80::LD_D_IYL;
+    case Z80::E: return Z80::LD_E_IYL; default: return 0;
+    }
+  default: break;
+  }
   return 0;
 }
 

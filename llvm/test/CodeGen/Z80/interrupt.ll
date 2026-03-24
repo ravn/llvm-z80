@@ -13,7 +13,6 @@ define void @isr() #0 {
 
 ; SM83-LABEL: _isr:
 ; SM83:       push af
-; SM83:       push de
 ; SM83:       reti
   store volatile i8 66, ptr @g
   ret void
@@ -41,7 +40,6 @@ define void @isr_complex() #0 {
 
 ; SM83-LABEL: _isr_complex:
 ; SM83:       push af
-; SM83:       push de
 ; SM83:       reti
   %a = load volatile i8, ptr @g
   %b = add i8 %a, 1

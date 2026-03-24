@@ -256,6 +256,18 @@ let Predicates = [HasZ80] in {
 def LD_IX_nn : InstDD24<"ld ix,", 0x21> { let Defs = [IX]; }
 def LD_IY_nn : InstFD24<"ld iy,", 0x21> { let Defs = [IY]; }
 
+// LD IX,(nn) / LD IY,(nn) — Direct addressing load
+let mayLoad = true, mayStore = false, hasSideEffects = false in {
+def LD_IX_nnind : InstDD24<"ld ix,", 0x2A, DDDirectMode> { let Defs = [IX]; }
+def LD_IY_nnind : InstFD24<"ld iy,", 0x2A, DDDirectMode> { let Defs = [IY]; }
+}
+
+// LD (nn),IX / LD (nn),IY — Direct addressing store
+let mayLoad = false, mayStore = true, hasSideEffects = false in {
+def LD_nnind_IX : InstDD24<"ld", 0x22, DDDirectMode> { let AsmString = "ld ( $imm ),ix"; let Uses = [IX]; }
+def LD_nnind_IY : InstFD24<"ld", 0x22, DDDirectMode> { let AsmString = "ld ( $imm ),iy"; let Uses = [IY]; }
+}
+
 // PUSH IX / PUSH IY
 def PUSH_IX : InstDD8<"push ix", 0xE5> { let Uses = [IX]; }
 def PUSH_IY : InstFD8<"push iy", 0xE5> { let Uses = [IY]; }

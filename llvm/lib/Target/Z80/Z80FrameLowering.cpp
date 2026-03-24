@@ -56,10 +56,10 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: IX still used as FP. Making IX/IY allocatable requires
-  // fixing sub-register allocation (IXH/IXL encoding issues) and
-  // MCCodeEmitter support for IX/IY in all instruction positions.
-  // See CLAUDE.md for the full investigation.
+  // Static stack: IX still used as FP. The direct-BSS path in
+  // eliminateFrameIndex handles locals, but IX is still needed for stack args.
+  // Making IX/IY truly allocatable requires adding them to GR16 and updating
+  // all pseudo expansions (ZEXT, SEXT, CMP16, etc.) to handle IX/IY.
   if (STI.staticStack())
     return true;
 

@@ -132,10 +132,10 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // IX/IY always reserved. Making them allocatable requires:
-  // 1. MCCodeEmitter support for IX/IY in all instruction encodings
-  // 2. Preventing IXH/IXL/IYH/IYL sub-register allocation (no standard encoding)
-  // 3. Static stack eliminateFrameIndex with direct BSS (partially implemented)
+  // IX/IY: reserved until pseudo expansion and MCCodeEmitter support them
+  // in all instruction positions. See CLAUDE.md for the full investigation.
+  // The hasFP=false + static-stack path works for BSS addressing, but
+  // IX/IY are not yet in GR16 so the allocator won't assign them.
   Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
 
@@ -1106,11 +1106,43 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       MI->eraseFromParent();
       return false;
     }
-    if (Opc == Z80::SPILL_GR16 || Opc == Z80::RELOAD_GR16) {
-      // 16-bit: handled by expandPostRAPseudo with direct BSS.
-      // Just patch the offset for now.
-      MI->getOperand(FIOperandNum).ChangeToImmediate(Offset);
-      return false;
+    if (Opc == Z80::SPILL_GR16) {
+      // 16-bit store to BSS: use direct addressing instructions.
+      // LD (addr),HL = 3B, LD (addr),DE = 4B (ED 53), LD (addr),BC = 4B (ED 43)
+      // LD (addr),IX = 4B (DD 22), LD (addr),IY = 4B (FD 22)
+      Register SrcReg = MI->getOperand(0).getReg();
+      unsigned StoreOpc = 0;
+      if (SrcReg == Z80::HL) StoreOpc = Z80::LD_nnind_HL;
+      else if (SrcReg == Z80::DE) StoreOpc = Z80::LD_nnind_DE;
+      else if (SrcReg == Z80::BC) StoreOpc = Z80::LD_nnind_BC;
+      else if (SrcReg == Z80::IX) StoreOpc = Z80::LD_nnind_IX;
+      else if (SrcReg == Z80::IY) StoreOpc = Z80::LD_nnind_IY;
+      if (StoreOpc) {
+        auto MIB = BuildMI(MBB, MI, DL, TII.get(StoreOpc));
+        addBSSAddr(MIB);
+        MI->eraseFromParent();
+        return false;
+      }
+      llvm_unreachable("Unexpected register for SPILL_GR16 in static-stack BSS mode");
+    }
+    if (Opc == Z80::RELOAD_GR16) {
+      // 16-bit load from BSS: use direct addressing instructions.
+      // LD HL,(addr) = 3B, LD DE,(addr) = 4B (ED 5B), LD BC,(addr) = 4B (ED 4B)
+      // LD IX,(addr) = 4B (DD 2A), LD IY,(addr) = 4B (FD 2A)
+      Register DstReg = MI->getOperand(0).getReg();
+      unsigned LoadOpc = 0;
+      if (DstReg == Z80::HL) LoadOpc = Z80::LD_HL_nnind;
+      else if (DstReg == Z80::DE) LoadOpc = Z80::LD_DE_nnind;
+      else if (DstReg == Z80::BC) LoadOpc = Z80::LD_BC_nnind;
+      else if (DstReg == Z80::IX) LoadOpc = Z80::LD_IX_nnind;
+      else if (DstReg == Z80::IY) LoadOpc = Z80::LD_IY_nnind;
+      if (LoadOpc) {
+        auto MIB = BuildMI(MBB, MI, DL, TII.get(LoadOpc));
+        addBSSAddr(MIB);
+        MI->eraseFromParent();
+        return false;
+      }
+      llvm_unreachable("Unexpected register for RELOAD_GR16 in static-stack BSS mode");
     }
     if (Opc == Z80::SPILL_IMM8) {
       // Store immediate to BSS: LD A,imm; LD (addr),A = 5B
@@ -1137,10 +1169,29 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       }
     }
     if (Opc == Z80::ADD_HL_FI || Opc == Z80::SUB_HL_FI) {
-      // ADD/SUB HL with BSS value: load to temp, operate.
-      // LD A,(addr); LD C,A; LD A,(addr+1); LD B,A; ADD HL,BC
-      // This is complex. Fall through to let expandPostRAPseudo handle.
-      MI->getOperand(FIOperandNum).ChangeToImmediate(Offset);
+      // Load 16-bit BSS value into temp, then ADD/SUB HL,temp.
+      // LD BC/DE,(addr); ADD HL,BC/DE  (or AND A; SBC HL,BC/DE for sub)
+      auto NextIt = std::next(MI);
+      Register TempReg = !isRegLiveAt(Z80::BC, MBB, NextIt, this) ? Z80::BC
+                       : !isRegLiveAt(Z80::DE, MBB, NextIt, this) ? Z80::DE
+                                                                   : Z80::BC;
+      bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, this);
+      if (NeedSaveTemp)
+        BuildMI(MBB, MI, DL, TII.get(Z80::getPushOpcode(TempReg)));
+      unsigned LoadOpc = (TempReg == Z80::BC) ? Z80::LD_BC_nnind : Z80::LD_DE_nnind;
+      auto MIB = BuildMI(MBB, MI, DL, TII.get(LoadOpc));
+      addBSSAddr(MIB);
+      if (Opc == Z80::ADD_HL_FI) {
+        BuildMI(MBB, MI, DL,
+                TII.get(TempReg == Z80::BC ? Z80::ADD_HL_BC : Z80::ADD_HL_DE));
+      } else {
+        BuildMI(MBB, MI, DL, TII.get(Z80::AND_A));
+        BuildMI(MBB, MI, DL,
+                TII.get(TempReg == Z80::BC ? Z80::SBC_HL_BC : Z80::SBC_HL_DE));
+      }
+      if (NeedSaveTemp)
+        BuildMI(MBB, MI, DL, TII.get(Z80::getPopOpcode(TempReg)));
+      MI->eraseFromParent();
       return false;
     }
     // Unknown opcode with frame index in static stack mode.
