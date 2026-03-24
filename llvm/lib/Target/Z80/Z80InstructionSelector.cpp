@@ -726,12 +726,62 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(*ConstVal & 0xFF);
         }
       } else {
-        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
-            !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
-          return false;
-        // Unsigned/eq/ne: CP compares A with operand, sets Z and C flags.
-        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
-        BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(RHS);
+        // Try CP (HL) fusion: if one operand is a single-use G_LOAD from
+        // a pointer, constrain that pointer to HL and use CP (HL) directly.
+        // This avoids loading the byte into a temp register (saves 1 reg, 1 byte).
+        auto tryFuseLoad = [&](Register LoadReg,
+                               Register OtherReg) -> bool {
+          MachineInstr *LoadDef = MRI.getVRegDef(LoadReg);
+          if (!LoadDef || LoadDef->getOpcode() != TargetOpcode::G_LOAD)
+            return false;
+          if (!MRI.hasOneNonDBGUse(LoadReg))
+            return false;
+          // Don't fuse port I/O loads (address_space 2).
+          if (LoadDef->hasOneMemOperand() &&
+              (*LoadDef->memoperands_begin())->getAddrSpace() != 0)
+            return false;
+          Register PtrReg = LoadDef->getOperand(1).getReg();
+          // Constrain pointer directly to HL (not just GR16) so the
+          // register allocator places it in HL. This avoids a COPY that
+          // might use EX DE,HL (which destroys DE).
+          // Use GR16 for constrainGenericRegister (type-compatible with p0),
+          // then add HL as allocation hint.
+          if (!RBI.constrainGenericRegister(PtrReg, Z80::GR16RegClass, MRI) ||
+              !RBI.constrainGenericRegister(OtherReg, Z80::GR8RegClass, MRI))
+            return false;
+          // Narrow the pointer's class to just HL if possible.
+          const TargetRegisterClass *PtrRC = MRI.getRegClass(PtrReg);
+          const TargetRegisterClass *HLRC =
+              TRI.getCommonSubClass(PtrRC, &Z80::HLIRegClass);
+          if (!HLRC) {
+            // Pointer class doesn't include HL — can't use CP (HL).
+            return false;
+          }
+          MRI.setRegClass(PtrReg, HLRC);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(PtrReg);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(OtherReg);
+          BuildMI(MBB, MI, DL, TII.get(Z80::CP_HLind));
+          LoadDef->eraseFromParent();
+          return true;
+        };
+        // Try RHS as load first (A=LHS, CP (HL)=*RHS), then LHS.
+        // For EQ/NE the comparison is symmetric so either side can be fused.
+        // For ordered predicates (ULT/UGE), only fuse the RHS (A=LHS, CP=*RHS)
+        // to preserve the comparison direction.
+        bool Fused = tryFuseLoad(RHS, LHS);
+        if (!Fused && IsEqNe)
+          Fused = tryFuseLoad(LHS, RHS);
+        if (!Fused) {
+          // Fallback: standard register-register compare.
+          if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
+              !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(LHS);
+          BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(RHS);
+        }
       }
     } else {
       // Signed 8-bit comparison: XOR 0x80 converts to unsigned domain.
