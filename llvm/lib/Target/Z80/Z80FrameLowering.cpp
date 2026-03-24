@@ -53,15 +53,17 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
 
   const MachineFrameInfo &MFI = MF.getFrameInfo();
 
-  // Static stack: use IX frame pointer only when the function has locals
-  // that will be accessed via IX. The IX setup (PUSH IX + LD IX,addr = 6B)
-  // is overhead — skip it for functions with no frame objects or where
-  // all locals fit in registers.
+  if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
+    return true;
+
+  // Static stack: still need IX as FP for eliminateFrameIndex to compute
+  // BSS offsets. Making IX allocatable requires eliminateFrameIndex to
+  // handle static stack without UseFP (emit direct BSS addresses directly).
+  // TODO: implement direct BSS in eliminateFrameIndex, then change this to:
+  //   return MF.getTarget().Options.DisableFramePointerElim(MF);
   if (STI.staticStack())
     return true;
 
-  if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
-    return true;
   if (MF.getTarget().Options.DisableFramePointerElim(MF))
     return true;
   // Use frame pointer when the function has local stack allocations

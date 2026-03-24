@@ -132,10 +132,11 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // Always reserve IX and IY (16-bit).
-  // IX is the frame pointer when hasFP, and stack frame code uses it
-  // unconditionally even without FP.
-  // IY is reserved because spilling IY requires HL as a temporary.
+  // IX: reserved as frame pointer when hasFP (always true for static stack
+  // currently). TODO: unreserve when eliminateFrameIndex handles static
+  // stack without IX, allowing IX as an "expensive" allocatable register.
+  // IY: reserved — runtime uses JP (IY) for callee cleanup.
+  // TODO: unreserve both when eliminateFrameIndex emits direct BSS addresses.
   Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
 
