@@ -163,7 +163,7 @@ With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit 
 - Caution: `LD HL,(addr)` destroys HL; `EX DE,HL` destroys both (see EXX warning)
 
 ### IX/IY as Allocatable Registers
-IX and IY are in GR16 (last, least preferred — each access costs +1 byte DD/FD prefix). This gives the register allocator 5 pairs (DE, HL, BC, IX, IY) instead of 3.
+IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix overhead). This gives the register allocator 5 pairs (DE, HL, BC, IX, IY) instead of 3.
 - With `+static-stack` and no stack arguments: `hasFP=false`, IX is free for allocation
 - IY is always allocatable on Z80 (never used as frame pointer)
 - Functions with stack arguments (fixed objects) still use IX as frame pointer
@@ -171,6 +171,15 @@ IX and IY are in GR16 (last, least preferred — each access costs +1 byte DD/FD
 - All pseudo expansions handle IX/IY sub-registers (IXH/IXL/IYH/IYL)
 - MAME fully supports all undocumented Z80 instructions — safe for testing
 - Verified: CP/M boots in MAME with IX/IY-allocatable clang-built PROM
+- **Asymmetry**: `ADD IX,rr` exists but `ADD HL,IX` does not. IX/IY are good as pointer accumulators (add offsets to them) but expensive as operands to HL-centric arithmetic (requires PUSH/POP or undocumented IXH/IXL extraction). The allocator should prefer IX/IY for address computation, not general arithmetic.
+
+### Z80_AllReg Calling Convention
+`__attribute__((z80_allreg))` / cc 129: pass all arguments in registers, no stack.
+- i8: A, L, E, C, IXL, IYL (IXL/IYL require `+undocumented`)
+- i16: HL, DE, BC, IX, IY
+- i32: HLDE, BCIY
+- Nothing callee-saved (caller saves everything)
+- Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
