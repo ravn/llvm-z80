@@ -165,7 +165,7 @@ With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit 
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
 - Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
-- IX/IY as allocatable registers: Z80 instructions with IX/IY use DD/FD prefix — completely different encodings from BC/DE/HL. Cannot simply add IX/IY to GR16; ALL instructions need DD/FD-prefixed variants defined. Making IX opaque (no sub-regs) avoids the IXH/IXL encoding crash but still fails because regular instructions (ADD HL,rr etc.) don't have IX/IY encodings. This requires defining DD/FD-prefixed instruction variants for every operation: LD, ADD, PUSH, POP, INC, DEC, and all 8-bit operations on IXH/IXL (undocumented). Estimated: ~80 new instruction definitions.
+- IX/IY as allocatable registers: **92 undocumented IXH/IXL/IYH/IYL instructions now defined** (gated by +undocumented). Helper functions (getLD8RegOpcode, getLoadImmR8Opcode, LD_r16_nn) updated. Assembly output (-S) works. Object file (-c) crashes on complex functions: `eliminateFrameIndex` with `hasFP=false` uses SP-relative addressing for stack arguments (fixed stack objects), which doesn't work with static-stack BSS. **Remaining blocker**: the static-stack direct-BSS path in `eliminateFrameIndex` must handle ALL frame index opcodes, including fixed objects and ADD_HL_FI/SUB_HL_FI. See Z80_INSTRUCTION_SET.md for complete reference.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
