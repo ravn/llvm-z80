@@ -366,6 +366,69 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto *TRI = STI.getRegisterInfo();
   bool Changed = false;
 
+  // --- Remove unused IX/IY setup in static stack functions ---
+  // If a function has PUSH IX; LD IX,addr in prologue and POP IX in epilogue
+  // but no IX-indexed instruction (IX+d) in the body, remove the setup.
+  // Same for IY: if PUSH IY / POP IY bracket the function but IY is unused.
+  if (STI.staticStack() && STI.hasZ80()) {
+    bool IXUsedInBody = false;
+    bool IYUsedInBody = false;
+    MachineInstr *PushIX = nullptr, *LdIX = nullptr, *PopIX = nullptr;
+    MachineInstr *PushIY = nullptr, *PopIY = nullptr;
+
+    for (auto &MBB2 : MF) {
+      for (auto &MI : MBB2) {
+        unsigned Opc = MI.getOpcode();
+        // Track IX/IY setup instructions.
+        if (Opc == Z80::PUSH_IX && !PushIX) PushIX = &MI;
+        else if (Opc == Z80::LD_IX_nn && !LdIX) LdIX = &MI;
+        else if (Opc == Z80::POP_IX) PopIX = &MI;
+        else if (Opc == Z80::PUSH_IY && !PushIY) PushIY = &MI;
+        else if (Opc == Z80::POP_IY) PopIY = &MI;
+        else {
+          // Check for IX/IY use: explicit operands, implicit uses/defs,
+          // and IX/IY-indexed instructions (DD/FD prefixed).
+          for (const auto &MO : MI.operands()) {
+            if (!MO.isReg()) continue;
+            Register R = MO.getReg();
+            if (R == Z80::IX) IXUsedInBody = true;
+            if (R == Z80::IY) IYUsedInBody = true;
+          }
+          for (MCPhysReg R : TII->get(Opc).implicit_uses()) {
+            if (R == Z80::IX) IXUsedInBody = true;
+            if (R == Z80::IY) IYUsedInBody = true;
+          }
+          for (MCPhysReg R : TII->get(Opc).implicit_defs()) {
+            if (R == Z80::IX) IXUsedInBody = true;
+            if (R == Z80::IY) IYUsedInBody = true;
+          }
+          // IX-indexed instructions (LD_*_IXd, LD_IXd_*, CP_IXd, etc.)
+          // use IX implicitly through DD prefix but don't declare it.
+          // Check instruction size: DD-prefixed = 3+ bytes, starts with 0xDD.
+          if (TII->getInstSizeInBytes(MI) >= 3) {
+            StringRef Name = TII->getName(Opc);
+            if (Name.contains("IX")) IXUsedInBody = true;
+            if (Name.contains("IY")) IYUsedInBody = true;
+          }
+        }
+      }
+    }
+
+    if (!IXUsedInBody && PushIX && LdIX && PopIX) {
+      LLVM_DEBUG(dbgs() << "  Removing unused IX frame setup\n");
+      PopIX->eraseFromParent();
+      LdIX->eraseFromParent();
+      PushIX->eraseFromParent();
+      Changed = true;
+    }
+    if (!IYUsedInBody && PushIY && PopIY) {
+      LLVM_DEBUG(dbgs() << "  Removing unused IY save/restore\n");
+      PopIY->eraseFromParent();
+      PushIY->eraseFromParent();
+      Changed = true;
+    }
+  }
+
   for (MachineBasicBlock &MBB : MF) {
     // --- Peephole: POP rr; PUSH rr → (remove both) ---
     // When a register pair is popped and immediately pushed back, the stack

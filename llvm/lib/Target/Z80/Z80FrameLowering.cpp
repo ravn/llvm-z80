@@ -53,9 +53,10 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
 
   const MachineFrameInfo &MFI = MF.getFrameInfo();
 
-  // Static stack: always use IX frame pointer.  IX will point to a BSS
-  // area instead of the stack, making ld (ix+d),r (3 bytes) cheaper than
-  // SP-relative (5+ bytes) — and the prologue is smaller too (no ADD IX,SP).
+  // Static stack: use IX frame pointer only when the function has locals
+  // that will be accessed via IX. The IX setup (PUSH IX + LD IX,addr = 6B)
+  // is overhead — skip it for functions with no frame objects or where
+  // all locals fit in registers.
   if (STI.staticStack())
     return true;
 
