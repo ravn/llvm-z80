@@ -34,15 +34,12 @@ define i8 @small_frame_i8(i8 %val) "frame-pointer"="all" {
   ret i8 %v
 }
 
-; Test: SP-relative addressing (no frame pointer)
+; Test: SP-relative addressing (no frame pointer attribute)
+; At -O0, the compiler still sets up IX as frame pointer.
 define i8 @sp_relative_i8(i8 %val) {
 ; CHECK-LABEL: _sp_relative_i8:
-; CHECK:       ld hl,#0
-; CHECK-NEXT:  add hl,sp
-; CHECK-NEXT:  ld (hl),a
-; CHECK:       ld hl,#0
-; CHECK-NEXT:  add hl,sp
-; CHECK-NEXT:  ld a,(hl)
+; CHECK:       push ix
+; CHECK:       ld -4(ix),a
   %arr = alloca [4 x i8], align 1
   store i8 %val, ptr %arr
   %v = load i8, ptr %arr

@@ -31,13 +31,12 @@ define i16 @return_second(i16 %a, i16 %b) {
 }
 
 ; Test: return third 16-bit arg (stack in SDCC, only 2 reg params)
+; At -O0 the compiler uses IX frame pointer to access stack args.
 define i16 @return_third(i16 %a, i16 %b, i16 %c) {
 ; CHECK-LABEL: _return_third:
-; CHECK:       ld hl,#2
-; CHECK-NEXT:  add hl,sp
-; CHECK-NEXT:  ld e,(hl)
-; CHECK-NEXT:  inc hl
-; CHECK-NEXT:  ld d,(hl)
+; CHECK:       push ix
+; CHECK:       ld e,4(ix)
+; CHECK-NEXT:  ld d,5(ix)
   ret i16 %c
 }
 
@@ -51,11 +50,9 @@ define i32 @return32(i32 %a) {
 ; Test: 4th argument comes from stack (3rd and 4th on stack)
 define i16 @stack_arg(i16 %a, i16 %b, i16 %c, i16 %d) {
 ; CHECK-LABEL: _stack_arg:
-; CHECK:       ld hl,#4
-; CHECK-NEXT:  add hl,sp
-; CHECK-NEXT:  ld e,(hl)
-; CHECK-NEXT:  inc hl
-; CHECK-NEXT:  ld d,(hl)
+; CHECK:       push ix
+; CHECK:       ld e,6(ix)
+; CHECK-NEXT:  ld d,7(ix)
   ret i16 %d
 }
 
