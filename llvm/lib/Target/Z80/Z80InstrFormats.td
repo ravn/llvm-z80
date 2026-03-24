@@ -44,6 +44,11 @@ def HasSM83 : Predicate<"Subtarget->hasSM83()">,
   let PredicateName = "FeatureSM83";
 }
 
+def HasUndocumented : Predicate<"Subtarget->hasUndocumented()">,
+                      AssemblerPredicate<(all_of FeatureUndocumented), "Undocumented"> {
+  let PredicateName = "FeatureUndocumented";
+}
+
 //===----------------------------------------------------------------------===//
 //  Operand definitions
 //===----------------------------------------------------------------------===//

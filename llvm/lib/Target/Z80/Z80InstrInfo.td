@@ -558,6 +558,130 @@ let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
 } // Predicates = [HasZ80]
 
 //===----------------------------------------------------------------------===//
+//  Undocumented IXH/IXL/IYH/IYL 8-bit Instructions (DD/FD prefixed)
+//===----------------------------------------------------------------------===//
+// These are real opcodes on NMOS and CMOS Z80 but not officially documented
+// by Zilog. They work by the DD/FD prefix substituting H→IXH/IYH and L→IXL/IYL
+// in the register encoding. Gated by FeatureUndocumented.
+//
+// NOT supported on: R800 (MSX TurboR), eZ80
+// Supported on: all NMOS Z80, CMOS Z80 (Zilog, Toshiba, NEC, ST, etc.)
+
+let Predicates = [HasZ80, HasUndocumented] in {
+
+// --- LD IXH/IXL,r (load register into IX half) ---
+def LD_IXH_A : InstDD8<"ld ixh,a", 0x67> { let Uses = [A]; let Defs = [IXH]; }
+def LD_IXH_B : InstDD8<"ld ixh,b", 0x60> { let Uses = [B]; let Defs = [IXH]; }
+def LD_IXH_C : InstDD8<"ld ixh,c", 0x61> { let Uses = [C]; let Defs = [IXH]; }
+def LD_IXH_D : InstDD8<"ld ixh,d", 0x62> { let Uses = [D]; let Defs = [IXH]; }
+def LD_IXH_E : InstDD8<"ld ixh,e", 0x63> { let Uses = [E]; let Defs = [IXH]; }
+def LD_IXH_IXH : InstDD8<"ld ixh,ixh", 0x64> { let Uses = [IXH]; let Defs = [IXH]; }
+def LD_IXH_IXL : InstDD8<"ld ixh,ixl", 0x65> { let Uses = [IXL]; let Defs = [IXH]; }
+
+def LD_IXL_A : InstDD8<"ld ixl,a", 0x6F> { let Uses = [A]; let Defs = [IXL]; }
+def LD_IXL_B : InstDD8<"ld ixl,b", 0x68> { let Uses = [B]; let Defs = [IXL]; }
+def LD_IXL_C : InstDD8<"ld ixl,c", 0x69> { let Uses = [C]; let Defs = [IXL]; }
+def LD_IXL_D : InstDD8<"ld ixl,d", 0x6A> { let Uses = [D]; let Defs = [IXL]; }
+def LD_IXL_E : InstDD8<"ld ixl,e", 0x6B> { let Uses = [E]; let Defs = [IXL]; }
+def LD_IXL_IXH : InstDD8<"ld ixl,ixh", 0x6C> { let Uses = [IXH]; let Defs = [IXL]; }
+def LD_IXL_IXL : InstDD8<"ld ixl,ixl", 0x6D> { let Uses = [IXL]; let Defs = [IXL]; }
+
+// --- LD r,IXH/IXL (load IX half into register) ---
+def LD_A_IXH : InstDD8<"ld a,ixh", 0x7C> { let Uses = [IXH]; let Defs = [A]; }
+def LD_A_IXL : InstDD8<"ld a,ixl", 0x7D> { let Uses = [IXL]; let Defs = [A]; }
+def LD_B_IXH : InstDD8<"ld b,ixh", 0x44> { let Uses = [IXH]; let Defs = [B]; }
+def LD_B_IXL : InstDD8<"ld b,ixl", 0x45> { let Uses = [IXL]; let Defs = [B]; }
+def LD_C_IXH : InstDD8<"ld c,ixh", 0x4C> { let Uses = [IXH]; let Defs = [C]; }
+def LD_C_IXL : InstDD8<"ld c,ixl", 0x4D> { let Uses = [IXL]; let Defs = [C]; }
+def LD_D_IXH : InstDD8<"ld d,ixh", 0x54> { let Uses = [IXH]; let Defs = [D]; }
+def LD_D_IXL : InstDD8<"ld d,ixl", 0x55> { let Uses = [IXL]; let Defs = [D]; }
+def LD_E_IXH : InstDD8<"ld e,ixh", 0x5C> { let Uses = [IXH]; let Defs = [E]; }
+def LD_E_IXL : InstDD8<"ld e,ixl", 0x5D> { let Uses = [IXL]; let Defs = [E]; }
+
+// --- LD IXH/IXL,n (load immediate) ---
+def LD_IXH_n : InstDD16<"ld ixh,", 0x26, Imm8Mode> { let Defs = [IXH]; }
+def LD_IXL_n : InstDD16<"ld ixl,", 0x2E, Imm8Mode> { let Defs = [IXL]; }
+
+// --- INC/DEC IXH/IXL ---
+def INC_IXH : InstDD8<"inc ixh", 0x24> { let Uses = [IXH]; let Defs = [IXH, FLAGS]; }
+def DEC_IXH : InstDD8<"dec ixh", 0x25> { let Uses = [IXH]; let Defs = [IXH, FLAGS]; }
+def INC_IXL : InstDD8<"inc ixl", 0x2C> { let Uses = [IXL]; let Defs = [IXL, FLAGS]; }
+def DEC_IXL : InstDD8<"dec ixl", 0x2D> { let Uses = [IXL]; let Defs = [IXL, FLAGS]; }
+
+// --- ALU A,IXH/IXL (arithmetic/logic with accumulator) ---
+def ADD_A_IXH : InstDD8<"add a,ixh", 0x84> { let Uses = [A, IXH]; let Defs = [A, FLAGS]; }
+def ADD_A_IXL : InstDD8<"add a,ixl", 0x85> { let Uses = [A, IXL]; let Defs = [A, FLAGS]; }
+def ADC_A_IXH : InstDD8<"adc a,ixh", 0x8C> { let Uses = [A, IXH, FLAGS]; let Defs = [A, FLAGS]; }
+def ADC_A_IXL : InstDD8<"adc a,ixl", 0x8D> { let Uses = [A, IXL, FLAGS]; let Defs = [A, FLAGS]; }
+def SUB_IXH : InstDD8<"sub ixh", 0x94> { let Uses = [A, IXH]; let Defs = [A, FLAGS]; }
+def SUB_IXL : InstDD8<"sub ixl", 0x95> { let Uses = [A, IXL]; let Defs = [A, FLAGS]; }
+def SBC_A_IXH : InstDD8<"sbc a,ixh", 0x9C> { let Uses = [A, IXH, FLAGS]; let Defs = [A, FLAGS]; }
+def SBC_A_IXL : InstDD8<"sbc a,ixl", 0x9D> { let Uses = [A, IXL, FLAGS]; let Defs = [A, FLAGS]; }
+def AND_IXH : InstDD8<"and ixh", 0xA4> { let Uses = [A, IXH]; let Defs = [A, FLAGS]; }
+def AND_IXL : InstDD8<"and ixl", 0xA5> { let Uses = [A, IXL]; let Defs = [A, FLAGS]; }
+def XOR_IXH : InstDD8<"xor ixh", 0xAC> { let Uses = [A, IXH]; let Defs = [A, FLAGS]; }
+def XOR_IXL : InstDD8<"xor ixl", 0xAD> { let Uses = [A, IXL]; let Defs = [A, FLAGS]; }
+def OR_IXH : InstDD8<"or ixh", 0xB4> { let Uses = [A, IXH]; let Defs = [A, FLAGS]; }
+def OR_IXL : InstDD8<"or ixl", 0xB5> { let Uses = [A, IXL]; let Defs = [A, FLAGS]; }
+def CP_IXH : InstDD8<"cp ixh", 0xBC> { let Uses = [A, IXH]; let Defs = [FLAGS]; }
+def CP_IXL : InstDD8<"cp ixl", 0xBD> { let Uses = [A, IXL]; let Defs = [FLAGS]; }
+
+// --- IYH/IYL equivalents (FD prefix) ---
+def LD_IYH_A : InstFD8<"ld iyh,a", 0x67> { let Uses = [A]; let Defs = [IYH]; }
+def LD_IYH_B : InstFD8<"ld iyh,b", 0x60> { let Uses = [B]; let Defs = [IYH]; }
+def LD_IYH_C : InstFD8<"ld iyh,c", 0x61> { let Uses = [C]; let Defs = [IYH]; }
+def LD_IYH_D : InstFD8<"ld iyh,d", 0x62> { let Uses = [D]; let Defs = [IYH]; }
+def LD_IYH_E : InstFD8<"ld iyh,e", 0x63> { let Uses = [E]; let Defs = [IYH]; }
+def LD_IYH_IYH : InstFD8<"ld iyh,iyh", 0x64> { let Uses = [IYH]; let Defs = [IYH]; }
+def LD_IYH_IYL : InstFD8<"ld iyh,iyl", 0x65> { let Uses = [IYL]; let Defs = [IYH]; }
+
+def LD_IYL_A : InstFD8<"ld iyl,a", 0x6F> { let Uses = [A]; let Defs = [IYL]; }
+def LD_IYL_B : InstFD8<"ld iyl,b", 0x68> { let Uses = [B]; let Defs = [IYL]; }
+def LD_IYL_C : InstFD8<"ld iyl,c", 0x69> { let Uses = [C]; let Defs = [IYL]; }
+def LD_IYL_D : InstFD8<"ld iyl,d", 0x6A> { let Uses = [D]; let Defs = [IYL]; }
+def LD_IYL_E : InstFD8<"ld iyl,e", 0x6B> { let Uses = [E]; let Defs = [IYL]; }
+def LD_IYL_IYH : InstFD8<"ld iyl,iyh", 0x6C> { let Uses = [IYH]; let Defs = [IYL]; }
+def LD_IYL_IYL : InstFD8<"ld iyl,iyl", 0x6D> { let Uses = [IYL]; let Defs = [IYL]; }
+
+def LD_A_IYH : InstFD8<"ld a,iyh", 0x7C> { let Uses = [IYH]; let Defs = [A]; }
+def LD_A_IYL : InstFD8<"ld a,iyl", 0x7D> { let Uses = [IYL]; let Defs = [A]; }
+def LD_B_IYH : InstFD8<"ld b,iyh", 0x44> { let Uses = [IYH]; let Defs = [B]; }
+def LD_B_IYL : InstFD8<"ld b,iyl", 0x45> { let Uses = [IYL]; let Defs = [B]; }
+def LD_C_IYH : InstFD8<"ld c,iyh", 0x4C> { let Uses = [IYH]; let Defs = [C]; }
+def LD_C_IYL : InstFD8<"ld c,iyl", 0x4D> { let Uses = [IYL]; let Defs = [C]; }
+def LD_D_IYH : InstFD8<"ld d,iyh", 0x54> { let Uses = [IYH]; let Defs = [D]; }
+def LD_D_IYL : InstFD8<"ld d,iyl", 0x55> { let Uses = [IYL]; let Defs = [D]; }
+def LD_E_IYH : InstFD8<"ld e,iyh", 0x5C> { let Uses = [IYH]; let Defs = [E]; }
+def LD_E_IYL : InstFD8<"ld e,iyl", 0x5D> { let Uses = [IYL]; let Defs = [E]; }
+
+def LD_IYH_n : InstFD16<"ld iyh,", 0x26, Imm8Mode> { let Defs = [IYH]; }
+def LD_IYL_n : InstFD16<"ld iyl,", 0x2E, Imm8Mode> { let Defs = [IYL]; }
+
+def INC_IYH : InstFD8<"inc iyh", 0x24> { let Uses = [IYH]; let Defs = [IYH, FLAGS]; }
+def DEC_IYH : InstFD8<"dec iyh", 0x25> { let Uses = [IYH]; let Defs = [IYH, FLAGS]; }
+def INC_IYL : InstFD8<"inc iyl", 0x2C> { let Uses = [IYL]; let Defs = [IYL, FLAGS]; }
+def DEC_IYL : InstFD8<"dec iyl", 0x2D> { let Uses = [IYL]; let Defs = [IYL, FLAGS]; }
+
+def ADD_A_IYH : InstFD8<"add a,iyh", 0x84> { let Uses = [A, IYH]; let Defs = [A, FLAGS]; }
+def ADD_A_IYL : InstFD8<"add a,iyl", 0x85> { let Uses = [A, IYL]; let Defs = [A, FLAGS]; }
+def ADC_A_IYH : InstFD8<"adc a,iyh", 0x8C> { let Uses = [A, IYH, FLAGS]; let Defs = [A, FLAGS]; }
+def ADC_A_IYL : InstFD8<"adc a,iyl", 0x8D> { let Uses = [A, IYL, FLAGS]; let Defs = [A, FLAGS]; }
+def SUB_IYH : InstFD8<"sub iyh", 0x94> { let Uses = [A, IYH]; let Defs = [A, FLAGS]; }
+def SUB_IYL : InstFD8<"sub iyl", 0x95> { let Uses = [A, IYL]; let Defs = [A, FLAGS]; }
+def SBC_A_IYH : InstFD8<"sbc a,iyh", 0x9C> { let Uses = [A, IYH, FLAGS]; let Defs = [A, FLAGS]; }
+def SBC_A_IYL : InstFD8<"sbc a,iyl", 0x9D> { let Uses = [A, IYL, FLAGS]; let Defs = [A, FLAGS]; }
+def AND_IYH : InstFD8<"and iyh", 0xA4> { let Uses = [A, IYH]; let Defs = [A, FLAGS]; }
+def AND_IYL : InstFD8<"and iyl", 0xA5> { let Uses = [A, IYL]; let Defs = [A, FLAGS]; }
+def XOR_IYH : InstFD8<"xor iyh", 0xAC> { let Uses = [A, IYH]; let Defs = [A, FLAGS]; }
+def XOR_IYL : InstFD8<"xor iyl", 0xAD> { let Uses = [A, IYL]; let Defs = [A, FLAGS]; }
+def OR_IYH : InstFD8<"or iyh", 0xB4> { let Uses = [A, IYH]; let Defs = [A, FLAGS]; }
+def OR_IYL : InstFD8<"or iyl", 0xB5> { let Uses = [A, IYL]; let Defs = [A, FLAGS]; }
+def CP_IYH : InstFD8<"cp iyh", 0xBC> { let Uses = [A, IYH]; let Defs = [FLAGS]; }
+def CP_IYL : InstFD8<"cp iyl", 0xBD> { let Uses = [A, IYL]; let Defs = [FLAGS]; }
+
+} // Predicates = [HasZ80, HasUndocumented]
+
+//===----------------------------------------------------------------------===//
 // Z80 Spill Pseudos
 // These are expanded in expandPostRAPseudo after physical registers are assigned
 //===----------------------------------------------------------------------===//
