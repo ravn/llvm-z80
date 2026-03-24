@@ -76,15 +76,7 @@ static unsigned getLoadImmR8Opcode(Register Reg) {
                                      Z80::LD_D_n, Z80::LD_E_n, Z80::LD_H_n,
                                      Z80::LD_L_n};
   int Idx = Z80::gr8RegToIndex(Reg);
-  if (Idx >= 0) return Opcodes[Idx];
-  // Undocumented IXH/IXL/IYH/IYL immediate loads.
-  switch (Reg.id()) {
-  case Z80::IXH: return Z80::LD_IXH_n;
-  case Z80::IXL: return Z80::LD_IXL_n;
-  case Z80::IYH: return Z80::LD_IYH_n;
-  case Z80::IYL: return Z80::LD_IYL_n;
-  default: return 0;
-  }
+  return Idx >= 0 ? Opcodes[Idx] : 0;
 }
 
 static unsigned getSUBOpcode(Register Reg) {
@@ -637,10 +629,6 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       Opcode = Z80::LD_DE_nn;
     else if (DstReg == Z80::HL)
       Opcode = Z80::LD_HL_nn;
-    else if (DstReg == Z80::IX)
-      Opcode = Z80::LD_IX_nn;
-    else if (DstReg == Z80::IY)
-      Opcode = Z80::LD_IY_nn;
     else
       llvm_unreachable("Unexpected register for LD_r16_nn");
 
