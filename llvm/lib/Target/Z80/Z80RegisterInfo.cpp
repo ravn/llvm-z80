@@ -1589,10 +1589,39 @@ bool Z80RegisterInfo::getRegAllocationHints(
 
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   const TargetRegisterClass *RC = MRI.getRegClass(VirtReg);
+  const auto &STI = MF.getSubtarget<Z80Subtarget>();
+
+  // For 16-bit registers: if the vreg is used by an instruction that
+  // constrains its operand to GR16_BCDE (ADD HL,rr / SUB HL,rr etc.),
+  // hint DE then BC. This avoids IX/IY which would need an expensive
+  // PUSH/POP copy to BC/DE (4 bytes) since ADD HL,IX doesn't exist.
+  if (RC->hasSubClassEq(&Z80::GR16RegClass) && STI.hasZ80()) {
+    for (const MachineInstr &Use : MRI.use_nodbg_instructions(VirtReg)) {
+      for (const MachineOperand &MO : Use.operands()) {
+        if (!MO.isReg() || MO.getReg() != VirtReg)
+          continue;
+        // Check if this operand's constraint narrows to GR16_BCDE
+        unsigned OpIdx = &MO - &Use.getOperand(0);
+        if (OpIdx < Use.getNumExplicitOperands()) {
+          const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+          const TargetRegisterClass *OpRC =
+              Use.getRegClassConstraint(OpIdx, TII, this);
+          if (OpRC && OpRC->hasSubClassEq(&Z80::GR16_BCDERegClass)) {
+            // Hint DE, BC (the only registers that work for ADD/SUB HL,rr)
+            if (is_contained(Order, Z80::DE) && !is_contained(Hints, Z80::DE))
+              Hints.push_back(Z80::DE);
+            if (is_contained(Order, Z80::BC) && !is_contained(Hints, Z80::BC))
+              Hints.push_back(Z80::BC);
+            goto done_16bit_hints;
+          }
+        }
+      }
+    }
+    done_16bit_hints:;
+  }
 
   // Only hint B for 8-bit registers on Z80 (DJNZ is Z80-only).
-  if (!RC->contains(Z80::B) ||
-      !MF.getSubtarget<Z80Subtarget>().hasZ80())
+  if (!RC->contains(Z80::B) || !STI.hasZ80())
     return false;
 
   // Check if this vreg looks like a loop counter: it's used in a COPY to A
