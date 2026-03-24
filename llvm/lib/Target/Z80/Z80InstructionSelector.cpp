@@ -792,17 +792,34 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
       if (RHSIsConst)
         C = RHSDef->getOperand(1).getCImm()->getSExtValue();
 
+      // Check if LHS is a constant (for swapped comparisons like sgt X,-1).
+      MachineInstr *LHSDef = MRI.getVRegDef(LHS);
+      int64_t LC = 0;
+      bool LHSIsConst = LHSDef &&
+                         LHSDef->getOpcode() == TargetOpcode::G_CONSTANT;
+      if (LHSIsConst)
+        LC = LHSDef->getOperand(1).getCImm()->getSExtValue();
+
       if (RHSIsConst && C == 0 &&
           (Pred == CmpInst::ICMP_SLT || Pred == CmpInst::ICMP_SGE)) {
         // slt X, 0: test sign bit.  RLCA rotates bit 7 into carry.
         // slt → JR C (bit7 set); sge → JR NC (bit7 clear).
-        // 2 bytes: RLCA + JR C/NC (vs 5 bytes: XOR 0x80; CP 0x80)
         if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI))
           return false;
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
         BuildMI(MBB, MI, DL, TII.get(Z80::RLCA));
-        // Carry flag is now bit 7.  Use JR C for SLT, JR NC for SGE.
         JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_C_nn : Z80::JP_NC_nn;
+      } else if (LHSIsConst && LC == -1 &&
+                 (Pred == CmpInst::ICMP_SLT || Pred == CmpInst::ICMP_SGE)) {
+        // slt -1, X (from sgt X, -1): X >= 0, bit 7 clear → RLCA; JR NC.
+        // sge -1, X (from sle X, -1): X < 0, bit 7 set → RLCA; JR C.
+        if (!RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::RLCA));
+        // slt -1, X means X > -1 means X >= 0: bit7 clear → JR NC.
+        // sge -1, X means X <= -1 means X < 0: bit7 set → JR C.
+        JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_NC_nn : Z80::JP_C_nn;
       } else if (RHSIsConst) {
         // Constant RHS: precompute RHS^0x80 to save 4 bytes.
         //   LD A,LHS; XOR 0x80; CP (RHS^0x80)   — 5 bytes
