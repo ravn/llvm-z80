@@ -395,8 +395,9 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
 
   getActionDefinitionsBuilder(G_ABS).lower();
 
-  // G_MEMCPY: custom lowering to inline LDIR on Z80.
-  // G_MEMMOVE: always libcall (LDIR doesn't handle overlap).
+  // G_MEMCPY: inline LDIR on Z80 (forward copy, no overlap handling).
+  // G_MEMMOVE: libcall to _memmove (handles overlapping regions).
+  // C memcpy is undefined for overlap; use memmove when overlap is possible.
   getActionDefinitionsBuilder(G_MEMCPY).custom();
   getActionDefinitionsBuilder(G_MEMMOVE).libcall();
 
