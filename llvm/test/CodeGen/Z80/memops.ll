@@ -20,18 +20,19 @@ define void @test_memmove(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; Test: memset lowers to runtime call with i8 val promoted to i16
+; Test: memset lowers to inline LDIR fill on Z80
 define void @test_memset(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset:
-; CHECK:       call _memset
+; CHECK:       ld (hl),a
+; CHECK:       ldir
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }
 
-; Test: memset val is zero-extended (not sign-extended) to i16
-define void @test_memset_zext(ptr %dst, i8 %val, i16 %n) {
-; CHECK-LABEL: _test_memset_zext:
-; CHECK:       ld {{[a-z]}},#0
-  call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
+; Test: memset with zero val uses XOR A
+define void @test_memset_zero(ptr %dst, i16 %n) {
+; CHECK-LABEL: _test_memset_zero:
+; CHECK:       ldir
+  call void @llvm.memset.p0.i16(ptr %dst, i8 0, i16 %n, i1 false)
   ret void
 }

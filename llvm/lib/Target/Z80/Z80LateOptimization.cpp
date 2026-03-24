@@ -472,6 +472,49 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       Changed = true;
     }
 
+    // --- Post-RA remapping: DEC r; JR NZ → DEC B; JR NZ when B is free ---
+    // If B (and the BC pair) are dead throughout a single-BB tight loop
+    // (only contains DEC r + JR NZ), rename r→B for the DJNZ peephole.
+    if (STI.hasZ80()) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE; ++MII) {
+        unsigned DecOpc = MII->getOpcode();
+        MCPhysReg CounterReg = 0;
+        if (DecOpc == Z80::DEC_D) CounterReg = Z80::D;
+        else if (DecOpc == Z80::DEC_E) CounterReg = Z80::E;
+        else if (DecOpc == Z80::DEC_H) CounterReg = Z80::H;
+        else if (DecOpc == Z80::DEC_L) CounterReg = Z80::L;
+        else continue;
+
+        auto NextIt = std::next(MII);
+        if (NextIt == MIE || NextIt->getOpcode() != Z80::JR_NZ_e)
+          continue;
+        MachineBasicBlock *LoopTarget = NextIt->getOperand(0).getMBB();
+        if (LoopTarget != &MBB)
+          continue;
+
+        // Only remap tight loops: MBB contains ONLY the DEC + JR NZ.
+        // This ensures B can't be used by anything else in the loop.
+        unsigned InstrCount = 0;
+        for (auto &MI2 : MBB) InstrCount++;
+        if (InstrCount != 2)
+          continue;
+
+        // Verify B is not live-in to this BB (coming from a predecessor).
+        bool BLiveIn = MBB.isLiveIn(Z80::B) || MBB.isLiveIn(Z80::BC);
+        if (BLiveIn)
+          continue;
+
+        LLVM_DEBUG(dbgs() << "  DJNZ remap: "
+                          << printReg(CounterReg, TRI)
+                          << " → B in tight loop\n");
+        // Rename: just change DEC opcode, the register operand is implicit.
+        MII->setDesc(TII->get(Z80::DEC_B));
+        Changed = true;
+        break;
+      }
+    }
+
     // --- Peephole: DEC B; JR NZ → DJNZ (Z80 only) ---
     // DJNZ is a 2-byte instruction that decrements B and branches if non-zero.
     // Replaces DEC B (1 byte) + JR NZ (2 bytes) = 3 bytes with DJNZ (2 bytes).
