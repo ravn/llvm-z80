@@ -56,12 +56,14 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: IX still used as FP. The direct-BSS path in
-  // eliminateFrameIndex handles locals, but IX is still needed for stack args.
-  // Making IX/IY truly allocatable requires adding them to GR16 and updating
-  // all pseudo expansions (ZEXT, SEXT, CMP16, etc.) to handle IX/IY.
-  if (STI.staticStack())
-    return true;
+  // Static stack without fixed objects (stack args): IX is NOT needed as FP.
+  // Locals live in BSS with direct addressing. Functions with stack arguments
+  // still need IX for IX+d access to those args.
+  if (STI.staticStack()) {
+    if (MFI.getNumFixedObjects() > 0)
+      return true;
+    return false;
+  }
 
   if (MF.getTarget().Options.DisableFramePointerElim(MF))
     return true;
@@ -207,6 +209,11 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
   } else {
     // --- No frame pointer (IX is allocatable) ---
     // Callee-saved registers are already pushed by spillCalleeSavedRegisters.
+    const auto &STI = MF.getSubtarget<Z80Subtarget>();
+    if (STI.staticStack()) {
+      // Static stack: locals live in BSS, no stack allocation needed.
+      return;
+    }
     // We only need to allocate space for locals (StackSize - CSSize).
     const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
     uint64_t LocalSize = StackSize - FI->getCalleeSavedFrameSize();
@@ -220,7 +227,6 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
       ++MBBI;
     }
 
-    const auto &STI = MF.getSubtarget<Z80Subtarget>();
     if (STI.hasSM83() && LocalSize <= 128) {
       // SM83: ADD SP,e (2 bytes, doesn't clobber HL)
       BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_SP_e))
@@ -280,6 +286,11 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
     }
   } else {
     // No frame pointer: deallocate locals only.
+    const auto &STI2 = MF.getSubtarget<Z80Subtarget>();
+    if (STI2.staticStack()) {
+      // Static stack: locals in BSS, nothing to deallocate.
+      // Callee-save restores (FrameDestroy POPs) happen normally.
+    } else {
     // Callee-saved registers are restored by restoreCalleeSavedRegisters,
     // which inserts POPs (with FrameDestroy flag) before the return.
     // We must insert local deallocation BEFORE those callee-save restores,
@@ -343,6 +354,7 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
         }
       }
     }
+    } // !staticStack
   }
 
   // Z80 interrupt handlers: emit EI immediately before RETI, after all

@@ -165,7 +165,7 @@ With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit 
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
 - Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
-- IX/IY as allocatable registers: **All undocumented Z80 instructions now defined** (~440 total, gated by `+undocumented`). Helper functions updated (getLD8RegOpcode, getLoadImmR8Opcode handle IXH/IXL/IYH/IYL; LD_r16_nn handles IX/IY). BSS path in eliminateFrameIndex complete (SPILL/RELOAD_GR16 use ED-prefix LD rr,(addr)/LD (addr),rr; ADD/SUB_HL_FI loads BSS into temp then operates). **Remaining blocker**: adding IX/IY to GR16 register class requires updating ALL pseudo expansions (ZEXT_GR8_GR16, SEXT_GR8_GR16, CMP16_FLAGS, XOR_CMP_*, variable shifts, MUL/DIV, etc.) to handle IX/IY sub-registers. Currently IX/IY stay reserved.
+- IX/IY as allocatable registers: **WORKING**. IX/IY are in GR16 (last, least preferred). With `+static-stack` and no stack arguments, `hasFP=false` frees IX for allocation. IY is always allocatable. All pseudo expansions handle IXH/IXL/IYH/IYL. Functions with stack arguments (fixed objects) still use IX as frame pointer.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 

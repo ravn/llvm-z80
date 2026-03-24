@@ -132,12 +132,15 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // IX/IY: reserved until pseudo expansion and MCCodeEmitter support them
-  // in all instruction positions. See CLAUDE.md for the full investigation.
-  // The hasFP=false + static-stack path works for BSS addressing, but
-  // IX/IY are not yet in GR16 so the allocator won't assign them.
-  Reserved.set(Z80::IX);
-  Reserved.set(Z80::IY);
+  // IX: reserved when used as frame pointer (hasFP=true), free otherwise.
+  // IY: always allocatable on Z80 (never used as FP).
+  const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
+  if (TFI->hasFP(MF))
+    Reserved.set(Z80::IX);
+  if (STI.hasSM83()) {
+    Reserved.set(Z80::IX);
+    Reserved.set(Z80::IY);
+  }
 
   // IXH/IXL/IYH/IYL are undocumented Z80 half-index registers.
   // Only available when FeatureUndocumented is enabled; absent on SM83.
