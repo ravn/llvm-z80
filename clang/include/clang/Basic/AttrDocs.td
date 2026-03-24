@@ -6641,6 +6641,15 @@ caller cleanup. ``sdcccall(1)`` (the default) uses register-based parameter
 passing per the SDCC ``__sdcccall(1)`` convention.}];
 }
 
+def Z80AllRegDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Heading = "clang::z80_allreg";
+  let Content = [{
+The ``z80_allreg`` attribute specifies the all-register calling convention
+for Z80 targets. All arguments are passed in registers (HL, DE, BC, IX, IY
+for i16; A for i8), with no stack arguments. Nothing is callee-saved.}];
+}
+
 def PreferredNameDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{

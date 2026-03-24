@@ -121,6 +121,8 @@ unsigned CodeGenTypes::ClangCallConvToLLVMCallConv(CallingConv CC) {
 #undef CC_VLS_CASE
   case CC_Z80SDCCCall0:
     return llvm::CallingConv::Z80_SDCCCall0;
+  case CC_Z80AllReg:
+    return llvm::CallingConv::Z80_AllReg;
   }
 }
 
@@ -339,6 +341,9 @@ static CallingConv getCallingConventionForDecl(const ObjCMethodDecl *D,
 
   if (SDCCCallAttr *SCC = D->getAttr<SDCCCallAttr>())
     return SCC->getABI() == 0 ? CC_Z80SDCCCall0 : CC_C;
+
+  if (D->hasAttr<Z80AllRegAttr>())
+    return CC_Z80AllReg;
 
   return CC_C;
 }

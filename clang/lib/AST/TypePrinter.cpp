@@ -1199,6 +1199,9 @@ void TypePrinter::printFunctionAfter(const FunctionType::ExtInfo &Info,
     case CC_Z80SDCCCall0:
       OS << " __attribute__((sdcccall(0)))";
       break;
+    case CC_Z80AllReg:
+      OS << " __attribute__((z80_allreg))";
+      break;
     }
   }
 

@@ -313,6 +313,7 @@ namespace clang {
     CC_RISCVVLSCall_32768, // __attribute__((riscv_vls_cc(32768)))
     CC_RISCVVLSCall_65536, // __attribute__((riscv_vls_cc(65536)))
     CC_Z80SDCCCall0,       // __attribute__((sdcccall(0)))
+    CC_Z80AllReg,          // __attribute__((z80_allreg))
   };
 
   /// Checks whether the given calling convention supports variadic

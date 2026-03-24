@@ -116,6 +116,7 @@ Z80TargetInfo::checkCallingConvention(CallingConv CC) const {
   switch (CC) {
   case CC_C:
   case CC_Z80SDCCCall0:
+  case CC_Z80AllReg:
     return CCCR_OK;
   default:
     return CCCR_Warning;

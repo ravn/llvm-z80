@@ -3555,6 +3555,11 @@ def SDCCCall : DeclOrTypeAttr, TargetSpecificAttr<TargetZ80> {
   let Documentation = [SDCCCallDocs];
 }
 
+def Z80AllReg : DeclOrTypeAttr, TargetSpecificAttr<TargetZ80> {
+  let Spellings = [Clang<"z80_allreg">];
+  let Documentation = [Z80AllRegDocs];
+}
+
 def Target : InheritableAttr {
   let Spellings = [GCC<"target">];
   let Args = [StringArgument<"featuresStr">];
