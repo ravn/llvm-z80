@@ -132,11 +132,10 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // IX: reserved as frame pointer when hasFP (always true for static stack
-  // currently). TODO: unreserve when eliminateFrameIndex handles static
-  // stack without IX, allowing IX as an "expensive" allocatable register.
-  // IY: reserved — runtime uses JP (IY) for callee cleanup.
-  // TODO: unreserve both when eliminateFrameIndex emits direct BSS addresses.
+  // IX/IY always reserved. Making them allocatable requires:
+  // 1. MCCodeEmitter support for IX/IY in all instruction encodings
+  // 2. Preventing IXH/IXL/IYH/IYL sub-register allocation (no standard encoding)
+  // 3. Static stack eliminateFrameIndex with direct BSS (partially implemented)
   Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
 
@@ -966,6 +965,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
   MachineFunction &MF = *MI->getMF();
   const MachineFrameInfo &MFI = MF.getFrameInfo();
+  const auto &STI2 = MF.getSubtarget<Z80Subtarget>();
   const TargetFrameLowering *TFI = getFrameLowering(MF);
 
   int Idx = MI->getOperand(FIOperandNum).getIndex();
@@ -987,7 +987,11 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   //   [local var 1]    (SP + LocalSize - 2)
   //   [local var 2]    <- SP
 
-  if (UseFP) {
+  if (STI2.staticStack() && !UseFP) {
+    // Static stack without frame pointer: BSS displacement only.
+    // Offset = object offset relative to __sfrend (negative).
+    // No SP adjustment, no saved IX to skip.
+  } else if (UseFP) {
     Offset += 2; // Skip saved IX (also needed for static stack: IX = base+size)
   } else {
     // For callee-cleanup calls, if regalloc inserted this frame-index
@@ -1044,6 +1048,104 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   MachineBasicBlock &MBB = *MI->getParent();
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
   DebugLoc DL = MI->getDebugLoc();
+
+  // --- Static stack direct BSS path ---
+  // When +static-stack and IX is not the frame pointer, resolve frame
+  // indices to BSS addresses (__sfrend_funcname + offset) directly.
+  // This allows IX/IY to be used as allocatable data registers.
+  if (STI2.staticStack() && !UseFP) {
+    MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
+        "__sfrend_" + MF.getName());
+
+    // Helper: create a MachineOperand with EndSym + Offset.
+    auto addBSSAddr = [&](MachineInstrBuilder &MIB) {
+      auto *NewMI = MIB.addSym(EndSym).getInstr();
+      NewMI->getOperand(NewMI->getNumExplicitOperands() - 1).setOffset(Offset);
+    };
+
+    // Helper: get LD A,r opcode for a given source register.
+    auto getLdAFromReg = [](Register R) -> unsigned {
+      switch (R.id()) {
+      case Z80::B: return Z80::LD_A_B; case Z80::C: return Z80::LD_A_C;
+      case Z80::D: return Z80::LD_A_D; case Z80::E: return Z80::LD_A_E;
+      case Z80::H: return Z80::LD_A_H; case Z80::L: return Z80::LD_A_L;
+      case Z80::A: return 0; // already in A
+      default: return 0;
+      }
+    };
+    // Helper: get LD r,A opcode for a given destination register.
+    auto getLdRegFromA = [](Register R) -> unsigned {
+      switch (R.id()) {
+      case Z80::B: return Z80::LD_B_A; case Z80::C: return Z80::LD_C_A;
+      case Z80::D: return Z80::LD_D_A; case Z80::E: return Z80::LD_E_A;
+      case Z80::H: return Z80::LD_H_A; case Z80::L: return Z80::LD_L_A;
+      case Z80::A: return 0; // already in A
+      default: return 0;
+      }
+    };
+
+    if (Opc == Z80::SPILL_GR8) {
+      // Store 8-bit reg to BSS via A: LD A,r; LD (addr),A = 4B (or 3B if A)
+      Register SrcReg = MI->getOperand(0).getReg();
+      unsigned CopyOpc = getLdAFromReg(SrcReg);
+      if (CopyOpc)
+        BuildMI(MBB, MI, DL, TII.get(CopyOpc));
+      auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A));
+      addBSSAddr(MIB);
+      MI->eraseFromParent();
+      return false;
+    }
+    if (Opc == Z80::RELOAD_GR8) {
+      // Load 8-bit reg from BSS via A: LD A,(addr); LD r,A = 4B (or 3B if A)
+      Register DstReg = MI->getOperand(0).getReg();
+      auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_nnind));
+      addBSSAddr(MIB);
+      unsigned CopyOpc = getLdRegFromA(DstReg);
+      if (CopyOpc)
+        BuildMI(MBB, MI, DL, TII.get(CopyOpc));
+      MI->eraseFromParent();
+      return false;
+    }
+    if (Opc == Z80::SPILL_GR16 || Opc == Z80::RELOAD_GR16) {
+      // 16-bit: handled by expandPostRAPseudo with direct BSS.
+      // Just patch the offset for now.
+      MI->getOperand(FIOperandNum).ChangeToImmediate(Offset);
+      return false;
+    }
+    if (Opc == Z80::SPILL_IMM8) {
+      // Store immediate to BSS: LD A,imm; LD (addr),A = 5B
+      int64_t Val = MI->getOperand(0).getImm();
+      BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_n)).addImm(Val);
+      auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A));
+      addBSSAddr(MIB);
+      MI->eraseFromParent();
+      return false;
+    }
+    if (Opc == Z80::LEA_IX_FI) {
+      // Compute BSS address into a register: LD rr, addr
+      Register DstReg = MI->getOperand(0).getReg();
+      unsigned LdOpc = 0;
+      if (DstReg == Z80::HL) LdOpc = Z80::LD_HL_nn;
+      else if (DstReg == Z80::DE) LdOpc = Z80::LD_DE_nn;
+      else if (DstReg == Z80::BC) LdOpc = Z80::LD_BC_nn;
+      else if (DstReg == Z80::IX) LdOpc = Z80::LD_IX_nn;
+      if (LdOpc) {
+        auto MIB = BuildMI(MBB, MI, DL, TII.get(LdOpc));
+        addBSSAddr(MIB);
+        MI->eraseFromParent();
+        return false;
+      }
+    }
+    if (Opc == Z80::ADD_HL_FI || Opc == Z80::SUB_HL_FI) {
+      // ADD/SUB HL with BSS value: load to temp, operate.
+      // LD A,(addr); LD C,A; LD A,(addr+1); LD B,A; ADD HL,BC
+      // This is complex. Fall through to let expandPostRAPseudo handle.
+      MI->getOperand(FIOperandNum).ChangeToImmediate(Offset);
+      return false;
+    }
+    // Unknown opcode with frame index in static stack mode.
+    // Fall through to normal handling.
+  }
 
   // LEA_IX_FI: compute the actual address of a stack object into a register.
   if (Opc == Z80::LEA_IX_FI) {

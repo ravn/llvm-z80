@@ -56,11 +56,10 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: still need IX as FP for eliminateFrameIndex to compute
-  // BSS offsets. Making IX allocatable requires eliminateFrameIndex to
-  // handle static stack without UseFP (emit direct BSS addresses directly).
-  // TODO: implement direct BSS in eliminateFrameIndex, then change this to:
-  //   return MF.getTarget().Options.DisableFramePointerElim(MF);
+  // Static stack: IX still used as FP. Making IX/IY allocatable requires
+  // fixing sub-register allocation (IXH/IXL encoding issues) and
+  // MCCodeEmitter support for IX/IY in all instruction positions.
+  // See CLAUDE.md for the full investigation.
   if (STI.staticStack())
     return true;
 
