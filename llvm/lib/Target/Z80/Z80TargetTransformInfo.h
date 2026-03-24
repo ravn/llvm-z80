@@ -46,10 +46,11 @@ public:
 
   bool isLSRCostLess(const TargetTransformInfo::LSRCost &C1,
                      const TargetTransformInfo::LSRCost &C2) const override {
-    // Prefer instruction count to the other metrics.
-    return std::tie(C1.Insns, C1.NumRegs, C1.AddRecCost, C1.NumIVMuls,
+    // Z80 has extreme register pressure (3 pairs). Penalize register count
+    // most heavily, then instruction count.
+    return std::tie(C1.NumRegs, C1.Insns, C1.AddRecCost, C1.NumIVMuls,
                     C1.NumBaseAdds, C1.ScaleCost, C1.ImmCost, C1.SetupCost) <
-           std::tie(C2.Insns, C2.NumRegs, C2.AddRecCost, C2.NumIVMuls,
+           std::tie(C2.NumRegs, C2.Insns, C2.AddRecCost, C2.NumIVMuls,
                     C2.NumBaseAdds, C2.ScaleCost, C2.ImmCost, C2.SetupCost);
   }
 
@@ -59,6 +60,19 @@ public:
 
   bool isValidAddrSpaceCast(unsigned FromAS, unsigned ToAS) const override {
     return true;
+  }
+
+  // Z80 has extremely few registers. Tell the loop optimizer so it avoids
+  // creating extra induction variables that cause spills.
+  unsigned getNumberOfRegisters(unsigned ClassID) const {
+    // ClassID 0 = scalar. Z80 has 3 allocatable 16-bit pairs (BC, DE, HL)
+    // and 7 allocatable 8-bit regs (A, B, C, D, E, H, L), but pairs and
+    // sub-registers overlap, so the effective count is very low.
+    return 3;
+  }
+
+  TypeSize getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const {
+    return TypeSize::getFixed(8);
   }
 
   // Z80 has only 3 GP register pairs (BC, DE, HL). Inlining non-trivial

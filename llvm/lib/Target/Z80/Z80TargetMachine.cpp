@@ -215,7 +215,6 @@ void Z80PassConfig::addIRPasses() {
   addPass(createLowerAtomicPass());
 
   TargetPassConfig::addIRPasses();
-  // Clean up after LSR in particular.
   if (getOptLevel() != CodeGenOptLevel::None)
     addPass(createInstructionCombiningPass());
 }
