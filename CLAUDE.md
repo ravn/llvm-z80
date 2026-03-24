@@ -130,12 +130,25 @@ Always test in MAME. The compiler has known bugs (branch relaxation crashes with
 - `+static-stack` — allocate function locals in BSS instead of stack. Non-reentrant.
 - `+shadow-regs` — enable EXX shadow register infrastructure (not yet functional for spill reduction).
 
+### Docker Build Image
+Use `llvm-z80-build` docker image (pre-installed cmake/ninja/clang/lld/python3) instead of installing packages every invocation. Build with:
+```
+docker build -t llvm-z80-build - <<'EOF'
+FROM ubuntu:24.04
+RUN apt-get update -qq && apt-get install -y -qq cmake ninja-build clang lld python3 && rm -rf /var/lib/apt/lists/*
+EOF
+```
+Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C build`
+
 ### Known Working Optimizations
 - CP (HL) fusion in instruction selector
 - LDIR/LDDR for memcpy/memset
 - RLCA bit-7 test for signed comparisons (slt X,0 / sgt X,-1)
 - 16-bit right shift by 5-7 via byte swap + ADD HL,HL
 - Static stack with overlay (call-graph-based BSS sharing)
+- Direct BSS addressing for HL 16-bit spills (3B vs 6B IX-indexed)
+- EXX-based ISR save/restore with +shadow-regs
+- Unused IX/IY setup removal
 - BC last in 16-bit allocation order
 - Conditional RET (branch-over-RET pattern)
 
@@ -150,7 +163,8 @@ With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit 
 
 ### Known Non-Working / Deferred
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
-- EXX spill conversion: EXX swaps ALL of BC/DE/HL atomically. Cannot be inserted at arbitrary points — destroys all live values. Wrapping a leaf function in EXX (shadow bank for entire body) doesn't reduce spills because the allocator still only sees 3 pairs. EXX could help as callee-save (preserve caller's registers for 1 byte instead of 3 PUSHes) but this needs calling convention changes. The shadow bank is fundamentally a CONTEXT SWITCH, not extra registers.
+- EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
+- Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
