@@ -90,6 +90,60 @@ struct ArgAssignment {
   FirstArgKind NewFirstKind = FIRST_NONE;
 };
 
+/// All-register convention: assign args from register pools by type.
+/// State is tracked via RegParamCount as a bitmask of used 16-bit pairs.
+/// Bit 0=HL, 1=DE, 2=BC, 3=IX, 4=IY. A is tracked by bit 5.
+static ArgAssignment classifyArgAllReg(unsigned &UsedMask, unsigned BitWidth) {
+  ArgAssignment Result;
+  // Register pools in allocation order
+  static const Register Pairs[] = {Z80::HL, Z80::DE, Z80::BC, Z80::IX, Z80::IY};
+
+  if (BitWidth <= 8) {
+    // First i8 → A, subsequent i8 → low byte of next free pair
+    if (!(UsedMask & (1 << 5))) {
+      Result = {true, Z80::A, Register(), FIRST_I8};
+      UsedMask |= (1 << 5);
+      return Result;
+    }
+    // Find a free pair and use its low byte
+    for (unsigned I = 0; I < 5; ++I) {
+      if (!(UsedMask & (1 << I))) {
+        Register Lo;
+        switch (Pairs[I].id()) {
+        case Z80::HL: Lo = Z80::L; break;
+        case Z80::DE: Lo = Z80::E; break;
+        case Z80::BC: Lo = Z80::C; break;
+        case Z80::IX: Lo = Z80::IXL; break;
+        case Z80::IY: Lo = Z80::IYL; break;
+        default: continue;
+        }
+        Result = {true, Lo, Register(), FIRST_NONE};
+        UsedMask |= (1 << I);
+        return Result;
+      }
+    }
+  } else if (BitWidth <= 16) {
+    for (unsigned I = 0; I < 5; ++I) {
+      if (!(UsedMask & (1 << I))) {
+        Result = {true, Pairs[I], Register(), (I == 0) ? FIRST_I16 : FIRST_NONE};
+        UsedMask |= (1 << I);
+        return Result;
+      }
+    }
+  } else if (BitWidth <= 32) {
+    // Need two consecutive free pairs: Hi then Lo
+    for (unsigned I = 0; I < 4; ++I) {
+      if (!(UsedMask & (1 << I)) && !(UsedMask & (1 << (I + 1)))) {
+        Result = {true, Pairs[I], Pairs[I + 1],
+                  (I == 0) ? FIRST_I32 : FIRST_NONE};
+        UsedMask |= (1 << I) | (1 << (I + 1));
+        return Result;
+      }
+    }
+  }
+  return Result; // InReg = false → would go to stack
+}
+
 /// Classify a single argument based on current register state.
 /// Uses CallingConvRegs to look up the correct physical registers.
 /// sdcccall(0): all args go on stack (returns empty result).
@@ -100,6 +154,10 @@ ArgAssignment classifyArg(const CallingConvRegs &Regs, unsigned &RegParamCount,
 
   if (CC == CallingConv::Z80_SDCCCall0 || IsVarArg)
     return Result;
+
+  // All-register convention: use all available registers, no stack args.
+  if (CC == CallingConv::Z80_AllReg)
+    return classifyArgAllReg(RegParamCount, BitWidth);
 
   if (RegParamCount == 0) {
     if (BitWidth <= 8) {

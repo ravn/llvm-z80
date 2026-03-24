@@ -301,6 +301,13 @@ namespace CallingConv {
     /// Return: Z80 i8->L, i16->HL, i32->DEHL; SM83 i8->E, i16->DE, i32->HLDE.
     Z80_SDCCCall0 = 128,
 
+    /// Z80 all-register calling convention — pass all args in registers.
+    /// i8: A, then low bytes of remaining pairs.
+    /// i16: HL, DE, BC, IX, IY in order.
+    /// i32: HLDE, then BCIY.
+    /// No stack arguments. Error if registers exhausted.
+    Z80_AllReg = 129,
+
     /// The highest possible ID. Must be some 2^k - 1.
     MaxID = 1023
   };
