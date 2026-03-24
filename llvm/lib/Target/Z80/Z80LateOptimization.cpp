@@ -1855,6 +1855,63 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   }
 #endif // disabled EXX conversion
 
+  // --- Peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr ---
+  // When a 16-bit addition is performed through HL with IX/IY as the actual
+  // accumulator, replace the 5-instruction copy-add-copy sequence (8-10 bytes)
+  // with a single ADD IX,rr or ADD IY,rr (2 bytes).
+  // Also handles ADD HL,HL → ADD IX,IX (left shift by 1).
+  if (STI.hasZ80()) {
+    for (auto &MBB : MF) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        unsigned Opc = MII->getOpcode();
+        // Match: PUSH IX or PUSH IY
+        bool IsIX = (Opc == Z80::PUSH_IX);
+        bool IsIY = (Opc == Z80::PUSH_IY);
+        if (!IsIX && !IsIY) { ++MII; continue; }
+
+        auto I1 = MII;       // PUSH IX/IY
+        auto I2 = std::next(I1);
+        if (I2 == MIE || I2->getOpcode() != Z80::POP_HL) { ++MII; continue; }
+        auto I3 = std::next(I2);
+        if (I3 == MIE) { ++MII; continue; }
+        // I3 must be ADD HL,BC or ADD HL,DE or ADD HL,HL
+        unsigned AddOpc = I3->getOpcode();
+        if (AddOpc != Z80::ADD_HL_BC && AddOpc != Z80::ADD_HL_DE &&
+            AddOpc != Z80::ADD_HL_HL) { ++MII; continue; }
+        auto I4 = std::next(I3);
+        if (I4 == MIE || I4->getOpcode() != Z80::PUSH_HL) { ++MII; continue; }
+        auto I5 = std::next(I4);
+        unsigned ExpectedPop = IsIX ? Z80::POP_IX : Z80::POP_IY;
+        if (I5 == MIE || I5->getOpcode() != ExpectedPop) { ++MII; continue; }
+
+        // Determine replacement opcode
+        unsigned NewOpc = 0;
+        if (IsIX) {
+          if (AddOpc == Z80::ADD_HL_BC) NewOpc = Z80::ADD_IX_BC;
+          else if (AddOpc == Z80::ADD_HL_DE) NewOpc = Z80::ADD_IX_DE;
+          else if (AddOpc == Z80::ADD_HL_HL) NewOpc = Z80::ADD_IX_IX;
+        } else {
+          if (AddOpc == Z80::ADD_HL_BC) NewOpc = Z80::ADD_IY_BC;
+          else if (AddOpc == Z80::ADD_HL_DE) NewOpc = Z80::ADD_IY_DE;
+          else if (AddOpc == Z80::ADD_HL_HL) NewOpc = Z80::ADD_IY_IY;
+        }
+        if (!NewOpc) { ++MII; continue; }
+
+        LLVM_DEBUG(dbgs() << "  ADD IX/IY peephole: PUSH;POP;ADD;PUSH;POP → "
+                          << TII->getName(NewOpc) << "\n");
+        DebugLoc DL = I3->getDebugLoc();
+        I5->eraseFromParent();
+        I4->eraseFromParent();
+        I3->eraseFromParent();
+        I2->eraseFromParent();
+        MII = MBB.erase(I1);
+        BuildMI(MBB, MII, DL, TII->get(NewOpc));
+        Changed = true;
+      }
+    }
+  }
+
   return Changed;
 }
 
