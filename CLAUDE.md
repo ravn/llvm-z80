@@ -141,7 +141,7 @@ Always test in MAME. The compiler has known bugs (branch relaxation crashes with
 
 ### Known Non-Working / Deferred
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
-- EXX spill conversion: swaps all registers, cannot be inserted at arbitrary points
+- EXX spill conversion: EXX swaps ALL of BC/DE/HL atomically. Cannot be inserted at arbitrary points — destroys all live values. Wrapping a leaf function in EXX (shadow bank for entire body) doesn't reduce spills because the allocator still only sees 3 pairs. EXX could help as callee-save (preserve caller's registers for 1 byte instead of 3 PUSHes) but this needs calling convention changes. The shadow bank is fundamentally a CONTEXT SWITCH, not extra registers.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
