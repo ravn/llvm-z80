@@ -161,6 +161,11 @@ class Z80Reg16Class<dag RegList>: Z80RegClass<[i16], 8, RegList>;
 // These can be used with most 8-bit operations
 def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
 
+// Shadow 8-bit GPRs (accessible via EXX): B', C', D', E', H', L'
+// These are the same physical registers after EXX swaps banks.
+// Allocating any shadow register requires EXX at function entry/exit (2 bytes).
+def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;
+
 //===----------------------------------------------------------------------===//
 //  16-bit register classes
 //===----------------------------------------------------------------------===//
@@ -169,6 +174,10 @@ def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
 // BC is last because B is needed for DJNZ (loop counter); keeping BC
 // free for 16-bit allocation lets B be used as an 8-bit loop counter.
 def GR16 : Z80Reg16Class<(add DE, HL, BC)>;
+
+// Shadow 16-bit pairs (accessible via EXX): DE', HL', BC'
+// Same allocation order rationale — BC' last for DJNZ in shadow context.
+def ShadowGR16 : Z80Reg16Class<(add DEp, HLp, BCp)>;
 
 // BC and DE only (for register scavenging temp in address computation)
 def GR16_BCDE : Z80Reg16Class<(add DE, BC)>;
