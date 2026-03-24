@@ -2840,6 +2840,41 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           BuildMI(MBB, MI, DL, TII.get(Z80::SRL_L));
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
             .addReg(Z80::HL);
+      } else if (ShiftAmt >= 5 && ShiftAmt <= 7) {
+        // LSHR 16-bit by 5-7: swap bytes + shift LEFT by (8-ShiftAmt).
+        // For shift by 7: LD A,L; RLCA; LD L,H; LD H,0; ADD HL,HL;
+        //                 AND 1; OR L; LD L,A  (8 bytes vs 28 for 7×SRL+RR)
+        // General: swap bytes, SHL by (8-N) using ADD HL,HL, then
+        //          merge the bits that shifted across the byte boundary.
+        int ShlAmt = 8 - ShiftAmt;
+        if (!RBI.constrainGenericRegister(SrcReg, Z80::GR16RegClass, MRI) ||
+            !RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+            .addReg(SrcReg);
+        // Save the low byte's upper bits that will shift into the result.
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(Z80::L);
+        // Rotate A left by ShlAmt to position the cross-byte bits.
+        for (int i = 0; i < ShlAmt; i++)
+          BuildMI(MBB, MI, DL, TII.get(Z80::RLCA));
+        BuildMI(MBB, MI, DL, TII.get(Z80::AND_n)).addImm((1 << ShlAmt) - 1);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::B)
+            .addReg(Z80::A); // save cross-bits in B
+        // Swap bytes: L = H, H = 0
+        BuildMI(MBB, MI, DL, TII.get(Z80::LD_L_H));
+        BuildMI(MBB, MI, DL, TII.get(Z80::LD_H_n)).addImm(0);
+        // Shift HL left by ShlAmt using ADD HL,HL
+        for (int i = 0; i < ShlAmt; i++)
+          BuildMI(MBB, MI, DL, TII.get(Z80::ADD_HL_HL));
+        // Merge the saved cross-byte bits.
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(Z80::L);
+        BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::B);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::L)
+            .addReg(Z80::A);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::HL);
       } else if (ShiftAmt > 0) {
         // 16-bit: chain LSHR16 pseudos (each shifts right by 1)
         Register Prev = SrcReg;
