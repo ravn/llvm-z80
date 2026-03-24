@@ -774,13 +774,15 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     if (STI->staticStack() && SrcReg != Z80::IY) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
+      // Only use LD (addr),HL (3B, unprefixed) for now.
+      // ED-prefixed LD (addr),DE/BC have encoding issues with MCSymbol operands.
       unsigned StoreOpc = 0;
       if (SrcReg == Z80::HL) StoreOpc = Z80::LD_nnind_HL;
-      else if (SrcReg == Z80::DE) StoreOpc = Z80::LD_nnind_DE;
-      else if (SrcReg == Z80::BC) StoreOpc = Z80::LD_nnind_BC;
       if (StoreOpc) {
-        auto MIB = BuildMI(MBB, MI, DL, get(StoreOpc)).addSym(EndSym);
-        MIB->getOperand(MIB->getNumOperands() - 1).setOffset(Offset);
+        auto *StoreMI = BuildMI(MBB, MI, DL, get(StoreOpc))
+            .addSym(EndSym).getInstr();
+        // The symbol is operand 0. Set offset for __sfrend + displacement.
+        StoreMI->getOperand(0).setOffset(Offset);
         MI.eraseFromParent();
         return true;
       }
@@ -844,13 +846,13 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     if (STI->staticStack() && DestReg != Z80::IY) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
+      // Only use LD HL,(addr) (3B, unprefixed) for now.
       unsigned LoadOpc = 0;
       if (DestReg == Z80::HL) LoadOpc = Z80::LD_HL_nnind;
-      else if (DestReg == Z80::DE) LoadOpc = Z80::LD_DE_nnind;
-      else if (DestReg == Z80::BC) LoadOpc = Z80::LD_BC_nnind;
       if (LoadOpc) {
-        auto MIB = BuildMI(MBB, MI, DL, get(LoadOpc)).addSym(EndSym);
-        MIB->getOperand(MIB->getNumOperands() - 1).setOffset(Offset);
+        auto *LoadMI = BuildMI(MBB, MI, DL, get(LoadOpc))
+            .addSym(EndSym).getInstr();
+        LoadMI->getOperand(0).setOffset(Offset);
         MI.eraseFromParent();
         return true;
       }
