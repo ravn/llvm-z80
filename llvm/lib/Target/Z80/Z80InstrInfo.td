@@ -250,8 +250,8 @@ def OTDR : InstED8<"otdr", 0xBB> { let Defs = [FLAGS]; }
 let Predicates = [HasZ80] in {
 
 // LD IX,nn / LD IY,nn
-def LD_IX_nn : InstDD24<"ld ix,", 0x21, Imm16Mode> { let Defs = [IX]; }
-def LD_IY_nn : InstFD24<"ld iy,", 0x21, Imm16Mode> { let Defs = [IY]; }
+def LD_IX_nn : InstDD24<"ld ix,", 0x21> { let Defs = [IX]; }
+def LD_IY_nn : InstFD24<"ld iy,", 0x21> { let Defs = [IY]; }
 
 // PUSH IX / PUSH IY
 def PUSH_IX : InstDD8<"push ix", 0xE5> { let Uses = [IX]; }
