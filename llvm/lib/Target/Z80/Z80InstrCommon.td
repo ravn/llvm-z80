@@ -407,56 +407,56 @@ def BIT_0_B : BITbr<0, REG_B>;  def BIT_0_C : BITbr<0, REG_C>;
 def BIT_0_D : BITbr<0, REG_D>;  def BIT_0_E : BITbr<0, REG_E>;
 def BIT_0_H : BITbr<0, REG_H>;  def BIT_0_L : BITbr<0, REG_L>;
 def BIT_0_A : BITbr<0, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_0_HLind : InstCB<"bit 0,(hl)", 0x46>;
 
 def BIT_1_B : BITbr<1, REG_B>;  def BIT_1_C : BITbr<1, REG_C>;
 def BIT_1_D : BITbr<1, REG_D>;  def BIT_1_E : BITbr<1, REG_E>;
 def BIT_1_H : BITbr<1, REG_H>;  def BIT_1_L : BITbr<1, REG_L>;
 def BIT_1_A : BITbr<1, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_1_HLind : InstCB<"bit 1,(hl)", 0x4E>;
 
 def BIT_2_B : BITbr<2, REG_B>;  def BIT_2_C : BITbr<2, REG_C>;
 def BIT_2_D : BITbr<2, REG_D>;  def BIT_2_E : BITbr<2, REG_E>;
 def BIT_2_H : BITbr<2, REG_H>;  def BIT_2_L : BITbr<2, REG_L>;
 def BIT_2_A : BITbr<2, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_2_HLind : InstCB<"bit 2,(hl)", 0x56>;
 
 def BIT_3_B : BITbr<3, REG_B>;  def BIT_3_C : BITbr<3, REG_C>;
 def BIT_3_D : BITbr<3, REG_D>;  def BIT_3_E : BITbr<3, REG_E>;
 def BIT_3_H : BITbr<3, REG_H>;  def BIT_3_L : BITbr<3, REG_L>;
 def BIT_3_A : BITbr<3, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_3_HLind : InstCB<"bit 3,(hl)", 0x5E>;
 
 def BIT_4_B : BITbr<4, REG_B>;  def BIT_4_C : BITbr<4, REG_C>;
 def BIT_4_D : BITbr<4, REG_D>;  def BIT_4_E : BITbr<4, REG_E>;
 def BIT_4_H : BITbr<4, REG_H>;  def BIT_4_L : BITbr<4, REG_L>;
 def BIT_4_A : BITbr<4, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_4_HLind : InstCB<"bit 4,(hl)", 0x66>;
 
 def BIT_5_B : BITbr<5, REG_B>;  def BIT_5_C : BITbr<5, REG_C>;
 def BIT_5_D : BITbr<5, REG_D>;  def BIT_5_E : BITbr<5, REG_E>;
 def BIT_5_H : BITbr<5, REG_H>;  def BIT_5_L : BITbr<5, REG_L>;
 def BIT_5_A : BITbr<5, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_5_HLind : InstCB<"bit 5,(hl)", 0x6E>;
 
 def BIT_6_B : BITbr<6, REG_B>;  def BIT_6_C : BITbr<6, REG_C>;
 def BIT_6_D : BITbr<6, REG_D>;  def BIT_6_E : BITbr<6, REG_E>;
 def BIT_6_H : BITbr<6, REG_H>;  def BIT_6_L : BITbr<6, REG_L>;
 def BIT_6_A : BITbr<6, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_6_HLind : InstCB<"bit 6,(hl)", 0x76>;
 
 def BIT_7_B : BITbr<7, REG_B>;  def BIT_7_C : BITbr<7, REG_C>;
 def BIT_7_D : BITbr<7, REG_D>;  def BIT_7_E : BITbr<7, REG_E>;
 def BIT_7_H : BITbr<7, REG_H>;  def BIT_7_L : BITbr<7, REG_L>;
 def BIT_7_A : BITbr<7, REG_A>;
-let mayLoad = true, mayStore = false, hasSideEffects = false in
+let mayLoad = true, mayStore = false, hasSideEffects = false, Uses = [HL] in
 def BIT_7_HLind : InstCB<"bit 7,(hl)", 0x7E>;
 } // Defs = [FLAGS]
 

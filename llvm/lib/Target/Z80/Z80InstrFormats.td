@@ -685,17 +685,19 @@ class ADDHLrr<RegPairEnc rr> : Inst8<"add hl," # rr.Name,
 class CBRotate<bits<3> op, RegEnc8 r, string opname>
     : InstCB<opname # " " # r.Name, !or(!shl(op, 3), r.enc)>;
 
-/// BIT b,r - Test bit b of register r
+/// BIT b,r - Test bit b of register r (sets FLAGS, reads register)
 /// Opcode: CB 0b01bbbrrr where bbb is bit number, rrr is register
 class BITbr<bits<3> b, RegEnc8 r>
-    : InstCB<"bit " # b # "," # r.Name, !or(0x40, !shl(b, 3), r.enc)>;
+    : InstCB<"bit " # b # "," # r.Name, !or(0x40, !shl(b, 3), r.enc)> {
+  let Defs = [FLAGS];
+}
 
-/// RES b,r - Reset bit b of register r
+/// RES b,r - Reset bit b of register r (reads and writes register)
 /// Opcode: CB 0b10bbbrrr where bbb is bit number, rrr is register
 class RESbr<bits<3> b, RegEnc8 r>
     : InstCB<"res " # b # "," # r.Name, !or(0x80, !shl(b, 3), r.enc)>;
 
-/// SET b,r - Set bit b of register r
+/// SET b,r - Set bit b of register r (reads and writes register)
 /// Opcode: CB 0b11bbbrrr where bbb is bit number, rrr is register
 class SETbr<bits<3> b, RegEnc8 r>
     : InstCB<"set " # b # "," # r.Name, !or(0xC0, !shl(b, 3), r.enc)>;
