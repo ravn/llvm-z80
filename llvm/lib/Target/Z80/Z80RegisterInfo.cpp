@@ -1441,30 +1441,35 @@ bool Z80RegisterInfo::getRegAllocationHints(
     ++It;
     if (It == End || It->getOpcode() != Z80::DEC_A)
       continue;
-    // Check that this DEC feeds a conditional NZ branch (not unconditional).
-    // Only conditional NZ branches benefit from DJNZ. Outer loop counters
-    // that use unconditional JR should NOT get the B hint — freeing B
-    // for inner loop counters that DO benefit from DJNZ.
+    // Check if the MBB containing this DEC has a conditional NZ branch
+    // as terminator. This indicates the counter controls a loop that
+    // could benefit from DJNZ (inner loop). Outer loops use unconditional
+    // JR and should NOT get the B hint.
+    const MachineBasicBlock *DecMBB = Use.getParent();
     bool FeedsCondNZ = false;
-    for (auto It2 = std::next(It); It2 != End; ++It2) {
-      unsigned Opc = It2->getOpcode();
-      if (Opc == Z80::JR_NZ_e || Opc == Z80::JP_NZ_nn) {
-        FeedsCondNZ = true;
-        break;
-      }
-      // If we hit another instruction that defines FLAGS, the DEC's
-      // flags are dead — this isn't a conditional branch pattern.
-      if (It2->modifiesRegister(Z80::FLAGS, this))
-        break;
+    auto Term = DecMBB->getLastNonDebugInstr();
+    if (Term != DecMBB->end()) {
+      unsigned TermOpc = Term->getOpcode();
+      FeedsCondNZ = (TermOpc == Z80::JR_NZ_e || TermOpc == Z80::JP_NZ_nn);
     }
-    if (!FeedsCondNZ)
-      continue;
-    // Found COPY vreg→A; DEC A; ...; JR NZ pattern. This is an inner
-    // loop counter that benefits from DJNZ.
-    LLVM_DEBUG(dbgs() << "  DJNZ hint: " << printReg(VirtReg, this)
-                      << " is an inner loop counter, hinting B\n");
-    if (is_contained(Order, Z80::B) && !is_contained(Hints, Z80::B)) {
-      Hints.insert(Hints.begin(), Z80::B);
+    if (FeedsCondNZ) {
+      // Inner loop counter: hint B for DJNZ.
+      LLVM_DEBUG(dbgs() << "  DJNZ hint: " << printReg(VirtReg, this)
+                        << " is an inner loop counter, hinting B\n");
+      if (is_contained(Order, Z80::B) && !is_contained(Hints, Z80::B))
+        Hints.insert(Hints.begin(), Z80::B);
+    } else {
+      // Outer loop counter (feeds unconditional branch or OR A; JR NZ
+      // that the peephole already reduced): AVOID B so inner loops can
+      // use it. Hint all non-B registers with priority.
+      LLVM_DEBUG(dbgs() << "  DJNZ anti-hint: " << printReg(VirtReg, this)
+                        << " is an outer loop counter, avoiding B\n");
+      static const MCPhysReg NonB[] = {Z80::D, Z80::E, Z80::H,
+                                        Z80::L, Z80::C};
+      for (MCPhysReg R : NonB) {
+        if (is_contained(Order, R) && !is_contained(Hints, R))
+          Hints.insert(Hints.begin(), R);
+      }
     }
     break;
   }
