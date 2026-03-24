@@ -18,8 +18,8 @@ define i16 @sum(i16 %count, ...) {
 ; va_start computes IX+6 (first vararg address):
 ; CHECK:       push ix
 ; CHECK-NEXT:  pop hl
-; CHECK:       ld bc,#6
-; CHECK-NEXT:  add hl,bc
+; CHECK:       ld de,#6
+; CHECK-NEXT:  add hl,de
   %ap = alloca ptr, align 1
   call void @llvm.va_start.p0(ptr %ap)
   %total = alloca i16, align 1

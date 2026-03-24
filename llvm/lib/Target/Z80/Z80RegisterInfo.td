@@ -165,20 +165,22 @@ def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
 //  16-bit register classes
 //===----------------------------------------------------------------------===//
 
-// General 16-bit registers: BC, DE, HL
-def GR16 : Z80Reg16Class<(add BC, DE, HL)>;
+// General 16-bit registers: DE, HL preferred over BC.
+// BC is last because B is needed for DJNZ (loop counter); keeping BC
+// free for 16-bit allocation lets B be used as an 8-bit loop counter.
+def GR16 : Z80Reg16Class<(add DE, HL, BC)>;
 
 // BC and DE only (for register scavenging temp in address computation)
-def GR16_BCDE : Z80Reg16Class<(add BC, DE)>;
+def GR16_BCDE : Z80Reg16Class<(add DE, BC)>;
 
-// 16-bit registers for PUSH/POP: BC, DE, HL, AF
-def GR16_AF : Z80Reg16Class<(add BC, DE, HL, AF)>;
+// 16-bit registers for PUSH/POP: DE, HL, BC, AF
+def GR16_AF : Z80Reg16Class<(add DE, HL, BC, AF)>;
 
-// 16-bit registers for ADD HL,rr: BC, DE, HL, SP
-def GR16_SP : Z80Reg16Class<(add BC, DE, HL, SP)>;
+// 16-bit registers for ADD HL,rr: DE, BC, HL, SP
+def GR16_SP : Z80Reg16Class<(add DE, BC, HL, SP)>;
 
 // 16-bit registers including SP (for LD rr,nn etc)
-def GR16_All : Z80Reg16Class<(add BC, DE, HL, SP)>;
+def GR16_All : Z80Reg16Class<(add DE, HL, BC, SP)>;
 
 // Index registers only
 def IR16 : Z80Reg16Class<(add IX, IY)>;
@@ -187,13 +189,13 @@ def IR16 : Z80Reg16Class<(add IX, IY)>;
 def HLI : Z80Reg16Class<(add HL, IX, IY)>;
 
 // Pointer registers (can hold addresses)
-def Ptr16 : Z80Reg16Class<(add BC, DE, HL, IX, IY, SP)>;
+def Ptr16 : Z80Reg16Class<(add DE, HL, BC, IX, IY, SP)>;
 
 // Stack pointer only
 def SPc : Z80Reg16Class<(add SP)>;
 
 // All 16-bit registers for PUSH/POP with indices
-def Push16 : Z80Reg16Class<(add BC, DE, HL, AF, IX, IY)>;
+def Push16 : Z80Reg16Class<(add DE, HL, BC, AF, IX, IY)>;
 
 //===----------------------------------------------------------------------===//
 //  Flag register classes
