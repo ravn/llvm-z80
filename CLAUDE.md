@@ -62,7 +62,11 @@ The Z80 has a rich set of special-purpose instructions that are far more compact
 - **LDIR/LDDR** — block copy (memcpy): (HL)→(DE), increment both, decrement BC, repeat. Replaces load/store/increment/branch loops.
 - **CPIR/CPDR** — block search/compare (memchr, memcmp): compare A with (HL), increment HL, decrement BC, repeat.
 - **Carry bit tricks** — RLCA/RLA to shift bit 7 into carry, BIT n to test single bits, SBC A,A to materialize carry as 0x00/0xFF. Avoids explicit comparisons.
-- **EX DE,HL** — swap two 16-bit pointers in 1 byte (vs 6 bytes of LD copies).
+- **Register exchange instructions** — Z80 has several atomic swap operations:
+  - **EX DE,HL** — swap DE↔HL in 1 byte (vs 6 bytes of LD copies). Note: modifies BOTH registers. Only safe when the "source" side is dead, otherwise use two LDs.
+  - **EXX** — swap BC↔BC', DE↔DE', HL↔HL' atomically (shadow register set). Effectively doubles register file for non-ISR code.
+  - **EX AF,AF'** — swap AF↔AF' (accumulator + flags).
+  - **EX (SP),HL/IX/IY** — exchange top-of-stack with register pair.
 - **CP (HL)** — compare A with memory pointed by HL directly (1 byte, no temp register needed).
 - **INC/DEC rr** — 16-bit increment/decrement in 1 byte.
 
