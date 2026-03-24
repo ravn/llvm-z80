@@ -58,6 +58,18 @@ public:
 
 } // namespace
 
+/// Map a conditional JR/JP to the corresponding conditional RET with
+/// INVERTED condition. E.g., JR_Z (skip RET) → RET_NZ.
+static unsigned invertBranchToCondRET(unsigned Opc) {
+  switch (Opc) {
+  case Z80::JR_Z_e:  case Z80::JP_Z_nn:  return Z80::RET_NZ;
+  case Z80::JR_NZ_e: case Z80::JP_NZ_nn: return Z80::RET_Z;
+  case Z80::JR_C_e:  case Z80::JP_C_nn:  return Z80::RET_NC;
+  case Z80::JR_NC_e: case Z80::JP_NC_nn: return Z80::RET_C;
+  default: return 0;
+  }
+}
+
 /// Invert a JR condition code to the corresponding JP condition code.
 /// JR_Z  → JP_NZ, JR_NZ → JP_Z, JR_C  → JP_NC, JR_NC → JP_C.
 /// Returns 0 if the opcode is not a conditional JR.
@@ -81,9 +93,79 @@ bool Z80BranchCleanup::runOnMachineFunction(MachineFunction &MF) {
   const auto *TII = STI.getInstrInfo();
   bool Changed = false;
 
-  // Collect trampoline blocks to remove after iteration.
+  // --- Conditional RET optimization ---
+  // Pattern: BB ends with JR/JP cond, skip; next BB is just RET.
+  // Replace with: RET !cond (inverted condition), remove the RET block.
+  // Saves 2 bytes: JR cond (2B) + RET (1B) = 3B → RET cond (1B).
   SmallVector<MachineBasicBlock *, 4> ToRemove;
 
+  for (auto MBI = MF.begin(), MBE = MF.end(); MBI != MBE; ++MBI) {
+    MachineBasicBlock &MBB = *MBI;
+    auto LastI = MBB.getLastNonDebugInstr();
+    if (LastI == MBB.end())
+      continue;
+
+    // Check if the last instruction is a conditional branch.
+    unsigned CondRETOpc = invertBranchToCondRET(LastI->getOpcode());
+    if (!CondRETOpc)
+      continue;
+
+    MachineBasicBlock *BranchTarget = LastI->getOperand(0).getMBB();
+
+    // The fallthrough successor must be a block containing only RET.
+    auto NextMBI = std::next(MBB.getIterator());
+    if (NextMBI == MBE)
+      continue;
+    MachineBasicBlock &FallMBB = *NextMBI;
+
+    // Check: does the fallthrough block contain only RET?
+    auto FallI = FallMBB.getFirstNonDebugInstr();
+    if (FallI == FallMBB.end())
+      continue;
+    if (FallI->getOpcode() != Z80::RET && FallI->getOpcode() != Z80::RETI)
+      continue;
+    if (FallMBB.getLastNonDebugInstr() != FallI)
+      continue; // more than one instruction
+
+    // The conditional branch must skip OVER the RET block to BranchTarget.
+    // So BranchTarget should be the block after FallMBB.
+    auto AfterFall = std::next(FallMBB.getIterator());
+    if (AfterFall == MBE || BranchTarget != &*AfterFall)
+      continue;
+
+    // Check: is the fallthrough block only reachable from this predecessor?
+    if (FallMBB.pred_size() != 1)
+      continue;
+
+    LLVM_DEBUG(dbgs() << "Z80BranchCleanup: conditional RET in "
+                      << printMBBReference(MBB) << "\n");
+
+    // Replace: JR cond, skip → RET !cond
+    bool IsRETI = FallI->getOpcode() == Z80::RETI;
+    DebugLoc DL = LastI->getDebugLoc();
+    LastI->eraseFromParent();
+    if (IsRETI) {
+      // No conditional RETI exists on Z80; keep the branch+RETI pattern.
+      continue;
+    }
+    BuildMI(MBB, MBB.end(), DL, TII->get(CondRETOpc));
+
+    // Update CFG: MBB no longer falls through to FallMBB.
+    MBB.removeSuccessor(&FallMBB);
+
+    // Remove RET instruction and mark block for removal.
+    FallI->eraseFromParent();
+    FallMBB.removeSuccessor(BranchTarget);
+    ToRemove.push_back(&FallMBB);
+    Changed = true;
+  }
+
+  // Remove empty blocks from conditional RET optimization.
+  for (MachineBasicBlock *MBB : ToRemove)
+    MBB->eraseFromParent();
+  ToRemove.clear();
+
+  // --- Trampoline collapsing ---
   for (auto MBI = MF.begin(), MBE = MF.end(); MBI != MBE; ++MBI) {
     // The entry block cannot be a trampoline.
     if (MBI == MF.begin())
