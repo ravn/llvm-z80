@@ -102,6 +102,10 @@ Z80RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   if (MF->getFunction().hasFnAttribute("interrupt")) {
     if (STI.hasSM83())
       return SM83_Interrupt_CSR_SaveList;
+    // With +shadow-regs, ISRs use EXX+EX AF,AF' for AF/BC/DE/HL save.
+    // Only IX/IY need explicit PUSH/POP.
+    if (STI.shadowRegs())
+      return Z80_Interrupt_EXX_CSR_SaveList;
     return Z80_Interrupt_CSR_SaveList;
   }
   if (STI.hasSM83())

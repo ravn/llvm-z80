@@ -143,6 +143,16 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
     BuildMI(MBB, MBBI, DL, TII.get(Z80::DI));
   }
 
+  // ISR with +shadow-regs: save AF/BC/DE/HL via EXX + EX AF,AF'.
+  // This replaces PUSH AF + PUSH BC + PUSH DE + PUSH HL (4 bytes → 2 bytes).
+  // Must be before any register use (including IX frame setup).
+  const auto &STI0 = MF.getSubtarget<Z80Subtarget>();
+  if (MF.getFunction().hasFnAttribute("interrupt") && STI0.shadowRegs() &&
+      STI0.hasZ80()) {
+    BuildMI(MBB, MBBI, DL, TII.get(Z80::EXX));
+    BuildMI(MBB, MBBI, DL, TII.get(Z80::EX_AF_AF));
+  }
+
   if (hasFP(MF)) {
     // --- Frame pointer mode (IX = frame pointer) ---
     bool NeedsFP = MFI.getNumFixedObjects() > 0 || MFI.isFrameAddressTaken() ||
@@ -348,6 +358,19 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
   if (MF.getFunction().hasFnAttribute("z80_critical") &&
       !MF.getFunction().hasFnAttribute("interrupt"))
     NeedsEI = true;
+
+  // ISR with +shadow-regs: restore AF/BC/DE/HL via EX AF,AF' + EXX
+  // before EI + RETI. Must be after all frame teardown (POP IX etc.)
+  // but before EI.
+  {
+    const auto &STI1 = MF.getSubtarget<Z80Subtarget>();
+    if (MF.getFunction().hasFnAttribute("interrupt") && STI1.shadowRegs() &&
+        STI1.hasZ80()) {
+      MachineBasicBlock::iterator RetI = MBB.getLastNonDebugInstr();
+      BuildMI(MBB, RetI, DL, TII.get(Z80::EX_AF_AF));
+      BuildMI(MBB, RetI, DL, TII.get(Z80::EXX));
+    }
+  }
 
   if (NeedsEI) {
     MachineBasicBlock::iterator RetI = MBB.getLastNonDebugInstr();

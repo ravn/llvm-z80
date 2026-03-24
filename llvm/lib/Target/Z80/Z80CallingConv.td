@@ -64,3 +64,7 @@ def Z80_CSR : CalleeSavedRegs<(add IX)>;
 
 // Interrupt handler saves all register pairs (push/pop only works on pairs)
 def Z80_Interrupt_CSR : CalleeSavedRegs<(add AF, BC, DE, HL, IX, IY)>;
+
+// Interrupt handler with +shadow-regs: AF/BC/DE/HL saved by EXX+EX AF,AF'
+// Only IX and IY need explicit PUSH/POP.
+def Z80_Interrupt_EXX_CSR : CalleeSavedRegs<(add IX, IY)>;

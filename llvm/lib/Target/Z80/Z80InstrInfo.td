@@ -84,8 +84,8 @@ def LD_nnind_SP : InstED24<"ld", 0x73, DirectMode> { let AsmString = "ld ( $imm 
 //===----------------------------------------------------------------------===//
 
 def EX_DE_HL : Inst8<"ex de,hl", 0xEB> { let Uses = [DE, HL]; let Defs = [DE, HL]; }
-def EX_AF_AF : Inst8<"ex af,af'", 0x08>;
-def EXX : Inst8<"exx", 0xD9>;
+def EX_AF_AF : Inst8<"ex af,af'", 0x08> { let Uses = [AF, AFp]; let Defs = [AF, AFp]; }
+def EXX : Inst8<"exx", 0xD9> { let Uses = [BC, DE, HL, BCp, DEp, HLp]; let Defs = [BC, DE, HL, BCp, DEp, HLp]; }
 let mayLoad = true, mayStore = true, hasSideEffects = false in
 def EX_SPind_HL : Inst8<"ex (sp),hl", 0xE3> { let Uses = [SP, HL]; let Defs = [HL]; }
 
