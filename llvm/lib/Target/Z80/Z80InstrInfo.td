@@ -558,6 +558,488 @@ let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
 } // Predicates = [HasZ80]
 
 //===----------------------------------------------------------------------===//
+//  Undocumented instructions (Z80 NMOS/CMOS only, NOT R800/eZ80)
+//===----------------------------------------------------------------------===//
+// Gated by FeatureUndocumented. These are real opcodes that work on all NMOS
+// and CMOS Z80 variants but are not officially documented by Zilog.
+
+//===----------------------------------------------------------------------===//
+//  SLL r (Shift Left Logical / "SL1") — CB 30-37
+//  Undocumented. Like SLA but shifts 1 into bit 0 instead of 0.
+//  result = (operand << 1) | 1, bit 7 → carry.
+//  On SM83, this opcode slot (CB 30-37) is the documented SWAP instruction.
+//===----------------------------------------------------------------------===//
+
+let Predicates = [HasZ80, HasUndocumented] in {
+
+def SLL_B : CBRotate<0b110, REG_B, "sll"> { let Defs = [B, FLAGS]; let Uses = [B]; }
+def SLL_C : CBRotate<0b110, REG_C, "sll"> { let Defs = [C, FLAGS]; let Uses = [C]; }
+def SLL_D : CBRotate<0b110, REG_D, "sll"> { let Defs = [D, FLAGS]; let Uses = [D]; }
+def SLL_E : CBRotate<0b110, REG_E, "sll"> { let Defs = [E, FLAGS]; let Uses = [E]; }
+def SLL_H : CBRotate<0b110, REG_H, "sll"> { let Defs = [H, FLAGS]; let Uses = [H]; }
+def SLL_L : CBRotate<0b110, REG_L, "sll"> { let Defs = [L, FLAGS]; let Uses = [L]; }
+let mayLoad = true, mayStore = true, hasSideEffects = false in
+def SLL_HLind : InstCB<"sll (hl)", 0x36> { let Uses = [HL]; let Defs = [FLAGS]; }
+def SLL_A : CBRotate<0b110, REG_A, "sll"> { let Defs = [A, FLAGS]; let Uses = [A]; }
+
+//===----------------------------------------------------------------------===//
+//  SLL (IX+d) / SLL (IY+d) — DD CB d 36 / FD CB d 36
+//  Undocumented indexed shift-left-logical.
+//===----------------------------------------------------------------------===//
+
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def SLL_IXd : InstDDCB<"sll", 0x36> { let Uses = [IX]; let Defs = [FLAGS]; }
+  def SLL_IYd : InstFDCB<"sll", 0x36> { let Uses = [IY]; let Defs = [FLAGS]; }
+}
+
+//===----------------------------------------------------------------------===//
+//  IN (C) — ED 70 — Input and discard, set flags only
+//  Reads port (C), discards value, sets flags based on input.
+//===----------------------------------------------------------------------===//
+
+def IN_F_C : InstED8<"in (c)", 0x70> { let Uses = [C]; let Defs = [FLAGS]; }
+
+//===----------------------------------------------------------------------===//
+//  OUT (C),0 — ED 71 — Output zero to port
+//  NMOS Z80 outputs 0x00, CMOS Z80 outputs 0xFF. Platform-dependent!
+//===----------------------------------------------------------------------===//
+
+def OUT_C_0 : InstED8<"out (c),0", 0x71> { let Uses = [C]; }
+
+//===----------------------------------------------------------------------===//
+//  DDCB/FDCB undocumented rotate/shift with register copy
+//  These perform the indexed operation AND copy the result to a register.
+//  Example: RLC (IX+d),B = DD CB d 00 — rotates (IX+d) left and copies to B.
+//  The "normal" form (register field = 110 = (HL)) is the documented version.
+//  All other register fields (000-101, 111) are undocumented variants.
+//===----------------------------------------------------------------------===//
+
+// Helper: indexed rotate/shift with register copy
+// These 4-byte instructions do: tmp = shift/rotate(mem[IX/IY+d]); mem = tmp; reg = tmp
+
+// --- RLC (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def RLC_IXd_B : InstDDCB<"rlc", 0x00> { let Uses = [IX]; let Defs = [B, FLAGS]; let AsmString = "rlc ( ix + $imm ), b"; }
+  def RLC_IXd_C : InstDDCB<"rlc", 0x01> { let Uses = [IX]; let Defs = [C, FLAGS]; let AsmString = "rlc ( ix + $imm ), c"; }
+  def RLC_IXd_D : InstDDCB<"rlc", 0x02> { let Uses = [IX]; let Defs = [D, FLAGS]; let AsmString = "rlc ( ix + $imm ), d"; }
+  def RLC_IXd_E : InstDDCB<"rlc", 0x03> { let Uses = [IX]; let Defs = [E, FLAGS]; let AsmString = "rlc ( ix + $imm ), e"; }
+  def RLC_IXd_H : InstDDCB<"rlc", 0x04> { let Uses = [IX]; let Defs = [H, FLAGS]; let AsmString = "rlc ( ix + $imm ), h"; }
+  def RLC_IXd_L : InstDDCB<"rlc", 0x05> { let Uses = [IX]; let Defs = [L, FLAGS]; let AsmString = "rlc ( ix + $imm ), l"; }
+  def RLC_IXd_A : InstDDCB<"rlc", 0x07> { let Uses = [IX]; let Defs = [A, FLAGS]; let AsmString = "rlc ( ix + $imm ), a"; }
+}
+
+// --- RRC (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def RRC_IXd_B : InstDDCB<"rrc", 0x08> { let Uses = [IX]; let Defs = [B, FLAGS]; let AsmString = "rrc ( ix + $imm ), b"; }
+  def RRC_IXd_C : InstDDCB<"rrc", 0x09> { let Uses = [IX]; let Defs = [C, FLAGS]; let AsmString = "rrc ( ix + $imm ), c"; }
+  def RRC_IXd_D : InstDDCB<"rrc", 0x0A> { let Uses = [IX]; let Defs = [D, FLAGS]; let AsmString = "rrc ( ix + $imm ), d"; }
+  def RRC_IXd_E : InstDDCB<"rrc", 0x0B> { let Uses = [IX]; let Defs = [E, FLAGS]; let AsmString = "rrc ( ix + $imm ), e"; }
+  def RRC_IXd_H : InstDDCB<"rrc", 0x0C> { let Uses = [IX]; let Defs = [H, FLAGS]; let AsmString = "rrc ( ix + $imm ), h"; }
+  def RRC_IXd_L : InstDDCB<"rrc", 0x0D> { let Uses = [IX]; let Defs = [L, FLAGS]; let AsmString = "rrc ( ix + $imm ), l"; }
+  def RRC_IXd_A : InstDDCB<"rrc", 0x0F> { let Uses = [IX]; let Defs = [A, FLAGS]; let AsmString = "rrc ( ix + $imm ), a"; }
+}
+
+// --- RL (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def RL_IXd_B : InstDDCB<"rl", 0x10> { let Uses = [IX, FLAGS]; let Defs = [B, FLAGS]; let AsmString = "rl ( ix + $imm ), b"; }
+  def RL_IXd_C : InstDDCB<"rl", 0x11> { let Uses = [IX, FLAGS]; let Defs = [C, FLAGS]; let AsmString = "rl ( ix + $imm ), c"; }
+  def RL_IXd_D : InstDDCB<"rl", 0x12> { let Uses = [IX, FLAGS]; let Defs = [D, FLAGS]; let AsmString = "rl ( ix + $imm ), d"; }
+  def RL_IXd_E : InstDDCB<"rl", 0x13> { let Uses = [IX, FLAGS]; let Defs = [E, FLAGS]; let AsmString = "rl ( ix + $imm ), e"; }
+  def RL_IXd_H : InstDDCB<"rl", 0x14> { let Uses = [IX, FLAGS]; let Defs = [H, FLAGS]; let AsmString = "rl ( ix + $imm ), h"; }
+  def RL_IXd_L : InstDDCB<"rl", 0x15> { let Uses = [IX, FLAGS]; let Defs = [L, FLAGS]; let AsmString = "rl ( ix + $imm ), l"; }
+  def RL_IXd_A : InstDDCB<"rl", 0x17> { let Uses = [IX, FLAGS]; let Defs = [A, FLAGS]; let AsmString = "rl ( ix + $imm ), a"; }
+}
+
+// --- RR (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def RR_IXd_B : InstDDCB<"rr", 0x18> { let Uses = [IX, FLAGS]; let Defs = [B, FLAGS]; let AsmString = "rr ( ix + $imm ), b"; }
+  def RR_IXd_C : InstDDCB<"rr", 0x19> { let Uses = [IX, FLAGS]; let Defs = [C, FLAGS]; let AsmString = "rr ( ix + $imm ), c"; }
+  def RR_IXd_D : InstDDCB<"rr", 0x1A> { let Uses = [IX, FLAGS]; let Defs = [D, FLAGS]; let AsmString = "rr ( ix + $imm ), d"; }
+  def RR_IXd_E : InstDDCB<"rr", 0x1B> { let Uses = [IX, FLAGS]; let Defs = [E, FLAGS]; let AsmString = "rr ( ix + $imm ), e"; }
+  def RR_IXd_H : InstDDCB<"rr", 0x1C> { let Uses = [IX, FLAGS]; let Defs = [H, FLAGS]; let AsmString = "rr ( ix + $imm ), h"; }
+  def RR_IXd_L : InstDDCB<"rr", 0x1D> { let Uses = [IX, FLAGS]; let Defs = [L, FLAGS]; let AsmString = "rr ( ix + $imm ), l"; }
+  def RR_IXd_A : InstDDCB<"rr", 0x1F> { let Uses = [IX, FLAGS]; let Defs = [A, FLAGS]; let AsmString = "rr ( ix + $imm ), a"; }
+}
+
+// --- SLA (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def SLA_IXd_B : InstDDCB<"sla", 0x20> { let Uses = [IX]; let Defs = [B, FLAGS]; let AsmString = "sla ( ix + $imm ), b"; }
+  def SLA_IXd_C : InstDDCB<"sla", 0x21> { let Uses = [IX]; let Defs = [C, FLAGS]; let AsmString = "sla ( ix + $imm ), c"; }
+  def SLA_IXd_D : InstDDCB<"sla", 0x22> { let Uses = [IX]; let Defs = [D, FLAGS]; let AsmString = "sla ( ix + $imm ), d"; }
+  def SLA_IXd_E : InstDDCB<"sla", 0x23> { let Uses = [IX]; let Defs = [E, FLAGS]; let AsmString = "sla ( ix + $imm ), e"; }
+  def SLA_IXd_H : InstDDCB<"sla", 0x24> { let Uses = [IX]; let Defs = [H, FLAGS]; let AsmString = "sla ( ix + $imm ), h"; }
+  def SLA_IXd_L : InstDDCB<"sla", 0x25> { let Uses = [IX]; let Defs = [L, FLAGS]; let AsmString = "sla ( ix + $imm ), l"; }
+  def SLA_IXd_A : InstDDCB<"sla", 0x27> { let Uses = [IX]; let Defs = [A, FLAGS]; let AsmString = "sla ( ix + $imm ), a"; }
+}
+
+// --- SRA (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def SRA_IXd_B : InstDDCB<"sra", 0x28> { let Uses = [IX]; let Defs = [B, FLAGS]; let AsmString = "sra ( ix + $imm ), b"; }
+  def SRA_IXd_C : InstDDCB<"sra", 0x29> { let Uses = [IX]; let Defs = [C, FLAGS]; let AsmString = "sra ( ix + $imm ), c"; }
+  def SRA_IXd_D : InstDDCB<"sra", 0x2A> { let Uses = [IX]; let Defs = [D, FLAGS]; let AsmString = "sra ( ix + $imm ), d"; }
+  def SRA_IXd_E : InstDDCB<"sra", 0x2B> { let Uses = [IX]; let Defs = [E, FLAGS]; let AsmString = "sra ( ix + $imm ), e"; }
+  def SRA_IXd_H : InstDDCB<"sra", 0x2C> { let Uses = [IX]; let Defs = [H, FLAGS]; let AsmString = "sra ( ix + $imm ), h"; }
+  def SRA_IXd_L : InstDDCB<"sra", 0x2D> { let Uses = [IX]; let Defs = [L, FLAGS]; let AsmString = "sra ( ix + $imm ), l"; }
+  def SRA_IXd_A : InstDDCB<"sra", 0x2F> { let Uses = [IX]; let Defs = [A, FLAGS]; let AsmString = "sra ( ix + $imm ), a"; }
+}
+
+// --- SLL (IX+d),r (undocumented shift + undocumented register copy) ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def SLL_IXd_B : InstDDCB<"sll", 0x30> { let Uses = [IX]; let Defs = [B, FLAGS]; let AsmString = "sll ( ix + $imm ), b"; }
+  def SLL_IXd_C : InstDDCB<"sll", 0x31> { let Uses = [IX]; let Defs = [C, FLAGS]; let AsmString = "sll ( ix + $imm ), c"; }
+  def SLL_IXd_D : InstDDCB<"sll", 0x32> { let Uses = [IX]; let Defs = [D, FLAGS]; let AsmString = "sll ( ix + $imm ), d"; }
+  def SLL_IXd_E : InstDDCB<"sll", 0x33> { let Uses = [IX]; let Defs = [E, FLAGS]; let AsmString = "sll ( ix + $imm ), e"; }
+  def SLL_IXd_H : InstDDCB<"sll", 0x34> { let Uses = [IX]; let Defs = [H, FLAGS]; let AsmString = "sll ( ix + $imm ), h"; }
+  def SLL_IXd_L : InstDDCB<"sll", 0x35> { let Uses = [IX]; let Defs = [L, FLAGS]; let AsmString = "sll ( ix + $imm ), l"; }
+  def SLL_IXd_A : InstDDCB<"sll", 0x37> { let Uses = [IX]; let Defs = [A, FLAGS]; let AsmString = "sll ( ix + $imm ), a"; }
+}
+
+// --- SRL (IX+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def SRL_IXd_B : InstDDCB<"srl", 0x38> { let Uses = [IX]; let Defs = [B, FLAGS]; let AsmString = "srl ( ix + $imm ), b"; }
+  def SRL_IXd_C : InstDDCB<"srl", 0x39> { let Uses = [IX]; let Defs = [C, FLAGS]; let AsmString = "srl ( ix + $imm ), c"; }
+  def SRL_IXd_D : InstDDCB<"srl", 0x3A> { let Uses = [IX]; let Defs = [D, FLAGS]; let AsmString = "srl ( ix + $imm ), d"; }
+  def SRL_IXd_E : InstDDCB<"srl", 0x3B> { let Uses = [IX]; let Defs = [E, FLAGS]; let AsmString = "srl ( ix + $imm ), e"; }
+  def SRL_IXd_H : InstDDCB<"srl", 0x3C> { let Uses = [IX]; let Defs = [H, FLAGS]; let AsmString = "srl ( ix + $imm ), h"; }
+  def SRL_IXd_L : InstDDCB<"srl", 0x3D> { let Uses = [IX]; let Defs = [L, FLAGS]; let AsmString = "srl ( ix + $imm ), l"; }
+  def SRL_IXd_A : InstDDCB<"srl", 0x3F> { let Uses = [IX]; let Defs = [A, FLAGS]; let AsmString = "srl ( ix + $imm ), a"; }
+}
+
+// --- RES b,(IX+d),r (indexed bit reset with register copy) ---
+// The documented RES b,(IX+d) uses register field 110 (already defined above).
+// These undocumented variants also copy the result to the specified register.
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  // RES 0,(IX+d),r
+  def RES_0_IXd_B : InstDDCB<"res 0,", 0x80> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 0, ( ix + $imm ), b"; }
+  def RES_0_IXd_C : InstDDCB<"res 0,", 0x81> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 0, ( ix + $imm ), c"; }
+  def RES_0_IXd_D : InstDDCB<"res 0,", 0x82> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 0, ( ix + $imm ), d"; }
+  def RES_0_IXd_E : InstDDCB<"res 0,", 0x83> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 0, ( ix + $imm ), e"; }
+  def RES_0_IXd_H : InstDDCB<"res 0,", 0x84> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 0, ( ix + $imm ), h"; }
+  def RES_0_IXd_L : InstDDCB<"res 0,", 0x85> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 0, ( ix + $imm ), l"; }
+  def RES_0_IXd_A : InstDDCB<"res 0,", 0x87> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 0, ( ix + $imm ), a"; }
+  // RES 1,(IX+d),r
+  def RES_1_IXd_B : InstDDCB<"res 1,", 0x88> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 1, ( ix + $imm ), b"; }
+  def RES_1_IXd_C : InstDDCB<"res 1,", 0x89> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 1, ( ix + $imm ), c"; }
+  def RES_1_IXd_D : InstDDCB<"res 1,", 0x8A> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 1, ( ix + $imm ), d"; }
+  def RES_1_IXd_E : InstDDCB<"res 1,", 0x8B> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 1, ( ix + $imm ), e"; }
+  def RES_1_IXd_H : InstDDCB<"res 1,", 0x8C> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 1, ( ix + $imm ), h"; }
+  def RES_1_IXd_L : InstDDCB<"res 1,", 0x8D> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 1, ( ix + $imm ), l"; }
+  def RES_1_IXd_A : InstDDCB<"res 1,", 0x8F> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 1, ( ix + $imm ), a"; }
+  // RES 2,(IX+d),r
+  def RES_2_IXd_B : InstDDCB<"res 2,", 0x90> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 2, ( ix + $imm ), b"; }
+  def RES_2_IXd_C : InstDDCB<"res 2,", 0x91> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 2, ( ix + $imm ), c"; }
+  def RES_2_IXd_D : InstDDCB<"res 2,", 0x92> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 2, ( ix + $imm ), d"; }
+  def RES_2_IXd_E : InstDDCB<"res 2,", 0x93> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 2, ( ix + $imm ), e"; }
+  def RES_2_IXd_H : InstDDCB<"res 2,", 0x94> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 2, ( ix + $imm ), h"; }
+  def RES_2_IXd_L : InstDDCB<"res 2,", 0x95> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 2, ( ix + $imm ), l"; }
+  def RES_2_IXd_A : InstDDCB<"res 2,", 0x97> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 2, ( ix + $imm ), a"; }
+  // RES 3,(IX+d),r
+  def RES_3_IXd_B : InstDDCB<"res 3,", 0x98> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 3, ( ix + $imm ), b"; }
+  def RES_3_IXd_C : InstDDCB<"res 3,", 0x99> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 3, ( ix + $imm ), c"; }
+  def RES_3_IXd_D : InstDDCB<"res 3,", 0x9A> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 3, ( ix + $imm ), d"; }
+  def RES_3_IXd_E : InstDDCB<"res 3,", 0x9B> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 3, ( ix + $imm ), e"; }
+  def RES_3_IXd_H : InstDDCB<"res 3,", 0x9C> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 3, ( ix + $imm ), h"; }
+  def RES_3_IXd_L : InstDDCB<"res 3,", 0x9D> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 3, ( ix + $imm ), l"; }
+  def RES_3_IXd_A : InstDDCB<"res 3,", 0x9F> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 3, ( ix + $imm ), a"; }
+  // RES 4,(IX+d),r
+  def RES_4_IXd_B : InstDDCB<"res 4,", 0xA0> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 4, ( ix + $imm ), b"; }
+  def RES_4_IXd_C : InstDDCB<"res 4,", 0xA1> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 4, ( ix + $imm ), c"; }
+  def RES_4_IXd_D : InstDDCB<"res 4,", 0xA2> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 4, ( ix + $imm ), d"; }
+  def RES_4_IXd_E : InstDDCB<"res 4,", 0xA3> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 4, ( ix + $imm ), e"; }
+  def RES_4_IXd_H : InstDDCB<"res 4,", 0xA4> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 4, ( ix + $imm ), h"; }
+  def RES_4_IXd_L : InstDDCB<"res 4,", 0xA5> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 4, ( ix + $imm ), l"; }
+  def RES_4_IXd_A : InstDDCB<"res 4,", 0xA7> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 4, ( ix + $imm ), a"; }
+  // RES 5,(IX+d),r
+  def RES_5_IXd_B : InstDDCB<"res 5,", 0xA8> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 5, ( ix + $imm ), b"; }
+  def RES_5_IXd_C : InstDDCB<"res 5,", 0xA9> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 5, ( ix + $imm ), c"; }
+  def RES_5_IXd_D : InstDDCB<"res 5,", 0xAA> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 5, ( ix + $imm ), d"; }
+  def RES_5_IXd_E : InstDDCB<"res 5,", 0xAB> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 5, ( ix + $imm ), e"; }
+  def RES_5_IXd_H : InstDDCB<"res 5,", 0xAC> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 5, ( ix + $imm ), h"; }
+  def RES_5_IXd_L : InstDDCB<"res 5,", 0xAD> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 5, ( ix + $imm ), l"; }
+  def RES_5_IXd_A : InstDDCB<"res 5,", 0xAF> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 5, ( ix + $imm ), a"; }
+  // RES 6,(IX+d),r
+  def RES_6_IXd_B : InstDDCB<"res 6,", 0xB0> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 6, ( ix + $imm ), b"; }
+  def RES_6_IXd_C : InstDDCB<"res 6,", 0xB1> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 6, ( ix + $imm ), c"; }
+  def RES_6_IXd_D : InstDDCB<"res 6,", 0xB2> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 6, ( ix + $imm ), d"; }
+  def RES_6_IXd_E : InstDDCB<"res 6,", 0xB3> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 6, ( ix + $imm ), e"; }
+  def RES_6_IXd_H : InstDDCB<"res 6,", 0xB4> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 6, ( ix + $imm ), h"; }
+  def RES_6_IXd_L : InstDDCB<"res 6,", 0xB5> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 6, ( ix + $imm ), l"; }
+  def RES_6_IXd_A : InstDDCB<"res 6,", 0xB7> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 6, ( ix + $imm ), a"; }
+  // RES 7,(IX+d),r
+  def RES_7_IXd_B : InstDDCB<"res 7,", 0xB8> { let Uses = [IX]; let Defs = [B]; let AsmString = "res 7, ( ix + $imm ), b"; }
+  def RES_7_IXd_C : InstDDCB<"res 7,", 0xB9> { let Uses = [IX]; let Defs = [C]; let AsmString = "res 7, ( ix + $imm ), c"; }
+  def RES_7_IXd_D : InstDDCB<"res 7,", 0xBA> { let Uses = [IX]; let Defs = [D]; let AsmString = "res 7, ( ix + $imm ), d"; }
+  def RES_7_IXd_E : InstDDCB<"res 7,", 0xBB> { let Uses = [IX]; let Defs = [E]; let AsmString = "res 7, ( ix + $imm ), e"; }
+  def RES_7_IXd_H : InstDDCB<"res 7,", 0xBC> { let Uses = [IX]; let Defs = [H]; let AsmString = "res 7, ( ix + $imm ), h"; }
+  def RES_7_IXd_L : InstDDCB<"res 7,", 0xBD> { let Uses = [IX]; let Defs = [L]; let AsmString = "res 7, ( ix + $imm ), l"; }
+  def RES_7_IXd_A : InstDDCB<"res 7,", 0xBF> { let Uses = [IX]; let Defs = [A]; let AsmString = "res 7, ( ix + $imm ), a"; }
+}
+
+// --- SET b,(IX+d),r (indexed bit set with register copy) ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  // SET 0,(IX+d),r
+  def SET_0_IXd_B : InstDDCB<"set 0,", 0xC0> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 0, ( ix + $imm ), b"; }
+  def SET_0_IXd_C : InstDDCB<"set 0,", 0xC1> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 0, ( ix + $imm ), c"; }
+  def SET_0_IXd_D : InstDDCB<"set 0,", 0xC2> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 0, ( ix + $imm ), d"; }
+  def SET_0_IXd_E : InstDDCB<"set 0,", 0xC3> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 0, ( ix + $imm ), e"; }
+  def SET_0_IXd_H : InstDDCB<"set 0,", 0xC4> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 0, ( ix + $imm ), h"; }
+  def SET_0_IXd_L : InstDDCB<"set 0,", 0xC5> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 0, ( ix + $imm ), l"; }
+  def SET_0_IXd_A : InstDDCB<"set 0,", 0xC7> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 0, ( ix + $imm ), a"; }
+  // SET 1,(IX+d),r
+  def SET_1_IXd_B : InstDDCB<"set 1,", 0xC8> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 1, ( ix + $imm ), b"; }
+  def SET_1_IXd_C : InstDDCB<"set 1,", 0xC9> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 1, ( ix + $imm ), c"; }
+  def SET_1_IXd_D : InstDDCB<"set 1,", 0xCA> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 1, ( ix + $imm ), d"; }
+  def SET_1_IXd_E : InstDDCB<"set 1,", 0xCB> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 1, ( ix + $imm ), e"; }
+  def SET_1_IXd_H : InstDDCB<"set 1,", 0xCC> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 1, ( ix + $imm ), h"; }
+  def SET_1_IXd_L : InstDDCB<"set 1,", 0xCD> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 1, ( ix + $imm ), l"; }
+  def SET_1_IXd_A : InstDDCB<"set 1,", 0xCF> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 1, ( ix + $imm ), a"; }
+  // SET 2,(IX+d),r
+  def SET_2_IXd_B : InstDDCB<"set 2,", 0xD0> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 2, ( ix + $imm ), b"; }
+  def SET_2_IXd_C : InstDDCB<"set 2,", 0xD1> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 2, ( ix + $imm ), c"; }
+  def SET_2_IXd_D : InstDDCB<"set 2,", 0xD2> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 2, ( ix + $imm ), d"; }
+  def SET_2_IXd_E : InstDDCB<"set 2,", 0xD3> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 2, ( ix + $imm ), e"; }
+  def SET_2_IXd_H : InstDDCB<"set 2,", 0xD4> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 2, ( ix + $imm ), h"; }
+  def SET_2_IXd_L : InstDDCB<"set 2,", 0xD5> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 2, ( ix + $imm ), l"; }
+  def SET_2_IXd_A : InstDDCB<"set 2,", 0xD7> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 2, ( ix + $imm ), a"; }
+  // SET 3,(IX+d),r
+  def SET_3_IXd_B : InstDDCB<"set 3,", 0xD8> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 3, ( ix + $imm ), b"; }
+  def SET_3_IXd_C : InstDDCB<"set 3,", 0xD9> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 3, ( ix + $imm ), c"; }
+  def SET_3_IXd_D : InstDDCB<"set 3,", 0xDA> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 3, ( ix + $imm ), d"; }
+  def SET_3_IXd_E : InstDDCB<"set 3,", 0xDB> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 3, ( ix + $imm ), e"; }
+  def SET_3_IXd_H : InstDDCB<"set 3,", 0xDC> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 3, ( ix + $imm ), h"; }
+  def SET_3_IXd_L : InstDDCB<"set 3,", 0xDD> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 3, ( ix + $imm ), l"; }
+  def SET_3_IXd_A : InstDDCB<"set 3,", 0xDF> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 3, ( ix + $imm ), a"; }
+  // SET 4,(IX+d),r
+  def SET_4_IXd_B : InstDDCB<"set 4,", 0xE0> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 4, ( ix + $imm ), b"; }
+  def SET_4_IXd_C : InstDDCB<"set 4,", 0xE1> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 4, ( ix + $imm ), c"; }
+  def SET_4_IXd_D : InstDDCB<"set 4,", 0xE2> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 4, ( ix + $imm ), d"; }
+  def SET_4_IXd_E : InstDDCB<"set 4,", 0xE3> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 4, ( ix + $imm ), e"; }
+  def SET_4_IXd_H : InstDDCB<"set 4,", 0xE4> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 4, ( ix + $imm ), h"; }
+  def SET_4_IXd_L : InstDDCB<"set 4,", 0xE5> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 4, ( ix + $imm ), l"; }
+  def SET_4_IXd_A : InstDDCB<"set 4,", 0xE7> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 4, ( ix + $imm ), a"; }
+  // SET 5,(IX+d),r
+  def SET_5_IXd_B : InstDDCB<"set 5,", 0xE8> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 5, ( ix + $imm ), b"; }
+  def SET_5_IXd_C : InstDDCB<"set 5,", 0xE9> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 5, ( ix + $imm ), c"; }
+  def SET_5_IXd_D : InstDDCB<"set 5,", 0xEA> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 5, ( ix + $imm ), d"; }
+  def SET_5_IXd_E : InstDDCB<"set 5,", 0xEB> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 5, ( ix + $imm ), e"; }
+  def SET_5_IXd_H : InstDDCB<"set 5,", 0xEC> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 5, ( ix + $imm ), h"; }
+  def SET_5_IXd_L : InstDDCB<"set 5,", 0xED> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 5, ( ix + $imm ), l"; }
+  def SET_5_IXd_A : InstDDCB<"set 5,", 0xEF> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 5, ( ix + $imm ), a"; }
+  // SET 6,(IX+d),r
+  def SET_6_IXd_B : InstDDCB<"set 6,", 0xF0> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 6, ( ix + $imm ), b"; }
+  def SET_6_IXd_C : InstDDCB<"set 6,", 0xF1> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 6, ( ix + $imm ), c"; }
+  def SET_6_IXd_D : InstDDCB<"set 6,", 0xF2> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 6, ( ix + $imm ), d"; }
+  def SET_6_IXd_E : InstDDCB<"set 6,", 0xF3> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 6, ( ix + $imm ), e"; }
+  def SET_6_IXd_H : InstDDCB<"set 6,", 0xF4> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 6, ( ix + $imm ), h"; }
+  def SET_6_IXd_L : InstDDCB<"set 6,", 0xF5> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 6, ( ix + $imm ), l"; }
+  def SET_6_IXd_A : InstDDCB<"set 6,", 0xF7> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 6, ( ix + $imm ), a"; }
+  // SET 7,(IX+d),r
+  def SET_7_IXd_B : InstDDCB<"set 7,", 0xF8> { let Uses = [IX]; let Defs = [B]; let AsmString = "set 7, ( ix + $imm ), b"; }
+  def SET_7_IXd_C : InstDDCB<"set 7,", 0xF9> { let Uses = [IX]; let Defs = [C]; let AsmString = "set 7, ( ix + $imm ), c"; }
+  def SET_7_IXd_D : InstDDCB<"set 7,", 0xFA> { let Uses = [IX]; let Defs = [D]; let AsmString = "set 7, ( ix + $imm ), d"; }
+  def SET_7_IXd_E : InstDDCB<"set 7,", 0xFB> { let Uses = [IX]; let Defs = [E]; let AsmString = "set 7, ( ix + $imm ), e"; }
+  def SET_7_IXd_H : InstDDCB<"set 7,", 0xFC> { let Uses = [IX]; let Defs = [H]; let AsmString = "set 7, ( ix + $imm ), h"; }
+  def SET_7_IXd_L : InstDDCB<"set 7,", 0xFD> { let Uses = [IX]; let Defs = [L]; let AsmString = "set 7, ( ix + $imm ), l"; }
+  def SET_7_IXd_A : InstDDCB<"set 7,", 0xFF> { let Uses = [IX]; let Defs = [A]; let AsmString = "set 7, ( ix + $imm ), a"; }
+}
+
+} // Predicates = [HasZ80, HasUndocumented]
+
+// Now the IY equivalents (FDCB prefix) — same structure, different prefix register
+
+let Predicates = [HasZ80, HasUndocumented] in {
+
+// --- Rotate/Shift (IY+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  // RLC (IY+d),r
+  def RLC_IYd_B : InstFDCB<"rlc", 0x00> { let Uses = [IY]; let Defs = [B, FLAGS]; let AsmString = "rlc ( iy + $imm ), b"; }
+  def RLC_IYd_C : InstFDCB<"rlc", 0x01> { let Uses = [IY]; let Defs = [C, FLAGS]; let AsmString = "rlc ( iy + $imm ), c"; }
+  def RLC_IYd_D : InstFDCB<"rlc", 0x02> { let Uses = [IY]; let Defs = [D, FLAGS]; let AsmString = "rlc ( iy + $imm ), d"; }
+  def RLC_IYd_E : InstFDCB<"rlc", 0x03> { let Uses = [IY]; let Defs = [E, FLAGS]; let AsmString = "rlc ( iy + $imm ), e"; }
+  def RLC_IYd_H : InstFDCB<"rlc", 0x04> { let Uses = [IY]; let Defs = [H, FLAGS]; let AsmString = "rlc ( iy + $imm ), h"; }
+  def RLC_IYd_L : InstFDCB<"rlc", 0x05> { let Uses = [IY]; let Defs = [L, FLAGS]; let AsmString = "rlc ( iy + $imm ), l"; }
+  def RLC_IYd_A : InstFDCB<"rlc", 0x07> { let Uses = [IY]; let Defs = [A, FLAGS]; let AsmString = "rlc ( iy + $imm ), a"; }
+  // RRC (IY+d),r
+  def RRC_IYd_B : InstFDCB<"rrc", 0x08> { let Uses = [IY]; let Defs = [B, FLAGS]; let AsmString = "rrc ( iy + $imm ), b"; }
+  def RRC_IYd_C : InstFDCB<"rrc", 0x09> { let Uses = [IY]; let Defs = [C, FLAGS]; let AsmString = "rrc ( iy + $imm ), c"; }
+  def RRC_IYd_D : InstFDCB<"rrc", 0x0A> { let Uses = [IY]; let Defs = [D, FLAGS]; let AsmString = "rrc ( iy + $imm ), d"; }
+  def RRC_IYd_E : InstFDCB<"rrc", 0x0B> { let Uses = [IY]; let Defs = [E, FLAGS]; let AsmString = "rrc ( iy + $imm ), e"; }
+  def RRC_IYd_H : InstFDCB<"rrc", 0x0C> { let Uses = [IY]; let Defs = [H, FLAGS]; let AsmString = "rrc ( iy + $imm ), h"; }
+  def RRC_IYd_L : InstFDCB<"rrc", 0x0D> { let Uses = [IY]; let Defs = [L, FLAGS]; let AsmString = "rrc ( iy + $imm ), l"; }
+  def RRC_IYd_A : InstFDCB<"rrc", 0x0F> { let Uses = [IY]; let Defs = [A, FLAGS]; let AsmString = "rrc ( iy + $imm ), a"; }
+  // RL (IY+d),r
+  def RL_IYd_B : InstFDCB<"rl", 0x10> { let Uses = [IY, FLAGS]; let Defs = [B, FLAGS]; let AsmString = "rl ( iy + $imm ), b"; }
+  def RL_IYd_C : InstFDCB<"rl", 0x11> { let Uses = [IY, FLAGS]; let Defs = [C, FLAGS]; let AsmString = "rl ( iy + $imm ), c"; }
+  def RL_IYd_D : InstFDCB<"rl", 0x12> { let Uses = [IY, FLAGS]; let Defs = [D, FLAGS]; let AsmString = "rl ( iy + $imm ), d"; }
+  def RL_IYd_E : InstFDCB<"rl", 0x13> { let Uses = [IY, FLAGS]; let Defs = [E, FLAGS]; let AsmString = "rl ( iy + $imm ), e"; }
+  def RL_IYd_H : InstFDCB<"rl", 0x14> { let Uses = [IY, FLAGS]; let Defs = [H, FLAGS]; let AsmString = "rl ( iy + $imm ), h"; }
+  def RL_IYd_L : InstFDCB<"rl", 0x15> { let Uses = [IY, FLAGS]; let Defs = [L, FLAGS]; let AsmString = "rl ( iy + $imm ), l"; }
+  def RL_IYd_A : InstFDCB<"rl", 0x17> { let Uses = [IY, FLAGS]; let Defs = [A, FLAGS]; let AsmString = "rl ( iy + $imm ), a"; }
+  // RR (IY+d),r
+  def RR_IYd_B : InstFDCB<"rr", 0x18> { let Uses = [IY, FLAGS]; let Defs = [B, FLAGS]; let AsmString = "rr ( iy + $imm ), b"; }
+  def RR_IYd_C : InstFDCB<"rr", 0x19> { let Uses = [IY, FLAGS]; let Defs = [C, FLAGS]; let AsmString = "rr ( iy + $imm ), c"; }
+  def RR_IYd_D : InstFDCB<"rr", 0x1A> { let Uses = [IY, FLAGS]; let Defs = [D, FLAGS]; let AsmString = "rr ( iy + $imm ), d"; }
+  def RR_IYd_E : InstFDCB<"rr", 0x1B> { let Uses = [IY, FLAGS]; let Defs = [E, FLAGS]; let AsmString = "rr ( iy + $imm ), e"; }
+  def RR_IYd_H : InstFDCB<"rr", 0x1C> { let Uses = [IY, FLAGS]; let Defs = [H, FLAGS]; let AsmString = "rr ( iy + $imm ), h"; }
+  def RR_IYd_L : InstFDCB<"rr", 0x1D> { let Uses = [IY, FLAGS]; let Defs = [L, FLAGS]; let AsmString = "rr ( iy + $imm ), l"; }
+  def RR_IYd_A : InstFDCB<"rr", 0x1F> { let Uses = [IY, FLAGS]; let Defs = [A, FLAGS]; let AsmString = "rr ( iy + $imm ), a"; }
+  // SLA (IY+d),r
+  def SLA_IYd_B : InstFDCB<"sla", 0x20> { let Uses = [IY]; let Defs = [B, FLAGS]; let AsmString = "sla ( iy + $imm ), b"; }
+  def SLA_IYd_C : InstFDCB<"sla", 0x21> { let Uses = [IY]; let Defs = [C, FLAGS]; let AsmString = "sla ( iy + $imm ), c"; }
+  def SLA_IYd_D : InstFDCB<"sla", 0x22> { let Uses = [IY]; let Defs = [D, FLAGS]; let AsmString = "sla ( iy + $imm ), d"; }
+  def SLA_IYd_E : InstFDCB<"sla", 0x23> { let Uses = [IY]; let Defs = [E, FLAGS]; let AsmString = "sla ( iy + $imm ), e"; }
+  def SLA_IYd_H : InstFDCB<"sla", 0x24> { let Uses = [IY]; let Defs = [H, FLAGS]; let AsmString = "sla ( iy + $imm ), h"; }
+  def SLA_IYd_L : InstFDCB<"sla", 0x25> { let Uses = [IY]; let Defs = [L, FLAGS]; let AsmString = "sla ( iy + $imm ), l"; }
+  def SLA_IYd_A : InstFDCB<"sla", 0x27> { let Uses = [IY]; let Defs = [A, FLAGS]; let AsmString = "sla ( iy + $imm ), a"; }
+  // SRA (IY+d),r
+  def SRA_IYd_B : InstFDCB<"sra", 0x28> { let Uses = [IY]; let Defs = [B, FLAGS]; let AsmString = "sra ( iy + $imm ), b"; }
+  def SRA_IYd_C : InstFDCB<"sra", 0x29> { let Uses = [IY]; let Defs = [C, FLAGS]; let AsmString = "sra ( iy + $imm ), c"; }
+  def SRA_IYd_D : InstFDCB<"sra", 0x2A> { let Uses = [IY]; let Defs = [D, FLAGS]; let AsmString = "sra ( iy + $imm ), d"; }
+  def SRA_IYd_E : InstFDCB<"sra", 0x2B> { let Uses = [IY]; let Defs = [E, FLAGS]; let AsmString = "sra ( iy + $imm ), e"; }
+  def SRA_IYd_H : InstFDCB<"sra", 0x2C> { let Uses = [IY]; let Defs = [H, FLAGS]; let AsmString = "sra ( iy + $imm ), h"; }
+  def SRA_IYd_L : InstFDCB<"sra", 0x2D> { let Uses = [IY]; let Defs = [L, FLAGS]; let AsmString = "sra ( iy + $imm ), l"; }
+  def SRA_IYd_A : InstFDCB<"sra", 0x2F> { let Uses = [IY]; let Defs = [A, FLAGS]; let AsmString = "sra ( iy + $imm ), a"; }
+  // SLL (IY+d),r
+  def SLL_IYd_B : InstFDCB<"sll", 0x30> { let Uses = [IY]; let Defs = [B, FLAGS]; let AsmString = "sll ( iy + $imm ), b"; }
+  def SLL_IYd_C : InstFDCB<"sll", 0x31> { let Uses = [IY]; let Defs = [C, FLAGS]; let AsmString = "sll ( iy + $imm ), c"; }
+  def SLL_IYd_D : InstFDCB<"sll", 0x32> { let Uses = [IY]; let Defs = [D, FLAGS]; let AsmString = "sll ( iy + $imm ), d"; }
+  def SLL_IYd_E : InstFDCB<"sll", 0x33> { let Uses = [IY]; let Defs = [E, FLAGS]; let AsmString = "sll ( iy + $imm ), e"; }
+  def SLL_IYd_H : InstFDCB<"sll", 0x34> { let Uses = [IY]; let Defs = [H, FLAGS]; let AsmString = "sll ( iy + $imm ), h"; }
+  def SLL_IYd_L : InstFDCB<"sll", 0x35> { let Uses = [IY]; let Defs = [L, FLAGS]; let AsmString = "sll ( iy + $imm ), l"; }
+  def SLL_IYd_A : InstFDCB<"sll", 0x37> { let Uses = [IY]; let Defs = [A, FLAGS]; let AsmString = "sll ( iy + $imm ), a"; }
+  // SRL (IY+d),r
+  def SRL_IYd_B : InstFDCB<"srl", 0x38> { let Uses = [IY]; let Defs = [B, FLAGS]; let AsmString = "srl ( iy + $imm ), b"; }
+  def SRL_IYd_C : InstFDCB<"srl", 0x39> { let Uses = [IY]; let Defs = [C, FLAGS]; let AsmString = "srl ( iy + $imm ), c"; }
+  def SRL_IYd_D : InstFDCB<"srl", 0x3A> { let Uses = [IY]; let Defs = [D, FLAGS]; let AsmString = "srl ( iy + $imm ), d"; }
+  def SRL_IYd_E : InstFDCB<"srl", 0x3B> { let Uses = [IY]; let Defs = [E, FLAGS]; let AsmString = "srl ( iy + $imm ), e"; }
+  def SRL_IYd_H : InstFDCB<"srl", 0x3C> { let Uses = [IY]; let Defs = [H, FLAGS]; let AsmString = "srl ( iy + $imm ), h"; }
+  def SRL_IYd_L : InstFDCB<"srl", 0x3D> { let Uses = [IY]; let Defs = [L, FLAGS]; let AsmString = "srl ( iy + $imm ), l"; }
+  def SRL_IYd_A : InstFDCB<"srl", 0x3F> { let Uses = [IY]; let Defs = [A, FLAGS]; let AsmString = "srl ( iy + $imm ), a"; }
+}
+
+// --- RES b,(IY+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def RES_0_IYd_B : InstFDCB<"res 0,", 0x80> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 0, ( iy + $imm ), b"; }
+  def RES_0_IYd_C : InstFDCB<"res 0,", 0x81> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 0, ( iy + $imm ), c"; }
+  def RES_0_IYd_D : InstFDCB<"res 0,", 0x82> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 0, ( iy + $imm ), d"; }
+  def RES_0_IYd_E : InstFDCB<"res 0,", 0x83> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 0, ( iy + $imm ), e"; }
+  def RES_0_IYd_H : InstFDCB<"res 0,", 0x84> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 0, ( iy + $imm ), h"; }
+  def RES_0_IYd_L : InstFDCB<"res 0,", 0x85> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 0, ( iy + $imm ), l"; }
+  def RES_0_IYd_A : InstFDCB<"res 0,", 0x87> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 0, ( iy + $imm ), a"; }
+  def RES_1_IYd_B : InstFDCB<"res 1,", 0x88> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 1, ( iy + $imm ), b"; }
+  def RES_1_IYd_C : InstFDCB<"res 1,", 0x89> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 1, ( iy + $imm ), c"; }
+  def RES_1_IYd_D : InstFDCB<"res 1,", 0x8A> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 1, ( iy + $imm ), d"; }
+  def RES_1_IYd_E : InstFDCB<"res 1,", 0x8B> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 1, ( iy + $imm ), e"; }
+  def RES_1_IYd_H : InstFDCB<"res 1,", 0x8C> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 1, ( iy + $imm ), h"; }
+  def RES_1_IYd_L : InstFDCB<"res 1,", 0x8D> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 1, ( iy + $imm ), l"; }
+  def RES_1_IYd_A : InstFDCB<"res 1,", 0x8F> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 1, ( iy + $imm ), a"; }
+  def RES_2_IYd_B : InstFDCB<"res 2,", 0x90> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 2, ( iy + $imm ), b"; }
+  def RES_2_IYd_C : InstFDCB<"res 2,", 0x91> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 2, ( iy + $imm ), c"; }
+  def RES_2_IYd_D : InstFDCB<"res 2,", 0x92> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 2, ( iy + $imm ), d"; }
+  def RES_2_IYd_E : InstFDCB<"res 2,", 0x93> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 2, ( iy + $imm ), e"; }
+  def RES_2_IYd_H : InstFDCB<"res 2,", 0x94> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 2, ( iy + $imm ), h"; }
+  def RES_2_IYd_L : InstFDCB<"res 2,", 0x95> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 2, ( iy + $imm ), l"; }
+  def RES_2_IYd_A : InstFDCB<"res 2,", 0x97> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 2, ( iy + $imm ), a"; }
+  def RES_3_IYd_B : InstFDCB<"res 3,", 0x98> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 3, ( iy + $imm ), b"; }
+  def RES_3_IYd_C : InstFDCB<"res 3,", 0x99> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 3, ( iy + $imm ), c"; }
+  def RES_3_IYd_D : InstFDCB<"res 3,", 0x9A> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 3, ( iy + $imm ), d"; }
+  def RES_3_IYd_E : InstFDCB<"res 3,", 0x9B> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 3, ( iy + $imm ), e"; }
+  def RES_3_IYd_H : InstFDCB<"res 3,", 0x9C> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 3, ( iy + $imm ), h"; }
+  def RES_3_IYd_L : InstFDCB<"res 3,", 0x9D> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 3, ( iy + $imm ), l"; }
+  def RES_3_IYd_A : InstFDCB<"res 3,", 0x9F> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 3, ( iy + $imm ), a"; }
+  def RES_4_IYd_B : InstFDCB<"res 4,", 0xA0> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 4, ( iy + $imm ), b"; }
+  def RES_4_IYd_C : InstFDCB<"res 4,", 0xA1> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 4, ( iy + $imm ), c"; }
+  def RES_4_IYd_D : InstFDCB<"res 4,", 0xA2> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 4, ( iy + $imm ), d"; }
+  def RES_4_IYd_E : InstFDCB<"res 4,", 0xA3> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 4, ( iy + $imm ), e"; }
+  def RES_4_IYd_H : InstFDCB<"res 4,", 0xA4> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 4, ( iy + $imm ), h"; }
+  def RES_4_IYd_L : InstFDCB<"res 4,", 0xA5> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 4, ( iy + $imm ), l"; }
+  def RES_4_IYd_A : InstFDCB<"res 4,", 0xA7> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 4, ( iy + $imm ), a"; }
+  def RES_5_IYd_B : InstFDCB<"res 5,", 0xA8> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 5, ( iy + $imm ), b"; }
+  def RES_5_IYd_C : InstFDCB<"res 5,", 0xA9> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 5, ( iy + $imm ), c"; }
+  def RES_5_IYd_D : InstFDCB<"res 5,", 0xAA> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 5, ( iy + $imm ), d"; }
+  def RES_5_IYd_E : InstFDCB<"res 5,", 0xAB> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 5, ( iy + $imm ), e"; }
+  def RES_5_IYd_H : InstFDCB<"res 5,", 0xAC> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 5, ( iy + $imm ), h"; }
+  def RES_5_IYd_L : InstFDCB<"res 5,", 0xAD> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 5, ( iy + $imm ), l"; }
+  def RES_5_IYd_A : InstFDCB<"res 5,", 0xAF> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 5, ( iy + $imm ), a"; }
+  def RES_6_IYd_B : InstFDCB<"res 6,", 0xB0> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 6, ( iy + $imm ), b"; }
+  def RES_6_IYd_C : InstFDCB<"res 6,", 0xB1> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 6, ( iy + $imm ), c"; }
+  def RES_6_IYd_D : InstFDCB<"res 6,", 0xB2> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 6, ( iy + $imm ), d"; }
+  def RES_6_IYd_E : InstFDCB<"res 6,", 0xB3> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 6, ( iy + $imm ), e"; }
+  def RES_6_IYd_H : InstFDCB<"res 6,", 0xB4> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 6, ( iy + $imm ), h"; }
+  def RES_6_IYd_L : InstFDCB<"res 6,", 0xB5> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 6, ( iy + $imm ), l"; }
+  def RES_6_IYd_A : InstFDCB<"res 6,", 0xB7> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 6, ( iy + $imm ), a"; }
+  def RES_7_IYd_B : InstFDCB<"res 7,", 0xB8> { let Uses = [IY]; let Defs = [B]; let AsmString = "res 7, ( iy + $imm ), b"; }
+  def RES_7_IYd_C : InstFDCB<"res 7,", 0xB9> { let Uses = [IY]; let Defs = [C]; let AsmString = "res 7, ( iy + $imm ), c"; }
+  def RES_7_IYd_D : InstFDCB<"res 7,", 0xBA> { let Uses = [IY]; let Defs = [D]; let AsmString = "res 7, ( iy + $imm ), d"; }
+  def RES_7_IYd_E : InstFDCB<"res 7,", 0xBB> { let Uses = [IY]; let Defs = [E]; let AsmString = "res 7, ( iy + $imm ), e"; }
+  def RES_7_IYd_H : InstFDCB<"res 7,", 0xBC> { let Uses = [IY]; let Defs = [H]; let AsmString = "res 7, ( iy + $imm ), h"; }
+  def RES_7_IYd_L : InstFDCB<"res 7,", 0xBD> { let Uses = [IY]; let Defs = [L]; let AsmString = "res 7, ( iy + $imm ), l"; }
+  def RES_7_IYd_A : InstFDCB<"res 7,", 0xBF> { let Uses = [IY]; let Defs = [A]; let AsmString = "res 7, ( iy + $imm ), a"; }
+}
+
+// --- SET b,(IY+d),r ---
+let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
+  def SET_0_IYd_B : InstFDCB<"set 0,", 0xC0> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 0, ( iy + $imm ), b"; }
+  def SET_0_IYd_C : InstFDCB<"set 0,", 0xC1> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 0, ( iy + $imm ), c"; }
+  def SET_0_IYd_D : InstFDCB<"set 0,", 0xC2> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 0, ( iy + $imm ), d"; }
+  def SET_0_IYd_E : InstFDCB<"set 0,", 0xC3> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 0, ( iy + $imm ), e"; }
+  def SET_0_IYd_H : InstFDCB<"set 0,", 0xC4> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 0, ( iy + $imm ), h"; }
+  def SET_0_IYd_L : InstFDCB<"set 0,", 0xC5> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 0, ( iy + $imm ), l"; }
+  def SET_0_IYd_A : InstFDCB<"set 0,", 0xC7> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 0, ( iy + $imm ), a"; }
+  def SET_1_IYd_B : InstFDCB<"set 1,", 0xC8> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 1, ( iy + $imm ), b"; }
+  def SET_1_IYd_C : InstFDCB<"set 1,", 0xC9> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 1, ( iy + $imm ), c"; }
+  def SET_1_IYd_D : InstFDCB<"set 1,", 0xCA> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 1, ( iy + $imm ), d"; }
+  def SET_1_IYd_E : InstFDCB<"set 1,", 0xCB> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 1, ( iy + $imm ), e"; }
+  def SET_1_IYd_H : InstFDCB<"set 1,", 0xCC> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 1, ( iy + $imm ), h"; }
+  def SET_1_IYd_L : InstFDCB<"set 1,", 0xCD> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 1, ( iy + $imm ), l"; }
+  def SET_1_IYd_A : InstFDCB<"set 1,", 0xCF> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 1, ( iy + $imm ), a"; }
+  def SET_2_IYd_B : InstFDCB<"set 2,", 0xD0> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 2, ( iy + $imm ), b"; }
+  def SET_2_IYd_C : InstFDCB<"set 2,", 0xD1> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 2, ( iy + $imm ), c"; }
+  def SET_2_IYd_D : InstFDCB<"set 2,", 0xD2> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 2, ( iy + $imm ), d"; }
+  def SET_2_IYd_E : InstFDCB<"set 2,", 0xD3> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 2, ( iy + $imm ), e"; }
+  def SET_2_IYd_H : InstFDCB<"set 2,", 0xD4> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 2, ( iy + $imm ), h"; }
+  def SET_2_IYd_L : InstFDCB<"set 2,", 0xD5> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 2, ( iy + $imm ), l"; }
+  def SET_2_IYd_A : InstFDCB<"set 2,", 0xD7> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 2, ( iy + $imm ), a"; }
+  def SET_3_IYd_B : InstFDCB<"set 3,", 0xD8> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 3, ( iy + $imm ), b"; }
+  def SET_3_IYd_C : InstFDCB<"set 3,", 0xD9> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 3, ( iy + $imm ), c"; }
+  def SET_3_IYd_D : InstFDCB<"set 3,", 0xDA> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 3, ( iy + $imm ), d"; }
+  def SET_3_IYd_E : InstFDCB<"set 3,", 0xDB> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 3, ( iy + $imm ), e"; }
+  def SET_3_IYd_H : InstFDCB<"set 3,", 0xDC> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 3, ( iy + $imm ), h"; }
+  def SET_3_IYd_L : InstFDCB<"set 3,", 0xDD> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 3, ( iy + $imm ), l"; }
+  def SET_3_IYd_A : InstFDCB<"set 3,", 0xDF> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 3, ( iy + $imm ), a"; }
+  def SET_4_IYd_B : InstFDCB<"set 4,", 0xE0> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 4, ( iy + $imm ), b"; }
+  def SET_4_IYd_C : InstFDCB<"set 4,", 0xE1> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 4, ( iy + $imm ), c"; }
+  def SET_4_IYd_D : InstFDCB<"set 4,", 0xE2> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 4, ( iy + $imm ), d"; }
+  def SET_4_IYd_E : InstFDCB<"set 4,", 0xE3> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 4, ( iy + $imm ), e"; }
+  def SET_4_IYd_H : InstFDCB<"set 4,", 0xE4> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 4, ( iy + $imm ), h"; }
+  def SET_4_IYd_L : InstFDCB<"set 4,", 0xE5> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 4, ( iy + $imm ), l"; }
+  def SET_4_IYd_A : InstFDCB<"set 4,", 0xE7> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 4, ( iy + $imm ), a"; }
+  def SET_5_IYd_B : InstFDCB<"set 5,", 0xE8> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 5, ( iy + $imm ), b"; }
+  def SET_5_IYd_C : InstFDCB<"set 5,", 0xE9> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 5, ( iy + $imm ), c"; }
+  def SET_5_IYd_D : InstFDCB<"set 5,", 0xEA> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 5, ( iy + $imm ), d"; }
+  def SET_5_IYd_E : InstFDCB<"set 5,", 0xEB> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 5, ( iy + $imm ), e"; }
+  def SET_5_IYd_H : InstFDCB<"set 5,", 0xEC> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 5, ( iy + $imm ), h"; }
+  def SET_5_IYd_L : InstFDCB<"set 5,", 0xED> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 5, ( iy + $imm ), l"; }
+  def SET_5_IYd_A : InstFDCB<"set 5,", 0xEF> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 5, ( iy + $imm ), a"; }
+  def SET_6_IYd_B : InstFDCB<"set 6,", 0xF0> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 6, ( iy + $imm ), b"; }
+  def SET_6_IYd_C : InstFDCB<"set 6,", 0xF1> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 6, ( iy + $imm ), c"; }
+  def SET_6_IYd_D : InstFDCB<"set 6,", 0xF2> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 6, ( iy + $imm ), d"; }
+  def SET_6_IYd_E : InstFDCB<"set 6,", 0xF3> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 6, ( iy + $imm ), e"; }
+  def SET_6_IYd_H : InstFDCB<"set 6,", 0xF4> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 6, ( iy + $imm ), h"; }
+  def SET_6_IYd_L : InstFDCB<"set 6,", 0xF5> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 6, ( iy + $imm ), l"; }
+  def SET_6_IYd_A : InstFDCB<"set 6,", 0xF7> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 6, ( iy + $imm ), a"; }
+  def SET_7_IYd_B : InstFDCB<"set 7,", 0xF8> { let Uses = [IY]; let Defs = [B]; let AsmString = "set 7, ( iy + $imm ), b"; }
+  def SET_7_IYd_C : InstFDCB<"set 7,", 0xF9> { let Uses = [IY]; let Defs = [C]; let AsmString = "set 7, ( iy + $imm ), c"; }
+  def SET_7_IYd_D : InstFDCB<"set 7,", 0xFA> { let Uses = [IY]; let Defs = [D]; let AsmString = "set 7, ( iy + $imm ), d"; }
+  def SET_7_IYd_E : InstFDCB<"set 7,", 0xFB> { let Uses = [IY]; let Defs = [E]; let AsmString = "set 7, ( iy + $imm ), e"; }
+  def SET_7_IYd_H : InstFDCB<"set 7,", 0xFC> { let Uses = [IY]; let Defs = [H]; let AsmString = "set 7, ( iy + $imm ), h"; }
+  def SET_7_IYd_L : InstFDCB<"set 7,", 0xFD> { let Uses = [IY]; let Defs = [L]; let AsmString = "set 7, ( iy + $imm ), l"; }
+  def SET_7_IYd_A : InstFDCB<"set 7,", 0xFF> { let Uses = [IY]; let Defs = [A]; let AsmString = "set 7, ( iy + $imm ), a"; }
+}
+
+} // Predicates = [HasZ80, HasUndocumented]
+
+//===----------------------------------------------------------------------===//
 //  Undocumented IXH/IXL/IYH/IYL 8-bit Instructions (DD/FD prefixed)
 //===----------------------------------------------------------------------===//
 // These are real opcodes on NMOS and CMOS Z80 but not officially documented
