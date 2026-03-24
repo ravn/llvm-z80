@@ -68,6 +68,7 @@ The Z80 has a rich set of special-purpose instructions that are far more compact
   - **EX AF,AF'** — swap AF↔AF' (accumulator + flags).
   - **EX (SP),HL/IX/IY** — exchange top-of-stack with register pair.
 - **CP (HL)** — compare A with memory pointed by HL directly (1 byte, no temp register needed).
+- **ADD HL,HL** — 16-bit left shift by 1 in 1 byte (11T). For multi-bit shifts, cheaper than SLA L; RL H (4 bytes). Enables byte-swap + left-shift for efficient 16-bit right shifts by 5-7.
 - **INC/DEC rr** — 16-bit increment/decrement in 1 byte.
 
 The approach: when implementing optimizations, start from "what does this Z80 instruction need?" and work backwards through register allocation and instruction selection to create those conditions, rather than starting from "what generic LLVM ops does this C code produce?" and trying to pattern-match forward.
