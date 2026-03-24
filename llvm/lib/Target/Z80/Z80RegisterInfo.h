@@ -60,6 +60,12 @@ public:
 
   Register getFrameRegister(const MachineFunction &MF) const override;
 
+  bool getRegAllocationHints(Register VirtReg, ArrayRef<MCPhysReg> Order,
+                             SmallVectorImpl<MCPhysReg> &Hints,
+                             const MachineFunction &MF,
+                             const VirtRegMap *VRM = nullptr,
+                             const LiveRegMatrix *Matrix = nullptr) const override;
+
   // Return the name of a register for inline assembly
   StringRef getRegAsmName(MCRegister Reg) const override;
 };

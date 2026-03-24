@@ -23,8 +23,10 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/LiveRegMatrix.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
+#include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -1406,6 +1408,50 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 Register Z80RegisterInfo::getFrameRegister(const MachineFunction &MF) const {
   const TargetFrameLowering *TFI = getFrameLowering(MF);
   return TFI->hasFP(MF) ? Z80::IX : Z80::SP;
+}
+
+bool Z80RegisterInfo::getRegAllocationHints(
+    Register VirtReg, ArrayRef<MCPhysReg> Order,
+    SmallVectorImpl<MCPhysReg> &Hints, const MachineFunction &MF,
+    const VirtRegMap *VRM, const LiveRegMatrix *Matrix) const {
+  // First, add default hints (copy-related).
+  TargetRegisterInfo::getRegAllocationHints(VirtReg, Order, Hints, MF, VRM,
+                                            Matrix);
+
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  const TargetRegisterClass *RC = MRI.getRegClass(VirtReg);
+
+  // Only hint B for 8-bit registers on Z80 (DJNZ is Z80-only).
+  if (!RC->contains(Z80::B) ||
+      !MF.getSubtarget<Z80Subtarget>().hasZ80())
+    return false;
+
+  // Check if this vreg looks like a loop counter: it's used in a COPY to A
+  // that feeds a DEC_A, OR_A, JR_NZ sequence (the decrement-and-branch
+  // pattern). If so, hinting B enables the DEC B; JR NZ → DJNZ peephole.
+  for (const MachineInstr &Use : MRI.use_nodbg_instructions(VirtReg)) {
+    if (Use.getOpcode() != TargetOpcode::COPY)
+      continue;
+    Register DstReg = Use.getOperand(0).getReg();
+    if (DstReg != Z80::A)
+      continue;
+    // A is destination of a COPY from our vreg. Check if DEC_A follows.
+    auto It = Use.getIterator();
+    auto End = Use.getParent()->end();
+    ++It;
+    if (It == End || It->getOpcode() != Z80::DEC_A)
+      continue;
+    // Found COPY vreg→A; DEC A pattern. This vreg is a loop counter.
+    // Hint B so the late optimization peephole can convert to DJNZ.
+    LLVM_DEBUG(dbgs() << "  DJNZ hint: " << printReg(VirtReg, this)
+                      << " is a loop counter, hinting B\n");
+    if (is_contained(Order, Z80::B) && !is_contained(Hints, Z80::B)) {
+      // Insert at front for highest priority.
+      Hints.insert(Hints.begin(), Z80::B);
+    }
+    break;
+  }
+  return false;
 }
 
 StringRef Z80RegisterInfo::getRegAsmName(MCRegister Reg) const {
