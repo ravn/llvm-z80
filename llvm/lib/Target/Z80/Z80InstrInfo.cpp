@@ -838,8 +838,16 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     assert(Offset >= -128 && Offset <= 127 &&
            "Large offset should have been expanded in eliminateFrameIndex");
     unsigned Opcode = getStoreIXdOpcode(SrcReg);
-    if (!Opcode)
-      return false;
+    if (!Opcode) {
+      // Undocumented IXH/IXL/IYH/IYL: route through A.
+      // LD A,src; LD (IX+d),A
+      unsigned CopyToA = Z80::getLD8RegOpcode(Z80::A, SrcReg);
+      if (!CopyToA) return false;
+      BuildMI(MBB, MI, DL, get(CopyToA));
+      BuildMI(MBB, MI, DL, get(Z80::LD_IXd_A)).addImm(Offset);
+      MI.eraseFromParent();
+      return true;
+    }
     BuildMI(MBB, MI, DL, get(Opcode)).addImm(Offset);
     MI.eraseFromParent();
     return true;
@@ -857,8 +865,16 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     assert(Offset >= -128 && Offset <= 127 &&
            "Large offset should have been expanded in eliminateFrameIndex");
     unsigned Opcode = getLoadIXdOpcode(DstReg);
-    if (!Opcode)
-      return false;
+    if (!Opcode) {
+      // Undocumented IXH/IXL/IYH/IYL: route through A.
+      // LD A,(IX+d); LD dst,A
+      unsigned CopyFromA = Z80::getLD8RegOpcode(DstReg, Z80::A);
+      if (!CopyFromA) return false;
+      BuildMI(MBB, MI, DL, get(Z80::LD_A_IXd)).addImm(Offset);
+      BuildMI(MBB, MI, DL, get(CopyFromA));
+      MI.eraseFromParent();
+      return true;
+    }
     BuildMI(MBB, MI, DL, get(Opcode)).addImm(Offset);
     MI.eraseFromParent();
     return true;
