@@ -653,7 +653,16 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     if (Addr == Z80::BC) Opc = Z80::LD_A_BCind;
     else if (Addr == Z80::DE) Opc = Z80::LD_A_DEind;
     else if (Addr == Z80::HL) Opc = Z80::LD_A_HLind;
-    else llvm_unreachable("Invalid register for LOAD8_IND");
+    else if (Addr == Z80::IX) {
+      // LD A,(IX+0) — IX indirect with zero displacement
+      BuildMI(MBB, MI, DL, get(Z80::LD_A_IXd)).addImm(0);
+      MI.eraseFromParent();
+      return true;
+    } else if (Addr == Z80::IY) {
+      BuildMI(MBB, MI, DL, get(Z80::LD_A_IYd)).addImm(0);
+      MI.eraseFromParent();
+      return true;
+    } else llvm_unreachable("Invalid register for LOAD8_IND");
     BuildMI(MBB, MI, DL, get(Opc));
     MI.eraseFromParent();
     return true;
@@ -666,7 +675,16 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     if (Addr == Z80::BC) Opc = Z80::LD_BCind_A;
     else if (Addr == Z80::DE) Opc = Z80::LD_DEind_A;
     else if (Addr == Z80::HL) Opc = Z80::LD_HLind_A;
-    else llvm_unreachable("Invalid register for STORE8_IND");
+    else if (Addr == Z80::IX) {
+      // LD (IX+0),A — IX indirect with zero displacement
+      BuildMI(MBB, MI, DL, get(Z80::LD_IXd_A)).addImm(0);
+      MI.eraseFromParent();
+      return true;
+    } else if (Addr == Z80::IY) {
+      BuildMI(MBB, MI, DL, get(Z80::LD_IYd_A)).addImm(0);
+      MI.eraseFromParent();
+      return true;
+    } else llvm_unreachable("Invalid register for STORE8_IND");
     BuildMI(MBB, MI, DL, get(Opc));
     MI.eraseFromParent();
     return true;
@@ -913,9 +931,10 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     unsigned HiOp = getStoreIXdOpcode(HiReg);
 
     if (!LoOp || !HiOp) {
-      if (SrcReg == Z80::IY) {
-        // IY has no IX-indexed store opcodes, so transfer via HL.
-        // Check if HL is live and save/restore it if needed.
+      if (SrcReg == Z80::IX || SrcReg == Z80::IY) {
+        // IX/IY have no IX-indexed store opcodes for their halves.
+        // Transfer via HL: PUSH IX/IY; POP HL; LD (IX+d),L; LD (IX+d+1),H
+        unsigned PushOp = (SrcReg == Z80::IX) ? Z80::PUSH_IX : Z80::PUSH_IY;
         LivePhysRegs LiveRegs(*TRI);
         LiveRegs.addLiveOuts(MBB);
         for (auto I = MBB.rbegin(); &*I != &MI; ++I)
@@ -924,7 +943,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
             LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
         if (NeedSaveHL)
           BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
-        BuildMI(MBB, MI, DL, get(Z80::PUSH_IY));
+        BuildMI(MBB, MI, DL, get(PushOp));
         BuildMI(MBB, MI, DL, get(Z80::POP_HL));
         BuildMI(MBB, MI, DL, get(Z80::LD_IXd_L)).addImm(Offset);
         BuildMI(MBB, MI, DL, get(Z80::LD_IXd_H)).addImm(Offset + 1);
@@ -1013,9 +1032,10 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     unsigned HiOp = getLoadIXdOpcode(HiReg);
 
     if (!LoOp || !HiOp) {
-      if (DestReg == Z80::IY) {
-        // IY has no IX-indexed load opcodes, so transfer via HL.
-        // Check if HL is live and save/restore it if needed.
+      if (DestReg == Z80::IX || DestReg == Z80::IY) {
+        // IX/IY have no IX-indexed load opcodes for their halves.
+        // Transfer via HL: LD L,(IX+d); LD H,(IX+d+1); PUSH HL; POP IX/IY
+        unsigned PopOp = (DestReg == Z80::IX) ? Z80::POP_IX : Z80::POP_IY;
         LivePhysRegs LiveRegs(*TRI);
         LiveRegs.addLiveOuts(MBB);
         for (auto I = MBB.rbegin(); &*I != &MI; ++I)
@@ -1027,7 +1047,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         BuildMI(MBB, MI, DL, get(Z80::LD_L_IXd)).addImm(Offset);
         BuildMI(MBB, MI, DL, get(Z80::LD_H_IXd)).addImm(Offset + 1);
         BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
-        BuildMI(MBB, MI, DL, get(Z80::POP_IY));
+        BuildMI(MBB, MI, DL, get(PopOp));
         if (NeedSaveHL)
           BuildMI(MBB, MI, DL, get(Z80::POP_HL));
         MI.eraseFromParent();
