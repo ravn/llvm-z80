@@ -395,8 +395,10 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
 
   getActionDefinitionsBuilder(G_ABS).lower();
 
-  // Memory intrinsics - lower to runtime library calls
-  getActionDefinitionsBuilder({G_MEMCPY, G_MEMMOVE}).libcall();
+  // G_MEMCPY: custom lowering to inline LDIR on Z80.
+  // G_MEMMOVE: always libcall (LDIR doesn't handle overlap).
+  getActionDefinitionsBuilder(G_MEMCPY).custom();
+  getActionDefinitionsBuilder(G_MEMMOVE).libcall();
 
   // G_MEMSET needs custom handling: promote i8 val to i16 (C 'int')
   // before lowering to libcall, so calling convention assigns it correctly
@@ -1022,6 +1024,37 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         MIRBuilder.buildOr(Dst, CmpBool, NaNBool);
       }
     }
+
+    MI.eraseFromParent();
+    return true;
+  }
+
+  case TargetOpcode::G_MEMCPY: {
+    // Lower G_MEMCPY to inline LDIR on Z80.
+    // LDIR: HL=source, DE=dest, BC=count. Copies (HL)→(DE), inc both, dec BC.
+    // G_MEMCPY operands: 0=dst, 1=src, 2=size, 3=tailcall
+    Register DstPtr = MI.getOperand(0).getReg();
+    Register SrcPtr = MI.getOperand(1).getReg();
+    Register Size = MI.getOperand(2).getReg();
+
+    const auto &STI = MIRBuilder.getMF().getSubtarget<Z80Subtarget>();
+    if (!STI.hasZ80()) {
+      // SM83 lacks LDIR — fall back to library call.
+      auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
+      if (Result != LegalizerHelper::Legalized)
+        return false;
+      MI.eraseFromParent();
+      return true;
+    }
+
+    MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+
+    // LDIR: HL=source, DE=destination, BC=byte count.
+    // Note: LDIR source is HL, dest is DE — opposite of C convention.
+    MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
+    MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
+    MIRBuilder.buildCopy(Register(Z80::BC), Size);
+    MIRBuilder.buildInstr(Z80::LDIR);
 
     MI.eraseFromParent();
     return true;
