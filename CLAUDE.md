@@ -171,7 +171,9 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - All pseudo expansions handle IX/IY sub-registers (IXH/IXL/IYH/IYL)
 - MAME fully supports all undocumented Z80 instructions — safe for testing
 - Verified: CP/M boots in MAME with IX/IY-allocatable clang-built PROM
-- **Asymmetry**: `ADD IX,rr` exists but `ADD HL,IX` does not. IX/IY are good as pointer accumulators (add offsets to them) but expensive as operands to HL-centric arithmetic (requires PUSH/POP or undocumented IXH/IXL extraction). The allocator should prefer IX/IY for address computation, not general arithmetic.
+- **Asymmetry**: `ADD IX,rr` exists but `ADD HL,IX` does not. IX/IY are good as pointer accumulators (add offsets to them) but expensive as operands to HL-centric arithmetic.
+- **EX (SP),IX/IY** (2B): swaps IX/IY with top-of-stack. Enables bidirectional register transfer: `PUSH HL; EX (SP),IX; POP DE` swaps HL↔IX via stack while freeing DE with the old IX value. Useful for moving a running sum into IX for `ADD IX,rr` accumulation.
+- Post-RA peephole detects `PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX` → `ADD IX,rr`
 
 ### Z80_AllReg Calling Convention
 `__attribute__((z80_allreg))` / cc 129: pass all arguments in registers, no stack.
