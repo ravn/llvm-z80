@@ -59,8 +59,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Callee-saved registers: IX, IY
-def Z80_CSR : CalleeSavedRegs<(add IX, IY)>;
+// Callee-saved registers: IX only (SDCC __sdcccall(1))
+def Z80_CSR : CalleeSavedRegs<(add IX)>;
 
 // Interrupt handler saves all register pairs (push/pop only works on pairs)
 def Z80_Interrupt_CSR : CalleeSavedRegs<(add AF, BC, DE, HL, IX, IY)>;

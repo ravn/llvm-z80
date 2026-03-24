@@ -56,10 +56,12 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: IX not needed as FP — spills use direct BSS.
-  // IX/IY are opaque 16-bit allocatable registers.
+  // Static stack: IX still used as FP. Making IX/IY allocatable requires
+  // fixing sub-register allocation (IXH/IXL encoding issues) and
+  // MCCodeEmitter support for IX/IY in all instruction positions.
+  // See CLAUDE.md for the full investigation.
   if (STI.staticStack())
-    return MF.getTarget().Options.DisableFramePointerElim(MF);
+    return true;
 
   if (MF.getTarget().Options.DisableFramePointerElim(MF))
     return true;
