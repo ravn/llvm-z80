@@ -109,8 +109,11 @@ def HL : Z80RegPair<32, "hl", L, H>;
 def AF : Z80RegPair<33, "af", F, A>;
 
 // Index registers
-def IX : Z80RegPair<34, "ix", IXL, IXH>;
-def IY : Z80RegPair<35, "iy", IYL, IYH>;
+// CostPerUse = [1]: every instruction using IX/IY costs +1 byte (DD/FD prefix).
+// The greedy allocator uses this to prefer spilling over allocating IX/IY when
+// a cheaper register would suffice with a short spill/reload sequence.
+def IX : Z80RegPair<34, "ix", IXL, IXH> { let CostPerUse = [1]; }
+def IY : Z80RegPair<35, "iy", IYL, IYH> { let CostPerUse = [1]; }
 
 // Stack pointer (no accessible sub-registers)
 def SP : Z80Reg<36, "sp">;
