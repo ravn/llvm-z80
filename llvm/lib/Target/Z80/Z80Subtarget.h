@@ -83,6 +83,7 @@ public:
   bool useAA() const override { return true; }
 
   bool staticStack() const { return StaticStack; }
+  bool shadowRegs() const { return ShadowRegs; }
   bool inlineI16Runtime() const { return InlineI16Runtime; }
 
   // Feature queries
@@ -110,6 +111,7 @@ private:
   bool HasSM83 = false;
 
   bool StaticStack = false;
+  bool ShadowRegs = false;
   bool InlineI16Runtime = false;
 
   Z80InstrInfo InstrInfo;

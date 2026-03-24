@@ -144,10 +144,9 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     Reserved.set(Z80::IYL);
   }
 
-  if (STI.hasSM83()) {
-    // SM83 has no I/R or shadow registers.
-    Reserved.set(Z80::I);
-    Reserved.set(Z80::R);
+  // Shadow registers: only allocatable with +shadow-regs on Z80.
+  // Reserved on SM83 (no shadow set) and when feature is disabled.
+  if (STI.hasSM83() || !STI.shadowRegs()) {
     Reserved.set(Z80::AFp);
     Reserved.set(Z80::BCp);
     Reserved.set(Z80::DEp);
@@ -160,6 +159,11 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     Reserved.set(Z80::Ep);
     Reserved.set(Z80::Hp);
     Reserved.set(Z80::Lp);
+  }
+
+  if (STI.hasSM83()) {
+    Reserved.set(Z80::I);
+    Reserved.set(Z80::R);
   }
 
   return Reserved;

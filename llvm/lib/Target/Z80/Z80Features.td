@@ -57,6 +57,15 @@ def FeatureStaticStack
 // designed with 16-bit architectures in mind and internally use 16-bit
 // multiply/divide operations, creating a circular dependency on the runtime
 // they are meant to replace.
+// Use EXX shadow registers (BC', DE', HL') to reduce register pressure.
+// When enabled, the shadow register pairs are allocatable. Any function
+// that uses them gets EXX inserted at entry/exit to switch banks.
+// Only safe when all EXX usage is compiler-controlled (no user EXX in
+// inline asm, and ISRs use PUSH/POP not EXX for save/restore).
+def FeatureShadowRegs
+    : SubtargetFeature<"shadow-regs", "ShadowRegs", "true",
+                       "Use EXX shadow registers to reduce spill pressure">;
+
 def FeatureInlineI16Runtime
     : SubtargetFeature<"inline-i16-runtime", "InlineI16Runtime", "true",
                        "Inline-expand 16-bit mul/div/mod instead of calling z80_rt.lib">;
