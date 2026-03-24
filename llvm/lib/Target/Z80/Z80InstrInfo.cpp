@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -753,7 +754,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
 
   case Z80::SPILL_GR16: {
     // SPILL_GR16 src, offset -> LD (IX+d),lo ; LD (IX+d+1),hi
-    // Large offsets are handled in eliminateFrameIndex.
+    // With +static-stack: LD (addr),rr (3-4B) instead of 6B IX-indexed.
     Register SrcReg = MI.getOperand(0).getReg();
     int64_t Offset = MI.getOperand(1).getImm();
 
@@ -763,9 +764,27 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     assert(Offset >= -128 && Offset + 1 <= 127 &&
            "Large offset should have been expanded in eliminateFrameIndex");
 
-    // SP is not in GR16 register class, so it should never reach here.
     if (SrcReg == Z80::SP)
       llvm_unreachable("SP cannot be spilled via SPILL_GR16");
+
+    // Static stack: use direct BSS addressing (3-4B vs 6B IX-indexed).
+    // LD (addr),HL = 3B, LD (addr),DE/BC = 4B vs LD (IX+d),lo;LD (IX+d+1),hi = 6B.
+    // Only safe for non-reentrant code (static stack guarantees this).
+    MachineFunction &MF = *MBB.getParent();
+    if (STI->staticStack() && SrcReg != Z80::IY) {
+      MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
+          "__sfrend_" + MF.getName());
+      unsigned StoreOpc = 0;
+      if (SrcReg == Z80::HL) StoreOpc = Z80::LD_nnind_HL;
+      else if (SrcReg == Z80::DE) StoreOpc = Z80::LD_nnind_DE;
+      else if (SrcReg == Z80::BC) StoreOpc = Z80::LD_nnind_BC;
+      if (StoreOpc) {
+        auto MIB = BuildMI(MBB, MI, DL, get(StoreOpc)).addSym(EndSym);
+        MIB->getOperand(MIB->getNumOperands() - 1).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
 
     Register LoReg = TRI->getSubReg(SrcReg, Z80::sub_lo);
     Register HiReg = TRI->getSubReg(SrcReg, Z80::sub_hi);
@@ -817,9 +836,25 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     assert(Offset >= -128 && Offset + 1 <= 127 &&
            "Large offset should have been expanded in eliminateFrameIndex");
 
-    // SP is not in GR16 register class, so it should never reach here.
     if (DestReg == Z80::SP)
       llvm_unreachable("SP cannot be reloaded via RELOAD_GR16");
+
+    // Static stack: use direct BSS addressing (3-4B vs 6B IX-indexed).
+    MachineFunction &MF = *MBB.getParent();
+    if (STI->staticStack() && DestReg != Z80::IY) {
+      MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
+          "__sfrend_" + MF.getName());
+      unsigned LoadOpc = 0;
+      if (DestReg == Z80::HL) LoadOpc = Z80::LD_HL_nnind;
+      else if (DestReg == Z80::DE) LoadOpc = Z80::LD_DE_nnind;
+      else if (DestReg == Z80::BC) LoadOpc = Z80::LD_BC_nnind;
+      if (LoadOpc) {
+        auto MIB = BuildMI(MBB, MI, DL, get(LoadOpc)).addSym(EndSym);
+        MIB->getOperand(MIB->getNumOperands() - 1).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
 
     Register LoReg = TRI->getSubReg(DestReg, Z80::sub_lo);
     Register HiReg = TRI->getSubReg(DestReg, Z80::sub_hi);
