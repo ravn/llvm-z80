@@ -1316,6 +1316,22 @@ def ADD_HL_rr : Z80Inst<"add_hl_rr"> {
   let Defs = [HL, FLAGS];
 }
 
+// ADD16_tied: generalized 16-bit add with explicit accumulator register.
+// Unlike ADD_HL_rr (which hardcodes HL), this allows the register allocator
+// to place the accumulator in any GR16 register including IX/IY.
+// expandPostRAPseudo selects the real instruction:
+//   HL → ADD HL,rr (1B)
+//   IX → ADD IX,rr (2B)
+//   IY → ADD IY,rr (2B)
+//   BC/DE → COPY to HL, ADD HL,rr, COPY back (fallback)
+// RHS is constrained to GR16_BCDE (BC or DE) by the ISel.
+def ADD16_tied : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src, GR16_BCDE:$rhs)> {
+  let Constraints = "$dst = $src";
+  let Defs = [FLAGS];
+  let mayLoad = false;
+  let mayStore = false;
+}
+
 // AND A; SBC HL,rr (subtraction without borrow)
 def SUB_HL_rr : Z80Inst<"sub_hl_rr"> {
   let InOperandList = (ins GR16_BCDE:$rhs);
