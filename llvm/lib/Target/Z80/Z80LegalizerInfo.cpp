@@ -1061,22 +1061,50 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_MEMSET: {
-    // C memset takes (void*, int, size_t). On Z80, int = i16.
-    // G_MEMSET has i8 val operand which must be promoted to i16
-    // so the calling convention assigns it to DE (2nd i16 reg param)
-    // instead of treating it as an i8 arg.
+    // G_MEMSET operands: 0=dst, 1=val(i8), 2=size, 3=tailcall
+    Register DstPtr = MI.getOperand(0).getReg();
     Register ValReg = MI.getOperand(1).getReg();
-    LLT ValTy = MRI.getType(ValReg);
+    Register Size = MI.getOperand(2).getReg();
 
-    if (ValTy.getSizeInBits() < 16) {
-      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
-      auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
-      MI.getOperand(1).setReg(ZExt.getReg(0));
+    const auto &STI = MIRBuilder.getMF().getSubtarget<Z80Subtarget>();
+    if (!STI.hasZ80()) {
+      // SM83 lacks LDIR — fall back to library call.
+      LLT ValTy = MRI.getType(ValReg);
+      if (ValTy.getSizeInBits() < 16) {
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+        auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
+        MI.getOperand(1).setReg(ZExt.getReg(0));
+      }
+      auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
+      if (Result != LegalizerHelper::Legalized)
+        return false;
+      MI.eraseFromParent();
+      return true;
     }
 
-    auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
-    if (Result != LegalizerHelper::Legalized)
-      return false;
+    // Inline memset using LDIR fill: LD (HL),val; DE=HL+1; BC=n-1; LDIR.
+    // This copies the fill byte forward through the buffer.
+    MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+
+    // Store val at first byte: HL=dst, then LD (HL),val
+    MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+    MIRBuilder.buildCopy(Register(Z80::A), ValReg);
+    MIRBuilder.buildInstr(Z80::LD_HLind_A);
+
+    // DE = HL + 1 (destination for LDIR)
+    LLT S16 = LLT::scalar(16);
+    auto One = MIRBuilder.buildConstant(S16, 1);
+    auto DstPlusOne = MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, One);
+    MIRBuilder.buildCopy(Register(Z80::DE), DstPlusOne);
+
+    // BC = size - 1
+    auto SizeMinusOne = MIRBuilder.buildSub(S16, Size, One);
+    MIRBuilder.buildCopy(Register(Z80::BC), SizeMinusOne);
+
+    // LDIR copies (HL)→(DE), filling the buffer
+    MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+    MIRBuilder.buildInstr(Z80::LDIR);
+
     MI.eraseFromParent();
     return true;
   }
