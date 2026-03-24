@@ -152,6 +152,10 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - BC last in 16-bit allocation order
 - Conditional RET (branch-over-RET pattern)
 - IX/IY allocatable as general 16-bit registers (see below)
+- PUSH/POP preferred over undocumented LD for IX/IY→GR16 copies (3B vs 4B)
+- Register allocation hints: DE/BC preferred for ADD/SUB HL,rr operands (avoids IX/IY)
+- CostPerUse=1 on IX/IY reflects DD/FD prefix overhead in spill-vs-allocate decisions
+- Post-RA peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
 With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit pairs:
@@ -171,9 +175,11 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - All pseudo expansions handle IX/IY sub-registers (IXH/IXL/IYH/IYL)
 - MAME fully supports all undocumented Z80 instructions — safe for testing
 - Verified: CP/M boots in MAME with IX/IY-allocatable clang-built PROM
-- **Asymmetry**: `ADD IX,rr` exists but `ADD HL,IX` does not. IX/IY are good as pointer accumulators (add offsets to them) but expensive as operands to HL-centric arithmetic.
-- **EX (SP),IX/IY** (2B): swaps IX/IY with top-of-stack. Enables bidirectional register transfer: `PUSH HL; EX (SP),IX; POP DE` swaps HL↔IX via stack while freeing DE with the old IX value. Useful for moving a running sum into IX for `ADD IX,rr` accumulation.
-- Post-RA peephole detects `PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX` → `ADD IX,rr`
+- **IX/IY copy preference**: `PUSH IX; POP DE` (3B, documented) preferred over `LD E,IXL; LD D,IXH` (4B, undocumented) for 16-bit IX/IY→GR16 register copies
+- **Asymmetry**: `ADD IX,rr` exists (rr=BC/DE/IX/SP) but `ADD HL,IX` does not. Values used as ADD HL,rr operands are hinted to DE/BC to avoid costly IX/IY extraction
+- **EX (SP),IX/IY** (2B): swaps IX/IY with top-of-stack. `PUSH HL; EX (SP),IX; POP DE` moves HL→IX and IX→DE simultaneously (4B). Useful for transferring a running sum into IX for `ADD IX,rr` accumulation
+- **ADD IX/IY peephole**: post-RA pattern `PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX` → `ADD IX,rr` (saves 6-8B). Also handles `ADD IX,IX` (left shift)
+- **ADD16_tied pseudo**: defined for future use — generalizes 16-bit add with explicit accumulator register. Expands to ADD HL/IX/IY,rr based on allocated register. Not yet used by ISel (register allocator constraint issues with tied operands on IR16)
 
 ### Z80_AllReg Calling Convention
 `__attribute__((z80_allreg))` / cc 129: pass all arguments in registers, no stack.
