@@ -157,7 +157,10 @@ def JP_P_nn  : JPcond<CC_P>;
 def JP_M_nn  : JPcond<CC_M>;
 
 // DJNZ e - Decrement B and jump if not zero
-def DJNZ_e : Inst16<"djnz", 0x10, RelativeMode>, InstConditionalBranch;
+def DJNZ_e : Inst16<"djnz", 0x10, RelativeMode>, InstConditionalBranch {
+  let Uses = [B];
+  let Defs = [B, FLAGS];
+}
 
 //===----------------------------------------------------------------------===//
 //  Call and Return Group (Z80-only)

@@ -472,6 +472,31 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       Changed = true;
     }
 
+    // --- Peephole: DEC B; JR NZ → DJNZ (Z80 only) ---
+    // DJNZ is a 2-byte instruction that decrements B and branches if non-zero.
+    // Replaces DEC B (1 byte) + JR NZ (2 bytes) = 3 bytes with DJNZ (2 bytes).
+    if (STI.hasZ80()) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        if (MII->getOpcode() != Z80::DEC_B) {
+          ++MII;
+          continue;
+        }
+        auto NextIt = std::next(MII);
+        if (NextIt == MIE || NextIt->getOpcode() != Z80::JR_NZ_e) {
+          ++MII;
+          continue;
+        }
+        MachineBasicBlock *TargetMBB = NextIt->getOperand(0).getMBB();
+        DebugLoc DL = MII->getDebugLoc();
+        LLVM_DEBUG(dbgs() << "  DEC B; JR NZ → DJNZ\n");
+        NextIt->eraseFromParent();
+        MII = MBB.erase(MII);
+        BuildMI(MBB, MII, DL, TII->get(Z80::DJNZ_e)).addMBB(TargetMBB);
+        Changed = true;
+      }
+    }
+
     // --- Peephole: XOR #0xFF → CPL ---
     // CPL (1 byte) is equivalent to XOR #0xFF (2 bytes) for the A register
     // value, but sets flags differently (CPL: H=1,N=1, others unchanged;
