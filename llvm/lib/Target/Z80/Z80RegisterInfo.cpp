@@ -132,20 +132,20 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // IX/IY always reserved. Making them allocatable requires:
-  // 1. MCCodeEmitter support for IX/IY in all instruction encodings
-  // 2. Preventing IXH/IXL/IYH/IYL sub-register allocation (no standard encoding)
-  // 3. Static stack eliminateFrameIndex with direct BSS (partially implemented)
-  Reserved.set(Z80::IX);
-  Reserved.set(Z80::IY);
+  // IXH/IXL/IYH/IYL: always reserved (IX/IY are opaque 16-bit, no sub-reg).
+  Reserved.set(Z80::IXH);
+  Reserved.set(Z80::IXL);
+  Reserved.set(Z80::IYH);
+  Reserved.set(Z80::IYL);
 
-  // IXH/IXL/IYH/IYL are undocumented Z80 half-index registers.
-  // Only available when FeatureUndocumented is enabled; absent on SM83.
-  if (!STI.hasUndocumented() || STI.hasSM83()) {
-    Reserved.set(Z80::IXH);
-    Reserved.set(Z80::IXL);
-    Reserved.set(Z80::IYH);
-    Reserved.set(Z80::IYL);
+  // IX/IY: allocatable as opaque 16-bit with +static-stack.
+  if (STI.staticStack()) {
+    const TargetFrameLowering *TFI = getFrameLowering(MF);
+    if (TFI->hasFP(MF))
+      Reserved.set(Z80::IX);
+  } else {
+    Reserved.set(Z80::IX);
+    Reserved.set(Z80::IY);
   }
 
   // Shadow registers: only allocatable with +shadow-regs on Z80.

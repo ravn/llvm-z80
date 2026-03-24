@@ -643,8 +643,30 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register SrcReg = MI.getOperand(1).getReg();
     Register LoReg = TRI->getSubReg(DstReg, Z80::sub_lo);
     Register HiReg = TRI->getSubReg(DstReg, Z80::sub_hi);
-    if (!LoReg || !HiReg)
+    if (!LoReg || !HiReg) {
+      // Opaque 16-bit (IX/IY): zero-extend via HL + PUSH/POP.
+      if (DstReg == Z80::IX || DstReg == Z80::IY) {
+        LivePhysRegs LiveRegs(*TRI);
+        LiveRegs.addLiveOuts(MBB);
+        for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+          LiveRegs.stepBackward(*I);
+        bool HLLive = LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+        if (HLLive)
+          BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        if (SrcReg != Z80::L) {
+          unsigned CopyOp = Z80::getLD8RegOpcode(Z80::L, SrcReg);
+          if (CopyOp) BuildMI(MBB, MI, DL, get(CopyOp));
+        }
+        BuildMI(MBB, MI, DL, get(Z80::LD_H_n)).addImm(0);
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        BuildMI(MBB, MI, DL, get(DstReg == Z80::IX ? Z80::POP_IX : Z80::POP_IY));
+        if (HLLive)
+          BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+        MI.eraseFromParent();
+        return true;
+      }
       return false;
+    }
 
     // Copy source to low byte (skip if already in place)
     if (SrcReg != LoReg) {
@@ -669,8 +691,34 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register SrcReg = MI.getOperand(1).getReg();
     Register LoReg = TRI->getSubReg(DstReg, Z80::sub_lo);
     Register HiReg = TRI->getSubReg(DstReg, Z80::sub_hi);
-    if (!LoReg || !HiReg)
+    if (!LoReg || !HiReg) {
+      // Opaque 16-bit (IX/IY): sign-extend via HL + PUSH/POP.
+      if (DstReg == Z80::IX || DstReg == Z80::IY) {
+        LivePhysRegs LiveRegs(*TRI);
+        LiveRegs.addLiveOuts(MBB);
+        for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+          LiveRegs.stepBackward(*I);
+        bool HLLive = LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+        if (HLLive)
+          BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        // LD A,src; LD L,A; RLCA; SBC A,A; LD H,A; PUSH HL; POP IX/IY
+        if (SrcReg != Z80::A) {
+          unsigned CopyToA = Z80::getLD8RegOpcode(Z80::A, SrcReg);
+          if (CopyToA) BuildMI(MBB, MI, DL, get(CopyToA));
+        }
+        BuildMI(MBB, MI, DL, get(Z80::LD_L_A));
+        BuildMI(MBB, MI, DL, get(Z80::RLCA));
+        BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+        BuildMI(MBB, MI, DL, get(Z80::LD_H_A));
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        BuildMI(MBB, MI, DL, get(DstReg == Z80::IX ? Z80::POP_IX : Z80::POP_IY));
+        if (HLLive)
+          BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+        MI.eraseFromParent();
+        return true;
+      }
       return false;
+    }
 
     // Copy source to A (for sign-bit extraction)
     if (SrcReg != Z80::A) {

@@ -108,9 +108,15 @@ def DE : Z80RegPair<31, "de", E, D>;
 def HL : Z80RegPair<32, "hl", L, H>;
 def AF : Z80RegPair<33, "af", F, A>;
 
-// Index registers
-def IX : Z80RegPair<34, "ix", IXL, IXH>;
-def IY : Z80RegPair<35, "iy", IYL, IYH>;
+// Index registers — opaque 16-bit (no sub-register access).
+// The Z80 has undocumented IXH/IXL/IYH/IYL instructions but they're
+// not exposed as sub-registers here. This prevents the register allocator
+// from trying to decompose IX/IY into 8-bit halves, which would require
+// DD/FD-prefixed instruction definitions that don't exist yet.
+// When +undocumented instructions are defined (step B), these can be
+// changed back to Z80RegPair with sub-register access.
+def IX : Z80Reg<34, "ix">;
+def IY : Z80Reg<35, "iy">;
 
 // Stack pointer (no accessible sub-registers)
 def SP : Z80Reg<36, "sp">;
@@ -169,7 +175,9 @@ def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;
 
 // General 16-bit registers: DE, HL preferred over BC.
 // BC is last because B is needed for DJNZ (loop counter).
-def GR16 : Z80Reg16Class<(add DE, HL, BC)>;
+// IX/IY are last resort — +1 byte per access (DD/FD prefix), opaque
+// (no 8-bit sub-register access). Reserved when not using +static-stack.
+def GR16 : Z80Reg16Class<(add DE, HL, BC, IX, IY)>;
 
 // Shadow-only register class
 def ShadowGR16 : Z80Reg16Class<(add DEp, HLp, BCp)>;
