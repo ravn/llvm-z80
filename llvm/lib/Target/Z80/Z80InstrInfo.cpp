@@ -782,9 +782,32 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         MI.eraseFromParent();
         return true;
       }
-      // DE/BC: requires HL as intermediate, clobbering it.
-      // TODO: implement with HL liveness check and save/restore.
-      // For now, fall through to IX-indexed for DE/BC.
+      if (SrcReg == Z80::DE || SrcReg == Z80::BC) {
+        // Store DE/BC through HL: copy to HL, store, restore HL if live.
+        // With PUSH/POP save: 2+2+3+2 = 9B (worse than IX 6B).
+        // Without save: 2+3 = 5B (saves 1B vs IX 6B).
+        LivePhysRegs LiveRegs(*TRI);
+        LiveRegs.addLiveOuts(MBB);
+        for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+          LiveRegs.stepBackward(*I);
+        bool HLLive = LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+        if (!HLLive) {
+          // HL is dead — safe to clobber. 5B vs 6B IX-indexed.
+          if (SrcReg == Z80::DE) {
+            BuildMI(MBB, MI, DL, get(Z80::LD_H_D));
+            BuildMI(MBB, MI, DL, get(Z80::LD_L_E));
+          } else {
+            BuildMI(MBB, MI, DL, get(Z80::LD_H_B));
+            BuildMI(MBB, MI, DL, get(Z80::LD_L_C));
+          }
+          auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_HL))
+              .addSym(EndSym).getInstr();
+          StoreMI->getOperand(0).setOffset(Offset);
+          MI.eraseFromParent();
+          return true;
+        }
+        // HL is live — fall through to IX-indexed.
+      }
     }
 
     Register LoReg = TRI->getSubReg(SrcReg, Z80::sub_lo);
@@ -853,7 +876,38 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         MI.eraseFromParent();
         return true;
       }
-      // DE/BC: fall through to IX-indexed (HL clobber issue).
+      if (DestReg == Z80::DE || DestReg == Z80::BC) {
+        // Load through HL, copy to target. LD HL,(addr); LD D,H; LD E,L = 5B.
+        // Clobbers HL. Only safe when HL is dead after this reload.
+        // Check: is HL live AFTER this instruction?
+        // Use LivePhysRegs (backward from end) for accurate liveness.
+        bool HLLiveAfter = false;
+        {
+          LivePhysRegs LiveRegs(*TRI);
+          LiveRegs.addLiveOuts(MBB);
+          for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+            LiveRegs.stepBackward(*I);
+          // LiveRegs now has liveness just AFTER MI.
+          HLLiveAfter = LiveRegs.contains(Z80::H) ||
+                        LiveRegs.contains(Z80::L);
+        }
+        if (!HLLiveAfter) {
+          // HL is dead after reload — safe to clobber. 5B vs 6B.
+          auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_HL_nnind))
+              .addSym(EndSym).getInstr();
+          LoadMI->getOperand(0).setOffset(Offset);
+          if (DestReg == Z80::DE) {
+            BuildMI(MBB, MI, DL, get(Z80::LD_D_H));
+            BuildMI(MBB, MI, DL, get(Z80::LD_E_L));
+          } else {
+            BuildMI(MBB, MI, DL, get(Z80::LD_B_H));
+            BuildMI(MBB, MI, DL, get(Z80::LD_C_L));
+          }
+          MI.eraseFromParent();
+          return true;
+        }
+        // HL is live — fall through to IX-indexed.
+      }
     }
 
     Register LoReg = TRI->getSubReg(DestReg, Z80::sub_lo);
