@@ -774,18 +774,17 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     if (STI->staticStack() && SrcReg != Z80::IY) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
-      // Only use LD (addr),HL (3B, unprefixed) for now.
-      // ED-prefixed LD (addr),DE/BC have encoding issues with MCSymbol operands.
-      unsigned StoreOpc = 0;
-      if (SrcReg == Z80::HL) StoreOpc = Z80::LD_nnind_HL;
-      if (StoreOpc) {
-        auto *StoreMI = BuildMI(MBB, MI, DL, get(StoreOpc))
+      if (SrcReg == Z80::HL) {
+        // LD (addr),HL = 3B (vs 6B IX-indexed)
+        auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_HL))
             .addSym(EndSym).getInstr();
-        // The symbol is operand 0. Set offset for __sfrend + displacement.
         StoreMI->getOperand(0).setOffset(Offset);
         MI.eraseFromParent();
         return true;
       }
+      // DE/BC: requires HL as intermediate, clobbering it.
+      // TODO: implement with HL liveness check and save/restore.
+      // For now, fall through to IX-indexed for DE/BC.
     }
 
     Register LoReg = TRI->getSubReg(SrcReg, Z80::sub_lo);
@@ -846,16 +845,15 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     if (STI->staticStack() && DestReg != Z80::IY) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
-      // Only use LD HL,(addr) (3B, unprefixed) for now.
-      unsigned LoadOpc = 0;
-      if (DestReg == Z80::HL) LoadOpc = Z80::LD_HL_nnind;
-      if (LoadOpc) {
-        auto *LoadMI = BuildMI(MBB, MI, DL, get(LoadOpc))
+      if (DestReg == Z80::HL) {
+        // LD HL,(addr) = 3B (vs 6B IX-indexed)
+        auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_HL_nnind))
             .addSym(EndSym).getInstr();
         LoadMI->getOperand(0).setOffset(Offset);
         MI.eraseFromParent();
         return true;
       }
+      // DE/BC: fall through to IX-indexed (HL clobber issue).
     }
 
     Register LoReg = TRI->getSubReg(DestReg, Z80::sub_lo);
