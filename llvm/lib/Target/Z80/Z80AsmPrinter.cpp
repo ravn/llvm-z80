@@ -318,10 +318,17 @@ void Z80AsmPrinter::emitFunctionBodyEnd() {
   const MachineFrameInfo &MFI = MF->getFrameInfo();
   if (STI.staticStack() && MFI.getStackSize() > 0 &&
       MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects()) {
-    MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
-    MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
-    StaticFrames.push_back(
-        StaticFrame{BaseSym, EndSym, MFI.getStackSize(), MF->getName()});
+    // BSS size = locals only.  MFI.getStackSize() may include callee-saved
+    // register pushes (e.g. IX when hasFP=false).  Subtract those — CSR
+    // saves live on the real stack via PUSH/POP, not in BSS.
+    const Z80FunctionInfo *FI = MF->getInfo<Z80FunctionInfo>();
+    uint64_t BSSSize = MFI.getStackSize() - FI->getCalleeSavedFrameSize();
+    if (BSSSize > 0) {
+      MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
+      MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
+      StaticFrames.push_back(
+          StaticFrame{BaseSym, EndSym, BSSSize, MF->getName()});
+    }
   }
 }
 
