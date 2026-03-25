@@ -257,11 +257,12 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   // Handle 16-bit register copies between BC, DE, HL using two 8-bit LDs.
   // LD r,r' is 1 byte / 4 cycles each (2 bytes / 8 cycles total),
   // much faster than PUSH/POP (2 bytes / 21 cycles).
-  // Skip for IX/IY: PUSH/POP (3B) is smaller than 2x undocumented LD (4B).
+  // NOTE: IX/IY copies also try this path first. With +undocumented,
+  // LD E,IXL (2B) + LD D,IXH (2B) = 4B, vs PUSH/POP = 3B. The LD
+  // path is used because PUSH/POP modifies SP, which can break
+  // SP-relative addressing and interrupt-sensitive contexts.
   if (Z80::GR16RegClass.contains(DestReg) &&
-      Z80::GR16RegClass.contains(SrcReg) &&
-      !Z80::IR16RegClass.contains(DestReg) &&
-      !Z80::IR16RegClass.contains(SrcReg)) {
+      Z80::GR16RegClass.contains(SrcReg)) {
     const TargetRegisterInfo *TRI = STI->getRegisterInfo();
     Register DstLo = TRI->getSubReg(DestReg, Z80::sub_lo);
     Register DstHi = TRI->getSubReg(DestReg, Z80::sub_hi);
