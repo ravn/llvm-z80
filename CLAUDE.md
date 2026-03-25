@@ -198,10 +198,10 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Direct BSS for DE/BC spills: resolved — now uses ED-prefix LD (addr),DE/BC (4B).
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
-- **Undocumented instructions emitted without +undocumented** (issue #13): copyPhysReg emits DD/FD-prefixed 8-bit ops (LD E,IXL etc.) for IX/IY copies, and ISel emits SUB IYL / SBC A,IYH for 16-bit comparisons. Switching copyPhysReg to PUSH/POP changes regalloc enough to trigger a separate crash. MAME may handle undocumented instructions incorrectly.
+- **Undocumented instructions emitted without +undocumented** (issue #13): FIXED. IY reserved without +undocumented; copyPhysReg skips undocumented IX/IY sub-register LD and falls through to PUSH/POP. PROM now has zero undocumented instructions.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2414 bytes (542B / 29% larger). Root causes:
+SDCC: 1872 bytes, Clang: 2393 bytes (521B / 28% larger). Root causes:
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **IY prefix overhead** (~35B): 35 FD-prefixed instructions across 10 functions. IY is used to hold values across calls (only callee-saved register besides IX/FP). CostPerUse=2 doesn't help because the alternative (spilling) is even more expensive.
 3. **Register pressure / spills** (~80B): Clang spills more conservatively than SDCC.
