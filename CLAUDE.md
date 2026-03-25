@@ -146,7 +146,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - RLCA bit-7 test for signed comparisons (slt X,0 / sgt X,-1)
 - 16-bit right shift by 5-7 via byte swap + ADD HL,HL
 - Static stack (BSS-allocated locals, sequential per-function layout)
-- Direct BSS addressing for HL 16-bit spills (3B vs 6B IX-indexed)
+- Direct BSS addressing for all 16-bit spills: HL 3B, DE/BC/IX/IY 4B (vs 6B IX-indexed)
 - EXX-based ISR save/restore with +shadow-regs
 - Unused IX/IY setup removal
 - BC last in 16-bit allocation order
@@ -154,7 +154,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - IX/IY allocatable as general 16-bit registers (see below)
 - Undocumented LD for IX/IY→GR16 copies (4B, SP-safe — PUSH/POP is 3B but corrupts SP-relative addressing)
 - Register allocation hints: DE/BC preferred for ADD/SUB HL,rr operands (avoids IX/IY)
-- CostPerUse=1 on IX/IY reflects DD/FD prefix overhead in spill-vs-allocate decisions
+- CostPerUse: IX=1, IY=2 (IY higher because it's never FP, so allocator picks it freely; extra cost discourages low-pressure use)
 - Post-RA peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
@@ -199,12 +199,14 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2421 bytes (549B / 29% larger). Root causes:
-1. **IX frame overhead** (~150B): PUSH IX + LD IX,addr + POP IX per function. hasFP=false with static-stack would save this but has a runtime bug (parked).
-2. **IX-indexed spills** (~100B): LD (IX+d) = 3B per access vs SDCC's direct 1B access.
-3. **Register pressure** (~80B): Clang spills more conservatively than SDCC.
+SDCC: 1872 bytes, Clang: 2401 bytes (529B / 28% larger). Root causes:
+1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
+2. **IY prefix overhead** (~35B): 35 FD-prefixed instructions across 10 functions. IY is used to hold values across calls (only callee-saved register besides IX/FP). CostPerUse=2 doesn't help because the alternative (spilling) is even more expensive.
+3. **Register pressure / spills** (~80B): Clang spills more conservatively than SDCC.
 4. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.
 5. **DJNZ not firing** (~30B): Infrastructure exists but B is always occupied.
+
+Top 3 worst functions: fdc_read_data (+95B), check_sysfile (+59B), lookup_sectors (+54B). Optimization plan in `glowing-bouncing-dream.md`.
 
 **PUSH/POP for IX/IY copies corrupts SP**: Using `PUSH IX; POP DE` (3B) instead of `LD E,IXL; LD D,IXH` (4B) saves 1 byte but modifies SP, breaking SP-relative addressing in surrounding code. Always use undocumented LD for IX/IY extraction in `copyPhysReg`.
 
