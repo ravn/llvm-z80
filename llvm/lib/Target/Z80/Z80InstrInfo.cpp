@@ -1797,6 +1797,14 @@ bool Z80InstrInfo::analyzeBranch(MachineBasicBlock &MBB,
       continue;
     }
 
+    // DJNZ combines DEC B (side effect) with JR NZ (branch). It can't be
+    // removed/re-inserted by the branch framework without losing the DEC B,
+    // so we report the block as unanalyzable. BranchRelaxation will still
+    // check isBranchOffsetInRange (DJNZ has ±127, same as JR) and leave it
+    // alone when in range.
+    if (I->getOpcode() == Z80::DJNZ_e)
+      return true;
+
     // Unknown terminator
     return true;
   }
@@ -1880,6 +1888,11 @@ unsigned Z80InstrInfo::removeBranch(MachineBasicBlock &MBB,
                 Opc == Z80::JP_NC_nn;
     bool isJR = Opc == Z80::JR_e || Opc == Z80::JR_Z_e || Opc == Z80::JR_NZ_e ||
                 Opc == Z80::JR_C_e || Opc == Z80::JR_NC_e;
+    // DJNZ has a DEC B side effect. analyzeBranch marks DJNZ blocks as
+    // unanalyzable, so BranchRelaxation won't call removeBranch for them.
+    // Stop here to preserve the side effect if any other pass calls us.
+    if (Opc == Z80::DJNZ_e)
+      break;
     if (!isJP && !isJR)
       break;
 
@@ -2230,7 +2243,8 @@ bool Z80InstrInfo::isBranchOffsetInRange(unsigned BranchOpc,
   case Z80::JR_NZ_e:
   case Z80::JR_C_e:
   case Z80::JR_NC_e:
-    // JR uses a signed 8-bit offset from PC after the 2-byte instruction.
+  case Z80::DJNZ_e:
+    // JR/DJNZ use a signed 8-bit offset from PC after the 2-byte instruction.
     // BrOffset is from the start of the instruction, so adjust by +2.
     return (BrOffset - 2) >= -128 && (BrOffset - 2) <= 127;
   default:
@@ -2251,6 +2265,7 @@ Z80InstrInfo::getBranchDestBlock(const MachineInstr &MI) const {
   case Z80::JR_NZ_e:
   case Z80::JR_C_e:
   case Z80::JR_NC_e:
+  case Z80::DJNZ_e:
     return MI.getOperand(0).getMBB();
   default:
     llvm_unreachable("unexpected opcode in getBranchDestBlock");
