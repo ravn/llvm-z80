@@ -56,9 +56,8 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: IX used as FP for now. The hasFP=false path has a runtime
-  // bug — needs a detailed debugging session to isolate. Parked.
-  // See plan: glowing-bouncing-dream.md
+  // Static stack: hasFP=false has a runtime bug (PROM hangs). The ED-prefix
+  // relocation fix (c95f800) was necessary but not sufficient. Remains parked.
   if (STI.staticStack())
     return true;
 

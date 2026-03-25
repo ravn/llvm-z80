@@ -112,6 +112,9 @@ def AF : Z80RegPair<33, "af", F, A>;
 // CostPerUse = [1]: every instruction using IX/IY costs +1 byte (DD/FD prefix).
 // The greedy allocator uses this to prefer spilling over allocating IX/IY when
 // a cheaper register would suffice with a short spill/reload sequence.
+// When IX is allocatable (hasFP=false), CostPerUse=2 discourages the
+// register allocator from using IX for short-lived values (each use adds
+// a DD prefix byte, plus CSR PUSH/POP overhead when first allocated).
 def IX : Z80RegPair<34, "ix", IXL, IXH> { let CostPerUse = [1]; }
 // IY costs more than IX: IY is never a frame pointer so the allocator picks
 // it freely, but every FD-prefixed instruction is +1 byte.  CostPerUse=2
