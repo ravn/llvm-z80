@@ -56,11 +56,8 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: hasFP=false is CORRECT (BSS size, offset, A-clobber bugs
-  // all fixed) but has a runtime failure in the RC700 PROM (hangs after
-  // banner display).  Root cause not yet identified.  Keep hasFP=true.
-  // To enable hasFP=false, also need: caller-saved IX in getCalleeSavedRegs,
-  // AllReg call preserved mask, and RegMask on CALL instructions.
+  // Static stack: hasFP=false has a runtime bug (PROM hangs after banner).
+  // Keep hasFP=true until diagnosed.
   if (STI.staticStack())
     return true;
 
