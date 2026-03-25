@@ -138,10 +138,14 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(Z80::FLAGS);
 
   // IX: reserved when used as frame pointer (hasFP=true), free otherwise.
-  // IY: always allocatable on Z80 (never used as FP).
+  // IY: reserved unless +undocumented is enabled.  Without +undocumented,
+  // IY copies and sub-register ops require undocumented Z80 instructions
+  // which MAME (and some hardware) may not handle correctly.
   const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
   if (TFI->hasFP(MF))
     Reserved.set(Z80::IX);
+  if (!STI.hasUndocumented())
+    Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
     Reserved.set(Z80::IX);
     Reserved.set(Z80::IY);

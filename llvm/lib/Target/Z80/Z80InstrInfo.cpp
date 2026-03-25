@@ -269,18 +269,26 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     Register SrcLo = TRI->getSubReg(SrcReg, Z80::sub_lo);
     Register SrcHi = TRI->getSubReg(SrcReg, Z80::sub_hi);
     if (DstLo && DstHi && SrcLo && SrcHi) {
-      unsigned LoOp = Z80::getLD8RegOpcode(DstLo, SrcLo);
-      unsigned HiOp = Z80::getLD8RegOpcode(DstHi, SrcHi);
-      if (LoOp && HiOp) {
-        BuildMI(MBB, I, DL, get(LoOp));
-        BuildMI(MBB, I, DL, get(HiOp));
-        return;
+      // Without +undocumented, skip 8-bit LD for IX/IY sub-registers
+      // (IXH/IXL/IYH/IYL ops are undocumented).  Fall through to PUSH/POP.
+      bool NeedsUndoc = Z80::IR16RegClass.contains(DestReg) ||
+                         Z80::IR16RegClass.contains(SrcReg);
+      if (!NeedsUndoc || STI->hasUndocumented()) {
+        unsigned LoOp = Z80::getLD8RegOpcode(DstLo, SrcLo);
+        unsigned HiOp = Z80::getLD8RegOpcode(DstHi, SrcHi);
+        if (LoOp && HiOp) {
+          BuildMI(MBB, I, DL, get(LoOp));
+          BuildMI(MBB, I, DL, get(HiOp));
+          return;
+        }
       }
     }
   }
 
   // Handle 16-bit register copies involving IX/IY using PUSH/POP sequence.
-  // PUSH IX; POP DE = 3B (cheaper than LD E,IXL; LD D,IXH = 4B undocumented).
+  // PUSH src; POP dest = 3B.  Used as fallback when the 8-bit LD path above
+  // didn't fire (e.g. IX/IY sub-register LD failed to find valid opcodes),
+  // and also for documented-only IX/IY copies without +undocumented.
   if ((Z80::GR16RegClass.contains(DestReg) ||
        Z80::IR16RegClass.contains(DestReg)) &&
       (Z80::GR16RegClass.contains(SrcReg) ||
