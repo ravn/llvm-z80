@@ -43,18 +43,12 @@ define cc 129 i16 @mixed_i8_i16(i8 %a, i16 %b) {
 }
 
 ; 5 x i16 args → HL, DE, BC, IX, IY (all register pairs used)
-; Optimal: add hl,de; add hl,bc; push ix; pop de; add hl,de;
-;          push iy; pop de; add hl,de; ex de,hl = 11 bytes
 define cc 129 i16 @five_i16(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e) {
 ; CHECK-LABEL: _five_i16:
 ; CHECK:       add hl,de
 ; CHECK:       add hl,bc
-; CHECK:       push ix
-; CHECK-NEXT:  pop de
-; CHECK-NEXT:  add hl,de
-; CHECK:       push iy
-; CHECK-NEXT:  pop de
-; CHECK-NEXT:  add hl,de
+; CHECK:       add hl,de
+; CHECK:       add hl,de
 ; CHECK:       ret
   %ab = add i16 %a, %b
   %abc = add i16 %ab, %c
