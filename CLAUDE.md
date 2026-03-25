@@ -190,11 +190,11 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
-- **hasFP=false for static-stack**: Would save ~150B by freeing IX. Runtime bug undiagnosed — SPILL_GR16 is expanded in both expandPostRAPseudo (Z80InstrInfo.cpp:887, has its own BSS path) and eliminateFrameIndex (Z80RegisterInfo.cpp:1116). The two paths may conflict. Debugging plan in `glowing-bouncing-dream.md`.
+- **hasFP=false for static-stack**: Runtime bug (PROM hangs after banner). ED-prefix relocation fix (c95f800) was necessary but not sufficient. Additional finding: even when working, hasFP=false produces LARGER code because the regalloc uses IX as callee-saved (26 PUSH IX vs 10), adding CSR overhead that exceeds frame setup savings. Needs both the runtime bug fixed AND a strategy to limit IX CSR allocation. IX CostPerUse=2 with hasFP=false triggers a separate codegen bug.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
-- Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
+- Direct BSS for DE/BC spills: now uses ED-prefix LD (addr),DE/BC (4B). Issue #8 resolved.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
