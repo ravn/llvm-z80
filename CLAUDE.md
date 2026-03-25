@@ -190,11 +190,11 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
-- **hasFP=false for static-stack**: Runtime bug (PROM hangs after banner). ED-prefix relocation fix (c95f800) was necessary but not sufficient. Additional finding: even when working, hasFP=false produces LARGER code because the regalloc uses IX as callee-saved (26 PUSH IX vs 10), adding CSR overhead that exceeds frame setup savings. Needs both the runtime bug fixed AND a strategy to limit IX CSR allocation. IX CostPerUse=2 with hasFP=false triggers a separate codegen bug.
+- **hasFP=false for static-stack** (issue #11): Three sub-bugs: BSS size includes CSR (#9), SPILL/RELOAD_GR8 clobbers A for undocumented regs (#10), and IX CSR overhead exceeds frame setup savings (regalloc uses IX freely as callee-saved → 26 PUSH IX vs 10). All three must be fixed for hasFP=false to both work correctly and produce smaller code.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
-- Direct BSS for DE/BC spills: now uses ED-prefix LD (addr),DE/BC (4B). Issue #8 resolved.
+- Direct BSS for DE/BC spills: resolved — now uses ED-prefix LD (addr),DE/BC (4B).
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
