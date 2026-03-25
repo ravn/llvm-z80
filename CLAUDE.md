@@ -156,6 +156,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - Register allocation hints: DE/BC preferred for ADD/SUB HL,rr operands (avoids IX/IY)
 - CostPerUse: IX=1, IY=2 (IY higher because it's never FP, so allocator picks it freely; extra cost discourages low-pressure use)
 - Post-RA peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr
+- RegMask on CALL instructions: register allocator properly tracks call-clobbered registers
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
 With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit pairs:
@@ -190,7 +191,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
-- **hasFP=false for static-stack**: Codegen is now CORRECT (bugs #9, #10 fixed, CP/M boots) but 32B larger than hasFP=true (2433 vs 2401) because regalloc uses IX as callee-saved across calls. Need to reduce IX CSR overhead (issue #12) before enabling.
+- **hasFP=false for static-stack**: Codegen is correct but has a runtime bug (PROM hangs after banner display, no CP/M boot). The approach to make it smaller: caller-saved IX via AllReg CSR + RegMask on CALL + hasFP=false. RegMask infrastructure is committed; CSR/hasFP changes parked until the runtime bug is diagnosed. Issue #12.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
@@ -199,7 +200,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2401 bytes (529B / 28% larger). Root causes:
+SDCC: 1872 bytes, Clang: 2414 bytes (542B / 29% larger). Root causes:
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **IY prefix overhead** (~35B): 35 FD-prefixed instructions across 10 functions. IY is used to hold values across calls (only callee-saved register besides IX/FP). CostPerUse=2 doesn't help because the alternative (spilling) is even more expensive.
 3. **Register pressure / spills** (~80B): Clang spills more conservatively than SDCC.
