@@ -335,8 +335,7 @@ void Z80AsmPrinter::emitFunctionBodyEnd() {
   const MachineFrameInfo &MFI = MF->getFrameInfo();
   const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
   if (STI.staticStack() && MFI.getStackSize() > 0 &&
-      MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects() &&
-      TFI->hasFP(*MF)) {
+      MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects()) {
     MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
     MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
     bool IsISR = MF->getFunction().hasFnAttribute("interrupt");
