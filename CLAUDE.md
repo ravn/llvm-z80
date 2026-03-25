@@ -157,6 +157,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - CostPerUse: IX=1, IY=2 (IY higher because it's never FP, so allocator picks it freely; extra cost discourages low-pressure use)
 - Post-RA peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr
 - RegMask on CALL instructions: register allocator properly tracks call-clobbered registers
+- DJNZ for loop counters: GR8 order (D,E,H,L,C,B,A) keeps B available; hint + peephole chain fires for `do { } while(--n)` loops. Limitation: nested loops get DJNZ on outer loop only (hint lacks depth info); loops with CALL can't use DJNZ (B is caller-saved)
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
 With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit pairs:
@@ -193,7 +194,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 ### Known Non-Working / Deferred
 - **hasFP=false for static-stack**: Codegen is correct but has a runtime bug (PROM hangs after banner display, no CP/M boot). The approach to make it smaller: caller-saved IX via AllReg CSR + RegMask on CALL + hasFP=false. RegMask infrastructure is committed; CSR/hasFP changes parked until the runtime bug is diagnosed. Issue #12.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
-- DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
+- DJNZ nested loop depth: DJNZ fires but on outer loop of nested pairs (hint can't distinguish depth). Inner-loop DJNZ would need pre-RA loop depth analysis
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
 - Direct BSS for DE/BC spills: resolved — now uses ED-prefix LD (addr),DE/BC (4B).
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
@@ -207,7 +208,7 @@ SDCC: 1872 bytes, Clang: 2393 bytes (521B / 28% larger). Root causes:
 2. **IY prefix overhead** (~35B): 35 FD-prefixed instructions across 10 functions. IY is used to hold values across calls (only callee-saved register besides IX/FP). CostPerUse=2 doesn't help because the alternative (spilling) is even more expensive.
 3. **Register pressure / spills** (~80B): Clang spills more conservatively than SDCC.
 4. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.
-5. **DJNZ not firing** (~30B): Infrastructure exists but B is always occupied.
+5. **DJNZ** (~30B): Now fires for single loops; nested loops only get outer DJNZ. Savings depend on loop count in PROM (needs integration test verification).
 
 Top 3 worst functions: fdc_read_data (+95B), check_sysfile (+59B), lookup_sectors (+54B). Optimization plan in `glowing-bouncing-dream.md`.
 

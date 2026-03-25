@@ -535,57 +535,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       Changed = true;
     }
 
-    // --- Post-RA remapping: DEC r; JR NZ → DEC B; JR NZ when B is free ---
-    // If B (and the BC pair) are dead throughout a single-BB tight loop
-    // (only contains DEC r + JR NZ), rename r→B for the DJNZ peephole.
-    if (STI.hasZ80()) {
-      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-           MII != MIE; ++MII) {
-        unsigned DecOpc = MII->getOpcode();
-        MCPhysReg CounterReg = 0;
-        if (DecOpc == Z80::DEC_D) CounterReg = Z80::D;
-        else if (DecOpc == Z80::DEC_E) CounterReg = Z80::E;
-        else if (DecOpc == Z80::DEC_H) CounterReg = Z80::H;
-        else if (DecOpc == Z80::DEC_L) CounterReg = Z80::L;
-        else continue;
-
-        auto NextIt = std::next(MII);
-        if (NextIt == MIE || NextIt->getOpcode() != Z80::JR_NZ_e)
-          continue;
-        MachineBasicBlock *LoopTarget = NextIt->getOperand(0).getMBB();
-        if (LoopTarget != &MBB)
-          continue;
-
-        // Only remap tight loops: MBB contains ONLY the DEC + JR NZ.
-        unsigned InstrCount = 0;
-        for (auto &MI2 : MBB) InstrCount++;
-        if (InstrCount != 2)
-          continue;
-
-        // B may be live across the loop (holding an outer counter).
-        // Use PUSH BC / DJNZ / POP BC to borrow B temporarily.
-        // Cost: PUSH BC (1B) + POP BC (1B) + DJNZ (2B) = 4B
-        // vs:   DEC r (1B) + JR NZ (2B) = 3B
-        // Net: +1 byte. NOT profitable for a single inner loop.
-        //
-        // BUT: if we also convert the middle loop's DEC; JR NZ to DJNZ,
-        // the PUSH/POP cost is shared: 1+1+2+2 = 6B vs 3+3 = 6B → break even.
-        // For 3+ loops sharing the PUSH/POP: saves 1B per extra loop.
-        //
-        // For now, only convert when B is actually dead (free DJNZ).
-        auto BLiveness = MBB.computeRegisterLiveness(TRI, Z80::B, MBB.begin());
-        if (BLiveness == MachineBasicBlock::LQR_Dead) {
-          LLVM_DEBUG(dbgs() << "  DJNZ remap: "
-                            << printReg(CounterReg, TRI)
-                            << " → B (B is dead)\n");
-          MII->setDesc(TII->get(Z80::DEC_B));
-          Changed = true;
-          break;
-        }
-        // B is live — skip for now.
-        // TODO: PUSH BC; DJNZ; POP BC when profitable.
-      }
-    }
+    // NOTE: A previous "DEC r → DEC B remap" for tight self-loops was here
+    // but had a correctness bug: it changed the DEC opcode without ensuring
+    // the counter value was actually in B (the predecessor still loads into r).
+    // Removed. The DEC B; JR NZ → DJNZ peephole below handles all cases
+    // correctly when the register allocator places the counter in B (enabled
+    // by the B-last GR8 allocation order + DJNZ register hint).
 
     // --- Peephole: DEC B; JR NZ → DJNZ (Z80 only) ---
     // DJNZ is a 2-byte instruction that decrements B and branches if non-zero.

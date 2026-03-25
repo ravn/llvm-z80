@@ -1674,10 +1674,16 @@ bool Z80RegisterInfo::getRegAllocationHints(
     // JR and should NOT get the B hint.
     const MachineBasicBlock *DecMBB = Use.getParent();
     bool FeedsCondNZ = false;
-    auto Term = DecMBB->getLastNonDebugInstr();
-    if (Term != DecMBB->end()) {
-      unsigned TermOpc = Term->getOpcode();
-      FeedsCondNZ = (TermOpc == Z80::JR_NZ_e || TermOpc == Z80::JP_NZ_nn);
+    // Scan all terminators, not just the last — an unconditional branch
+    // after the conditional (non-fallthrough exit) would hide JP_NZ.
+    for (auto TI = DecMBB->terminators().begin(),
+              TE = DecMBB->terminators().end();
+         TI != TE; ++TI) {
+      unsigned TermOpc = TI->getOpcode();
+      if (TermOpc == Z80::JR_NZ_e || TermOpc == Z80::JP_NZ_nn) {
+        FeedsCondNZ = true;
+        break;
+      }
     }
     if (FeedsCondNZ) {
       // Inner loop counter: hint B for DJNZ.

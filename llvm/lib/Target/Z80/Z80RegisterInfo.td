@@ -166,8 +166,10 @@ class Z80Reg16Class<dag RegList>: Z80RegClass<[i16], 8, RegList>;
 //  8-bit register classes
 //===----------------------------------------------------------------------===//
 
-// Main 8-bit GPRs: B, C, D, E, H, L, A
-def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
+// Main 8-bit GPRs: D, E, H, L preferred; B reserved for DJNZ.
+// Order mirrors GR16 (DE first, HL second, BC last) so that B stays
+// available for loop-counter hints that enable DJNZ.
+def GR8 : Z80Reg8Class<(add D, E, H, L, C, B, A)>;
 
 // Shadow-only register class (for constraints that need shadow specifically)
 def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;

@@ -47,7 +47,7 @@ define i16 @call_i16_4args() {
 ; The spilled arg1 must be reloaded correctly, not dropped
 define signext i8 @add3_i8(i8 signext %a, i8 signext %b, i8 signext %c) noinline {
 ; CHECK-LABEL: _add3_i8:
-; CHECK:       add a,b
+; CHECK:       add a,d
   %ab = add i8 %b, %a
   %abc = add i8 %ab, %c
   ret i8 %abc
