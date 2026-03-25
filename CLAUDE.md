@@ -190,7 +190,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
-- **hasFP=false for static-stack** (issue #11): Three sub-bugs: BSS size includes CSR (#9), SPILL/RELOAD_GR8 clobbers A for undocumented regs (#10), and IX CSR overhead exceeds frame setup savings (regalloc uses IX freely as callee-saved → 26 PUSH IX vs 10). All three must be fixed for hasFP=false to both work correctly and produce smaller code.
+- **hasFP=false for static-stack**: Codegen is now CORRECT (bugs #9, #10 fixed, CP/M boots) but 32B larger than hasFP=true (2433 vs 2401) because regalloc uses IX as callee-saved across calls. Need to reduce IX CSR overhead (issue #12) before enabling.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
