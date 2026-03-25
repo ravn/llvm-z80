@@ -198,7 +198,8 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Direct BSS for DE/BC spills: resolved — now uses ED-prefix LD (addr),DE/BC (4B).
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
-- **Undocumented instructions emitted without +undocumented** (issue #13): FIXED. IY reserved without +undocumented; copyPhysReg skips undocumented IX/IY sub-register LD and falls through to PUSH/POP. PROM now has zero undocumented instructions.
+- **Undocumented instructions without +undocumented** (issue #13): FIXED. IY reserved without +undocumented; copyPhysReg falls through to PUSH/POP for IX/IY copies. PROM has zero undocumented instructions.
+- **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
 SDCC: 1872 bytes, Clang: 2393 bytes (521B / 28% larger). Root causes:
