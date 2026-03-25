@@ -56,14 +56,12 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack without fixed objects (stack args): IX is NOT needed as FP.
-  // Locals live in BSS with direct addressing. Functions with stack arguments
-  // still need IX for IX+d access to those args.
-  if (STI.staticStack()) {
-    if (MFI.getNumFixedObjects() > 0)
-      return true;
-    return false;
-  }
+  // Static stack: IX used as FP for now. The hasFP=false path has a runtime
+  // bug (BSS addressing offset calculation issue). Needs investigation.
+  // TODO: enable hasFP=false for static-stack without fixed objects once
+  // the offset calculation in eliminateFrameIndex is verified correct.
+  if (STI.staticStack())
+    return true;
 
   if (MF.getTarget().Options.DisableFramePointerElim(MF))
     return true;
