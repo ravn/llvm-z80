@@ -844,11 +844,20 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     unsigned Opcode = getStoreIXdOpcode(SrcReg);
     if (!Opcode) {
       // Undocumented IXH/IXL/IYH/IYL: route through A.
-      // LD A,src; LD (IX+d),A
+      // LD A,src; LD (IX+d),A — must save A if live.
       unsigned CopyToA = Z80::getLD8RegOpcode(Z80::A, SrcReg);
       if (!CopyToA) return false;
+      LivePhysRegs LiveRegs(*TRI);
+      LiveRegs.addLiveOuts(MBB);
+      for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+        LiveRegs.stepBackward(*I);
+      bool ALive = LiveRegs.contains(Z80::A);
+      if (ALive)
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_AF));
       BuildMI(MBB, MI, DL, get(CopyToA));
       BuildMI(MBB, MI, DL, get(Z80::LD_IXd_A)).addImm(Offset);
+      if (ALive)
+        BuildMI(MBB, MI, DL, get(Z80::POP_AF));
       MI.eraseFromParent();
       return true;
     }
@@ -871,11 +880,20 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     unsigned Opcode = getLoadIXdOpcode(DstReg);
     if (!Opcode) {
       // Undocumented IXH/IXL/IYH/IYL: route through A.
-      // LD A,(IX+d); LD dst,A
+      // LD A,(IX+d); LD dst,A — must save A if live.
       unsigned CopyFromA = Z80::getLD8RegOpcode(DstReg, Z80::A);
       if (!CopyFromA) return false;
+      LivePhysRegs LiveRegs(*TRI);
+      LiveRegs.addLiveOuts(MBB);
+      for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+        LiveRegs.stepBackward(*I);
+      bool ALive = LiveRegs.contains(Z80::A);
+      if (ALive)
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_AF));
       BuildMI(MBB, MI, DL, get(Z80::LD_A_IXd)).addImm(Offset);
       BuildMI(MBB, MI, DL, get(CopyFromA));
+      if (ALive)
+        BuildMI(MBB, MI, DL, get(Z80::POP_AF));
       MI.eraseFromParent();
       return true;
     }

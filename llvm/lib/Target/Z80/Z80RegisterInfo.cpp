@@ -1076,6 +1076,8 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       case Z80::B: return Z80::LD_A_B; case Z80::C: return Z80::LD_A_C;
       case Z80::D: return Z80::LD_A_D; case Z80::E: return Z80::LD_A_E;
       case Z80::H: return Z80::LD_A_H; case Z80::L: return Z80::LD_A_L;
+      case Z80::IXH: return Z80::LD_A_IXH; case Z80::IXL: return Z80::LD_A_IXL;
+      case Z80::IYH: return Z80::LD_A_IYH; case Z80::IYL: return Z80::LD_A_IYL;
       case Z80::A: return 0; // already in A
       default: return 0;
       }
@@ -1086,30 +1088,46 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       case Z80::B: return Z80::LD_B_A; case Z80::C: return Z80::LD_C_A;
       case Z80::D: return Z80::LD_D_A; case Z80::E: return Z80::LD_E_A;
       case Z80::H: return Z80::LD_H_A; case Z80::L: return Z80::LD_L_A;
+      case Z80::IXH: return Z80::LD_IXH_A; case Z80::IXL: return Z80::LD_IXL_A;
+      case Z80::IYH: return Z80::LD_IYH_A; case Z80::IYL: return Z80::LD_IYL_A;
       case Z80::A: return 0; // already in A
       default: return 0;
       }
     };
 
     if (Opc == Z80::SPILL_GR8) {
-      // Store 8-bit reg to BSS via A: LD A,r; LD (addr),A = 4B (or 3B if A)
+      // Store 8-bit reg to BSS via A: LD A,r; LD (addr),A
+      // Must save/restore A if it's live (not the source register).
       Register SrcReg = MI->getOperand(0).getReg();
       unsigned CopyOpc = getLdAFromReg(SrcReg);
+      bool NeedSaveA = (CopyOpc != 0) &&
+          isRegLiveAt(Z80::A, MBB, std::next(MI->getIterator()), this);
+      if (NeedSaveA)
+        BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_AF));
       if (CopyOpc)
         BuildMI(MBB, MI, DL, TII.get(CopyOpc));
       auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A));
       addBSSAddr(MIB);
+      if (NeedSaveA)
+        BuildMI(MBB, MI, DL, TII.get(Z80::POP_AF));
       MI->eraseFromParent();
       return false;
     }
     if (Opc == Z80::RELOAD_GR8) {
-      // Load 8-bit reg from BSS via A: LD A,(addr); LD r,A = 4B (or 3B if A)
+      // Load 8-bit reg from BSS via A: LD A,(addr); LD r,A
+      // Must save/restore A if it's live (not the destination register).
       Register DstReg = MI->getOperand(0).getReg();
+      unsigned CopyOpc = getLdRegFromA(DstReg);
+      bool NeedSaveA = (CopyOpc != 0) &&
+          isRegLiveAt(Z80::A, MBB, std::next(MI->getIterator()), this);
+      if (NeedSaveA)
+        BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_AF));
       auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_nnind));
       addBSSAddr(MIB);
-      unsigned CopyOpc = getLdRegFromA(DstReg);
       if (CopyOpc)
         BuildMI(MBB, MI, DL, TII.get(CopyOpc));
+      if (NeedSaveA)
+        BuildMI(MBB, MI, DL, TII.get(Z80::POP_AF));
       MI->eraseFromParent();
       return false;
     }
