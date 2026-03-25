@@ -145,7 +145,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - LDIR/LDDR for memcpy/memset
 - RLCA bit-7 test for signed comparisons (slt X,0 / sgt X,-1)
 - 16-bit right shift by 5-7 via byte swap + ADD HL,HL
-- Static stack with overlay (call-graph-based BSS sharing)
+- Static stack (BSS-allocated locals, sequential per-function layout)
 - Direct BSS addressing for HL 16-bit spills (3B vs 6B IX-indexed)
 - EXX-based ISR save/restore with +shadow-regs
 - Unused IX/IY setup removal
@@ -168,7 +168,7 @@ With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit 
 
 ### IX/IY as Allocatable Registers
 IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix overhead). This gives the register allocator 5 pairs (DE, HL, BC, IX, IY) instead of 3.
-- With `+static-stack` and no stack arguments: `hasFP=false`, IX is free for allocation
+- With `+static-stack` and no stack arguments: hasFP=false would free IX for allocation, but has a runtime bug (parked — see Known Non-Working)
 - IY is always allocatable on Z80 (never used as frame pointer)
 - Functions with stack arguments (fixed objects) still use IX as frame pointer
 - All ~440 undocumented Z80 instructions defined (gated by `+undocumented`): IXH/IXL/IYH/IYL 8-bit ops, SLL, DDCB/FDCB register-copy variants, IN (C), OUT (C),0
@@ -190,6 +190,8 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
+- **hasFP=false for static-stack**: Would save ~150B by freeing IX. Runtime bug undiagnosed — SPILL_GR16 is expanded in both expandPostRAPseudo (Z80InstrInfo.cpp:887, has its own BSS path) and eliminateFrameIndex (Z80RegisterInfo.cpp:1116). The two paths may conflict. Debugging plan in `glowing-bouncing-dream.md`.
+- **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
 - DJNZ: infrastructure complete but never fires (B always occupied by outer loops)
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
 - Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
@@ -198,7 +200,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
 SDCC: 1872 bytes, Clang: 2421 bytes (549B / 29% larger). Root causes:
-1. **IX frame overhead** (~150B): PUSH IX + LD IX,addr + POP IX per function. hasFP=false with static-stack saves this but has a BSS offset bug (TODO: fix).
+1. **IX frame overhead** (~150B): PUSH IX + LD IX,addr + POP IX per function. hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **IX-indexed spills** (~100B): LD (IX+d) = 3B per access vs SDCC's direct 1B access.
 3. **Register pressure** (~80B): Clang spills more conservatively than SDCC.
 4. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.

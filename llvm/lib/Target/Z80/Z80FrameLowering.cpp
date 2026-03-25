@@ -57,9 +57,8 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
     return true;
 
   // Static stack: IX used as FP for now. The hasFP=false path has a runtime
-  // bug (BSS addressing offset calculation issue). Needs investigation.
-  // TODO: enable hasFP=false for static-stack without fixed objects once
-  // the offset calculation in eliminateFrameIndex is verified correct.
+  // bug — needs a detailed debugging session to isolate. Parked.
+  // See plan: glowing-bouncing-dream.md
   if (STI.staticStack())
     return true;
 

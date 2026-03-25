@@ -21,8 +21,6 @@
 #include "Z80RegisterInfo.h"
 #include "Z80Subtarget.h"
 
-#include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/CodeGen/AsmPrinter.h"
@@ -91,12 +89,8 @@ private:
     MCSymbol *EndSym;
     uint64_t Size;
     StringRef Name;
-    bool IsISR = false;             // interrupt handler (must not overlap)
   };
   SmallVector<StaticFrame> StaticFrames;
-  // Full call graph (all functions, including non-static-frame ones).
-  // Needed to compute transitive ancestry for correct overlaying.
-  StringMap<SmallVector<StringRef>> CallGraph;
 };
 
 // Simple pseudo-instructions have their lowering (with expansion to real
@@ -319,176 +313,38 @@ void Z80AsmPrinter::emitJumpTableInfo() {
 }
 
 void Z80AsmPrinter::emitFunctionBodyEnd() {
-  // Record call edges for ALL functions (needed for transitive overlay analysis).
-  SmallVector<StringRef> Callees;
-  for (const auto &MBB : *MF)
-    for (const auto &MI : MBB)
-      if (MI.isCall())
-        for (const auto &MO : MI.operands())
-          if (MO.isGlobal())
-            Callees.push_back(MO.getGlobal()->getName());
-  if (!Callees.empty())
-    CallGraph[MF->getName()] = std::move(Callees);
-
   // If this function uses static stack, record it for BSS emission.
   const auto &STI = MF->getSubtarget<Z80Subtarget>();
   const MachineFrameInfo &MFI = MF->getFrameInfo();
-  const TargetFrameLowering *TFI = MF->getSubtarget().getFrameLowering();
   if (STI.staticStack() && MFI.getStackSize() > 0 &&
       MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects()) {
     MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
     MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
-    bool IsISR = MF->getFunction().hasFnAttribute("interrupt");
     StaticFrames.push_back(
-        StaticFrame{BaseSym, EndSym, MFI.getStackSize(), MF->getName(), IsISR});
+        StaticFrame{BaseSym, EndSym, MFI.getStackSize(), MF->getName()});
   }
 }
 
 void Z80AsmPrinter::emitEndOfAsmFile(Module &M) {
-  // Emit BSS allocations for static stack frames with overlay optimization.
-  // Functions that are never simultaneously active (on different call branches)
-  // can share the same BSS memory, like a union.
+  // Emit BSS allocations for static stack frames.
+  // Each function gets its own sequential BSS area (no overlay).
   //
-  // Algorithm: each function's BSS offset = max over all callers of
-  // (caller_offset + caller_size). Functions on different branches of the call
-  // graph naturally get the same offset and overlap.
+  // TODO: overlay optimization (call-graph-based BSS sharing) is parked.
+  // The algorithm was implemented but has correctness issues when combined
+  // with hasFP=false and changed spill patterns.  Re-enable once the
+  // hasFP=false path is debugged and verified.
   if (StaticFrames.empty())
     return;
 
-  // Build name→index map for quick lookup.
-  StringMap<unsigned> FrameIndex;
-  for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I)
-    FrameIndex[StaticFrames[I].Name] = I;
-
-  // Mark ISR-reachable functions via BFS through the full call graph.
-  SmallVector<bool> IsISRReachable(StaticFrames.size(), false);
-  {
-    StringSet<> ISRReachableNames;
-    // BFS from ISR functions through the full call graph.
-    SmallVector<StringRef> Worklist;
-    for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I)
-      if (StaticFrames[I].IsISR) {
-        IsISRReachable[I] = true;
-        ISRReachableNames.insert(StaticFrames[I].Name);
-        Worklist.push_back(StaticFrames[I].Name);
-      }
-    while (!Worklist.empty()) {
-      StringRef Fn = Worklist.pop_back_val();
-      auto CGIt = CallGraph.find(Fn);
-      if (CGIt == CallGraph.end())
-        continue;
-      for (StringRef Callee : CGIt->second) {
-        if (ISRReachableNames.insert(Callee).second) {
-          Worklist.push_back(Callee);
-          auto FI = FrameIndex.find(Callee);
-          if (FI != FrameIndex.end())
-            IsISRReachable[FI->second] = true;
-        }
-      }
-    }
-  }
-
-  // Compute overlay offsets using the FULL call graph (including
-  // non-static-frame functions). This ensures transitive ancestry
-  // through frameless functions is correctly tracked.
-  //
-  // For each function in the call graph, track its "stack extent":
-  // the total static frame bytes of all ancestors on the call stack.
-  // A static-frame function's offset = its stack extent from callers.
-  SmallVector<uint64_t> Offsets(StaticFrames.size(), 0);
-  // extent[name] = max offset+size that any ancestor contributes.
-  // For static-frame functions, extent = offset + size.
-  // For non-static-frame functions, extent = max caller extent (passthrough).
-  StringMap<uint64_t> Extent;
-  bool Changed = true;
-  unsigned Iters = 0;
-  unsigned MaxIters = CallGraph.size() + StaticFrames.size() + 1;
-  while (Changed && Iters++ < MaxIters) {
-    Changed = false;
-    for (const auto &[Caller, Callees] : CallGraph) {
-      uint64_t CallerExtent = 0;
-      auto FI = FrameIndex.find(Caller);
-      if (FI != FrameIndex.end())
-        CallerExtent = Offsets[FI->second] + StaticFrames[FI->second].Size;
-      else {
-        auto EI = Extent.find(Caller);
-        if (EI != Extent.end())
-          CallerExtent = EI->second;
-      }
-      for (StringRef Callee : Callees) {
-        // Update callee's offset (if it has a static frame).
-        auto CFI = FrameIndex.find(Callee);
-        if (CFI != FrameIndex.end()) {
-          if (CallerExtent > Offsets[CFI->second]) {
-            Offsets[CFI->second] = CallerExtent;
-            Changed = true;
-          }
-        }
-        // Propagate extent through non-static-frame functions.
-        auto &CE = Extent[Callee];
-        uint64_t NewExtent = CallerExtent;
-        if (CFI != FrameIndex.end())
-          NewExtent = Offsets[CFI->second] + StaticFrames[CFI->second].Size;
-        if (NewExtent > CE) {
-          CE = NewExtent;
-          Changed = true;
-        }
-      }
-    }
-  }
-
-  // Compute max extent of non-ISR functions.
-  uint64_t MainExtent = 0;
-  for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I)
-    if (!IsISRReachable[I])
-      MainExtent = std::max(MainExtent, Offsets[I] + StaticFrames[I].Size);
-
-  // Shift ISR-reachable functions so they don't overlap with main code.
-  if (MainExtent > 0) {
-    uint64_t MinISR = UINT64_MAX;
-    for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I)
-      if (IsISRReachable[I])
-        MinISR = std::min(MinISR, Offsets[I]);
-    if (MinISR != UINT64_MAX) {
-      uint64_t Shift = MainExtent - MinISR;
-      for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I)
-        if (IsISRReachable[I])
-          Offsets[I] += Shift;
-    }
-  }
-
-  // Compute total BSS size.
-  uint64_t TotalSize = 0;
-  for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I)
-    TotalSize = std::max(TotalSize, Offsets[I] + StaticFrames[I].Size);
-
-  // Emit a single BSS region with per-function symbols at computed offsets.
   OutStreamer->switchSection(
       OutContext.getELFSection(".bss", ELF::SHT_NOBITS,
                               ELF::SHF_ALLOC | ELF::SHF_WRITE));
 
-  // Collect all labels (base and end) with their absolute offsets.
-  SmallVector<std::pair<uint64_t, MCSymbol *>> Labels;
-  for (unsigned I = 0, E = StaticFrames.size(); I < E; ++I) {
-    Labels.push_back({Offsets[I], StaticFrames[I].BaseSym});
-    Labels.push_back({Offsets[I] + StaticFrames[I].Size, StaticFrames[I].EndSym});
+  for (const auto &SF : StaticFrames) {
+    OutStreamer->emitLabel(SF.BaseSym);
+    OutStreamer->emitZeros(SF.Size);
+    OutStreamer->emitLabel(SF.EndSym);
   }
-  llvm::sort(Labels, [](const auto &A, const auto &B) {
-    return A.first < B.first;
-  });
-
-  // Emit labels at the right positions, filling gaps with zeros.
-  uint64_t Pos = 0;
-  for (const auto &[Off, Sym] : Labels) {
-    if (Off > Pos) {
-      OutStreamer->emitZeros(Off - Pos);
-      Pos = Off;
-    }
-    OutStreamer->emitLabel(Sym);
-  }
-  // Pad to total size.
-  if (TotalSize > Pos)
-    OutStreamer->emitZeros(TotalSize - Pos);
 }
 
 } // namespace
