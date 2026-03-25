@@ -152,7 +152,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - BC last in 16-bit allocation order
 - Conditional RET (branch-over-RET pattern)
 - IX/IY allocatable as general 16-bit registers (see below)
-- PUSH/POP preferred over undocumented LD for IX/IY→GR16 copies (3B vs 4B)
+- Undocumented LD for IX/IY→GR16 copies (4B, SP-safe — PUSH/POP is 3B but corrupts SP-relative addressing)
 - Register allocation hints: DE/BC preferred for ADD/SUB HL,rr operands (avoids IX/IY)
 - CostPerUse=1 on IX/IY reflects DD/FD prefix overhead in spill-vs-allocate decisions
 - Post-RA peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr
@@ -195,6 +195,16 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Direct BSS for DE/BC spills: clobbers HL. Needs liveness check. See issue #8.
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
+
+### Code Size: Clang vs SDCC (RC700 PROM)
+SDCC: 1872 bytes, Clang: 2421 bytes (549B / 29% larger). Root causes:
+1. **IX frame overhead** (~150B): PUSH IX + LD IX,addr + POP IX per function. hasFP=false with static-stack saves this but has a BSS offset bug (TODO: fix).
+2. **IX-indexed spills** (~100B): LD (IX+d) = 3B per access vs SDCC's direct 1B access.
+3. **Register pressure** (~80B): Clang spills more conservatively than SDCC.
+4. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.
+5. **DJNZ not firing** (~30B): Infrastructure exists but B is always occupied.
+
+**PUSH/POP for IX/IY copies corrupts SP**: Using `PUSH IX; POP DE` (3B) instead of `LD E,IXL; LD D,IXH` (4B) saves 1 byte but modifies SP, breaking SP-relative addressing in surrounding code. Always use undocumented LD for IX/IY extraction in `copyPhysReg`.
 
 ### Bug Reports
 File bugs in `ravn/llvm-z80` only, never upstream LLVM. Collect crash artifacts (preprocessed source, run script) into a zip.
