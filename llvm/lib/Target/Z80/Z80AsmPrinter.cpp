@@ -323,12 +323,13 @@ void Z80AsmPrinter::emitFunctionBodyEnd() {
     // saves live on the real stack via PUSH/POP, not in BSS.
     const Z80FunctionInfo *FI = MF->getInfo<Z80FunctionInfo>();
     uint64_t BSSSize = MFI.getStackSize() - FI->getCalleeSavedFrameSize();
-    if (BSSSize > 0) {
-      MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
-      MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
-      StaticFrames.push_back(
-          StaticFrame{BaseSym, EndSym, BSSSize, MF->getName()});
-    }
+    // Always emit sframe/sfrend symbols for static-stack functions with
+    // a stack frame.  Even if BSSSize=0 (only CSR saves), the SPILL_GR16
+    // expansion and UseStaticFrame prologue may reference __sfrend_.
+    MCSymbol *BaseSym = OutContext.getOrCreateSymbol("__sframe_" + MF->getName());
+    MCSymbol *EndSym = OutContext.getOrCreateSymbol("__sfrend_" + MF->getName());
+    StaticFrames.push_back(
+        StaticFrame{BaseSym, EndSym, BSSSize, MF->getName()});
   }
 }
 

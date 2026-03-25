@@ -919,7 +919,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
 
     // Static stack: use direct BSS addressing (3-4B vs 6B IX-indexed).
     // LD (addr),HL = 3B, LD (addr),DE/BC = 4B vs LD (IX+d),lo;LD (IX+d+1),hi = 6B.
-    // Only safe for non-reentrant code (static stack guarantees this).
+    // Works with both hasFP=true (IX→BSS) and hasFP=false (direct BSS).
     MachineFunction &MF = *MBB.getParent();
     if (STI->staticStack()) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(

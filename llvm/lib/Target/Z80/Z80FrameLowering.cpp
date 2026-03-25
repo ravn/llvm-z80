@@ -56,11 +56,11 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: hasFP=false is now CORRECT (BSS size, offset, and A-clobber
-  // bugs all fixed) but produces LARGER code (2433B vs 2401B) because the
-  // regalloc uses IX as callee-saved across calls, adding CSR PUSH/POP
-  // overhead that exceeds the frame setup savings.  Keep hasFP=true until
-  // IX is removed from Z80_CSR or a better allocation strategy is found.
+  // Static stack: hasFP=false is CORRECT (BSS size, offset, A-clobber bugs
+  // all fixed) but has a runtime failure in the RC700 PROM (hangs after
+  // banner display).  Root cause not yet identified.  Keep hasFP=true.
+  // To enable hasFP=false, also need: caller-saved IX in getCalleeSavedRegs,
+  // AllReg call preserved mask, and RegMask on CALL instructions.
   if (STI.staticStack())
     return true;
 
@@ -165,9 +165,13 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
       return;
 
     // Static stack: locals in BSS instead of the stack.
+    // Only if there are actual locals (StackSize > CalleeSavedFrameSize),
+    // not just CSR saves which live on the real stack.
     const auto &STI = MF.getSubtarget<Z80Subtarget>();
+    const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
     bool UseStaticFrame =
-        STI.staticStack() && StackSize > 0 &&
+        STI.staticStack() &&
+        StackSize > FI->getCalleeSavedFrameSize() &&
         MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
 
     BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_IX));
@@ -270,8 +274,10 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
 
     if (StackSize || NeedsFP) {
       const auto &STI = MF.getSubtarget<Z80Subtarget>();
+      const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
       bool UseStaticFrame =
-          STI.staticStack() && StackSize > 0 &&
+          STI.staticStack() &&
+          StackSize > FI->getCalleeSavedFrameSize() &&
           MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
 
       if (UseStaticFrame) {

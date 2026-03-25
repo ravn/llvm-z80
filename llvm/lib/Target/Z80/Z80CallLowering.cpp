@@ -996,6 +996,13 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
   for (Register Reg : ArgRegs)
     CallMI.addUse(Reg, RegState::Implicit);
 
+  // Add call-preserved register mask so the register allocator knows which
+  // registers survive across this call.  Without this, only the instruction's
+  // implicit Defs are considered clobbered.
+  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+  const uint32_t *Mask = TRI->getCallPreservedMask(MF, CC);
+  CallMI.addRegMask(Mask);
+
   // Compute callee-cleanup amount before emitting return value handling.
   // For callee-cleanup calls, ADJCALLSTACKUP must be emitted BEFORE sret loads
   // because the callee has already restored SP — PEI's SPAdj must reflect this
