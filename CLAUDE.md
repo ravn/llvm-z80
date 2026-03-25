@@ -122,7 +122,7 @@ LSR widens 8-bit loop counters to 16-bit and creates extra induction variables, 
 The FDC needs ~260ms after power-on. If delay timing is wrong (wrong DELAY_T constant for the compiler), the FDC Specify command fails and all disk operations fail with DISKETTE ERROR.
 
 ### The compiler is experimental — never assume generated code is correct
-Always test in MAME. The compiler has known bugs (pre-existing test failures in calling-conv.ll and large-frame.ll).
+Always test in MAME. The compiler is experimental and has known bugs. All 40 lit tests pass.
 
 ## Project Status
 
