@@ -903,7 +903,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // LD (addr),HL = 3B, LD (addr),DE/BC = 4B vs LD (IX+d),lo;LD (IX+d+1),hi = 6B.
     // Only safe for non-reentrant code (static stack guarantees this).
     MachineFunction &MF = *MBB.getParent();
-    if (STI->staticStack() && SrcReg != Z80::IY) {
+    if (STI->staticStack()) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
       if (SrcReg == Z80::HL) {
@@ -914,31 +914,37 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         MI.eraseFromParent();
         return true;
       }
-      if (SrcReg == Z80::DE || SrcReg == Z80::BC) {
-        // Store DE/BC through HL: copy to HL, store, restore HL if live.
-        // With PUSH/POP save: 2+2+3+2 = 9B (worse than IX 6B).
-        // Without save: 2+3 = 5B (saves 1B vs IX 6B).
-        LivePhysRegs LiveRegs(*TRI);
-        LiveRegs.addLiveOuts(MBB);
-        for (auto I = MBB.rbegin(); &*I != &MI; ++I)
-          LiveRegs.stepBackward(*I);
-        bool HLLive = LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
-        if (!HLLive) {
-          // HL is dead — safe to clobber. 5B vs 6B IX-indexed.
-          if (SrcReg == Z80::DE) {
-            BuildMI(MBB, MI, DL, get(Z80::LD_H_D));
-            BuildMI(MBB, MI, DL, get(Z80::LD_L_E));
-          } else {
-            BuildMI(MBB, MI, DL, get(Z80::LD_H_B));
-            BuildMI(MBB, MI, DL, get(Z80::LD_L_C));
-          }
-          auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_HL))
-              .addSym(EndSym).getInstr();
-          StoreMI->getOperand(0).setOffset(Offset);
-          MI.eraseFromParent();
-          return true;
-        }
-        // HL is live — fall through to IX-indexed.
+      if (SrcReg == Z80::DE) {
+        // LD (addr),DE = 4B (ED 53) vs 6B IX-indexed. Always wins.
+        auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_DE))
+            .addSym(EndSym).getInstr();
+        StoreMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (SrcReg == Z80::BC) {
+        // LD (addr),BC = 4B (ED 43) vs 6B IX-indexed. Always wins.
+        auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_BC))
+            .addSym(EndSym).getInstr();
+        StoreMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (SrcReg == Z80::IX) {
+        // LD (addr),IX = 4B (DD 22) vs 6B IX-indexed.
+        auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_IX))
+            .addSym(EndSym).getInstr();
+        StoreMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (SrcReg == Z80::IY) {
+        // LD (addr),IY = 4B (FD 22) vs 6B IX-indexed.
+        auto *StoreMI = BuildMI(MBB, MI, DL, get(Z80::LD_nnind_IY))
+            .addSym(EndSym).getInstr();
+        StoreMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
       }
     }
 
@@ -998,7 +1004,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
 
     // Static stack: use direct BSS addressing (3-4B vs 6B IX-indexed).
     MachineFunction &MF = *MBB.getParent();
-    if (STI->staticStack() && DestReg != Z80::IY) {
+    if (STI->staticStack()) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
       if (DestReg == Z80::HL) {
@@ -1009,37 +1015,37 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         MI.eraseFromParent();
         return true;
       }
-      if (DestReg == Z80::DE || DestReg == Z80::BC) {
-        // Load through HL, copy to target. LD HL,(addr); LD D,H; LD E,L = 5B.
-        // Clobbers HL. Only safe when HL is dead after this reload.
-        // Check: is HL live AFTER this instruction?
-        // Use LivePhysRegs (backward from end) for accurate liveness.
-        bool HLLiveAfter = false;
-        {
-          LivePhysRegs LiveRegs(*TRI);
-          LiveRegs.addLiveOuts(MBB);
-          for (auto I = MBB.rbegin(); &*I != &MI; ++I)
-            LiveRegs.stepBackward(*I);
-          // LiveRegs now has liveness just AFTER MI.
-          HLLiveAfter = LiveRegs.contains(Z80::H) ||
-                        LiveRegs.contains(Z80::L);
-        }
-        if (!HLLiveAfter) {
-          // HL is dead after reload — safe to clobber. 5B vs 6B.
-          auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_HL_nnind))
-              .addSym(EndSym).getInstr();
-          LoadMI->getOperand(0).setOffset(Offset);
-          if (DestReg == Z80::DE) {
-            BuildMI(MBB, MI, DL, get(Z80::LD_D_H));
-            BuildMI(MBB, MI, DL, get(Z80::LD_E_L));
-          } else {
-            BuildMI(MBB, MI, DL, get(Z80::LD_B_H));
-            BuildMI(MBB, MI, DL, get(Z80::LD_C_L));
-          }
-          MI.eraseFromParent();
-          return true;
-        }
-        // HL is live — fall through to IX-indexed.
+      if (DestReg == Z80::DE) {
+        // LD DE,(addr) = 4B (ED 5B) vs 6B IX-indexed. Always wins.
+        auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_DE_nnind))
+            .addSym(EndSym).getInstr();
+        LoadMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (DestReg == Z80::BC) {
+        // LD BC,(addr) = 4B (ED 4B) vs 6B IX-indexed. Always wins.
+        auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_BC_nnind))
+            .addSym(EndSym).getInstr();
+        LoadMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (DestReg == Z80::IX) {
+        // LD IX,(addr) = 4B (DD 2A) vs 6B IX-indexed.
+        auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_IX_nnind))
+            .addSym(EndSym).getInstr();
+        LoadMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (DestReg == Z80::IY) {
+        // LD IY,(addr) = 4B (FD 2A) vs 6B IX-indexed.
+        auto *LoadMI = BuildMI(MBB, MI, DL, get(Z80::LD_IY_nnind))
+            .addSym(EndSym).getInstr();
+        LoadMI->getOperand(0).setOffset(Offset);
+        MI.eraseFromParent();
+        return true;
       }
     }
 
