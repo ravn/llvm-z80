@@ -16,6 +16,7 @@
 #include "Z80.h"
 #include "Z80FrameLowering.h"
 #include "Z80InstrInfo.h"
+#include "Z80MachineFunctionInfo.h"
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -996,8 +997,14 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
   if (STI2.staticStack() && !UseFP) {
     // Static stack without frame pointer: BSS displacement only.
-    // Offset = object offset relative to __sfrend (negative).
-    // No SP adjustment, no saved IX to skip.
+    // Two adjustments needed:
+    // 1. PEI starts offsets from abs(LocalAreaOffset)=2 (return address
+    //    space), but BSS has no return address.
+    Offset -= TFI->getOffsetOfLocalArea(); // -(-2) = +2
+    // 2. PEI includes CalleeSavedFrameSize in object offsets when CSR
+    //    saves exist (they live on the real stack, not in BSS).
+    const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+    Offset += FI->getCalleeSavedFrameSize();
   } else if (UseFP) {
     Offset += 2; // Skip saved IX (also needed for static stack: IX = base+size)
   } else {

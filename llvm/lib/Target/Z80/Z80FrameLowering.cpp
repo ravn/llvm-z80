@@ -56,8 +56,11 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: hasFP=false has a runtime bug (PROM hangs). The ED-prefix
-  // relocation fix (c95f800) was necessary but not sufficient. Remains parked.
+  // Static stack: hasFP=false is now CORRECT (BSS size, offset, and A-clobber
+  // bugs all fixed) but produces LARGER code (2433B vs 2401B) because the
+  // regalloc uses IX as callee-saved across calls, adding CSR PUSH/POP
+  // overhead that exceeds the frame setup savings.  Keep hasFP=true until
+  // IX is removed from Z80_CSR or a better allocation strategy is found.
   if (STI.staticStack())
     return true;
 
