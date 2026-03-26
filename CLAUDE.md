@@ -206,12 +206,12 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
 - **Rematerializable constants held in IX** (issue #15): Allocator puts rematerializable constants (LD rr,imm / LD rr,sym) in IX to keep them alive across calls/LDIR, costing 13B (PUSH IX + LD IX + copy-out + POP IX) vs 3B for rematerialization (LD BC,imm at use site). boot_main wastes 10B this way. Fix needs allocator to prefer remat over callee-saved for cheap constants.
 - **Duplicate LD rr,imm peephole** (issue #16): When two registers are loaded with the same immediate and one is still live, the second load (3B) could be a register copy (1-2B). Example: `LD HL,$68e4; LD DE,$68e4` → `LD HL,$68e4; LD D,H; LD E,L`. Post-RA peephole in Z80LateOptimization.
-- **HL hint for 16-bit loop counters** (issue #17): With `+static-stack`, 16-bit loop counters (while(++t)) go into BC/DE, requiring a 16B increment+test sequence. If hinted into HL, the optimizer reverses the loop and generates `DEC HL; LD A,L; OR H; JR NZ` (5B). Similar to the 8-bit DJNZ B-hint but for 16-bit. The post-RA peephole catches the BC/DE case but the HL hint would avoid the issue entirely.
+- **HL hint for 16-bit loop counters** (issue #17): Parked — the 16-bit INC+NZ peephole already converts `LD HL,1; ADD HL,rr; SBC A,A; ...` to `INC rr; LD A,hi; OR lo; JR NZ` (5B). Zero instances remain in PROM. The HL hint would be a structural improvement (cleaner ISel) but has identical output.
 - **Undocumented instructions without +undocumented** (issue #13): FIXED. IY reserved without +undocumented; copyPhysReg falls through to PUSH/POP for IX/IY copies. PROM has zero undocumented instructions.
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2350 bytes (478B / 26% larger). Verified: boots CP/M in MAME. Root causes:
+SDCC: 1872 bytes, Clang: 2330 bytes (458B / 24% larger). Verified: boots CP/M in MAME. Root causes:
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **BSS correctness fix** (+60B): Fixed bug where SPILL/RELOAD_GR16 in expandPostRAPseudo used direct BSS addressing for stack arguments (wrong address). Now correctly uses IX-indexed (6B vs 3-4B per access). Recovery requires mixed-mode BSS (direct for locals, IX for stack args).
 3. **IY prefix overhead** (~35B): FD-prefixed instructions. CostPerUse=2 doesn't help because spilling is worse.
