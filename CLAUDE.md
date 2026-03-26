@@ -161,6 +161,7 @@ Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C b
 - IX constant propagation: when IX holds only a constant (LD IX,nn + DEC/INC + PUSH IX; POP rr), replaces extractions with direct LD rr,adjusted_value and removes IX chain. Saves ~10B per occurrence (boot_main: 39→27 bytes)
 - Tail call optimization: CALL nn; RET → JP nn when no stack args pushed. Uses TAILJMP pseudo (isReturn, not isBranch) to avoid confusing branch passes. Saves 1B per tail call site
 - LD rr,nn; INC/DEC rr → LD rr,nn±1: fold adjacent 16-bit increment/decrement into the preceding immediate load. Handles both immediate and symbol operands. Saves 1B per instance (16B on PROM)
+- Single-call-site inlining: areInlineCompatible allows inlining internal functions with hasOneUse() (one caller). Eliminates CALL+RET overhead without code duplication. Multi-call-site functions blocked to prevent spill pressure
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
 With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit pairs:
@@ -208,7 +209,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2362 bytes (490B / 26% larger). Verified: boots CP/M in MAME. Root causes:
+SDCC: 1872 bytes, Clang: 2350 bytes (478B / 26% larger). Verified: boots CP/M in MAME. Root causes:
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **BSS correctness fix** (+60B): Fixed bug where SPILL/RELOAD_GR16 in expandPostRAPseudo used direct BSS addressing for stack arguments (wrong address). Now correctly uses IX-indexed (6B vs 3-4B per access). Recovery requires mixed-mode BSS (direct for locals, IX for stack args).
 3. **IY prefix overhead** (~35B): FD-prefixed instructions. CostPerUse=2 doesn't help because spilling is worse.
