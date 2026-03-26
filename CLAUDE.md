@@ -199,6 +199,8 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Direct BSS for DE/BC spills: resolved — now uses ED-prefix LD (addr),DE/BC (4B).
 - Conditional RET with epilogue duplication: crashes with -ffunction-sections
 - Machine outliner: disabled (CALL overhead > most instruction sizes on Z80)
+- **Rematerializable constants held in IX** (issue #15): Allocator puts rematerializable constants (LD rr,imm / LD rr,sym) in IX to keep them alive across calls/LDIR, costing 13B (PUSH IX + LD IX + copy-out + POP IX) vs 3B for rematerialization (LD BC,imm at use site). boot_main wastes 10B this way. Fix needs allocator to prefer remat over callee-saved for cheap constants.
+- **Duplicate LD rr,imm peephole** (issue #16): When two registers are loaded with the same immediate and one is still live, the second load (3B) could be a register copy (1-2B). Example: `LD HL,$68e4; LD DE,$68e4` → `LD HL,$68e4; LD D,H; LD E,L`. Post-RA peephole in Z80LateOptimization.
 - **Undocumented instructions without +undocumented** (issue #13): FIXED. IY reserved without +undocumented; copyPhysReg falls through to PUSH/POP for IX/IY copies. PROM has zero undocumented instructions.
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
