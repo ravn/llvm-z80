@@ -13,6 +13,7 @@
 #include "Z80InstrInfo.h"
 
 #include "MCTargetDesc/Z80MCTargetDesc.h"
+#include "Z80MachineFunctionInfo.h"
 #include "Z80OpcodeUtils.h"
 #include "Z80RegisterInfo.h"
 #include "Z80Subtarget.h"
@@ -927,9 +928,11 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
 
     // Static stack: use direct BSS addressing (3-4B vs 6B IX-indexed).
     // LD (addr),HL = 3B, LD (addr),DE/BC = 4B vs LD (IX+d),lo;LD (IX+d+1),hi = 6B.
-    // Works with both hasFP=true (IX→BSS) and hasFP=false (direct BSS).
+    // Only when UseStaticFrame (IX = __sfrend_) AND offset is negative (local
+    // in BSS). Positive offsets would be stack args on the real stack.
     MachineFunction &MF = *MBB.getParent();
-    if (STI->staticStack()) {
+    Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+    if (FI->getUseStaticFrame() && Offset < 0) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
       if (SrcReg == Z80::HL) {
@@ -1029,8 +1032,11 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       llvm_unreachable("SP cannot be reloaded via RELOAD_GR16");
 
     // Static stack: use direct BSS addressing (3-4B vs 6B IX-indexed).
+    // Only when UseStaticFrame (IX = __sfrend_) AND offset is negative (local
+    // in BSS). Positive offsets would be stack args on the real stack.
     MachineFunction &MF = *MBB.getParent();
-    if (STI->staticStack()) {
+    Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+    if (FI->getUseStaticFrame() && Offset < 0) {
       MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
           "__sfrend_" + MF.getName());
       if (DestReg == Z80::HL) {

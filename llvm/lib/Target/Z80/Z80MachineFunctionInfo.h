@@ -34,6 +34,13 @@ struct Z80FunctionInfo : public MachineFunctionInfo {
   unsigned CalleeSavedFrameSize = 0;
   unsigned getCalleeSavedFrameSize() const { return CalleeSavedFrameSize; }
   void setCalleeSavedFrameSize(unsigned S) { CalleeSavedFrameSize = S; }
+
+  /// True when the prologue sets IX = __sfrend_ (BSS end) instead of
+  /// IX = SP (standard frame pointer). Locals are in BSS and accessed
+  /// via direct addressing. Set by emitPrologue, read by expandPostRAPseudo.
+  bool UseStaticFrame = false;
+  bool getUseStaticFrame() const { return UseStaticFrame; }
+  void setUseStaticFrame(bool V) { UseStaticFrame = V; }
 };
 
 } // namespace llvm

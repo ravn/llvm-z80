@@ -165,11 +165,12 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
     // Only if there are actual locals (StackSize > CalleeSavedFrameSize),
     // not just CSR saves which live on the real stack.
     const auto &STI = MF.getSubtarget<Z80Subtarget>();
-    const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+    Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
     bool UseStaticFrame =
         STI.staticStack() &&
         StackSize > FI->getCalleeSavedFrameSize() &&
         MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
+    FI->setUseStaticFrame(UseStaticFrame);
 
     BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_IX));
 
