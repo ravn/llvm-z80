@@ -140,6 +140,29 @@ EOF
 ```
 Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C build`
 
+### Docker Test Image
+Extends build image with Rust/cargo for z80-utils integration tests. Build with:
+```
+docker build -t llvm-z80-test - <<'EOF'
+FROM llvm-z80-build
+RUN apt-get update -qq && apt-get install -y -qq curl && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+EOF
+```
+z88dk-ticks must be built from source first (one-time):
+```
+docker run --rm -v ~/git/rc700-gensmedet:/rc700 -w /rc700/z88dk/download/z88dk/src/ticks \
+  llvm-z80-test sh -c 'apt-get update -qq && apt-get install -y -qq flex bison > /dev/null 2>&1 && make'
+```
+Run integration tests:
+```
+docker run --rm -v ~/git/llvm-z80:/src -v ~/git/rc700-gensmedet:/rc700 \
+  -w /src/z80-utils/test-runner \
+  -e PATH="/root/.cargo/bin:/rc700/z88dk/download/z88dk/src/ticks:/src/build/bin:$PATH" \
+  llvm-z80-test cargo run -- clang
+```
+
 ### Known Working Optimizations
 - CP (HL) fusion in instruction selector
 - LDIR/LDDR for memcpy/memset
