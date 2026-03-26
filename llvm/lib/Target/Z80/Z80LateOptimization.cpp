@@ -721,6 +721,56 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
+    // --- Peephole: LD rr,nn; INC/DEC rr → LD rr,nn±1 ---
+    // Fold a 16-bit increment/decrement into the preceding immediate load.
+    // LD rr,nn (3B) + INC/DEC rr (1B) = 4B → LD rr,nn±1 (3B). Saves 1B.
+    // INC/DEC rr doesn't set flags, so no flag dependency to worry about.
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+         MII != MIE;) {
+      unsigned Opc = MII->getOpcode();
+      unsigned LdOpc = 0;
+      if (Opc == Z80::LD_BC_nn) LdOpc = Opc;
+      else if (Opc == Z80::LD_DE_nn) LdOpc = Opc;
+      else if (Opc == Z80::LD_HL_nn) LdOpc = Opc;
+      else if (Opc == Z80::LD_IX_nn) LdOpc = Opc;
+      else if (Opc == Z80::LD_IY_nn) LdOpc = Opc;
+      if (!LdOpc) {
+        ++MII;
+        continue;
+      }
+      auto NextIt = std::next(MII);
+      if (NextIt == MIE) { ++MII; continue; }
+      int Delta = 0;
+      unsigned NextOpc = NextIt->getOpcode();
+      if ((Opc == Z80::LD_BC_nn && NextOpc == Z80::INC_BC) ||
+          (Opc == Z80::LD_DE_nn && NextOpc == Z80::INC_DE) ||
+          (Opc == Z80::LD_HL_nn && NextOpc == Z80::INC_HL) ||
+          (Opc == Z80::LD_IX_nn && NextOpc == Z80::INC_IX) ||
+          (Opc == Z80::LD_IY_nn && NextOpc == Z80::INC_IY))
+        Delta = 1;
+      else if ((Opc == Z80::LD_BC_nn && NextOpc == Z80::DEC_BC) ||
+               (Opc == Z80::LD_DE_nn && NextOpc == Z80::DEC_DE) ||
+               (Opc == Z80::LD_HL_nn && NextOpc == Z80::DEC_HL) ||
+               (Opc == Z80::LD_IX_nn && NextOpc == Z80::DEC_IX) ||
+               (Opc == Z80::LD_IY_nn && NextOpc == Z80::DEC_IY))
+        Delta = -1;
+      if (Delta) {
+        MachineOperand &Op = MII->getOperand(0);
+        LLVM_DEBUG(dbgs() << "  LD rr,nn; " << (Delta > 0 ? "INC" : "DEC")
+                          << " → fold into load\n");
+        if (Op.isImm()) {
+          Op.setImm((Op.getImm() + Delta) & 0xFFFF);
+        } else {
+          // Symbol operand: adjust the offset.
+          Op.setOffset(Op.getOffset() + Delta);
+        }
+        NextIt->eraseFromParent();
+        Changed = true;
+        continue; // re-check in case of chained INC/DEC
+      }
+      ++MII;
+    }
+
     // --- Peephole: ALU #imm; ALU #imm → ALU #imm ---
     // When the same immediate ALU instruction appears consecutively, the
     // second is redundant for idempotent operations (AND, OR).
