@@ -790,6 +790,112 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
+    // --- Peephole: 16-bit increment overflow test ---
+    // Pattern A (9 instr, 16B): LD HL,1; ADD HL,rr; SBC A,A; AND 1;
+    //   LD lo,L; LD hi,H; XOR 1; AND 1; JR NZ → INC rr; LD A,hi; OR lo; JR NZ
+    // Pattern B (6 instr, 10B): LD HL,1; ADD HL,rr; SBC A,A; AND 1;
+    //   EX DE,HL; JR Z → INC rr; LD A,hi; OR lo; JR NZ (inverted sense)
+    // Saves 11B (A) or 5B (B) per instance. Common in `while(++counter)` loops.
+    if (STI.hasZ80()) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        // Match: LD HL,1
+        if (MII->getOpcode() != Z80::LD_HL_nn || !MII->getOperand(0).isImm() ||
+            MII->getOperand(0).getImm() != 1) {
+          ++MII;
+          continue;
+        }
+        auto I0 = MII; // LD HL,1
+        auto I1 = std::next(I0); if (I1 == MIE) { ++MII; continue; }
+        auto I2 = std::next(I1); if (I2 == MIE) { ++MII; continue; }
+        auto I3 = std::next(I2); if (I3 == MIE) { ++MII; continue; }
+
+        // Match: ADD HL,rr; SBC A,A; AND 1
+        unsigned AddOpc = I1->getOpcode();
+        unsigned IncOpc = 0, LdAHiOpc = 0, OrLoOpc = 0;
+        unsigned LdLoOpc = 0, LdHiOpc = 0;
+        if (AddOpc == Z80::ADD_HL_BC) {
+          IncOpc = Z80::INC_BC;
+          LdAHiOpc = Z80::LD_A_B; OrLoOpc = Z80::OR_C;
+          LdLoOpc = Z80::LD_C_L; LdHiOpc = Z80::LD_B_H;
+        } else if (AddOpc == Z80::ADD_HL_DE) {
+          IncOpc = Z80::INC_DE;
+          LdAHiOpc = Z80::LD_A_D; OrLoOpc = Z80::OR_E;
+          LdLoOpc = Z80::LD_E_L; LdHiOpc = Z80::LD_D_H;
+        }
+        if (!IncOpc ||
+            I2->getOpcode() != Z80::SBC_A_A ||
+            I3->getOpcode() != Z80::AND_n || I3->getOperand(0).getImm() != 1) {
+          ++MII;
+          continue;
+        }
+
+        auto I4 = std::next(I3); if (I4 == MIE) { ++MII; continue; }
+
+        bool Matched = false;
+
+        // Try Pattern A: LD lo,L; LD hi,H; XOR 1; AND 1; JR NZ
+        {
+          auto I5 = std::next(I4);
+          auto I6 = (I5 != MIE) ? std::next(I5) : MIE;
+          auto I7 = (I6 != MIE) ? std::next(I6) : MIE;
+          auto I8 = (I7 != MIE) ? std::next(I7) : MIE;
+          // Also handle optional OR_A before JR_NZ (redundant flag test).
+          auto IBranch = I8;
+          if (I8 != MIE && I8->getOpcode() == Z80::OR_A) {
+            auto I9 = std::next(I8);
+            if (I9 != MIE) IBranch = I9;
+          }
+          if (IBranch != MIE &&
+              I4->getOpcode() == LdLoOpc && I5->getOpcode() == LdHiOpc &&
+              I6->getOpcode() == Z80::XOR_n && I6->getOperand(0).getImm() == 1 &&
+              I7->getOpcode() == Z80::AND_n && I7->getOperand(0).getImm() == 1 &&
+              IBranch->getOpcode() == Z80::JR_NZ_e) {
+            MachineBasicBlock *Target = IBranch->getOperand(0).getMBB();
+            DebugLoc DL = I0->getDebugLoc();
+            LLVM_DEBUG(dbgs() << "  16-bit INC+NZ (pattern A): 9→4 instr\n");
+            BuildMI(MBB, *I0, DL, TII->get(IncOpc));
+            BuildMI(MBB, *I0, DL, TII->get(LdAHiOpc));
+            BuildMI(MBB, *I0, DL, TII->get(OrLoOpc));
+            BuildMI(MBB, *I0, DL, TII->get(Z80::JR_NZ_e)).addMBB(Target);
+            IBranch->eraseFromParent();
+            if (I8 != IBranch) I8->eraseFromParent(); // OR_A
+            I7->eraseFromParent();
+            I6->eraseFromParent(); I5->eraseFromParent();
+            I4->eraseFromParent(); I3->eraseFromParent();
+            I2->eraseFromParent(); I1->eraseFromParent();
+            MII = MBB.erase(I0);
+            Changed = true;
+            Matched = true;
+          }
+        }
+
+        // Try Pattern B: EX DE,HL; JR Z (counter in DE, inverted branch)
+        if (!Matched && I4->getOpcode() == Z80::EX_DE_HL &&
+            AddOpc == Z80::ADD_HL_DE) {
+          auto IBr = std::next(I4);
+          if (IBr != MIE && IBr->getOpcode() == Z80::JR_Z_e) {
+            MachineBasicBlock *Target = IBr->getOperand(0).getMBB();
+            DebugLoc DL = I0->getDebugLoc();
+            LLVM_DEBUG(dbgs() << "  16-bit INC+NZ (pattern B): 6→4 instr\n");
+            BuildMI(MBB, *I0, DL, TII->get(Z80::INC_DE));
+            BuildMI(MBB, *I0, DL, TII->get(Z80::LD_A_D));
+            BuildMI(MBB, *I0, DL, TII->get(Z80::OR_E));
+            BuildMI(MBB, *I0, DL, TII->get(Z80::JR_NZ_e)).addMBB(Target);
+            IBr->eraseFromParent(); I4->eraseFromParent();
+            I3->eraseFromParent(); I2->eraseFromParent();
+            I1->eraseFromParent();
+            MII = MBB.erase(I0);
+            Changed = true;
+            Matched = true;
+          }
+        }
+
+        if (!Matched)
+          ++MII;
+      }
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,
