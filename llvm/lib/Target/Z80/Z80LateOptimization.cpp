@@ -1925,6 +1925,65 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   }
 #endif // disabled EXX conversion
 
+  // --- Peephole: CALL nn; RET → JP nn (tail call) ---
+  // When a function's last action is CALL followed by RET, replace with JP.
+  // The callee's RET returns directly to our caller.
+  // ONLY safe when no stack arguments were pushed for the callee (JP doesn't
+  // push a return address, so the callee's stack frame would be wrong if
+  // stack args are present). We verify by checking that no PUSH instructions
+  // appear in the MBB before the CALL.
+  for (auto &MBB : MF) {
+    auto Term = MBB.getLastNonDebugInstr();
+    if (Term == MBB.end())
+      continue;
+
+    // Match RET or RET_CLEANUP 0.
+    unsigned TermOpc = Term->getOpcode();
+    bool IsRet = (TermOpc == Z80::RET);
+    bool IsRetCleanup0 = (TermOpc == Z80::RET_CLEANUP &&
+                          Term->getOperand(0).getImm() == 0);
+    if (!IsRet && !IsRetCleanup0)
+      continue;
+
+    // Check for CALL_nn immediately before RET.
+    auto CallIt = Term;
+    if (CallIt == MBB.begin())
+      continue;
+    --CallIt;
+    while (CallIt != MBB.begin() && CallIt->isDebugInstr())
+      --CallIt;
+    if (CallIt->getOpcode() != Z80::CALL_nn)
+      continue;
+
+    // Verify no PUSHes in this MBB before the CALL (stack args would make
+    // the tail call unsafe — callee expects a return address at SP).
+    bool HasPush = false;
+    for (auto It = MBB.begin(); It != CallIt; ++It) {
+      if (It->isDebugInstr())
+        continue;
+      unsigned Opc = It->getOpcode();
+      if (Opc == Z80::PUSH_AF || Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
+          Opc == Z80::PUSH_HL || Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY) {
+        HasPush = true;
+        break;
+      }
+    }
+    if (HasPush)
+      continue;
+
+    // Replace CALL nn; RET with TAILJMP (JP to external function).
+    // TAILJMP is isReturn + isTerminator but NOT isBranch, so branch
+    // relaxation and branch cleanup don't process it. Lowered to JP_nn
+    // in the assembly printer.
+    MachineOperand &CallTarget = CallIt->getOperand(0);
+    LLVM_DEBUG(dbgs() << "  CALL; RET → JP (tail call): " << *CallIt);
+    DebugLoc DL = CallIt->getDebugLoc();
+    BuildMI(MBB, *CallIt, DL, TII->get(Z80::TAILJMP)).add(CallTarget);
+    Term->eraseFromParent();
+    CallIt->eraseFromParent();
+    Changed = true;
+  }
+
   // --- Peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr ---
   // When a 16-bit addition is performed through HL with IX/IY as the actual
   // accumulator, replace the 5-instruction copy-add-copy sequence (8-10 bytes)

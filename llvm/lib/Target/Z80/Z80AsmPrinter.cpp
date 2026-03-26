@@ -118,6 +118,17 @@ void Z80AsmPrinter::emitInstruction(const MachineInstr *MI) {
     return;
   }
 
+  // TAILJMP pseudo → JP_nn (tail call to external function).
+  if (MI->getOpcode() == Z80::TAILJMP) {
+    MCInst Inst;
+    Inst.setOpcode(Z80::JP_nn);
+    MCOperand MCOp;
+    lowerOperand(MI->getOperand(0), MCOp);
+    Inst.addOperand(MCOp);
+    EmitToStreamer(*OutStreamer, Inst);
+    return;
+  }
+
   MCInst Inst;
   InstLowering.lower(MI, Inst);
   EmitToStreamer(*OutStreamer, Inst);

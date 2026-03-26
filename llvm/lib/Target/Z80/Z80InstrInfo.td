@@ -1698,6 +1698,15 @@ let isPseudo = true, isReturn = true, isTerminator = true, isBarrier = true,
 def RET_CLEANUP : Z80Pseudo<(outs), (ins i16imm:$bytes)>;
 }
 
+
+// Tail call: JP to an external function as a return.
+// NOT marked isBranch — getBranchDestBlock/BranchCleanup don't process it.
+// Lowered to JP_nn in MCInstLowering (Z80AsmPrinter).
+let isPseudo = true, isReturn = true, isTerminator = true, isBarrier = true,
+    isCall = true, mayLoad = false, mayStore = false in {
+def TAILJMP : Z80Pseudo<(outs), (ins i16imm:$target)>;
+}
+
 // SM83-only instructions and pseudos
 include "SM83InstrInfo.td"
 

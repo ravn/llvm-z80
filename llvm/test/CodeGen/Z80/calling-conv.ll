@@ -61,7 +61,7 @@ declare void @external_func(i16)
 
 define void @call_func(i16 %x) {
 ; CHECK-LABEL: _call_func:
-; CHECK:       call _external_func
+; CHECK:       jp _external_func
   call void @external_func(i16 %x)
   ret void
 }
