@@ -205,12 +205,13 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2393 bytes (521B / 28% larger). Root causes:
+SDCC: 1872 bytes, Clang: 2461 bytes (589B / 31% larger). Root causes:
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
-2. **IY prefix overhead** (~35B): 35 FD-prefixed instructions across 10 functions. IY is used to hold values across calls (only callee-saved register besides IX/FP). CostPerUse=2 doesn't help because the alternative (spilling) is even more expensive.
-3. **Register pressure / spills** (~80B): Clang spills more conservatively than SDCC.
-4. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.
-5. **DJNZ** (~30B): Now fires for single loops; nested loops only get outer DJNZ. Savings depend on loop count in PROM (needs integration test verification).
+2. **BSS correctness fix** (+60B): Fixed bug where SPILL/RELOAD_GR16 in expandPostRAPseudo used direct BSS addressing for stack arguments (wrong address). Now correctly uses IX-indexed (6B vs 3-4B per access). Recovery requires mixed-mode BSS (direct for locals, IX for stack args).
+3. **IY prefix overhead** (~35B): FD-prefixed instructions. CostPerUse=2 doesn't help because spilling is worse.
+4. **Register pressure / spills** (~80B): Clang spills more conservatively than SDCC.
+5. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.
+6. **GR8 reorder** (+8B): B-last order for DJNZ enablement. DJNZ doesn't fire in PROM (no i8 loop counters, all loops have CALLs or are 16-bit). Conditional B ordering was tried but made things worse.
 
 Top 3 worst functions: fdc_read_data (+95B), check_sysfile (+59B), lookup_sectors (+54B). Optimization plan in `glowing-bouncing-dream.md`.
 
