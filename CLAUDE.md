@@ -216,7 +216,7 @@ SDCC: 1872 bytes, Clang: 2362 bytes (490B / 26% larger). Verified: boots CP/M in
 5. **Comparison sequences** (~50B): Clang generates longer compare/branch patterns.
 6. **GR8 reorder** (+8B): B-last order for DJNZ enablement. DJNZ doesn't fire in PROM (no i8 loop counters, all loops have CALLs or are 16-bit).
 
-Boot section optimized: boot_main at address 0x0000 (no JP indirection), unified C code using memcpy/memset (Clang inlines as LDIR), banner fits between boot_main and NMI handler at 0x0066. boot_main is 29 bytes of plain C.
+Boot section optimized: `start()` at address 0x0000 (no JP indirection), unified C entry point shared by both SDCC and Clang using standard memcpy/memset (Clang inlines as LDIR). Code and data in `.pagezero.text` / `.pagezero.data` sections, banner between start() and NMI handler at 0x0066. start() is 29 bytes of plain C. `__z80__` macro (defined by cross-compiler) guards Z80-specific code paths; CLion sees all code via `__z80__` in CMakeLists.
 
 Top 3 worst functions: fdc_read_data (+95B), check_sysfile (+59B), lookup_sectors (+54B). Optimization plan in `glowing-bouncing-dream.md`.
 
