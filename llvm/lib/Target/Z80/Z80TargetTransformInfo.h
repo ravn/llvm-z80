@@ -75,13 +75,20 @@ public:
     return TypeSize::getFixed(8);
   }
 
-  // Z80 has only 3 GP register pairs (BC, DE, HL). Inlining non-trivial
-  // functions causes massive register spilling that dwarfs the benefit.
-  // Allow inlining only for tiny functions (≤ 2 IR instructions) where
-  // the call instruction (3 bytes) costs more than the function body.
+  // Z80 CALL is 3 bytes + RET 1 byte = 4 bytes overhead per call.
+  // Inlining a function with multiple call sites duplicates code and
+  // increases register pressure (only 3 GP pairs), causing spills.
+  // But single-call-site static functions should always be inlined:
+  // eliminates CALL+RET overhead and the function body entirely,
+  // with no code duplication.
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const override {
+    // Tiny functions: always inline (body < CALL overhead).
     if (Callee->getInstructionCount() <= 2)
+      return true;
+    // Single-call-site internal functions: inline to eliminate the call.
+    // hasOneUse() = one call site (the only reference to the function).
+    if (Callee->hasInternalLinkage() && Callee->hasOneUse())
       return true;
     return false;
   }
