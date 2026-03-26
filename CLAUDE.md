@@ -198,6 +198,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 ### Known Non-Working / Deferred
 - **hasFP=false for static-stack**: Codegen is correct but has a runtime bug (PROM hangs after banner display, no CP/M boot). The approach to make it smaller: caller-saved IX via AllReg CSR + RegMask on CALL + hasFP=false. RegMask infrastructure is committed; CSR/hasFP changes parked until the runtime bug is diagnosed. Issue #12.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
+- **Mixed-mode BSS**: Direct BSS for locals + IX-indexed for stack args in same function. Not needed for current PROM (all functions use globals, no stack args). Parked — will matter when source switches back to register parameters.
 - DJNZ nested loop depth: DJNZ fires but on outer loop of nested pairs (hint can't distinguish depth). Inner-loop DJNZ would need pre-RA loop depth analysis
 - EXX spill conversion: shadow bank is a CONTEXT SWITCH, not extra registers. Cannot be inserted at arbitrary points. See issue #7.
 - Direct BSS for DE/BC spills: resolved — now uses ED-prefix LD (addr),DE/BC (4B).
