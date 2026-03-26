@@ -367,14 +367,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   bool Changed = false;
 
   // --- IX constant propagation + unused IX/IY setup removal ---
-  // Enhanced optimization for static stack functions:
   // 1. If IX is only used to hold a constant (LD IX,nn) with optional
   //    DEC/INC modifications and PUSH IX; POP rr extractions, replace
   //    each extraction with a direct LD rr,adjusted_value and remove
   //    the IX instructions. This saves ~10B per function (issue #15).
   // 2. If IX has no uses at all, remove PUSH IX; LD IX; POP IX setup.
   // 3. If IY has no uses, remove PUSH IY; POP IY.
-  if (STI.staticStack() && STI.hasZ80()) {
+  if (STI.hasZ80()) {
     bool IXUsedAsPointer = false; // IX-indexed addressing (abort remat)
     bool IXUsedOther = false;     // Other IX use (abort remat)
     bool IYUsedInBody = false;
