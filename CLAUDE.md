@@ -196,7 +196,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - Ideal for static-stack bare-metal code with full register control
 
 ### Known Non-Working / Deferred
-- **hasFP=false for static-stack**: Codegen is correct but has a runtime bug (PROM hangs after banner display, no CP/M boot). The approach to make it smaller: caller-saved IX via AllReg CSR + RegMask on CALL + hasFP=false. RegMask infrastructure is committed; CSR/hasFP changes parked until the runtime bug is diagnosed. Issue #12.
+- **hasFP=false for static-stack** (issue #12): Only saves 8B (not 80B as estimated — IX constant propagation and unused IX removal already handle most overhead). Some functions get BIGGER with hasFP=false (fdc_read_data +26B from IX PUSH/POP copies). Runtime bug (PROM hangs after banner) still present — ISR/timing related, not stack imbalance. Low priority given minimal savings.
 - **BSS overlay**: Call-graph-based BSS sharing disabled (sequential layout now). The overlay algorithm worked but is parked alongside hasFP=false since both interact.
 - **Mixed-mode BSS**: Direct BSS for locals + IX-indexed for stack args in same function. Not needed for current PROM (all functions use globals, no stack args). Parked — will matter when source switches back to register parameters.
 - DJNZ nested loop depth: DJNZ fires but on outer loop of nested pairs (hint can't distinguish depth). Inner-loop DJNZ would need pre-RA loop depth analysis
