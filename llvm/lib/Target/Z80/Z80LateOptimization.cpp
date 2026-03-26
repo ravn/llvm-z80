@@ -366,59 +366,175 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto *TRI = STI.getRegisterInfo();
   bool Changed = false;
 
-  // --- Remove unused IX/IY setup in static stack functions ---
-  // If a function has PUSH IX; LD IX,addr in prologue and POP IX in epilogue
-  // but no IX-indexed instruction (IX+d) in the body, remove the setup.
-  // Same for IY: if PUSH IY / POP IY bracket the function but IY is unused.
+  // --- IX constant propagation + unused IX/IY setup removal ---
+  // Enhanced optimization for static stack functions:
+  // 1. If IX is only used to hold a constant (LD IX,nn) with optional
+  //    DEC/INC modifications and PUSH IX; POP rr extractions, replace
+  //    each extraction with a direct LD rr,adjusted_value and remove
+  //    the IX instructions. This saves ~10B per function (issue #15).
+  // 2. If IX has no uses at all, remove PUSH IX; LD IX; POP IX setup.
+  // 3. If IY has no uses, remove PUSH IY; POP IY.
   if (STI.staticStack() && STI.hasZ80()) {
-    bool IXUsedInBody = false;
+    bool IXUsedAsPointer = false; // IX-indexed addressing (abort remat)
+    bool IXUsedOther = false;     // Other IX use (abort remat)
     bool IYUsedInBody = false;
-    MachineInstr *PushIX = nullptr, *LdIX = nullptr, *PopIX = nullptr;
+    MachineInstr *ProloguePushIX = nullptr, *LdIX = nullptr;
+    MachineInstr *EpiloguePopIX = nullptr;
     MachineInstr *PushIY = nullptr, *PopIY = nullptr;
 
+    // Track IX constant value modifications and extractions.
+    struct IXModification {
+      MachineInstr *MI;
+      int Delta; // +1 for INC, -1 for DEC
+    };
+    struct IXExtraction {
+      MachineInstr *PushMI;
+      MachineInstr *PopMI;
+      unsigned TargetReg; // e.g. Z80::BC, Z80::DE, Z80::HL
+      int64_t AdjustmentAtPoint; // cumulative DEC/INC delta at this point
+    };
+    SmallVector<IXModification, 4> Modifications;
+    SmallVector<IXExtraction, 4> Extractions;
+    int64_t CumulativeDelta = 0;
+
     for (auto &MBB2 : MF) {
-      for (auto &MI : MBB2) {
-        unsigned Opc = MI.getOpcode();
-        // Track IX/IY setup instructions.
-        if (Opc == Z80::PUSH_IX && !PushIX) PushIX = &MI;
-        else if (Opc == Z80::LD_IX_nn && !LdIX) LdIX = &MI;
-        else if (Opc == Z80::POP_IX) PopIX = &MI;
-        else if (Opc == Z80::PUSH_IY && !PushIY) PushIY = &MI;
-        else if (Opc == Z80::POP_IY) PopIY = &MI;
-        else {
-          // Check for IX/IY use: explicit operands, implicit uses/defs,
-          // and IX/IY-indexed instructions (DD/FD prefixed).
-          for (const auto &MO : MI.operands()) {
-            if (!MO.isReg()) continue;
-            Register R = MO.getReg();
-            if (R == Z80::IX) IXUsedInBody = true;
-            if (R == Z80::IY) IYUsedInBody = true;
-          }
-          for (MCPhysReg R : TII->get(Opc).implicit_uses()) {
-            if (R == Z80::IX) IXUsedInBody = true;
-            if (R == Z80::IY) IYUsedInBody = true;
-          }
-          for (MCPhysReg R : TII->get(Opc).implicit_defs()) {
-            if (R == Z80::IX) IXUsedInBody = true;
-            if (R == Z80::IY) IYUsedInBody = true;
-          }
-          // IX-indexed instructions (LD_*_IXd, LD_IXd_*, CP_IXd, etc.)
-          // use IX implicitly through DD prefix but don't declare it.
-          // Check instruction size: DD-prefixed = 3+ bytes, starts with 0xDD.
-          if (TII->getInstSizeInBytes(MI) >= 3) {
-            StringRef Name = TII->getName(Opc);
-            if (Name.contains("IX")) IXUsedInBody = true;
-            if (Name.contains("IY")) IYUsedInBody = true;
-          }
+      for (auto MII = MBB2.begin(), MIE = MBB2.end(); MII != MIE; ++MII) {
+        unsigned Opc = MII->getOpcode();
+        // Track prologue/epilogue PUSH/POP IX.
+        if (Opc == Z80::PUSH_IX && !ProloguePushIX && !LdIX) {
+          ProloguePushIX = &*MII;
+          continue;
         }
+        if (Opc == Z80::LD_IX_nn && !LdIX) {
+          LdIX = &*MII;
+          continue;
+        }
+        if (Opc == Z80::POP_IX) {
+          EpiloguePopIX = &*MII;
+          continue;
+        }
+        // Track IY setup.
+        if (Opc == Z80::PUSH_IY && !PushIY) { PushIY = &*MII; continue; }
+        if (Opc == Z80::POP_IY) { PopIY = &*MII; continue; }
+
+        // Classify IX uses.
+        if (Opc == Z80::DEC_IX) {
+          CumulativeDelta -= 1;
+          Modifications.push_back({&*MII, -1});
+          continue;
+        }
+        if (Opc == Z80::INC_IX) {
+          CumulativeDelta += 1;
+          Modifications.push_back({&*MII, +1});
+          continue;
+        }
+        // PUSH IX; POP rr extraction pattern.
+        if (Opc == Z80::PUSH_IX) {
+          auto NextIt = std::next(MII);
+          if (NextIt != MIE) {
+            unsigned NextOpc = NextIt->getOpcode();
+            unsigned TargetReg = 0;
+            if (NextOpc == Z80::POP_BC) TargetReg = Z80::BC;
+            else if (NextOpc == Z80::POP_DE) TargetReg = Z80::DE;
+            else if (NextOpc == Z80::POP_HL) TargetReg = Z80::HL;
+            if (TargetReg) {
+              Extractions.push_back(
+                  {&*MII, &*NextIt, TargetReg, CumulativeDelta});
+              ++MII; // skip the POP
+              continue;
+            }
+          }
+          // PUSH IX without matching POP rr — unknown use.
+          IXUsedOther = true;
+          continue;
+        }
+
+        // Check for IX-indexed or other IX references.
+        bool IsIXUse = false;
+        for (const auto &MO : MII->operands()) {
+          if (!MO.isReg()) continue;
+          Register R = MO.getReg();
+          if (R == Z80::IX) IsIXUse = true;
+          if (R == Z80::IY) IYUsedInBody = true;
+        }
+        for (MCPhysReg R : TII->get(Opc).implicit_uses()) {
+          if (R == Z80::IX) IsIXUse = true;
+          if (R == Z80::IY) IYUsedInBody = true;
+        }
+        for (MCPhysReg R : TII->get(Opc).implicit_defs()) {
+          if (R == Z80::IX) IsIXUse = true;
+          if (R == Z80::IY) IYUsedInBody = true;
+        }
+        if (TII->getInstSizeInBytes(*MII) >= 3) {
+          StringRef Name = TII->getName(Opc);
+          if (Name.contains("IX")) { IsIXUse = true; IXUsedAsPointer = true; }
+          if (Name.contains("IY")) IYUsedInBody = true;
+        }
+        if (IsIXUse) IXUsedOther = true;
       }
     }
 
-    if (!IXUsedInBody && PushIX && LdIX && PopIX) {
+    bool IXUsedInBody = IXUsedAsPointer || IXUsedOther;
+
+    // IX constant propagation: replace extractions with direct loads.
+    if (!IXUsedAsPointer && !IXUsedOther && !Extractions.empty() &&
+        ProloguePushIX && LdIX && EpiloguePopIX) {
+      MachineOperand &ValOp = LdIX->getOperand(0);
+      // Get the LD rr,nn opcode for the target register.
+      auto getLdOpc = [](unsigned Reg) -> unsigned {
+        if (Reg == Z80::BC) return Z80::LD_BC_nn;
+        if (Reg == Z80::DE) return Z80::LD_DE_nn;
+        if (Reg == Z80::HL) return Z80::LD_HL_nn;
+        return 0;
+      };
+
+      bool CanPropagate = true;
+      for (auto &Ext : Extractions) {
+        if (!getLdOpc(Ext.TargetReg)) { CanPropagate = false; break; }
+      }
+
+      if (CanPropagate) {
+        LLVM_DEBUG(dbgs() << "  IX constant propagation: replacing "
+                          << Extractions.size() << " extractions\n");
+        for (auto &Ext : Extractions) {
+          unsigned LdOpc = getLdOpc(Ext.TargetReg);
+          MachineBasicBlock &ExtMBB = *Ext.PushMI->getParent();
+          DebugLoc ExtDL = Ext.PushMI->getDebugLoc();
+          // Build LD rr, value+adjustment.
+          if (ValOp.isImm()) {
+            BuildMI(ExtMBB, *Ext.PushMI, ExtDL, TII->get(LdOpc))
+                .addImm((ValOp.getImm() + Ext.AdjustmentAtPoint) & 0xFFFF);
+          } else {
+            // Symbol operand: copy and adjust offset.
+            auto MIB = BuildMI(ExtMBB, *Ext.PushMI, ExtDL, TII->get(LdOpc));
+            MIB.add(ValOp);
+            auto *NewMI = MIB.getInstr();
+            auto &NewOp = NewMI->getOperand(NewMI->getNumExplicitOperands() - 1);
+            NewOp.setOffset(NewOp.getOffset() + Ext.AdjustmentAtPoint);
+          }
+          Ext.PopMI->eraseFromParent();
+          Ext.PushMI->eraseFromParent();
+        }
+        for (auto &Mod : Modifications)
+          Mod.MI->eraseFromParent();
+        LdIX->eraseFromParent();
+        LdIX = nullptr;
+        // Now IX is unused — the block below will remove PUSH/POP IX.
+        IXUsedInBody = false;
+        Changed = true;
+      }
+    }
+
+    if (!IXUsedInBody && ProloguePushIX && LdIX && EpiloguePopIX) {
       LLVM_DEBUG(dbgs() << "  Removing unused IX frame setup\n");
-      PopIX->eraseFromParent();
+      EpiloguePopIX->eraseFromParent();
       LdIX->eraseFromParent();
-      PushIX->eraseFromParent();
+      ProloguePushIX->eraseFromParent();
+      Changed = true;
+    } else if (!IXUsedInBody && ProloguePushIX && !LdIX && EpiloguePopIX) {
+      LLVM_DEBUG(dbgs() << "  Removing unused IX save/restore\n");
+      EpiloguePopIX->eraseFromParent();
+      ProloguePushIX->eraseFromParent();
       Changed = true;
     }
     if (!IYUsedInBody && PushIY && PopIY) {
