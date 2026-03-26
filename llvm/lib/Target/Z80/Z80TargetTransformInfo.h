@@ -76,18 +76,17 @@ public:
   }
 
   // Z80 CALL is 3 bytes + RET 1 byte = 4 bytes overhead per call.
-  // Inlining a function with multiple call sites duplicates code and
-  // increases register pressure (only 3 GP pairs), causing spills.
-  // But single-call-site static functions should always be inlined:
-  // eliminates CALL+RET overhead and the function body entirely,
-  // with no code duplication.
+  // Inlining large functions causes massive register spilling.
+  // Allow inlining for:
+  //   - functions marked inlinehint (e.g. Rust iterators)
+  //   - small functions (≤ 10 instructions) where call overhead dominates
+  //   - single-call-site internal functions (no code duplication)
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const override {
-    // Tiny functions: always inline (body < CALL overhead).
-    if (Callee->getInstructionCount() <= 2)
+    if (Callee->hasFnAttribute(Attribute::InlineHint))
       return true;
-    // Single-call-site internal functions: inline to eliminate the call.
-    // hasOneUse() = one call site (the only reference to the function).
+    if (Callee->getInstructionCount() <= 10)
+      return true;
     if (Callee->hasInternalLinkage() && Callee->hasOneUse())
       return true;
     return false;

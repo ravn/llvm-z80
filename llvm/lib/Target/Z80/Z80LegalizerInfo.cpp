@@ -279,17 +279,25 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
       .clampScalar(0, S8, S16);
 
   // Pointer operations
-  getActionDefinitionsBuilder(G_PTR_ADD).legalFor({{P0, S16}});
+  getActionDefinitionsBuilder(G_PTR_ADD)
+      .legalFor({{P0, S16}})
+      .clampScalar(1, S16, S16);
 
   // Pointer/integer conversions - no-op on Z80 (both are 16-bit)
   // Wider integers (e.g. s32 from GEP with i32 index) are narrowed to s16.
   getActionDefinitionsBuilder(G_INTTOPTR)
       .legalFor({{P0, S16}, {P2, S16}})
       .clampScalar(1, S16, S16);
-  getActionDefinitionsBuilder(G_PTRTOINT).legalFor({{S16, P0}, {S16, P2}});
+  getActionDefinitionsBuilder(G_PTRTOINT)
+      .legalFor({{S16, P0}, {S16, P2}})
+      .clampScalar(0, S16, S16);
 
-  // Bitcast - no-op reinterpretation between same-size types
-  getActionDefinitionsBuilder(G_BITCAST).legalFor({{S16, P0}, {P0, S16}});
+  // Bitcast - no-op reinterpretation between same-size types.
+  // Vector bitcasts (e.g. <4 x s8> → s32 from SROA) are lowered to
+  // scalar operations since Z80 has no vector support.
+  getActionDefinitionsBuilder(G_BITCAST)
+      .legalFor({{S16, P0}, {P0, S16}})
+      .lower();
 
   // Branches
   // G_BRCOND takes a boolean condition - we use S8 since Z80 has no 1-bit regs.
