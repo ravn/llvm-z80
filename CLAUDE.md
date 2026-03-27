@@ -167,6 +167,7 @@ docker run --rm -v ~/git/llvm-z80:/src -v ~/git/rc700-gensmedet:/rc700 \
 - CP (HL) fusion in instruction selector
 - LDIR/LDDR for memcpy/memset
 - RLCA bit-7 test for signed comparisons (slt X,0 / sgt X,-1)
+- SGT X,0 / SLE X,0 branchless: (non-negative mask) AND (non-zero test) — 12B fused, 14B materialized (was ~34B)
 - 16-bit right shift by 5-7 via byte swap + ADD HL,HL
 - Static stack (BSS-allocated locals, sequential per-function layout)
 - Direct BSS addressing for all 16-bit spills: HL 3B, DE/BC/IX/IY 4B (vs 6B IX-indexed)
@@ -234,7 +235,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1872 bytes, Clang: 2330 bytes (458B / 24% larger). Verified: boots CP/M in MAME. Root causes:
+SDCC: 1912 bytes, Clang: 1906 bytes (6B / 0.3% smaller). Verified: boots CP/M in MAME. Historical root causes (mostly fixed):
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **BSS correctness fix** (+60B): Fixed bug where SPILL/RELOAD_GR16 in expandPostRAPseudo used direct BSS addressing for stack arguments (wrong address). Now correctly uses IX-indexed (6B vs 3-4B per access). Recovery requires mixed-mode BSS (direct for locals, IX for stack args).
 3. **IY prefix overhead** (~35B): FD-prefixed instructions. CostPerUse=2 doesn't help because spilling is worse.

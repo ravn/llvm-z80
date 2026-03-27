@@ -44,6 +44,40 @@ define i8 @icmp_sgt16(i16 %a, i16 %b) {
   ret i8 %r
 }
 
+; Test: signed greater-than zero (SGT X, 0) - non-negative AND non-zero
+define i8 @icmp_sgt_zero(i16 %a) {
+; CHECK-LABEL: icmp_sgt_zero:
+; CHECK:       rlca
+; CHECK:       sbc a,a
+; CHECK:       cpl
+; CHECK:       or l
+; CHECK:       and
+; CHECK:       add a,#255
+; CHECK:       sbc a,a
+; CHECK:       and #1
+; CHECK-NOT:   xor #1
+  %c = icmp sgt i16 %a, 0
+  %r = zext i1 %c to i8
+  ret i8 %r
+}
+
+; Test: signed less-or-equal zero (SLE X, 0) - inverted SGT X, 0
+define i8 @icmp_sle_zero(i16 %a) {
+; CHECK-LABEL: icmp_sle_zero:
+; CHECK:       rlca
+; CHECK:       sbc a,a
+; CHECK:       cpl
+; CHECK:       or l
+; CHECK:       and
+; CHECK:       add a,#255
+; CHECK:       sbc a,a
+; CHECK:       and #1
+; CHECK:       xor #1
+  %c = icmp sle i16 %a, 0
+  %r = zext i1 %c to i8
+  ret i8 %r
+}
+
 ; Test: unsigned less-or-equal (ULE) - swapped operands, 8-bit SUB/SBC chain
 define i8 @icmp_ule16(i16 %a, i16 %b) {
 ; CHECK-LABEL: icmp_ule16:

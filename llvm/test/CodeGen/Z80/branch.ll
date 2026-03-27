@@ -35,3 +35,37 @@ define i8 @icmp_ult16(i16 %a, i16 %b) {
   %r = zext i1 %c to i8
   ret i8 %r
 }
+
+; Test conditional branch for SGT X, 0 (fused: non-negative AND non-zero)
+define i16 @branch_sgt_zero(i16 %a) {
+; CHECK-LABEL: _branch_sgt_zero:
+; CHECK:       rlca
+; CHECK:       sbc a,a
+; CHECK:       cpl
+; CHECK:       or l
+; CHECK:       and
+; CHECK:       jp nz,
+  %cond = icmp sgt i16 %a, 0
+  br i1 %cond, label %then, label %else
+then:
+  ret i16 42
+else:
+  ret i16 0
+}
+
+; Test conditional branch for SLE X, 0 (fused: inverted SGT zero)
+define i16 @branch_sle_zero(i16 %a) {
+; CHECK-LABEL: _branch_sle_zero:
+; CHECK:       rlca
+; CHECK:       sbc a,a
+; CHECK:       cpl
+; CHECK:       or l
+; CHECK:       and
+; CHECK:       jp z,
+  %cond = icmp sle i16 %a, 0
+  br i1 %cond, label %then, label %else
+then:
+  ret i16 42
+else:
+  ret i16 0
+}

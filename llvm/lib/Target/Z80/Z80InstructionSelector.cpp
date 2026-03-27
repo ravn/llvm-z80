@@ -1018,6 +1018,34 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         BuildMI(MBB, MI, DL, TII.get(Z80::ADD_A_A));
         // SLT: branch on carry; SGE: branch on no carry
         JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_C_nn : Z80::JP_NC_nn;
+      } else if (isConstZero(LHS)) {
+        // SLT 0, X (from SGT X, 0 normalization) = X > 0: non-neg AND non-zero
+        // SGE 0, X (from SLE X, 0 normalization) = X <= 0: inverted
+        if (!RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+          return false;
+        Register HiByte = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiByte)
+            .addReg(RHS, RegState{}, Z80::sub_hi);
+        Register LoByte = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), LoByte)
+            .addReg(RHS, RegState{}, Z80::sub_lo);
+        // Non-negative mask: RLCA; SBC A,A; CPL → 0xFF if X>=0, 0x00 if X<0
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(HiByte);
+        BuildMI(MBB, MI, DL, TII.get(Z80::RLCA));
+        BuildMI(MBB, MI, DL, TII.get(Z80::SBC_A_A));
+        BuildMI(MBB, MI, DL, TII.get(Z80::CPL));
+        Register Mask = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Mask)
+            .addReg(Z80::A);
+        // Non-zero test: H | L → nonzero iff X != 0
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(HiByte);
+        BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(LoByte);
+        // Combine: (non_neg_mask) AND (H|L) → nonzero iff X > 0
+        BuildMI(MBB, MI, DL, TII.get(Z80::AND_r)).addReg(Mask);
+        // SLT 0,X (= X>0): branch when NZ; SGE 0,X (= X<=0): branch when Z
+        JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_NZ_nn : Z80::JP_Z_nn;
       } else {
         // Signed 16-bit: compute SLT boolean in A, then OR A to set Z flag.
         if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
@@ -3459,8 +3487,45 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           IsSignTest = true;
           SignTestReg = RHS;
           InvertSign = (Pred == CmpInst::ICMP_SLE);
+        } else if ((Pred == CmpInst::ICMP_SGT || Pred == CmpInst::ICMP_SLE) &&
+                   isConstZero(RHS)) {
+          // SGT X, 0 = X > 0: (non-negative) AND (non-zero)
+          // SLE X, 0 = X <= 0: inverted
+          // Handled fully below; mark as special case.
+          IsSignTest = true; // reuse flag to skip general path
+          if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI))
+            return false;
+          Register HiByte = MRI.createVirtualRegister(&Z80::GR8RegClass);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiByte)
+              .addReg(LHS, RegState{}, Z80::sub_hi);
+          Register LoByte = MRI.createVirtualRegister(&Z80::GR8RegClass);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), LoByte)
+              .addReg(LHS, RegState{}, Z80::sub_lo);
+          // Non-negative mask: RLCA; SBC A,A; CPL → 0xFF if X>=0, 0x00 if X<0
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(HiByte);
+          BuildMI(MBB, MI, DL, TII.get(Z80::RLCA));
+          BuildMI(MBB, MI, DL, TII.get(Z80::SBC_A_A));
+          BuildMI(MBB, MI, DL, TII.get(Z80::CPL));
+          Register Mask = MRI.createVirtualRegister(&Z80::GR8RegClass);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Mask)
+              .addReg(Z80::A);
+          // Non-zero test: H | L → nonzero iff X != 0
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(HiByte);
+          BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(LoByte);
+          // Combine: (non_neg_mask) AND (H|L) → nonzero iff X > 0
+          BuildMI(MBB, MI, DL, TII.get(Z80::AND_r)).addReg(Mask);
+          // Normalize to 0/1: ADD A,$FF sets carry iff A!=0; SBC A,A; AND 1
+          BuildMI(MBB, MI, DL, TII.get(Z80::ADD_A_n)).addImm(0xFF);
+          BuildMI(MBB, MI, DL, TII.get(Z80::SBC_A_A));
+          BuildMI(MBB, MI, DL, TII.get(Z80::AND_n)).addImm(1);
+          if (Pred == CmpInst::ICMP_SLE)
+            BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(1);
         }
-        if (IsSignTest) {
+        if (IsSignTest && !SignTestReg.isValid()) {
+          // SGT/SLE-zero case: code already emitted above, nothing more to do.
+        } else if (IsSignTest) {
           if (!RBI.constrainGenericRegister(SignTestReg, Z80::GR16RegClass,
                                             MRI))
             return false;
