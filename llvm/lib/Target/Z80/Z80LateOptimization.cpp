@@ -2260,6 +2260,157 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: BSS spill/reload → PUSH/POP across CALLs ---
+  // With static-stack, register allocator spills use BSS direct addressing:
+  //   LD (bss),A  (3B/13T)  +  LD A,(bss)  (3B/13T)  =  6B/26T per pair
+  // PUSH AF (1B/11T) + POP AF (1B/10T) = 2B/21T — saves 4B and 5T per pair.
+  // For GR16: LD (bss),rr (3-4B) + LD rr,(bss) (3-4B) → PUSH/POP (2B).
+  //
+  // Pattern: LD (sfrend),reg ... CALL ... LD reg,(sfrend) with same address.
+  // If the value is loaded multiple times, insert PUSH after each POP to keep
+  // the value on the stack for subsequent POPs (1B overhead per extra use,
+  // still cheaper than 3B BSS reload).
+  //
+  // Safety: with static-stack there is no SP-relative addressing, so PUSH/POP
+  // cannot break address calculations.  Only fire for __sfrend/__sframe symbols.
+  if (STI.staticStack()) {
+    // Helper: get PUSH/POP opcodes for a BSS store/load pair.
+    struct SpillInfo {
+      unsigned StoreOpc;   // LD_nnind_A, LD_nnind_HL, etc.
+      unsigned LoadOpc;    // LD_A_nnind, LD_HL_nnind, etc.
+      unsigned PushOpc;    // PUSH_AF, PUSH_HL, etc.
+      unsigned PopOpc;     // POP_AF, POP_HL, etc.
+      unsigned StoreBytes; // size of store instruction
+      unsigned LoadBytes;  // size of load instruction
+    };
+    static const SpillInfo SpillPairs[] = {
+        {Z80::LD_nnind_A,  Z80::LD_A_nnind,  Z80::PUSH_AF, Z80::POP_AF, 3, 3},
+        {Z80::LD_nnind_HL, Z80::LD_HL_nnind, Z80::PUSH_HL, Z80::POP_HL, 3, 3},
+        {Z80::LD_nnind_DE, Z80::LD_DE_nnind, Z80::PUSH_DE, Z80::POP_DE, 4, 4},
+        {Z80::LD_nnind_BC, Z80::LD_BC_nnind, Z80::PUSH_BC, Z80::POP_BC, 4, 4},
+    };
+
+    auto getSpillInfo = [&](unsigned Opc) -> const SpillInfo * {
+      for (const auto &SI : SpillPairs)
+        if (SI.StoreOpc == Opc) return &SI;
+      return nullptr;
+    };
+
+    auto isMatchingLoad = [&](unsigned StoreOpc, unsigned Opc) -> bool {
+      for (const auto &SI : SpillPairs)
+        if (SI.StoreOpc == StoreOpc && SI.LoadOpc == Opc) return true;
+      return false;
+    };
+
+    auto isSfrendSymbol = [](const MachineOperand &MO) -> bool {
+      if (!MO.isMCSymbol()) return false;
+      StringRef Name = MO.getMCSymbol()->getName();
+      if (!Name.starts_with("__sfrend") && !Name.starts_with("__sframe"))
+        return false;
+      return true;
+    };
+
+    auto sameAddress = [](const MachineInstr &A, const MachineInstr &B) -> bool {
+      // Compare the address operand (operand 0 for both store and load).
+      return A.getOperand(0).isIdenticalTo(B.getOperand(0));
+    };
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        const SpillInfo *SI = getSpillInfo(MII->getOpcode());
+        if (!SI) continue;
+        if (!isSfrendSymbol(MII->getOperand(0))) continue;
+
+        // Found a BSS spill store.  Scan forward for CALLs and matching loads.
+        // Count how many loads reference this same address after the store.
+        // Also track whether any other store to the same address intervenes
+        // (which would mean the slot is reused for a different value).
+        bool HasCall = false;
+        bool Conflict = false;
+        int LoadCount = 0;
+        int PushPopBytes = 1; // initial PUSH
+        int BssBytes = SI->StoreBytes;
+        SmallVector<MachineBasicBlock::iterator, 4> Loads;
+
+        for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
+          unsigned SOpc = Scan->getOpcode();
+
+          // Another store to the same sfrend slot = conflict (reuse).
+          if (SOpc == SI->StoreOpc && sameAddress(*MII, *Scan)) {
+            Conflict = true;
+            break;
+          }
+
+          if (SOpc == Z80::CALL_nn)
+            HasCall = true;
+
+          // Matching load from the same address.
+          if (isMatchingLoad(SI->StoreOpc, SOpc) && sameAddress(*MII, *Scan)) {
+            if (!HasCall) continue; // load before any call — not a cross-call spill
+            Loads.push_back(Scan);
+            LoadCount++;
+            PushPopBytes += 1; // POP
+            BssBytes += SI->LoadBytes;
+            // If there are more loads after this one, we need PUSH after POP.
+            // We'll account for that below.
+          }
+
+          // Branch/jump out of block = stop scanning.
+          if (Scan->isTerminator()) break;
+        }
+
+        if (Conflict || LoadCount == 0) continue;
+
+        // Only convert single store/single load pairs for now.
+        // Multi-load with re-PUSH is correct in isolation but causes
+        // stack depth issues when multiple functions are converted.
+        if (LoadCount != 1) continue;
+
+        PushPopBytes = 2; // PUSH + POP
+        BssBytes = SI->StoreBytes + SI->LoadBytes;
+
+        if (PushPopBytes >= BssBytes) continue; // not worth it
+
+        LLVM_DEBUG(dbgs() << "  BSS spill→PUSH/POP: " << *MII
+                          << "  " << LoadCount << " loads, saves "
+                          << (BssBytes - PushPopBytes) << "B\n");
+
+        // Replace store with PUSH.
+        DebugLoc DL = MII->getDebugLoc();
+        BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
+        MII = MBB.erase(MII);
+
+        // For PUSH AF / POP AF: POP AF restores flags, which may conflict
+        // with flags set by the CALL or intervening instructions.
+        // Only safe when FLAGS is dead after each POP AF.
+        if (SI->PopOpc == Z80::POP_AF) {
+          bool FlagsSafe = true;
+          for (auto &LoadIt : Loads) {
+            auto After = std::next(LoadIt);
+            // After erasing the load, the POP AF will be at this position.
+            // Check if flags are dead after the load instruction.
+            if (!isRegDeadAfter(After, MBB, TRI, Z80::FLAGS)) {
+              FlagsSafe = false;
+              break;
+            }
+          }
+          if (!FlagsSafe)
+            continue;
+        }
+
+        // Replace the single load with POP.
+        auto &LoadMI = *Loads[0];
+        DebugLoc LoadDL = LoadMI.getDebugLoc();
+        BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PopOpc));
+        MBB.erase(Loads[0]);
+
+        Changed = true;
+        // Restart scan from current position (MII was updated by erase).
+        --MII;
+      }
+    }
+  }
+
   return Changed;
 }
 
