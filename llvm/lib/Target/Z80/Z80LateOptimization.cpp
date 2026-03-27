@@ -2331,6 +2331,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         int PushPopBytes = 1; // initial PUSH
         int BssBytes = SI->StoreBytes;
         SmallVector<MachineBasicBlock::iterator, 4> Loads;
+        // Track PUSH/POP balance for the same register pair.
+        // Our PUSH will be at the store position.  If an existing POP of
+        // the same pair appears between our PUSH and the matching load,
+        // it would steal our value (LIFO).  Similarly, if a previous
+        // conversion inserted a PUSH/POP pair, we must not interleave.
+        int StackDepth = 0;
 
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
@@ -2339,6 +2345,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (SOpc == SI->StoreOpc && sameAddress(*MII, *Scan)) {
             Conflict = true;
             break;
+          }
+
+          // Track PUSH/POP of the same register pair between our store
+          // and its matching load.  A negative depth means an existing
+          // POP would consume our pushed value before we reach it.
+          if (SOpc == SI->PushOpc) StackDepth++;
+          if (SOpc == SI->PopOpc) {
+            StackDepth--;
+            if (StackDepth < 0) { Conflict = true; break; }
           }
 
           if (SOpc == Z80::CALL_nn)
@@ -2359,30 +2374,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (Scan->isTerminator()) break;
         }
 
+        // Unbalanced PUSH/POP between store and load = unsafe.
+        if (StackDepth != 0) Conflict = true;
+
         if (Conflict || LoadCount == 0) continue;
 
-        // Only convert single store/single load pairs for now.
-        // Multi-load with re-PUSH is correct in isolation but causes
-        // stack depth issues when multiple functions are converted.
-        if (LoadCount != 1) continue;
-
-        PushPopBytes = 2; // PUSH + POP
-        BssBytes = SI->StoreBytes + SI->LoadBytes;
+        // Cost: PUSH (1B) + N*POP (N B) + (N-1)*re-PUSH ((N-1) B) = 2N B.
+        // Original: store (S B) + N*load (N*L B).
+        // Multi-load with re-PUSH: after each POP except the last, insert
+        // PUSH to keep the value on the stack for subsequent POPs.
+        // The LIFO safety check above prevents interference with other
+        // conversions in the same MBB.
+        PushPopBytes = 2 * LoadCount; // PUSH + N*POP + (N-1)*re-PUSH
+        BssBytes = SI->StoreBytes + LoadCount * SI->LoadBytes;
 
         if (PushPopBytes >= BssBytes) continue; // not worth it
-
-        LLVM_DEBUG(dbgs() << "  BSS spill→PUSH/POP: " << *MII
-                          << "  " << LoadCount << " loads, saves "
-                          << (BssBytes - PushPopBytes) << "B\n");
-
-        // Replace store with PUSH.
-        DebugLoc DL = MII->getDebugLoc();
-        BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
-        MII = MBB.erase(MII);
 
         // For PUSH AF / POP AF: POP AF restores flags, which may conflict
         // with flags set by the CALL or intervening instructions.
         // Only safe when FLAGS is dead after each POP AF.
+        // Check BEFORE replacing the store to avoid leaving a dangling PUSH.
         if (SI->PopOpc == Z80::POP_AF) {
           bool FlagsSafe = true;
           for (auto &LoadIt : Loads) {
@@ -2398,11 +2409,28 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             continue;
         }
 
-        // Replace the single load with POP.
-        auto &LoadMI = *Loads[0];
-        DebugLoc LoadDL = LoadMI.getDebugLoc();
-        BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PopOpc));
-        MBB.erase(Loads[0]);
+        LLVM_DEBUG(dbgs() << "  BSS spill→PUSH/POP: " << *MII
+                          << "  " << LoadCount << " loads, saves "
+                          << (BssBytes - PushPopBytes) << "B\n");
+
+        // Replace store with PUSH.
+        DebugLoc DL = MII->getDebugLoc();
+        BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
+        MII = MBB.erase(MII);
+
+        // Replace each load with POP.  For all but the last, insert a
+        // re-PUSH immediately after the POP to keep the value on the stack
+        // for subsequent loads.
+        for (int i = 0; i < LoadCount; ++i) {
+          auto &LoadMI = *Loads[i];
+          DebugLoc LoadDL = LoadMI.getDebugLoc();
+          BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PopOpc));
+          if (i < LoadCount - 1) {
+            // Re-PUSH after POP: saves the value back for the next POP.
+            BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PushOpc));
+          }
+          MBB.erase(Loads[i]);
+        }
 
         Changed = true;
         // Restart scan from current position (MII was updated by erase).

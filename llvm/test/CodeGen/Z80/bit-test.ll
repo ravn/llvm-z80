@@ -74,7 +74,7 @@ no:
 @g_status = global i8 0
 define void @branch_mem_bit3() {
 ; CHECK-LABEL: _branch_mem_bit3:
-; CHECK:       ld	a,(de)
+; CHECK:       ld	a,(_g_status)
 ; CHECK-NEXT:  and	#8
 ; CHECK-NEXT:  jr	{{nz|z}},
   %v = load volatile i8, ptr @g_status

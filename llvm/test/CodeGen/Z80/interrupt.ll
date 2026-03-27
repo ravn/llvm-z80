@@ -2,13 +2,14 @@
 ; RUN: llc -mtriple=sm83 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s --check-prefix=SM83
 
 ; Test: interrupt handler saves registers and returns with reti
+; With direct addressing, only AF is needed for simple ISR (no DE for address)
 
 @g = global i8 0
 
 define void @isr() #0 {
 ; Z80-LABEL: _isr:
 ; Z80:       push af
-; Z80:       push de
+; Z80-NOT:   push de
 ; Z80:       reti
 
 ; SM83-LABEL: _isr:
@@ -32,10 +33,11 @@ define void @normal() {
 }
 
 ; Test: interrupt handler with more register pressure saves more pairs
+; With direct addressing, globals are accessed via LD A,(addr) — only AF used
 define void @isr_complex() #0 {
 ; Z80-LABEL: _isr_complex:
 ; Z80:       push af
-; Z80:       push de
+; Z80-NOT:   push de
 ; Z80:       reti
 
 ; SM83-LABEL: _isr_complex:
