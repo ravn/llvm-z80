@@ -1939,6 +1939,57 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    // Direct addressing for global variables (Z80 only).
+    // G_LOAD(G_GLOBAL_VALUE @sym) → LD A,(sym) or LD HL,(sym)
+    // G_LOAD(G_PTR_ADD(G_GLOBAL_VALUE @sym, G_CONSTANT off)) → LD A,(sym+off)
+    // Saves 1-5 bytes vs loading address into register pair + indirect load.
+    if (STI.hasZ80()) {
+      const GlobalValue *GV = nullptr;
+      int64_t GVOffset = 0;
+
+      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_GLOBAL_VALUE) {
+        GV = AddrDef->getOperand(1).getGlobal();
+        GVOffset = AddrDef->getOperand(1).getOffset();
+      } else if (AddrDef &&
+                 AddrDef->getOpcode() == TargetOpcode::G_PTR_ADD) {
+        Register BaseReg2 = AddrDef->getOperand(1).getReg();
+        Register OffReg2 = AddrDef->getOperand(2).getReg();
+        MachineInstr *BaseDef2 = MRI.getVRegDef(BaseReg2);
+        MachineInstr *OffDef2 = MRI.getVRegDef(OffReg2);
+        if (BaseDef2 &&
+            BaseDef2->getOpcode() == TargetOpcode::G_GLOBAL_VALUE &&
+            OffDef2 &&
+            OffDef2->getOpcode() == TargetOpcode::G_CONSTANT) {
+          GV = BaseDef2->getOperand(1).getGlobal();
+          GVOffset = BaseDef2->getOperand(1).getOffset() +
+                     OffDef2->getOperand(1).getCImm()->getSExtValue();
+        }
+      }
+
+      if (GV) {
+        if (DstTy.getSizeInBits() <= 8) {
+          if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_nnind))
+              .addGlobalAddress(GV, GVOffset);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+              .addReg(Z80::A);
+          MI.eraseFromParent();
+          return true;
+        }
+        if (DstTy.getSizeInBits() <= 16) {
+          if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_HL_nnind))
+              .addGlobalAddress(GV, GVOffset);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+              .addReg(Z80::HL);
+          MI.eraseFromParent();
+          return true;
+        }
+      }
+    }
+
     // Fallback: indirect addressing via BC, DE, or HL.
     // LOAD8_IND accepts any GR16 register, so regalloc can choose BC/DE/HL
     // freely. This avoids forcing the address into HL, reducing register
@@ -2067,6 +2118,58 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
               .addReg(SrcReg)
               .addFrameIndex(FI)
               .addImm(ExtraOffset);
+          MI.eraseFromParent();
+          return true;
+        }
+      }
+    }
+
+    // Direct addressing for global variable stores (Z80 only).
+    // G_STORE(val, G_GLOBAL_VALUE @sym) → LD (sym),A or LD (sym),HL
+    // G_STORE(val, G_PTR_ADD(G_GLOBAL_VALUE @sym, G_CONSTANT off)) →
+    //   LD (sym+off),A
+    if (STI.hasZ80()) {
+      MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
+      const GlobalValue *GV = nullptr;
+      int64_t GVOffset = 0;
+
+      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_GLOBAL_VALUE) {
+        GV = AddrDef->getOperand(1).getGlobal();
+        GVOffset = AddrDef->getOperand(1).getOffset();
+      } else if (AddrDef &&
+                 AddrDef->getOpcode() == TargetOpcode::G_PTR_ADD) {
+        Register BaseReg = AddrDef->getOperand(1).getReg();
+        Register OffReg = AddrDef->getOperand(2).getReg();
+        MachineInstr *BaseDef = MRI.getVRegDef(BaseReg);
+        MachineInstr *OffDef = MRI.getVRegDef(OffReg);
+        if (BaseDef &&
+            BaseDef->getOpcode() == TargetOpcode::G_GLOBAL_VALUE &&
+            OffDef &&
+            OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          GV = BaseDef->getOperand(1).getGlobal();
+          GVOffset = BaseDef->getOperand(1).getOffset() +
+                     OffDef->getOperand(1).getCImm()->getSExtValue();
+        }
+      }
+
+      if (GV) {
+        if (SrcTy.getSizeInBits() <= 8) {
+          if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(SrcReg);
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A))
+              .addGlobalAddress(GV, GVOffset);
+          MI.eraseFromParent();
+          return true;
+        }
+        if (SrcTy.getSizeInBits() <= 16) {
+          if (!RBI.constrainGenericRegister(SrcReg, Z80::GR16RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(SrcReg);
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_HL))
+              .addGlobalAddress(GV, GVOffset);
           MI.eraseFromParent();
           return true;
         }
