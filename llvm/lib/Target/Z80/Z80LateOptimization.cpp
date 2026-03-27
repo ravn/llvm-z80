@@ -417,14 +417,20 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (Opc == Z80::POP_IY) { PopIY = &*MII; continue; }
 
         // Classify IX uses.
-        if (Opc == Z80::DEC_IX) {
-          CumulativeDelta -= 1;
-          Modifications.push_back({&*MII, -1});
-          continue;
-        }
-        if (Opc == Z80::INC_IX) {
-          CumulativeDelta += 1;
-          Modifications.push_back({&*MII, +1});
+        // INC/DEC IX inside a loop means IX is not a constant —
+        // the delta changes every iteration.  Detect by checking if
+        // this block has a back-edge (a successor with a number <= ours,
+        // or is its own successor).
+        if (Opc == Z80::DEC_IX || Opc == Z80::INC_IX) {
+          for (auto *Succ : MBB2.successors()) {
+            if (Succ->getNumber() <= MBB2.getNumber()) {
+              IXUsedOther = true; // in a loop: delta is not constant
+              break;
+            }
+          }
+          int Delta = (Opc == Z80::INC_IX) ? +1 : -1;
+          CumulativeDelta += Delta;
+          Modifications.push_back({&*MII, Delta});
           continue;
         }
         // PUSH IX; POP rr extraction pattern.
@@ -719,6 +725,46 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
       }
       ++MII;
+    }
+
+    // --- Peephole: OR A; LD r,0; JR Z → OR A; LD r,A; JR Z ---
+    // After OR A, flags reflect A.  LD r,#0 doesn't touch flags.
+    // On the Z branch (A==0), LD r,A produces the same result as LD r,0.
+    // On the NZ fall-through, r will be overwritten (select pattern).
+    // LD r,A is 1 byte vs LD r,#0 at 2 bytes.  Saves 1B per instance.
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+         MII != MIE; ++MII) {
+      // Look for OR_A (tests A, sets Z if A==0).
+      if (MII->getOpcode() != Z80::OR_A)
+        continue;
+      // Scan forward past non-A-modifying LD r,0 instructions
+      // until we hit a conditional branch or something else.
+      auto Scan = std::next(MII);
+      while (Scan != MIE) {
+        unsigned SOpc = Scan->getOpcode();
+        // Check for LD r,#0 where r != A.
+        unsigned LdOpc = SOpc;
+        Register Dst;
+        if (LdOpc == Z80::LD_B_n) Dst = Z80::B;
+        else if (LdOpc == Z80::LD_C_n) Dst = Z80::C;
+        else if (LdOpc == Z80::LD_D_n) Dst = Z80::D;
+        else if (LdOpc == Z80::LD_E_n) Dst = Z80::E;
+        else if (LdOpc == Z80::LD_H_n) Dst = Z80::H;
+        else if (LdOpc == Z80::LD_L_n) Dst = Z80::L;
+        else break; // not an LD r,n — stop scanning
+
+        if (Scan->getOperand(0).getImm() != 0)
+          break; // not loading zero
+
+        unsigned LdRA = getLDrAOpcode(Dst);
+        if (!LdRA) break;
+
+        LLVM_DEBUG(dbgs() << "  OR A; LD r,0 → LD r,A: " << *Scan);
+        BuildMI(MBB, *Scan, Scan->getDebugLoc(), TII->get(LdRA));
+        Scan = MBB.erase(Scan);
+        Changed = true;
+        // Continue scanning — there might be more LD r,0 instructions.
+      }
     }
 
     // --- Peephole: LD rr,nn; INC/DEC rr → LD rr,nn±1 ---

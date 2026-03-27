@@ -56,10 +56,11 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken())
     return true;
 
-  // Static stack: hasFP=false has a runtime bug (PROM hangs after banner).
-  // Keep hasFP=true until diagnosed.
-  if (STI.staticStack())
-    return true;
+  // Static stack without stack arguments: IX not needed as frame pointer.
+  // The existing alloca/fixedObjects checks below will catch functions
+  // that actually need IX (stack args).
+  // (Previously guarded with `return true` due to IX constant propagation
+  //  bug in Z80LateOptimization — now fixed.)
 
   if (MF.getTarget().Options.DisableFramePointerElim(MF))
     return true;
