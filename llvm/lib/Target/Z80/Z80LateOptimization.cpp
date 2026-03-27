@@ -853,6 +853,42 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
+    // --- Peephole: LD L,H; LD H,0; LD A,L → LD A,H ---
+    // When extracting the high byte of HL into A, the compiler sometimes
+    // routes through L (LD L,H; LD H,0; LD A,L) instead of directly (LD A,H).
+    // This happens when ISel zero-extends the high byte into HL (for potential
+    // 16-bit use) but the result is only consumed as an 8-bit value in A.
+    // The peephole replaces the 3-instruction sequence (4B) with LD A,H (1B).
+    // Safe when H and L are dead after (the LD H,0 overwrites H, and LD A,L
+    // is the last use of L before it's overwritten or dead).
+    {
+      SmallVector<MachineInstr *, 4> ToErase;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        MachineInstr &MI = *MII;
+        if (MI.getOpcode() != Z80::LD_L_H) continue;
+        // Look for LD H,#0 (skipping KILL pseudos)
+        auto It = std::next(MachineBasicBlock::iterator(&MI));
+        while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
+        if (It == MIE || It->getOpcode() != Z80::LD_H_n ||
+            It->getOperand(0).getImm() != 0) continue;
+        MachineInstr *LdH = &*It;
+        // Look for LD A,L (skipping KILL pseudos)
+        ++It;
+        while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
+        if (It == MIE || It->getOpcode() != Z80::LD_A_L) continue;
+        MachineInstr *LdA = &*It;
+        LLVM_DEBUG(dbgs() << "  High-byte extract: LD L,H; LD H,0; LD A,L → "
+                             "LD A,H\n");
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(Z80::LD_A_H));
+        ToErase.push_back(LdA);
+        ToErase.push_back(LdH);
+        ToErase.push_back(&MI);
+        Changed = true;
+      }
+      for (auto *MI : ToErase)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: 16-bit increment overflow test ---
     // Pattern A (9 instr, 16B): LD HL,1; ADD HL,rr; SBC A,A; AND 1;
     //   LD lo,L; LD hi,H; XOR 1; AND 1; JR NZ → INC rr; LD A,hi; OR lo; JR NZ
