@@ -56,7 +56,7 @@ COMPILERS = {
         "asm_ext": ".clang.asm",
     },
     "zsdcc": {
-        "docker_image": "z88dk:v2.4",
+        "docker_image": "z88dk:2.4",
         "docker_volumes": lambda: [],
         "compile": [
             "zcc", "+z80", "-clib=sdcc_iy", "-SO3", "--opt-code-size",
@@ -230,8 +230,16 @@ def parse_zcc_map_halt(map_file):
 # ---------------------------------------------------------------------------
 
 def measure_tstates(image, volumes, bin_path, halt_addr):
-    """Run binary in z88dk-ticks and return (tstates, de_value)."""
-    cmd = ["z88dk-ticks", "-mz80", "-trace", "-end", f"0x{halt_addr}", bin_path]
+    """Run binary in z88dk-ticks and return (tstates, de_value).
+
+    IMPORTANT: -trace generates one line per instruction — millions for large
+    programs.  We pipe through 'tail -20' inside the container so only the
+    last few lines (containing final register state + T-state count) are
+    captured.  Without this, the trace output can fill the disk."""
+    # Shell pipeline: run ticks with trace, keep only the tail
+    shell_cmd = (f"z88dk-ticks -mz80 -trace -end 0x{halt_addr} {bin_path} "
+                 f"2>&1 | tail -20")
+    cmd = ["sh", "-c", shell_cmd]
     r = docker_run(image, volumes, SCRIPT_DIR, cmd)
     if r.returncode != 0:
         return None, None
