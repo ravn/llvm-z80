@@ -147,11 +147,24 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
   // ISR with +shadow-regs: save AF/BC/DE/HL via EXX + EX AF,AF'.
   // This replaces PUSH AF + PUSH BC + PUSH DE + PUSH HL (4 bytes → 2 bytes).
   // Must be before any register use (including IX frame setup).
+  // Skip for empty ISR stubs (only a RET/RETI) — no registers to save.
   const auto &STI0 = MF.getSubtarget<Z80Subtarget>();
   if (MF.getFunction().hasFnAttribute("interrupt") && STI0.shadowRegs() &&
       STI0.hasZ80()) {
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::EXX));
-    BuildMI(MBB, MBBI, DL, TII.get(Z80::EX_AF_AF));
+    // Check if ISR body is empty: single block with only return instruction(s)
+    bool IsEmptyISR = (MF.size() == 1);
+    if (IsEmptyISR) {
+      for (const auto &MI : MBB) {
+        if (!MI.isTerminator() && !MI.isDebugInstr()) {
+          IsEmptyISR = false;
+          break;
+        }
+      }
+    }
+    if (!IsEmptyISR) {
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::EXX));
+      BuildMI(MBB, MBBI, DL, TII.get(Z80::EX_AF_AF));
+    }
   }
 
   if (hasFP(MF)) {
@@ -379,14 +392,25 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
 
   // ISR with +shadow-regs: restore AF/BC/DE/HL via EX AF,AF' + EXX
   // before EI + RETI. Must be after all frame teardown (POP IX etc.)
-  // but before EI.
+  // but before EI. Skip for empty ISR stubs (matching prologue logic).
   {
     const auto &STI1 = MF.getSubtarget<Z80Subtarget>();
     if (MF.getFunction().hasFnAttribute("interrupt") && STI1.shadowRegs() &&
         STI1.hasZ80()) {
-      MachineBasicBlock::iterator RetI = MBB.getLastNonDebugInstr();
-      BuildMI(MBB, RetI, DL, TII.get(Z80::EX_AF_AF));
-      BuildMI(MBB, RetI, DL, TII.get(Z80::EXX));
+      bool IsEmptyISR = (MF.size() == 1);
+      if (IsEmptyISR) {
+        for (const auto &MI : MBB) {
+          if (!MI.isTerminator() && !MI.isDebugInstr()) {
+            IsEmptyISR = false;
+            break;
+          }
+        }
+      }
+      if (!IsEmptyISR) {
+        MachineBasicBlock::iterator RetI = MBB.getLastNonDebugInstr();
+        BuildMI(MBB, RetI, DL, TII.get(Z80::EX_AF_AF));
+        BuildMI(MBB, RetI, DL, TII.get(Z80::EXX));
+      }
     }
   }
 
