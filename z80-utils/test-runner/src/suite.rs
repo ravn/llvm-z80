@@ -46,6 +46,10 @@ impl TestResult {
             outcome: TestOutcome::Skip { reason: reason.into() },
         }
     }
+
+    pub fn is_pass(&self) -> bool {
+        matches!(self.outcome, TestOutcome::Pass { .. })
+    }
 }
 
 /// Callback invoked after each test completes.

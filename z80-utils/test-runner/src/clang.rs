@@ -177,7 +177,10 @@ fn run_single(
             }
         }
     };
-    remove_tmp_dir(&tmp_dir);
+    // Keep temp files on failure for debugging; clean up on pass.
+    if result.is_pass() {
+        remove_tmp_dir(&tmp_dir);
+    }
     result
 }
 
