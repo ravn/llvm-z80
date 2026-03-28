@@ -682,6 +682,94 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
     }
   }
 
+  // Extended narrowing: icmp eq/ne (add (zext i8 X), C), (zext i8 Y)
+  // On Z80, ADD A,n sets carry on overflow. For EQ/NE, if the 8-bit add
+  // wraps (carry), the 16-bit result is in [256,510] while the other side
+  // is in [0,255], so equality is impossible. We use JP C as overflow guard.
+  if (CmpInst::isEquality(Pred) && MRI.getType(LHS).getSizeInBits() == 16) {
+    auto tryNarrowAddZext = [&](Register AddSide,
+                                Register ExtSide) -> bool {
+      MachineInstr *AddDef = MRI.getVRegDef(AddSide);
+      if (!AddDef || AddDef->getOpcode() != TargetOpcode::G_ADD)
+        return false;
+      MachineInstr *ExtDef = MRI.getVRegDef(ExtSide);
+      if (!ExtDef || ExtDef->getOpcode() != TargetOpcode::G_ZEXT)
+        return false;
+      Register ExtSrc = ExtDef->getOperand(1).getReg();
+      if (MRI.getType(ExtSrc).getSizeInBits() != 8)
+        return false;
+
+      // Decompose G_ADD: one operand G_ZEXT i8, other G_CONSTANT [1,255].
+      Register AddOp1 = AddDef->getOperand(1).getReg();
+      Register AddOp2 = AddDef->getOperand(2).getReg();
+      MachineInstr *Op1Def = MRI.getVRegDef(AddOp1);
+      MachineInstr *Op2Def = MRI.getVRegDef(AddOp2);
+      if (!Op1Def || !Op2Def)
+        return false;
+
+      Register AddExtSrc;
+      int64_t AddConst;
+      if (Op1Def->getOpcode() == TargetOpcode::G_ZEXT &&
+          Op2Def->getOpcode() == TargetOpcode::G_CONSTANT) {
+        AddExtSrc = Op1Def->getOperand(1).getReg();
+        AddConst = Op2Def->getOperand(1).getCImm()->getZExtValue();
+      } else if (Op2Def->getOpcode() == TargetOpcode::G_ZEXT &&
+                 Op1Def->getOpcode() == TargetOpcode::G_CONSTANT) {
+        AddExtSrc = Op2Def->getOperand(1).getReg();
+        AddConst = Op1Def->getOperand(1).getCImm()->getZExtValue();
+      } else
+        return false;
+
+      if (MRI.getType(AddExtSrc).getSizeInBits() != 8)
+        return false;
+      if (AddConst < 1 || AddConst > 255)
+        return false;
+
+      // Pattern matched. Emit 8-bit add + carry guard + compare.
+      if (!RBI.constrainGenericRegister(AddExtSrc, Z80::GR8RegClass, MRI) ||
+          !RBI.constrainGenericRegister(ExtSrc, Z80::GR8RegClass, MRI))
+        return false;
+
+      // COPY A, X; ADD A, C
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+          .addReg(AddExtSrc);
+      BuildMI(MBB, MI, DL, TII.get(Z80::ADD_A_n)).addImm(AddConst & 0xFF);
+
+      // Overflow guard: carry → always NE.
+      if (Pred == CmpInst::ICMP_NE) {
+        // NE + overflow → true → branch to target.
+        BuildMI(MBB, MI, DL, TII.get(Z80::JP_C_nn)).addMBB(TargetMBB);
+      } else {
+        // EQ + overflow → false → skip to fallthrough.
+        MachineBasicBlock *FallThroughMBB = nullptr;
+        for (auto *Succ : MBB.successors()) {
+          if (Succ != TargetMBB) {
+            FallThroughMBB = Succ;
+            break;
+          }
+        }
+        if (!FallThroughMBB)
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(Z80::JP_C_nn)).addMBB(FallThroughMBB);
+      }
+
+      // CP ExtSrc (8-bit compare sets Z flag)
+      BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(ExtSrc);
+
+      // Branch on result.
+      unsigned BrOpc =
+          (Pred == CmpInst::ICMP_EQ) ? Z80::JP_Z_nn : Z80::JP_NZ_nn;
+      BuildMI(MBB, MI, DL, TII.get(BrOpc)).addMBB(TargetMBB);
+
+      MI.eraseFromParent();
+      return true;
+    };
+
+    // Try LHS as add side, then RHS (EQ/NE are commutative).
+    if (tryNarrowAddZext(LHS, RHS) || tryNarrowAddZext(RHS, LHS))
+      return true;
+  }
+
   const LLT LHSTy = MRI.getType(LHS);
 
   // Normalize: convert GT/LE to LT/GE by swapping operands.

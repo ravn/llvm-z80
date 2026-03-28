@@ -141,25 +141,29 @@ EOF
 Usage: `docker run --rm -v ~/git/llvm-z80:/src -w /src llvm-z80-build ninja -C build`
 
 ### Docker Test Image
-Extends build image with Rust/cargo for z80-utils integration tests. Build with:
+Extends build image with Rust/cargo and z88dk-ticks for integration tests. Build with:
 ```
-docker build -t llvm-z80-test - <<'EOF'
+docker build -t llvm-z80-test -f - ~/z80/z88dk <<'EOF'
+FROM llvm-z80-build AS ticks-builder
+RUN apt-get update -qq && apt-get install -y -qq flex bison && rm -rf /var/lib/apt/lists/*
+COPY src/ticks /ticks/src/ticks
+COPY src/common /ticks/src/common
+COPY src/Make.common /ticks/src/Make.common
+COPY ext/uthash /ticks/ext/uthash
+RUN make -C /ticks/src/ticks clean && make -C /ticks/src/ticks
+
 FROM llvm-z80-build
 RUN apt-get update -qq && apt-get install -y -qq curl && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+COPY --from=ticks-builder /ticks/src/ticks/z88dk-ticks /usr/local/bin/z88dk-ticks
 ENV PATH="/root/.cargo/bin:${PATH}"
 EOF
 ```
-z88dk-ticks must be built from source first (one-time):
-```
-docker run --rm -v ~/git/rc700-gensmedet:/rc700 -w /rc700/z88dk/download/z88dk/src/ticks \
-  llvm-z80-test sh -c 'apt-get update -qq && apt-get install -y -qq flex bison > /dev/null 2>&1 && make'
-```
 Run integration tests:
 ```
-docker run --rm -v ~/git/llvm-z80:/src -v ~/git/rc700-gensmedet:/rc700 \
+docker run --rm -v ~/z80/llvm-z80:/src \
   -w /src/z80-utils/test-runner \
-  -e PATH="/root/.cargo/bin:/rc700/z88dk/download/z88dk/src/ticks:/src/build/bin:$PATH" \
+  -e PATH="/root/.cargo/bin:/usr/local/bin:/src/build/bin:$PATH" \
   llvm-z80-test cargo run -- clang
 ```
 
