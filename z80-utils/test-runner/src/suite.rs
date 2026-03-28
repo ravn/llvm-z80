@@ -159,12 +159,16 @@ pub fn extract_error(stderr: &str) -> String {
 
 /// Parse SKIP-IF directives from C source files.
 /// Format: `/* SKIP-IF: <conditions> */`
-/// Conditions: flags (-ffast-math, -fomit-frame-pointer) and/or target (sm83, z80)
+/// Conditions: flags (-ffast-math, -fomit-frame-pointer), target (sm83, z80),
+/// and/or opt levels (O0, O1, O2, O3, Os, Oz).
 pub fn check_skip_c(
     source: &str,
     target: Target,
     active_flags: &[&str],
+    opt_tag: &str,
 ) -> Option<String> {
+    let opt_levels = ["O0", "O1", "O2", "O3", "Os", "Oz"];
+
     for line in source.lines() {
         let lower = line.to_lowercase();
         if let Some(pos) = lower.find("skip-if:") {
@@ -180,6 +184,13 @@ pub fn check_skip_c(
             let mut target_filter = None;
 
             for token in &tokens {
+                // Check opt level match (e.g. "O0")
+                if opt_levels.iter().any(|o| o.eq_ignore_ascii_case(token)) {
+                    if token.eq_ignore_ascii_case(opt_tag) {
+                        return Some(conditions.to_string());
+                    }
+                    continue;
+                }
                 if token.starts_with('-') {
                     flag = Some(*token);
                 } else {

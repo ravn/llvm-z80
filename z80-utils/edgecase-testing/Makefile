@@ -1,6 +1,7 @@
 GEN = ./gen_z80_full.py
 FILES = 25
 TESTS = 1000
+TESTS_O0 = 800
 SEED = 123
 
 # LLVM-Z80 cross-compiler + z88dk-ticks (Docker)
@@ -25,15 +26,16 @@ PROM_FLAGS = -Xclang -target-feature -Xclang +static-stack -Xclang -target-featu
 
 # Generate into the clang test suite (picked up by `cargo run -- clang`)
 # Two variants: plain (default flags) and prom (static-stack + shadow-regs)
+# Uses $(TESTS_O0) tests per file to fit in 64KB at -O0.
 gen-suite:
-	python3 $(GEN) $(FILES) $(TESTS) $(SEED) \
+	python3 $(GEN) $(FILES) $(TESTS_O0) $(SEED) \
 		--outdir $(SUITE_DIR) --prefix test_90_edge_
-	python3 $(GEN) $(FILES) $(TESTS) $(SEED) \
+	python3 $(GEN) $(FILES) $(TESTS_O0) $(SEED) \
 		--outdir $(SUITE_DIR) --prefix test_91_edge_prom_ \
 		--extra-flags "$(PROM_FLAGS)"
 
 clean-suite:
-	rm -f $(SUITE_DIR)/test_90_edge_*.c $(SUITE_DIR)/test_91_edge_prom_*.c
+	rm -f $(SUITE_DIR)/test_9[0-3]_edge*.c
 
 build:
 	@ok=0; fail=0; \

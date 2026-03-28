@@ -85,7 +85,7 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
             let tag = format!("{name}_{opt}{suffix}");
 
             // Check SKIP-IF
-            if let Some(reason) = check_skip_c(&source, config.target, &active) {
+            if let Some(reason) = check_skip_c(&source, config.target, &active, opt.clang_flag()) {
                 result.add(TestResult::skip(&tag, reason), on_result, reg_name);
                 continue;
             }
