@@ -1,0 +1,1578 @@
+/tmp/tmpXXneJfKc.asm:
+     1                          MODULE bench_i64_arith_c
+     2                          LINE 0, "/work/programs/bench_i64_arith.c"
+/work/programs/bench_i64_arith.c:
+                                
+     1                          ;--------------------------------------------------------
+     2                          ; File Created by SDCC : free open source ISO C Compiler
+     3                          ; Version 4.5.0 #15242 (Linux)
+     4                          ;--------------------------------------------------------
+     5                          ; Processed by Z88DK
+     6                          ;--------------------------------------------------------
+     7                          
+     8                          	EXTERN __divschar
+     9                          	EXTERN __divschar_callee
+    10                          	EXTERN __divsint
+    11                          	EXTERN __divsint_callee
+    12                          	EXTERN __divslong
+    13                          	EXTERN __divslong_callee
+    14                          	EXTERN __divslonglong
+    15                          	EXTERN __divslonglong_callee
+    16                          	EXTERN __divsuchar
+    17                          	EXTERN __divsuchar_callee
+    18                          	EXTERN __divuchar
+    19                          	EXTERN __divuchar_callee
+    20                          	EXTERN __divuint
+    21                          	EXTERN __divuint_callee
+    22                          	EXTERN __divulong
+    23                          	EXTERN __divulong_callee
+    24                          	EXTERN __divulonglong
+    25                          	EXTERN __divulonglong_callee
+    26                          	EXTERN __divuschar
+    27                          	EXTERN __divuschar_callee
+    28                          	EXTERN __modschar
+    29                          	EXTERN __modschar_callee
+    30                          	EXTERN __modsint
+    31                          	EXTERN __modsint_callee
+    32                          	EXTERN __modslong
+    33                          	EXTERN __modslong_callee
+    34                          	EXTERN __modslonglong
+    35                          	EXTERN __modslonglong_callee
+    36                          	EXTERN __modsuchar
+    37                          	EXTERN __modsuchar_callee
+    38                          	EXTERN __moduchar
+    39                          	EXTERN __moduchar_callee
+    40                          	EXTERN __moduint
+    41                          	EXTERN __moduint_callee
+    42                          	EXTERN __modulong
+    43                          	EXTERN __modulong_callee
+    44                          	EXTERN __modulonglong
+    45                          	EXTERN __modulonglong_callee
+    46                          	EXTERN __moduschar
+    47                          	EXTERN __moduschar_callee
+    48                          	EXTERN __mulint
+    49                          	EXTERN __mulint_callee
+    50                          	EXTERN __mullong
+    51                          	EXTERN __mullong_callee
+    52                          	EXTERN __mullonglong
+    53                          	EXTERN __mullonglong_callee
+    54                          	EXTERN __mulschar
+    55                          	EXTERN __mulschar_callee
+    56                          	EXTERN __mulsuchar
+    57                          	EXTERN __mulsuchar_callee
+    58                          	EXTERN __muluchar
+    59                          	EXTERN __muluchar_callee
+    60                          	EXTERN __muluschar
+    61                          	EXTERN __muluschar_callee
+    62                          	EXTERN __rlslonglong
+    63                          	EXTERN __rlslonglong_callee
+    64                          	EXTERN __rlulonglong
+    65                          	EXTERN __rlulonglong_callee
+    66                          	EXTERN __rrslonglong
+    67                          	EXTERN __rrslonglong_callee
+    68                          	EXTERN __rrulonglong
+    69                          	EXTERN __rrulonglong_callee
+    70                          	EXTERN ___mulsint2slong
+    71                          	EXTERN ___mulsint2slong_callee
+    72                          	EXTERN ___muluint2ulong
+    73                          	EXTERN ___muluint2ulong_callee
+    74                          	EXTERN ___sdcc_call_hl
+    75                          	EXTERN ___sdcc_call_iy
+    76                          	EXTERN ___sdcc_enter_ix
+    77                          	EXTERN banked_call
+    78                          	EXTERN _banked_ret
+    79                          	EXTERN ___fs2schar
+    80                          	EXTERN ___fs2schar_callee
+    81                          	EXTERN ___fs2sint
+    82                          	EXTERN ___fs2sint_callee
+    83                          	EXTERN ___fs2slong
+    84                          	EXTERN ___fs2slong_callee
+    85                          	EXTERN ___fs2slonglong
+    86                          	EXTERN ___fs2slonglong_callee
+    87                          	EXTERN ___fs2uchar
+    88                          	EXTERN ___fs2uchar_callee
+    89                          	EXTERN ___fs2uint
+    90                          	EXTERN ___fs2uint_callee
+    91                          	EXTERN ___fs2ulong
+    92                          	EXTERN ___fs2ulong_callee
+    93                          	EXTERN ___fs2ulonglong
+    94                          	EXTERN ___fs2ulonglong_callee
+    95                          	EXTERN ___fsadd
+    96                          	EXTERN ___fsadd_callee
+    97                          	EXTERN ___fsdiv
+    98                          	EXTERN ___fsdiv_callee
+    99                          	EXTERN ___fseq
+   100                          	EXTERN ___fseq_callee
+   101                          	EXTERN ___fsgt
+   102                          	EXTERN ___fsgt_callee
+   103                          	EXTERN ___fslt
+   104                          	EXTERN ___fslt_callee
+   105                          	EXTERN ___fsmul
+   106                          	EXTERN ___fsmul_callee
+   107                          	EXTERN ___fsneq
+   108                          	EXTERN ___fsneq_callee
+   109                          	EXTERN ___fssub
+   110                          	EXTERN ___fssub_callee
+   111                          	EXTERN ___schar2fs
+   112                          	EXTERN ___schar2fs_callee
+   113                          	EXTERN ___sint2fs
+   114                          	EXTERN ___sint2fs_callee
+   115                          	EXTERN ___slong2fs
+   116                          	EXTERN ___slong2fs_callee
+   117                          	EXTERN ___slonglong2fs
+   118                          	EXTERN ___slonglong2fs_callee
+   119                          	EXTERN ___uchar2fs
+   120                          	EXTERN ___uchar2fs_callee
+   121                          	EXTERN ___uint2fs
+   122                          	EXTERN ___uint2fs_callee
+   123                          	EXTERN ___ulong2fs
+   124                          	EXTERN ___ulong2fs_callee
+   125                          	EXTERN ___ulonglong2fs
+   126                          	EXTERN ___ulonglong2fs_callee
+   127                          	EXTERN ____sdcc_2_copy_src_mhl_dst_deix
+   128                          	EXTERN ____sdcc_2_copy_src_mhl_dst_bcix
+   129                          	EXTERN ____sdcc_4_copy_src_mhl_dst_deix
+   130                          	EXTERN ____sdcc_4_copy_src_mhl_dst_bcix
+   131                          	EXTERN ____sdcc_4_copy_src_mhl_dst_mbc
+   132                          	EXTERN ____sdcc_4_ldi_nosave_bc
+   133                          	EXTERN ____sdcc_4_ldi_save_bc
+   134                          	EXTERN ____sdcc_4_push_hlix
+   135                          	EXTERN ____sdcc_4_push_mhl
+   136                          	EXTERN ____sdcc_lib_setmem_hl
+   137                          	EXTERN ____sdcc_ll_add_de_bc_hl
+   138                          	EXTERN ____sdcc_ll_add_de_bc_hlix
+   139                          	EXTERN ____sdcc_ll_add_de_hlix_bc
+   140                          	EXTERN ____sdcc_ll_add_de_hlix_bcix
+   141                          	EXTERN ____sdcc_ll_add_deix_bc_hl
+   142                          	EXTERN ____sdcc_ll_add_deix_hlix
+   143                          	EXTERN ____sdcc_ll_add_hlix_bc_deix
+   144                          	EXTERN ____sdcc_ll_add_hlix_deix_bc
+   145                          	EXTERN ____sdcc_ll_add_hlix_deix_bcix
+   146                          	EXTERN ____sdcc_ll_asr_hlix_a
+   147                          	EXTERN ____sdcc_ll_asr_mbc_a
+   148                          	EXTERN ____sdcc_ll_copy_src_de_dst_hlix
+   149                          	EXTERN ____sdcc_ll_copy_src_de_dst_hlsp
+   150                          	EXTERN ____sdcc_ll_copy_src_deix_dst_hl
+   151                          	EXTERN ____sdcc_ll_copy_src_deix_dst_hlix
+   152                          	EXTERN ____sdcc_ll_copy_src_deixm_dst_hlsp
+   153                          	EXTERN ____sdcc_ll_copy_src_desp_dst_hlsp
+   154                          	EXTERN ____sdcc_ll_copy_src_hl_dst_de
+   155                          	EXTERN ____sdcc_ll_copy_src_hlsp_dst_de
+   156                          	EXTERN ____sdcc_ll_copy_src_hlsp_dst_deixm
+   157                          	EXTERN ____sdcc_ll_lsl_hlix_a
+   158                          	EXTERN ____sdcc_ll_lsl_mbc_a
+   159                          	EXTERN ____sdcc_ll_lsr_hlix_a
+   160                          	EXTERN ____sdcc_ll_lsr_mbc_a
+   161                          	EXTERN ____sdcc_ll_push_hlix
+   162                          	EXTERN ____sdcc_ll_push_mhl
+   163                          	EXTERN ____sdcc_ll_sub_de_bc_hl
+   164                          	EXTERN ____sdcc_ll_sub_de_bc_hlix
+   165                          	EXTERN ____sdcc_ll_sub_de_hlix_bc
+   166                          	EXTERN ____sdcc_ll_sub_de_hlix_bcix
+   167                          	EXTERN ____sdcc_ll_sub_deix_bc_hl
+   168                          	EXTERN ____sdcc_ll_sub_deix_hlix
+   169                          	EXTERN ____sdcc_ll_sub_hlix_bc_deix
+   170                          	EXTERN ____sdcc_ll_sub_hlix_deix_bc
+   171                          	EXTERN ____sdcc_ll_sub_hlix_deix_bcix
+   172                          	EXTERN ____sdcc_load_debc_deix
+   173                          	EXTERN ____sdcc_load_dehl_deix
+   174                          	EXTERN ____sdcc_load_debc_mhl
+   175                          	EXTERN ____sdcc_load_hlde_mhl
+   176                          	EXTERN ____sdcc_store_dehl_bcix
+   177                          	EXTERN ____sdcc_store_debc_hlix
+   178                          	EXTERN ____sdcc_store_debc_mhl
+   179                          	EXTERN ____sdcc_cpu_pop_ei
+   180                          	EXTERN ____sdcc_cpu_pop_ei_jp
+   181                          	EXTERN ____sdcc_cpu_push_di
+   182                          	EXTERN ____sdcc_outi
+   183                          	EXTERN ____sdcc_outi_128
+   184                          	EXTERN ____sdcc_outi_256
+   185                          	EXTERN ____sdcc_ldi
+   186                          	EXTERN ____sdcc_ldi_128
+   187                          	EXTERN ____sdcc_ldi_256
+   188                          	EXTERN ____sdcc_4_copy_srcd_hlix_dst_deix
+   189                          	EXTERN ____sdcc_4_and_src_mbc_mhl_dst_deix
+   190                          	EXTERN ____sdcc_4_or_src_mbc_mhl_dst_deix
+   191                          	EXTERN ____sdcc_4_xor_src_mbc_mhl_dst_deix
+   192                          	EXTERN ____sdcc_4_or_src_dehl_dst_bcix
+   193                          	EXTERN ____sdcc_4_xor_src_dehl_dst_bcix
+   194                          	EXTERN ____sdcc_4_and_src_dehl_dst_bcix
+   195                          	EXTERN ____sdcc_4_xor_src_mbc_mhl_dst_debc
+   196                          	EXTERN ____sdcc_4_or_src_mbc_mhl_dst_debc
+   197                          	EXTERN ____sdcc_4_and_src_mbc_mhl_dst_debc
+   198                          	EXTERN ____sdcc_4_cpl_src_mhl_dst_debc
+   199                          	EXTERN ____sdcc_4_xor_src_debc_mhl_dst_debc
+   200                          	EXTERN ____sdcc_4_or_src_debc_mhl_dst_debc
+   201                          	EXTERN ____sdcc_4_and_src_debc_mhl_dst_debc
+   202                          	EXTERN ____sdcc_4_and_src_debc_hlix_dst_debc
+   203                          	EXTERN ____sdcc_4_or_src_debc_hlix_dst_debc
+   204                          	EXTERN ____sdcc_4_xor_src_debc_hlix_dst_debc
+   205                          
+   206                          ;--------------------------------------------------------
+   207                          ; Public variables in this module
+   208                          ;--------------------------------------------------------
+   209                          	GLOBAL _main
+   210                          ;--------------------------------------------------------
+   211                          ; Externals used
+   212                          ;--------------------------------------------------------
+   213                          ;--------------------------------------------------------
+   214                          ; special function registers
+   215                          ;--------------------------------------------------------
+   216                          ;--------------------------------------------------------
+   217                          ; ram data
+   218                          ;--------------------------------------------------------
+   219                          	SECTION bss_compiler
+   220                          ;--------------------------------------------------------
+   221                          ; ram data
+   222                          ;--------------------------------------------------------
+   223                          
+   224                          IF 0
+   225                          
+   226                          ; .area _INITIALIZED removed by z88dk
+   227                          
+   228                          
+   229                          ENDIF
+   230                          
+   231                          ;--------------------------------------------------------
+   232                          ; absolute external ram data
+   233                          ;--------------------------------------------------------
+   234                          	SECTION IGNORE
+   235                          ;--------------------------------------------------------
+   236                          ; global & static initialisations
+   237                          ;--------------------------------------------------------
+   238                          	SECTION code_crt_init
+   239                          ;--------------------------------------------------------
+   240                          ; Home
+   241                          ;--------------------------------------------------------
+   242                          	SECTION code_home
+   243                          ;--------------------------------------------------------
+   244                          ; code
+   245                          ;--------------------------------------------------------
+   246                          	SECTION code_compiler
+   247                          ;	genLabel
+   248                          ;	genFunction
+   249                          ;	---------------------------------
+   250                          ; Function main
+   251                          ; ---------------------------------
+   252                          ;	Register assignment is optimal.
+   253                          ; Stack space usage: 40 bytes.
+   254                          _main:
+   255  0000  cd0000            	call	___sdcc_enter_ix
+   256                          ;	adjustStack by -40
+   257  0003  21d8ff            	ld	hl, -40
+   258  0006  39                	add	hl, sp
+   259  0007  f9                	ld	sp, hl
+   260                          ;	genAssign
+   261                          ;	genMove_o size 1 result type 2 source type 1 hl_dead 1
+   262  0008  1e00              	ld	e,0x00
+   263                          ;	genAssign
+   264                          ;	AOP_STK for _main_a_20000_2
+   265                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   266  000a  dd36d8a0          	ld	(ix-40),0xa0
+   267  000e  dd36d986          	ld	(ix-39),0x86
+   268  0012  dd36da01          	ld	(ix-38),0x01
+   269  0016  af                	xor	a, a
+   270  0017  dd77db            	ld	(ix-37),a
+   271  001a  dd77dc            	ld	(ix-36),a
+   272  001d  dd77dd            	ld	(ix-35),a
+   273  0020  dd77de            	ld	(ix-34),a
+   274  0023  dd77df            	ld	(ix-33),a
+   275                          ;	genAssign
+   276                          ;	AOP_STK for _main_b_20000_2
+   277                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   278  0026  dd36e0a0          	ld	(ix-32),0xa0
+   279  002a  dd36e186          	ld	(ix-31),0x86
+   280  002e  dd36e201          	ld	(ix-30),0x01
+   281  0032  af                	xor	a, a
+   282  0033  dd77e3            	ld	(ix-29),a
+   283  0036  dd77e4            	ld	(ix-28),a
+   284  0039  dd77e5            	ld	(ix-27),a
+   285  003c  dd77e6            	ld	(ix-26),a
+   286  003f  dd77e7            	ld	(ix-25),a
+   287                          ;	genIpush
+   288  0042  d5                	push	de
+   289                          ;	AOP_STK for _main_b_20000_2
+   290                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   291                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   292                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   293                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   294  0043  21e4ff            	ld	hl,-28
+   295  0046  cd0000            	call	____sdcc_4_push_hlix
+   296                          ; peephole z88dk-code-reduction-310
+   297                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   298                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   299                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   300                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   301  0049  21e0ff            	ld	hl,-32
+   302  004c  cd0000            	call	____sdcc_4_push_hlix
+   303                          ; peephole z88dk-code-reduction-310
+   304                          ;	genIpush
+   305                          ;	AOP_STK for _main_a_20000_2
+   306                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   307                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   308                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   309                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   310  004f  21dcff            	ld	hl,-36
+   311  0052  cd0000            	call	____sdcc_4_push_hlix
+   312                          ; peephole z88dk-code-reduction-310
+   313                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   314                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   315                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   316                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   317  0055  21d8ff            	ld	hl,-40
+   318  0058  cd0000            	call	____sdcc_4_push_hlix
+   319                          ; peephole z88dk-code-reduction-310
+   320                          ;	genCall
+   321                          ;	AOP_STK for _main_sloc0_1_0
+   322  005b  212a00            	ld	hl,0x002a
+   323  005e  39                	add	hl, sp
+   324  005f  e5                	push	hl
+   325  0060  cd0000            	call	__mullonglong
+   326                          ;	adjustStack by 18
+   327  0063  211200            	ld	hl,18
+   328  0066  39                	add	hl, sp
+   329  0067  f9                	ld	sp, hl
+   330                          ;	genIpush
+   331                          ; peephole 44 eleminated dead pop/push pair.
+   332                          ;	AOP_STK for _main_b_20000_2
+   333                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   334                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   335                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   336                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   337  0068  21e4ff            	ld	hl,-28
+   338  006b  cd0000            	call	____sdcc_4_push_hlix
+   339                          ; peephole z88dk-code-reduction-310
+   340                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   341                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   342                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   343                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   344  006e  21e0ff            	ld	hl,-32
+   345  0071  cd0000            	call	____sdcc_4_push_hlix
+   346                          ; peephole z88dk-code-reduction-310
+   347                          ;	genIpush
+   348                          ;	AOP_STK for _main_sloc0_1_0
+   349                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   350                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   351                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   352                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   353  0074  21f4ff            	ld	hl,-12
+   354  0077  cd0000            	call	____sdcc_4_push_hlix
+   355                          ; peephole z88dk-code-reduction-310
+   356                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   357                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   358                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   359                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   360  007a  21f0ff            	ld	hl,-16
+   361  007d  cd0000            	call	____sdcc_4_push_hlix
+   362                          ; peephole z88dk-code-reduction-310
+   363                          ;	genCall
+   364                          ;	AOP_STK for _main_sloc1_1_0
+   365  0080  213200            	ld	hl,0x0032
+   366  0083  39                	add	hl, sp
+   367  0084  e5                	push	hl
+   368  0085  cd0000            	call	__divulonglong
+   369                          ;	adjustStack by 18
+   370  0088  211200            	ld	hl,18
+   371  008b  39                	add	hl, sp
+   372  008c  f9                	ld	sp, hl
+   373  008d  d1                	pop	de
+   374                          ;	genCmpEq
+   375                          ;	AOP_STK for _main_sloc0_1_0
+   376  008e  dd7ef0            	ld	a,(ix-16)
+   377  0091  b7                	or	a, a
+   378  0092  204a              	jr	NZ,l_main_00102
+   379                          ; peephole 155 changed absolute to relative conditional jump.
+   380                          ; peephole 65 jumped to l_main_00102$ directly instead of via l_main_00257$.
+   381  0094  dd7ef1            	ld	a,(ix-15)
+   382  0097  d6e4              	sub	a,0xe4
+   383  0099  2043              	jr	NZ,l_main_00102
+   384                          ; peephole 155 changed absolute to relative conditional jump.
+   385                          ; peephole 65 jumped to l_main_00102$ directly instead of via l_main_00257$.
+   386  009b  dd7ef2            	ld	a,(ix-14)
+   387  009e  d60b              	sub	a,0x0b
+   388  00a0  203c              	jr	NZ,l_main_00102
+   389                          ; peephole 155 changed absolute to relative conditional jump.
+   390                          ; peephole 65 jumped to l_main_00102$ directly instead of via l_main_00257$.
+   391  00a2  dd7ef3            	ld	a,(ix-13)
+   392  00a5  d654              	sub	a,0x54
+   393  00a7  2035              	jr	NZ,l_main_00102
+   394                          ; peephole 155 changed absolute to relative conditional jump.
+   395                          ; peephole 65 jumped to l_main_00102$ directly instead of via l_main_00257$.
+   396  00a9  dd7ef4            	ld	a,(ix-12)
+   397  00ac  d602              	sub	a,0x02
+   398  00ae  ddb6f5            	or	a,(ix-11)
+   399  00b1  ddb6f6            	or	a,(ix-10)
+   400  00b4  ddb6f7            	or	a,(ix-9)
+   401                          ; peephole 62 removed jp by using inverse jump logic
+   402                          ; peephole 149 removed unused label l_main_00257$.
+   403  00b7  2025              	jr	NZ,l_main_00102
+   404                          ; peephole 155 changed absolute to relative conditional jump.
+   405                          ; peephole 63 removed jp by using inverse jump logic
+   406                          ; peephole 149 removed unused label l_main_00258$.
+   407                          ;	skipping generated iCode
+   408                          ;	genCmpEq
+   409                          ;	AOP_STK for _main_sloc1_1_0
+   410  00b9  dd7ef8            	ld	a,(ix-8)
+   411  00bc  d6a0              	sub	a,0xa0
+   412  00be  201e              	jr	NZ,l_main_00102
+   413                          ; peephole 155 changed absolute to relative conditional jump.
+   414                          ; peephole 65 jumped to l_main_00102$ directly instead of via l_main_00259$.
+   415  00c0  dd7ef9            	ld	a,(ix-7)
+   416  00c3  d686              	sub	a,0x86
+   417  00c5  2017              	jr	NZ,l_main_00102
+   418                          ; peephole 155 changed absolute to relative conditional jump.
+   419                          ; peephole 65 jumped to l_main_00102$ directly instead of via l_main_00259$.
+   420  00c7  dd7efa            	ld	a,(ix-6)
+   421  00ca  3d                	dec	a
+   422  00cb  ddb6fb            	or	a,(ix-5)
+   423  00ce  ddb6fc            	or	a,(ix-4)
+   424  00d1  ddb6fd            	or	a,(ix-3)
+   425  00d4  ddb6fe            	or	a,(ix-2)
+   426  00d7  ddb6ff            	or	a,(ix-1)
+   427                          ; peephole 62 removed jp by using inverse jump logic
+   428                          ; peephole 149 removed unused label l_main_00259$.
+   429  00da  2002              	jr	NZ,l_main_00102
+   430                          ; peephole 155 changed absolute to relative conditional jump.
+   431                          ; peephole 63 removed jp by using inverse jump logic
+   432                          ; peephole 149 removed unused label l_main_00260$.
+   433                          ;	skipping generated iCode
+   434                          ;	genAssign
+   435                          ;	genMove_o size 1 result type 2 source type 1 hl_dead 1
+   436  00dc  1e01              	ld	e,0x01
+   437                          ;	genLabel
+   438                          l_main_00102:
+   439                          ;	genAssign
+   440                          ;	AOP_STK for _main_a_20000_3
+   441                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   442  00de  dd36d800          	ld	(ix-40),0x00
+   443  00e2  dd36d9e4          	ld	(ix-39),0xe4
+   444  00e6  dd36da0b          	ld	(ix-38),0x0b
+   445  00ea  dd36db54          	ld	(ix-37),0x54
+   446  00ee  dd36dc02          	ld	(ix-36),0x02
+   447  00f2  af                	xor	a, a
+   448  00f3  dd77dd            	ld	(ix-35),a
+   449  00f6  dd77de            	ld	(ix-34),a
+   450  00f9  dd77df            	ld	(ix-33),a
+   451                          ;	genAssign
+   452                          ;	AOP_STK for _main_b_20000_3
+   453                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   454  00fc  dd36e060          	ld	(ix-32),0x60
+   455  0100  dd36e1ae          	ld	(ix-31),0xae
+   456  0104  dd36e20a          	ld	(ix-30),0x0a
+   457  0108  af                	xor	a, a
+   458  0109  dd77e3            	ld	(ix-29),a
+   459  010c  dd77e4            	ld	(ix-28),a
+   460  010f  dd77e5            	ld	(ix-27),a
+   461  0112  dd77e6            	ld	(ix-26),a
+   462  0115  dd77e7            	ld	(ix-25),a
+   463                          ;	genIpush
+   464  0118  d5                	push	de
+   465                          ;	AOP_STK for _main_b_20000_3
+   466                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   467                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   468                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   469                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   470  0119  21e4ff            	ld	hl,-28
+   471  011c  cd0000            	call	____sdcc_4_push_hlix
+   472                          ; peephole z88dk-code-reduction-310
+   473                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   474                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   475                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   476                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   477  011f  21e0ff            	ld	hl,-32
+   478  0122  cd0000            	call	____sdcc_4_push_hlix
+   479                          ; peephole z88dk-code-reduction-310
+   480                          ;	genIpush
+   481                          ;	AOP_STK for _main_a_20000_3
+   482                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   483                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   484                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   485                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   486  0125  21dcff            	ld	hl,-36
+   487  0128  cd0000            	call	____sdcc_4_push_hlix
+   488                          ; peephole z88dk-code-reduction-310
+   489                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   490                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   491                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   492                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   493  012b  21d8ff            	ld	hl,-40
+   494  012e  cd0000            	call	____sdcc_4_push_hlix
+   495                          ; peephole z88dk-code-reduction-310
+   496                          ;	genCall
+   497                          ;	AOP_STK for _main_sloc2_1_0
+   498  0131  212a00            	ld	hl,0x002a
+   499  0134  39                	add	hl, sp
+   500  0135  e5                	push	hl
+   501  0136  cd0000            	call	__divulonglong
+   502                          ;	adjustStack by 18
+   503  0139  211200            	ld	hl,18
+   504  013c  39                	add	hl, sp
+   505  013d  f9                	ld	sp, hl
+   506                          ;	genIpush
+   507                          ; peephole 44 eleminated dead pop/push pair.
+   508                          ;	AOP_STK for _main_b_20000_3
+   509                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   510                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   511                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   512                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   513  013e  21e4ff            	ld	hl,-28
+   514  0141  cd0000            	call	____sdcc_4_push_hlix
+   515                          ; peephole z88dk-code-reduction-310
+   516                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   517                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   518                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   519                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   520  0144  21e0ff            	ld	hl,-32
+   521  0147  cd0000            	call	____sdcc_4_push_hlix
+   522                          ; peephole z88dk-code-reduction-310
+   523                          ;	genIpush
+   524                          ;	AOP_STK for _main_a_20000_3
+   525                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   526                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   527                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   528                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   529  014a  21dcff            	ld	hl,-36
+   530  014d  cd0000            	call	____sdcc_4_push_hlix
+   531                          ; peephole z88dk-code-reduction-310
+   532                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   533                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   534                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   535                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   536  0150  21d8ff            	ld	hl,-40
+   537  0153  cd0000            	call	____sdcc_4_push_hlix
+   538                          ; peephole z88dk-code-reduction-310
+   539                          ;	genCall
+   540                          ;	AOP_STK for _main_sloc3_1_0
+   541  0156  213200            	ld	hl,0x0032
+   542  0159  39                	add	hl, sp
+   543  015a  e5                	push	hl
+   544  015b  cd0000            	call	__modulonglong
+   545                          ;	adjustStack by 18
+   546  015e  211200            	ld	hl,18
+   547  0161  39                	add	hl, sp
+   548  0162  f9                	ld	sp, hl
+   549  0163  d1                	pop	de
+   550                          ;	genCmpEq
+   551                          ;	AOP_STK for _main_sloc2_1_0
+   552  0164  dd7ef0            	ld	a,(ix-16)
+   553  0167  d6cd              	sub	a,0xcd
+   554  0169  203f              	jr	NZ,l_main_00105
+   555                          ; peephole 155 changed absolute to relative conditional jump.
+   556                          ; peephole 65 jumped to l_main_00105$ directly instead of via l_main_00261$.
+   557  016b  dd7ef1            	ld	a,(ix-15)
+   558  016e  d637              	sub	a,0x37
+   559  0170  ddb6f2            	or	a,(ix-14)
+   560  0173  ddb6f3            	or	a,(ix-13)
+   561  0176  ddb6f4            	or	a,(ix-12)
+   562  0179  ddb6f5            	or	a,(ix-11)
+   563  017c  ddb6f6            	or	a,(ix-10)
+   564  017f  ddb6f7            	or	a,(ix-9)
+   565                          ; peephole 62 removed jp by using inverse jump logic
+   566                          ; peephole 149 removed unused label l_main_00261$.
+   567  0182  2026              	jr	NZ,l_main_00105
+   568                          ; peephole 155 changed absolute to relative conditional jump.
+   569                          ; peephole 63 removed jp by using inverse jump logic
+   570                          ; peephole 149 removed unused label l_main_00262$.
+   571                          ;	skipping generated iCode
+   572                          ;	genCmpEq
+   573                          ;	AOP_STK for _main_sloc3_1_0
+   574  0184  dd7ef8            	ld	a,(ix-8)
+   575  0187  d620              	sub	a,0x20
+   576  0189  201f              	jr	NZ,l_main_00105
+   577                          ; peephole 155 changed absolute to relative conditional jump.
+   578                          ; peephole 65 jumped to l_main_00105$ directly instead of via l_main_00263$.
+   579  018b  dd7ef9            	ld	a,(ix-7)
+   580  018e  d6a1              	sub	a,0xa1
+   581  0190  2018              	jr	NZ,l_main_00105
+   582                          ; peephole 155 changed absolute to relative conditional jump.
+   583                          ; peephole 65 jumped to l_main_00105$ directly instead of via l_main_00263$.
+   584  0192  dd7efa            	ld	a,(ix-6)
+   585  0195  d607              	sub	a,0x07
+   586  0197  ddb6fb            	or	a,(ix-5)
+   587  019a  ddb6fc            	or	a,(ix-4)
+   588  019d  ddb6fd            	or	a,(ix-3)
+   589  01a0  ddb6fe            	or	a,(ix-2)
+   590  01a3  ddb6ff            	or	a,(ix-1)
+   591                          ; peephole 62 removed jp by using inverse jump logic
+   592                          ; peephole 149 removed unused label l_main_00263$.
+   593  01a6  2002              	jr	NZ,l_main_00105
+   594                          ; peephole 155 changed absolute to relative conditional jump.
+   595                          ; peephole 63 removed jp by using inverse jump logic
+   596                          ; peephole 149 removed unused label l_main_00264$.
+   597                          ;	skipping generated iCode
+   598                          ;	genCast
+   599                          ;	(locations are the same)
+   600                          ;	genOr
+   601  01a8  cbcb              	set	1, e
+   602                          ;	genCast
+   603                          ;	(locations are the same)
+   604                          ;	genCast
+   605                          ;	(locations are the same)
+   606                          ;	genLabel
+   607                          l_main_00105:
+   608                          ;	genAssign
+   609                          ;	AOP_STK for _main_a_20000_4
+   610                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   611  01aa  dd36d835          	ld	(ix-40),0x35
+   612  01ae  dd36d9fb          	ld	(ix-39),0xfb
+   613  01b2  dd36da04          	ld	(ix-38),0x04
+   614  01b6  dd36db8e          	ld	(ix-37),0x8e
+   615  01ba  dd36dce0          	ld	(ix-36),0xe0
+   616  01be  dd36ddfe          	ld	(ix-35),0xfe
+   617  01c2  dd36deff          	ld	(ix-34),0xff
+   618  01c6  dd36dfff          	ld	(ix-33),0xff
+   619                          ;	genAssign
+   620                          ;	AOP_STK for _main_b_20000_4
+   621                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   622  01ca  dd36e040          	ld	(ix-32),0x40
+   623  01ce  dd36e142          	ld	(ix-31),0x42
+   624  01d2  dd36e20f          	ld	(ix-30),0x0f
+   625  01d6  af                	xor	a, a
+   626  01d7  dd77e3            	ld	(ix-29),a
+   627  01da  dd77e4            	ld	(ix-28),a
+   628  01dd  dd77e5            	ld	(ix-27),a
+   629  01e0  dd77e6            	ld	(ix-26),a
+   630  01e3  dd77e7            	ld	(ix-25),a
+   631                          ;	genIpush
+   632  01e6  d5                	push	de
+   633                          ;	AOP_STK for _main_b_20000_4
+   634                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   635                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   636                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   637                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   638  01e7  21e4ff            	ld	hl,-28
+   639  01ea  cd0000            	call	____sdcc_4_push_hlix
+   640                          ; peephole z88dk-code-reduction-310
+   641                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   642                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   643                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   644                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   645  01ed  21e0ff            	ld	hl,-32
+   646  01f0  cd0000            	call	____sdcc_4_push_hlix
+   647                          ; peephole z88dk-code-reduction-310
+   648                          ;	genIpush
+   649                          ;	AOP_STK for _main_a_20000_4
+   650                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   651                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   652                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   653                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   654  01f3  21dcff            	ld	hl,-36
+   655  01f6  cd0000            	call	____sdcc_4_push_hlix
+   656                          ; peephole z88dk-code-reduction-310
+   657                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   658                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   659                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   660                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   661  01f9  21d8ff            	ld	hl,-40
+   662  01fc  cd0000            	call	____sdcc_4_push_hlix
+   663                          ; peephole z88dk-code-reduction-310
+   664                          ;	genCall
+   665                          ;	AOP_STK for _main_sloc4_1_0
+   666  01ff  212a00            	ld	hl,0x002a
+   667  0202  39                	add	hl, sp
+   668  0203  e5                	push	hl
+   669  0204  cd0000            	call	__divslonglong
+   670                          ;	adjustStack by 18
+   671  0207  211200            	ld	hl,18
+   672  020a  39                	add	hl, sp
+   673  020b  f9                	ld	sp, hl
+   674                          ;	genIpush
+   675                          ; peephole 44 eleminated dead pop/push pair.
+   676                          ;	AOP_STK for _main_b_20000_4
+   677                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   678                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   679                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   680                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   681  020c  21e4ff            	ld	hl,-28
+   682  020f  cd0000            	call	____sdcc_4_push_hlix
+   683                          ; peephole z88dk-code-reduction-310
+   684                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   685                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   686                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   687                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   688  0212  21e0ff            	ld	hl,-32
+   689  0215  cd0000            	call	____sdcc_4_push_hlix
+   690                          ; peephole z88dk-code-reduction-310
+   691                          ;	genIpush
+   692                          ;	AOP_STK for _main_a_20000_4
+   693                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   694                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   695                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   696                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   697  0218  21dcff            	ld	hl,-36
+   698  021b  cd0000            	call	____sdcc_4_push_hlix
+   699                          ; peephole z88dk-code-reduction-310
+   700                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   701                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   702                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+   703                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+   704  021e  21d8ff            	ld	hl,-40
+   705  0221  cd0000            	call	____sdcc_4_push_hlix
+   706                          ; peephole z88dk-code-reduction-310
+   707                          ;	genCall
+   708                          ;	AOP_STK for _main_sloc5_1_0
+   709  0224  213200            	ld	hl,0x0032
+   710  0227  39                	add	hl, sp
+   711  0228  e5                	push	hl
+   712  0229  cd0000            	call	__modslonglong
+   713                          ;	adjustStack by 18
+   714  022c  211200            	ld	hl,18
+   715  022f  39                	add	hl, sp
+   716  0230  f9                	ld	sp, hl
+   717  0231  d1                	pop	de
+   718                          ;	genCmpEq
+   719                          ;	AOP_STK for _main_sloc4_1_0
+   720  0232  dd7ef0            	ld	a,(ix-16)
+   721  0235  d679              	sub	a,0x79
+   722  0237  2049              	jr	NZ,l_main_00108
+   723                          ; peephole 155 changed absolute to relative conditional jump.
+   724                          ; peephole 65 jumped to l_main_00108$ directly instead of via l_main_00265$.
+   725  0239  dd7ef1            	ld	a,(ix-15)
+   726  023c  d629              	sub	a,0x29
+   727  023e  2042              	jr	NZ,l_main_00108
+   728                          ; peephole 155 changed absolute to relative conditional jump.
+   729                          ; peephole 65 jumped to l_main_00108$ directly instead of via l_main_00265$.
+   730  0240  dd7ef2            	ld	a,(ix-14)
+   731  0243  d6ed              	sub	a,0xed
+   732  0245  203b              	jr	NZ,l_main_00108
+   733                          ; peephole 155 changed absolute to relative conditional jump.
+   734                          ; peephole 65 jumped to l_main_00108$ directly instead of via l_main_00265$.
+   735  0247  dd7ef3            	ld	a,(ix-13)
+   736  024a  dda6f4            	and	a,(ix-12)
+   737  024d  dda6f5            	and	a,(ix-11)
+   738  0250  dda6f6            	and	a,(ix-10)
+   739  0253  dda6f7            	and	a,(ix-9)
+   740  0256  3c                	inc	a
+   741                          ; peephole 62 removed jp by using inverse jump logic
+   742                          ; peephole 149 removed unused label l_main_00265$.
+   743  0257  2029              	jr	NZ,l_main_00108
+   744                          ; peephole 155 changed absolute to relative conditional jump.
+   745                          ; peephole 63 removed jp by using inverse jump logic
+   746                          ; peephole 149 removed unused label l_main_00266$.
+   747                          ;	skipping generated iCode
+   748                          ;	genCmpEq
+   749                          ;	AOP_STK for _main_sloc5_1_0
+   750  0259  dd7ef8            	ld	a,(ix-8)
+   751  025c  d6f5              	sub	a,0xf5
+   752  025e  2022              	jr	NZ,l_main_00108
+   753                          ; peephole 155 changed absolute to relative conditional jump.
+   754                          ; peephole 65 jumped to l_main_00108$ directly instead of via l_main_00267$.
+   755  0260  dd7ef9            	ld	a,(ix-7)
+   756  0263  d66a              	sub	a,0x6a
+   757  0265  201b              	jr	NZ,l_main_00108
+   758                          ; peephole 155 changed absolute to relative conditional jump.
+   759                          ; peephole 65 jumped to l_main_00108$ directly instead of via l_main_00267$.
+   760  0267  dd7efa            	ld	a,(ix-6)
+   761  026a  d6f2              	sub	a,0xf2
+   762  026c  2014              	jr	NZ,l_main_00108
+   763                          ; peephole 155 changed absolute to relative conditional jump.
+   764                          ; peephole 65 jumped to l_main_00108$ directly instead of via l_main_00267$.
+   765  026e  dd7efb            	ld	a,(ix-5)
+   766  0271  dda6fc            	and	a,(ix-4)
+   767  0274  dda6fd            	and	a,(ix-3)
+   768  0277  dda6fe            	and	a,(ix-2)
+   769  027a  dda6ff            	and	a,(ix-1)
+   770  027d  3c                	inc	a
+   771                          ; peephole 62 removed jp by using inverse jump logic
+   772                          ; peephole 149 removed unused label l_main_00267$.
+   773  027e  2002              	jr	NZ,l_main_00108
+   774                          ; peephole 155 changed absolute to relative conditional jump.
+   775                          ; peephole 63 removed jp by using inverse jump logic
+   776                          ; peephole 149 removed unused label l_main_00268$.
+   777                          ;	skipping generated iCode
+   778                          ;	genCast
+   779                          ;	(locations are the same)
+   780                          ;	genOr
+   781  0280  cbd3              	set	2, e
+   782                          ;	genCast
+   783                          ;	(locations are the same)
+   784                          ;	genCast
+   785                          ;	(locations are the same)
+   786                          ;	genLabel
+   787                          l_main_00108:
+   788                          ;	genAssign
+   789                          ;	AOP_STK for _main_a_20000_5
+   790                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   791  0282  dd36e001          	ld	(ix-32),0x01
+   792  0286  af                	xor	a, a
+   793  0287  dd77e1            	ld	(ix-31),a
+   794  028a  dd77e2            	ld	(ix-30),a
+   795  028d  dd77e3            	ld	(ix-29),a
+   796  0290  dd77e4            	ld	(ix-28),a
+   797  0293  dd77e5            	ld	(ix-27),a
+   798  0296  dd77e6            	ld	(ix-26),a
+   799  0299  dd77e7            	ld	(ix-25),a
+   800                          ;	genLeftShift
+   801                          ;	AOP_STK for _main_sloc6_1_0
+   802                          ;	AOP_STK for _main_a_20000_5
+   803                          ;	genMove_o size 4 result type 5 source type 5 hl_dead 1
+   804  029c  d5                	push	de
+   805  029d  11f4ff            	ld	de,-12
+   806  02a0  21ecff            	ld	hl,+(-32--12)
+   807  02a3  cd0000            	call	____sdcc_4_copy_srcd_hlix_dst_deix
+   808                          ; peephole z88dk-code-reduction-316b
+   809  02a6  d1                	pop	de
+   810                          ; peephole z88dk-code-reduction-316d
+   811                          ; peephole z88dk-code-reduction-316a
+   812                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   813                          ;	genMove_o size 4 result type 5 source type 1 hl_dead 1
+   814  02a7  af                	xor	a, a
+   815  02a8  dd77f0            	ld	(ix-16),a
+   816  02ab  dd77f1            	ld	(ix-15),a
+   817  02ae  dd77f2            	ld	(ix-14),a
+   818  02b1  dd77f3            	ld	(ix-13),a
+   819                          ;	genMove_o size 8 result type 5 source type 5 hl_dead 1
+   820                          ;	genRightShift
+   821                          ;	AOP_STK for _main_sloc7_1_0
+   822                          ;	AOP_STK for _main_sloc6_1_0
+   823                          ;	genMove_o size 4 result type 5 source type 5 hl_dead 1
+   824                          ; peephole z88dk-code-reduction-316b
+   825  02b4  d5                	push	de
+   826  02b5  11f8ff            	ld	de,-8
+   827  02b8  21fcff            	ld	hl,+(-12--8)
+   828  02bb  cd0000            	call	____sdcc_4_copy_srcd_hlix_dst_deix
+   829  02be  d1                	pop	de
+   830                          ; peephole z88dk-code-reduction-316c
+   831                          ; peephole z88dk-code-reduction-316a
+   832                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   833                          ;	genMove_o size 4 result type 5 source type 1 hl_dead 1
+   834  02bf  af                	xor	a, a
+   835  02c0  dd77fc            	ld	(ix-4),a
+   836  02c3  dd77fd            	ld	(ix-3),a
+   837  02c6  dd77fe            	ld	(ix-2),a
+   838  02c9  dd77ff            	ld	(ix-1),a
+   839                          ;	genMove_o size 8 result type 5 source type 5 hl_dead 1
+   840                          ;	genCmpEq
+   841                          ;	AOP_STK for _main_sloc6_1_0
+   842  02cc  dd7ef0            	ld	a,(ix-16)
+   843  02cf  b7                	or	a, a
+   844  02d0  ddb6f1            	or	a,(ix-15)
+   845  02d3  ddb6f2            	or	a,(ix-14)
+   846  02d6  ddb6f3            	or	a,(ix-13)
+   847  02d9  202c              	jr	NZ,l_main_00111
+   848                          ; peephole 155 changed absolute to relative conditional jump.
+   849                          ; peephole 65 jumped to l_main_00111$ directly instead of via l_main_00273$.
+   850  02db  dd7ef4            	ld	a,(ix-12)
+   851  02de  3d                	dec	a
+   852  02df  ddb6f5            	or	a,(ix-11)
+   853  02e2  ddb6f6            	or	a,(ix-10)
+   854  02e5  ddb6f7            	or	a,(ix-9)
+   855                          ; peephole 62 removed jp by using inverse jump logic
+   856                          ; peephole 149 removed unused label l_main_00273$.
+   857  02e8  201d              	jr	NZ,l_main_00111
+   858                          ; peephole 155 changed absolute to relative conditional jump.
+   859                          ; peephole 63 removed jp by using inverse jump logic
+   860                          ; peephole 149 removed unused label l_main_00274$.
+   861                          ;	skipping generated iCode
+   862                          ;	genCmpEq
+   863                          ;	AOP_STK for _main_sloc7_1_0
+   864  02ea  dd7ef8            	ld	a,(ix-8)
+   865  02ed  3d                	dec	a
+   866  02ee  ddb6f9            	or	a,(ix-7)
+   867  02f1  ddb6fa            	or	a,(ix-6)
+   868  02f4  ddb6fb            	or	a,(ix-5)
+   869  02f7  ddb6fc            	or	a,(ix-4)
+   870  02fa  ddb6fd            	or	a,(ix-3)
+   871  02fd  ddb6fe            	or	a,(ix-2)
+   872  0300  ddb6ff            	or	a,(ix-1)
+   873                          ; peephole 62 removed jp by using inverse jump logic
+   874                          ; peephole 149 removed unused label l_main_00275$.
+   875  0303  2002              	jr	NZ,l_main_00111
+   876                          ; peephole 155 changed absolute to relative conditional jump.
+   877                          ; peephole 63 removed jp by using inverse jump logic
+   878                          ; peephole 149 removed unused label l_main_00276$.
+   879                          ;	skipping generated iCode
+   880                          ;	genCast
+   881                          ;	(locations are the same)
+   882                          ;	genOr
+   883  0305  cbdb              	set	3, e
+   884                          ;	genCast
+   885                          ;	(locations are the same)
+   886                          ;	genCast
+   887                          ;	(locations are the same)
+   888                          ;	genLabel
+   889                          l_main_00111:
+   890                          ;	genAssign
+   891                          ;	AOP_STK for _main_a_20000_6
+   892                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   893  0307  dd36d800          	ld	(ix-40),0x00
+   894  030b  dd36d9ff          	ld	(ix-39),0xff
+   895  030f  dd36da00          	ld	(ix-38),0x00
+   896  0313  dd36dbff          	ld	(ix-37),0xff
+   897  0317  dd36dc00          	ld	(ix-36),0x00
+   898  031b  dd36ddff          	ld	(ix-35),0xff
+   899  031f  dd36de00          	ld	(ix-34),0x00
+   900  0323  dd36dfff          	ld	(ix-33),0xff
+   901                          ;	genAssign
+   902                          ;	AOP_STK for _main_b_20000_6
+   903                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+   904  0327  dd36e0f0          	ld	(ix-32),0xf0
+   905  032b  dd36e10f          	ld	(ix-31),0x0f
+   906  032f  dd36e2f0          	ld	(ix-30),0xf0
+   907  0333  dd36e30f          	ld	(ix-29),0x0f
+   908  0337  dd36e4f0          	ld	(ix-28),0xf0
+   909  033b  dd36e50f          	ld	(ix-27),0x0f
+   910  033f  dd36e6f0          	ld	(ix-26),0xf0
+   911  0343  dd36e70f          	ld	(ix-25),0x0f
+   912                          ;	genXor
+   913                          ;	AOP_STK for _main_a_20000_6
+   914                          ;	AOP_STK for _main_b_20000_6
+   915                          ;	AOP_STK for _main_sloc8_1_0
+   916  0347  dd7ed8            	ld	a,(ix-40)
+   917  034a  ddaee0            	xor	a,(ix-32)
+   918                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   919  034d  dd77e8            	ld	(ix-24),a
+   920                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   921  0350  dd7ed9            	ld	a,(ix-39)
+   922  0353  ddaee1            	xor	a,(ix-31)
+   923                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   924  0356  dd77e9            	ld	(ix-23),a
+   925                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   926  0359  dd7eda            	ld	a,(ix-38)
+   927  035c  ddaee2            	xor	a,(ix-30)
+   928                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   929  035f  dd77ea            	ld	(ix-22),a
+   930                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   931  0362  dd7edb            	ld	a,(ix-37)
+   932  0365  ddaee3            	xor	a,(ix-29)
+   933                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   934  0368  dd77eb            	ld	(ix-21),a
+   935                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   936  036b  dd7edc            	ld	a,(ix-36)
+   937  036e  ddaee4            	xor	a,(ix-28)
+   938                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   939  0371  dd77ec            	ld	(ix-20),a
+   940                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   941  0374  dd7edd            	ld	a,(ix-35)
+   942  0377  ddaee5            	xor	a,(ix-27)
+   943                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   944  037a  dd77ed            	ld	(ix-19),a
+   945                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   946  037d  dd7ede            	ld	a,(ix-34)
+   947  0380  ddaee6            	xor	a,(ix-26)
+   948                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   949  0383  dd77ee            	ld	(ix-18),a
+   950                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   951  0386  dd7edf            	ld	a,(ix-33)
+   952  0389  ddaee7            	xor	a,(ix-25)
+   953                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   954  038c  dd77ef            	ld	(ix-17),a
+   955                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   956                          ;	genAnd
+   957                          ;	AOP_STK for _main_a_20000_6
+   958                          ;	AOP_STK for _main_b_20000_6
+   959                          ;	AOP_STK for _main_sloc9_1_0
+   960  038f  dd7ed8            	ld	a,(ix-40)
+   961  0392  dda6e0            	and	a,(ix-32)
+   962                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   963  0395  dd77f0            	ld	(ix-16),a
+   964                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   965  0398  dd7ed9            	ld	a,(ix-39)
+   966  039b  dda6e1            	and	a,(ix-31)
+   967                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   968  039e  dd77f1            	ld	(ix-15),a
+   969                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   970  03a1  dd7eda            	ld	a,(ix-38)
+   971  03a4  dda6e2            	and	a,(ix-30)
+   972                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   973  03a7  dd77f2            	ld	(ix-14),a
+   974                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   975  03aa  dd7edb            	ld	a,(ix-37)
+   976  03ad  dda6e3            	and	a,(ix-29)
+   977                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   978  03b0  dd77f3            	ld	(ix-13),a
+   979                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   980  03b3  dd7edc            	ld	a,(ix-36)
+   981  03b6  dda6e4            	and	a,(ix-28)
+   982                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   983  03b9  dd77f4            	ld	(ix-12),a
+   984                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   985  03bc  dd7edd            	ld	a,(ix-35)
+   986  03bf  dda6e5            	and	a,(ix-27)
+   987                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   988  03c2  dd77f5            	ld	(ix-11),a
+   989                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   990  03c5  dd7ede            	ld	a,(ix-34)
+   991  03c8  dda6e6            	and	a,(ix-26)
+   992                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   993  03cb  dd77f6            	ld	(ix-10),a
+   994                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+   995  03ce  dd7edf            	ld	a,(ix-33)
+   996  03d1  dda6e7            	and	a,(ix-25)
+   997                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+   998  03d4  dd77f7            	ld	(ix-9),a
+   999                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1000                          ;	genOr
+  1001                          ;	AOP_STK for _main_a_20000_6
+  1002                          ;	AOP_STK for _main_b_20000_6
+  1003                          ;	AOP_STK for _main_sloc10_1_0
+  1004  03d7  dd7ed8            	ld	a,(ix-40)
+  1005  03da  ddb6e0            	or	a,(ix-32)
+  1006                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1007  03dd  dd77f8            	ld	(ix-8),a
+  1008                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1009  03e0  dd7ed9            	ld	a,(ix-39)
+  1010  03e3  ddb6e1            	or	a,(ix-31)
+  1011                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1012  03e6  dd77f9            	ld	(ix-7),a
+  1013                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1014  03e9  dd7eda            	ld	a,(ix-38)
+  1015  03ec  ddb6e2            	or	a,(ix-30)
+  1016                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1017  03ef  dd77fa            	ld	(ix-6),a
+  1018                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1019  03f2  dd7edb            	ld	a,(ix-37)
+  1020  03f5  ddb6e3            	or	a,(ix-29)
+  1021                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1022  03f8  dd77fb            	ld	(ix-5),a
+  1023                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1024  03fb  dd7edc            	ld	a,(ix-36)
+  1025  03fe  ddb6e4            	or	a,(ix-28)
+  1026                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1027  0401  dd77fc            	ld	(ix-4),a
+  1028                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1029  0404  dd7edd            	ld	a,(ix-35)
+  1030  0407  ddb6e5            	or	a,(ix-27)
+  1031                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1032  040a  dd77fd            	ld	(ix-3),a
+  1033                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1034  040d  dd7ede            	ld	a,(ix-34)
+  1035  0410  ddb6e6            	or	a,(ix-26)
+  1036                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1037  0413  dd77fe            	ld	(ix-2),a
+  1038                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1039  0416  dd7edf            	ld	a,(ix-33)
+  1040  0419  ddb6e7            	or	a,(ix-25)
+  1041                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1042  041c  dd77ff            	ld	(ix-1),a
+  1043                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1044                          ;	genCmpEq
+  1045                          ;	AOP_STK for _main_sloc8_1_0
+  1046  041f  dd7ee8            	ld	a,(ix-24)
+  1047  0422  d6f0              	sub	a,0xf0
+  1048  0424  c2be04            	jp	NZ,l_main_00114
+  1049                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1050  0427  dd7ee9            	ld	a,(ix-23)
+  1051  042a  d6f0              	sub	a,0xf0
+  1052  042c  c2be04            	jp	NZ,l_main_00114
+  1053                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1054  042f  dd7eea            	ld	a,(ix-22)
+  1055  0432  d6f0              	sub	a,0xf0
+  1056  0434  c2be04            	jp	NZ,l_main_00114
+  1057                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1058  0437  dd7eeb            	ld	a,(ix-21)
+  1059  043a  d6f0              	sub	a,0xf0
+  1060  043c  c2be04            	jp	NZ,l_main_00114
+  1061                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1062  043f  dd7eec            	ld	a,(ix-20)
+  1063  0442  d6f0              	sub	a,0xf0
+  1064  0444  c2be04            	jp	NZ,l_main_00114
+  1065                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1066  0447  dd7eed            	ld	a,(ix-19)
+  1067  044a  d6f0              	sub	a,0xf0
+  1068  044c  c2be04            	jp	NZ,l_main_00114
+  1069                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1070  044f  dd7eee            	ld	a,(ix-18)
+  1071  0452  d6f0              	sub	a,0xf0
+  1072  0454  2068              	jr	NZ,l_main_00114
+  1073                          ; peephole 155 changed absolute to relative conditional jump.
+  1074                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00277$.
+  1075  0456  dd7eef            	ld	a,(ix-17)
+  1076  0459  d6f0              	sub	a,0xf0
+  1077                          ; peephole 62 removed jp by using inverse jump logic
+  1078                          ; peephole 149 removed unused label l_main_00277$.
+  1079  045b  2061              	jr	NZ,l_main_00114
+  1080                          ; peephole 155 changed absolute to relative conditional jump.
+  1081                          ; peephole 63 removed jp by using inverse jump logic
+  1082                          ; peephole 149 removed unused label l_main_00278$.
+  1083                          ;	skipping generated iCode
+  1084                          ;	genCmpEq
+  1085                          ;	AOP_STK for _main_sloc9_1_0
+  1086  045d  dd7ef0            	ld	a,(ix-16)
+  1087  0460  b7                	or	a, a
+  1088  0461  205b              	jr	NZ,l_main_00114
+  1089                          ; peephole 155 changed absolute to relative conditional jump.
+  1090                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00279$.
+  1091  0463  dd7ef1            	ld	a,(ix-15)
+  1092  0466  d60f              	sub	a,0x0f
+  1093  0468  ddb6f2            	or	a,(ix-14)
+  1094  046b  2051              	jr	NZ,l_main_00114
+  1095                          ; peephole 155 changed absolute to relative conditional jump.
+  1096                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00279$.
+  1097  046d  dd7ef3            	ld	a,(ix-13)
+  1098  0470  d60f              	sub	a,0x0f
+  1099  0472  ddb6f4            	or	a,(ix-12)
+  1100  0475  2047              	jr	NZ,l_main_00114
+  1101                          ; peephole 155 changed absolute to relative conditional jump.
+  1102                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00279$.
+  1103  0477  dd7ef5            	ld	a,(ix-11)
+  1104  047a  d60f              	sub	a,0x0f
+  1105  047c  ddb6f6            	or	a,(ix-10)
+  1106  047f  203d              	jr	NZ,l_main_00114
+  1107                          ; peephole 155 changed absolute to relative conditional jump.
+  1108                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00279$.
+  1109  0481  dd7ef7            	ld	a,(ix-9)
+  1110  0484  d60f              	sub	a,0x0f
+  1111                          ; peephole 62 removed jp by using inverse jump logic
+  1112                          ; peephole 149 removed unused label l_main_00279$.
+  1113  0486  2036              	jr	NZ,l_main_00114
+  1114                          ; peephole 155 changed absolute to relative conditional jump.
+  1115                          ; peephole 63 removed jp by using inverse jump logic
+  1116                          ; peephole 149 removed unused label l_main_00280$.
+  1117                          ;	skipping generated iCode
+  1118                          ;	genCmpEq
+  1119                          ;	AOP_STK for _main_sloc10_1_0
+  1120  0488  dd7ef8            	ld	a,(ix-8)
+  1121  048b  d6f0              	sub	a,0xf0
+  1122  048d  202f              	jr	NZ,l_main_00114
+  1123                          ; peephole 155 changed absolute to relative conditional jump.
+  1124                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1125  048f  dd7ef9            	ld	a,(ix-7)
+  1126  0492  3c                	inc	a
+  1127  0493  2029              	jr	NZ,l_main_00114
+  1128                          ; peephole 155 changed absolute to relative conditional jump.
+  1129                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1130  0495  dd7efa            	ld	a,(ix-6)
+  1131  0498  d6f0              	sub	a,0xf0
+  1132  049a  2022              	jr	NZ,l_main_00114
+  1133                          ; peephole 155 changed absolute to relative conditional jump.
+  1134                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1135  049c  dd7efb            	ld	a,(ix-5)
+  1136  049f  3c                	inc	a
+  1137  04a0  201c              	jr	NZ,l_main_00114
+  1138                          ; peephole 155 changed absolute to relative conditional jump.
+  1139                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1140  04a2  dd7efc            	ld	a,(ix-4)
+  1141  04a5  d6f0              	sub	a,0xf0
+  1142  04a7  2015              	jr	NZ,l_main_00114
+  1143                          ; peephole 155 changed absolute to relative conditional jump.
+  1144                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1145  04a9  dd7efd            	ld	a,(ix-3)
+  1146  04ac  3c                	inc	a
+  1147  04ad  200f              	jr	NZ,l_main_00114
+  1148                          ; peephole 155 changed absolute to relative conditional jump.
+  1149                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1150  04af  dd7efe            	ld	a,(ix-2)
+  1151  04b2  d6f0              	sub	a,0xf0
+  1152  04b4  2008              	jr	NZ,l_main_00114
+  1153                          ; peephole 155 changed absolute to relative conditional jump.
+  1154                          ; peephole 65 jumped to l_main_00114$ directly instead of via l_main_00281$.
+  1155  04b6  dd7eff            	ld	a,(ix-1)
+  1156  04b9  3c                	inc	a
+  1157                          ; peephole 62 removed jp by using inverse jump logic
+  1158                          ; peephole 149 removed unused label l_main_00281$.
+  1159  04ba  2002              	jr	NZ,l_main_00114
+  1160                          ; peephole 155 changed absolute to relative conditional jump.
+  1161                          ; peephole 63 removed jp by using inverse jump logic
+  1162                          ; peephole 149 removed unused label l_main_00282$.
+  1163                          ;	skipping generated iCode
+  1164                          ;	genCast
+  1165                          ;	(locations are the same)
+  1166                          ;	genOr
+  1167  04bc  cbe3              	set	4, e
+  1168                          ;	genCast
+  1169                          ;	(locations are the same)
+  1170                          ;	genCast
+  1171                          ;	(locations are the same)
+  1172                          ;	genLabel
+  1173                          l_main_00114:
+  1174                          ;	genAssign
+  1175                          ;	AOP_STK for _main_a_20000_7
+  1176                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+  1177  04be  dd36d8f0          	ld	(ix-40),0xf0
+  1178  04c2  3eff              	ld	a,0xff
+  1179  04c4  dd77d9            	ld	(ix-39),a
+  1180  04c7  dd77da            	ld	(ix-38),a
+  1181  04ca  dd77db            	ld	(ix-37),a
+  1182                          ; peephole z88dk-460b
+  1183  04cd  af                	xor	a, a
+  1184  04ce  dd77dc            	ld	(ix-36),a
+  1185  04d1  dd77dd            	ld	(ix-35),a
+  1186  04d4  dd77de            	ld	(ix-34),a
+  1187  04d7  dd77df            	ld	(ix-33),a
+  1188                          ;	genAssign
+  1189                          ;	AOP_STK for _main_b_20000_7
+  1190                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+  1191  04da  dd36e020          	ld	(ix-32),0x20
+  1192  04de  af                	xor	a, a
+  1193  04df  dd77e1            	ld	(ix-31),a
+  1194  04e2  dd77e2            	ld	(ix-30),a
+  1195  04e5  dd77e3            	ld	(ix-29),a
+  1196  04e8  dd77e4            	ld	(ix-28),a
+  1197  04eb  dd77e5            	ld	(ix-27),a
+  1198  04ee  dd77e6            	ld	(ix-26),a
+  1199  04f1  dd77e7            	ld	(ix-25),a
+  1200                          ;	genPlus
+  1201                          ;	AOP_STK for _main_a_20000_7
+  1202                          ;	AOP_STK for _main_b_20000_7
+  1203                          ;	AOP_STK for _main_sloc11_1_0
+  1204                          ; peephole z88dk-code-reduction-25b
+  1205  04f4  d5                	push	de
+  1206  04f5  01e0ff            	ld	bc,-32
+  1207  04f8  11d8ff            	ld	de,-40
+  1208  04fb  21f0ff            	ld	hl,-16
+  1209  04fe  cd0000            	call	____sdcc_ll_add_hlix_deix_bcix
+  1210                          ; peephole z88dk-code-reduction-25c
+  1211                          ; peephole z88dk-code-reduction-25a
+  1212                          ;	genMinus
+  1213                          ;	AOP_STK for _main_sloc11_1_0
+  1214                          ;	AOP_STK for _main_a_20000_7
+  1215                          ;	AOP_STK for _main_sloc12_1_0
+  1216                          ; peephole z88dk-code-reduction-26b
+  1217                          ; peephole 44 eleminated dead pop/push pair.
+  1218  0501  01d8ff            	ld	bc,-40
+  1219  0504  11f0ff            	ld	de,-16
+  1220  0507  21f8ff            	ld	hl,-8
+  1221  050a  cd0000            	call	____sdcc_ll_sub_hlix_deix_bcix
+  1222  050d  d1                	pop	de
+  1223                          ; peephole z88dk-code-reduction-26c
+  1224                          ; peephole z88dk-code-reduction-26a
+  1225                          ;	genCmpEq
+  1226                          ;	AOP_STK for _main_sloc11_1_0
+  1227  050e  dd7ef0            	ld	a,(ix-16)
+  1228  0511  d610              	sub	a,0x10
+  1229  0513  ddb6f1            	or	a,(ix-15)
+  1230  0516  ddb6f2            	or	a,(ix-14)
+  1231  0519  ddb6f3            	or	a,(ix-13)
+  1232  051c  202d              	jr	NZ,l_main_00118
+  1233                          ; peephole 155 changed absolute to relative conditional jump.
+  1234                          ; peephole 65 jumped to l_main_00118$ directly instead of via l_main_00283$.
+  1235  051e  dd7ef4            	ld	a,(ix-12)
+  1236  0521  3d                	dec	a
+  1237  0522  ddb6f5            	or	a,(ix-11)
+  1238  0525  ddb6f6            	or	a,(ix-10)
+  1239  0528  ddb6f7            	or	a,(ix-9)
+  1240                          ; peephole 62 removed jp by using inverse jump logic
+  1241                          ; peephole 149 removed unused label l_main_00283$.
+  1242  052b  201e              	jr	NZ,l_main_00118
+  1243                          ; peephole 155 changed absolute to relative conditional jump.
+  1244                          ; peephole 63 removed jp by using inverse jump logic
+  1245                          ; peephole 149 removed unused label l_main_00284$.
+  1246                          ;	skipping generated iCode
+  1247                          ;	genCmpEq
+  1248                          ;	AOP_STK for _main_sloc12_1_0
+  1249  052d  dd7ef8            	ld	a,(ix-8)
+  1250  0530  d620              	sub	a,0x20
+  1251  0532  ddb6f9            	or	a,(ix-7)
+  1252  0535  ddb6fa            	or	a,(ix-6)
+  1253  0538  ddb6fb            	or	a,(ix-5)
+  1254  053b  ddb6fc            	or	a,(ix-4)
+  1255  053e  ddb6fd            	or	a,(ix-3)
+  1256  0541  ddb6fe            	or	a,(ix-2)
+  1257  0544  ddb6ff            	or	a,(ix-1)
+  1258                          ; peephole 62 removed jp by using inverse jump logic
+  1259                          ; peephole 149 removed unused label l_main_00285$.
+  1260  0547  2002              	jr	NZ,l_main_00118
+  1261                          ; peephole 155 changed absolute to relative conditional jump.
+  1262                          ; peephole 63 removed jp by using inverse jump logic
+  1263                          ; peephole 149 removed unused label l_main_00286$.
+  1264                          ;	skipping generated iCode
+  1265                          ;	genCast
+  1266                          ;	(locations are the same)
+  1267                          ;	genOr
+  1268  0549  cbeb              	set	5, e
+  1269                          ;	genCast
+  1270                          ;	(locations are the same)
+  1271                          ;	genCast
+  1272                          ;	(locations are the same)
+  1273                          ;	genLabel
+  1274                          l_main_00118:
+  1275                          ;	genAssign
+  1276                          ;	AOP_STK for _main_init_20000_8
+  1277                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+  1278  054b  dd36e001          	ld	(ix-32),0x01
+  1279  054f  af                	xor	a, a
+  1280  0550  dd77e1            	ld	(ix-31),a
+  1281  0553  dd77e2            	ld	(ix-30),a
+  1282  0556  dd77e3            	ld	(ix-29),a
+  1283  0559  dd77e4            	ld	(ix-28),a
+  1284  055c  dd77e5            	ld	(ix-27),a
+  1285  055f  dd77e6            	ld	(ix-26),a
+  1286  0562  dd77e7            	ld	(ix-25),a
+  1287                          ;	genAssign
+  1288                          ;	AOP_STK for _main_init_20000_8
+  1289                          ;	AOP_STK for _main_sloc13_1_0
+  1290  0565  d5                	push	de
+  1291  0566  110c00            	ld	de,10 + 2
+  1292  0569  211c00            	ld	hl,26 + 2
+  1293  056c  cd0000            	call	____sdcc_ll_copy_src_desp_dst_hlsp
+  1294                          ; peephole z88dk-code-size-reduction-17
+  1295  056f  d1                	pop	de
+  1296                          ;	genAssign
+  1297                          ;	genMove_o size 1 result type 2 source type 1 hl_dead 1
+  1298  0570  1602              	ld	d,0x02
+  1299                          ;	genLabel
+  1300                          l_main_00126:
+  1301                          ;	genCast
+  1302                          ;	AOP_STK for _main_sloc14_1_0
+  1303                          ;	genMove_o size 1 result type 5 source type 2 hl_dead 1
+  1304  0572  dd72f8            	ld	(ix-8),d
+  1305                          ;	genMove_o size 0 result type 5 source type 1 hl_dead 1
+  1306                          ;	genMove_o size 7 result type 5 source type 1 hl_dead 1
+  1307  0575  af                	xor	a, a
+  1308  0576  dd77f9            	ld	(ix-7),a
+  1309  0579  dd77fa            	ld	(ix-6),a
+  1310  057c  dd77fb            	ld	(ix-5),a
+  1311  057f  dd77fc            	ld	(ix-4),a
+  1312  0582  dd77fd            	ld	(ix-3),a
+  1313  0585  dd77fe            	ld	(ix-2),a
+  1314  0588  dd77ff            	ld	(ix-1),a
+  1315                          ;	genIpush
+  1316  058b  d5                	push	de
+  1317                          ;	AOP_STK for _main_sloc14_1_0
+  1318                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1319                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1320                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1321                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1322  058c  21fcff            	ld	hl,-4
+  1323  058f  cd0000            	call	____sdcc_4_push_hlix
+  1324                          ; peephole z88dk-code-reduction-310
+  1325                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1326                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1327                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1328                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1329  0592  21f8ff            	ld	hl,-8
+  1330  0595  cd0000            	call	____sdcc_4_push_hlix
+  1331                          ; peephole z88dk-code-reduction-310
+  1332                          ;	genIpush
+  1333                          ;	AOP_STK for _main_sloc13_1_0
+  1334                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1335                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1336                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1337                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1338  0598  21f4ff            	ld	hl,-12
+  1339  059b  cd0000            	call	____sdcc_4_push_hlix
+  1340                          ; peephole z88dk-code-reduction-310
+  1341                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1342                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1343                          ;	genMove_o size 2 result type 2 source type 5 hl_dead 1
+  1344                          ;	genMove_o size 0 result type 2 source type 1 hl_dead 1
+  1345  059e  21f0ff            	ld	hl,-16
+  1346  05a1  cd0000            	call	____sdcc_4_push_hlix
+  1347                          ; peephole z88dk-code-reduction-310
+  1348                          ;	genCall
+  1349                          ;	AOP_STK for _main_sloc13_1_0
+  1350  05a4  212a00            	ld	hl,0x002a
+  1351  05a7  39                	add	hl, sp
+  1352  05a8  e5                	push	hl
+  1353  05a9  cd0000            	call	__mullonglong
+  1354                          ;	adjustStack by 18
+  1355  05ac  211200            	ld	hl,18
+  1356  05af  39                	add	hl, sp
+  1357  05b0  f9                	ld	sp, hl
+  1358  05b1  d1                	pop	de
+  1359                          ;	genPlus
+  1360  05b2  14                	inc	d
+  1361                          ;	genCmpGt
+  1362  05b3  3e0f              	ld	a,0x0f
+  1363  05b5  92                	sub	a, d
+  1364  05b6  30ba              	jr	NC,l_main_00126
+  1365                          ; peephole 157 changed absolute to relative conditional jump.
+  1366                          ;	skipping generated iCode
+  1367                          ;	genCmpEq
+  1368                          ;	AOP_STK for _main_sloc13_1_0
+  1369  05b8  dd7ef0            	ld	a,(ix-16)
+  1370  05bb  b7                	or	a, a
+  1371  05bc  202a              	jr	NZ,l_main_00122
+  1372                          ; peephole 155 changed absolute to relative conditional jump.
+  1373                          ; peephole 65 jumped to l_main_00122$ directly instead of via l_main_00287$.
+  1374  05be  dd7ef1            	ld	a,(ix-15)
+  1375  05c1  d658              	sub	a,0x58
+  1376  05c3  2023              	jr	NZ,l_main_00122
+  1377                          ; peephole 155 changed absolute to relative conditional jump.
+  1378                          ; peephole 65 jumped to l_main_00122$ directly instead of via l_main_00287$.
+  1379  05c5  dd7ef2            	ld	a,(ix-14)
+  1380  05c8  d677              	sub	a,0x77
+  1381  05ca  201c              	jr	NZ,l_main_00122
+  1382                          ; peephole 155 changed absolute to relative conditional jump.
+  1383                          ; peephole 65 jumped to l_main_00122$ directly instead of via l_main_00287$.
+  1384  05cc  dd7ef3            	ld	a,(ix-13)
+  1385  05cf  d677              	sub	a,0x77
+  1386  05d1  2015              	jr	NZ,l_main_00122
+  1387                          ; peephole 155 changed absolute to relative conditional jump.
+  1388                          ; peephole 65 jumped to l_main_00122$ directly instead of via l_main_00287$.
+  1389  05d3  dd7ef4            	ld	a,(ix-12)
+  1390  05d6  d630              	sub	a,0x30
+  1391  05d8  200e              	jr	NZ,l_main_00122
+  1392                          ; peephole 155 changed absolute to relative conditional jump.
+  1393                          ; peephole 65 jumped to l_main_00122$ directly instead of via l_main_00287$.
+  1394  05da  dd7ef5            	ld	a,(ix-11)
+  1395  05dd  3d                	dec	a
+  1396  05de  ddb6f6            	or	a,(ix-10)
+  1397  05e1  ddb6f7            	or	a,(ix-9)
+  1398                          ; peephole 62 removed jp by using inverse jump logic
+  1399                          ; peephole 149 removed unused label l_main_00287$.
+  1400  05e4  2002              	jr	NZ,l_main_00122
+  1401                          ; peephole 155 changed absolute to relative conditional jump.
+  1402                          ; peephole 63 removed jp by using inverse jump logic
+  1403                          ; peephole 149 removed unused label l_main_00288$.
+  1404                          ;	skipping generated iCode
+  1405                          ;	genCast
+  1406                          ;	(locations are the same)
+  1407                          ;	genOr
+  1408  05e6  cbf3              	set	6, e
+  1409                          ;	genCast
+  1410                          ;	(locations are the same)
+  1411                          ;	genCast
+  1412                          ;	(locations are the same)
+  1413                          ;	genLabel
+  1414                          l_main_00122:
+  1415                          ;	genAssign
+  1416                          ;	AOP_STK for _main_a_20000_10
+  1417                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+  1418  05e8  dd36d835          	ld	(ix-40),0x35
+  1419  05ec  dd36d9fb          	ld	(ix-39),0xfb
+  1420  05f0  dd36da04          	ld	(ix-38),0x04
+  1421  05f4  dd36db8e          	ld	(ix-37),0x8e
+  1422  05f8  dd36dce0          	ld	(ix-36),0xe0
+  1423  05fc  dd36ddfe          	ld	(ix-35),0xfe
+  1424  0600  dd36deff          	ld	(ix-34),0xff
+  1425  0604  dd36dfff          	ld	(ix-33),0xff
+  1426                          ;	genAssign
+  1427                          ;	AOP_STK for _main_b_20000_10
+  1428                          ;	genMove_o size 8 result type 5 source type 1 hl_dead 1
+  1429  0608  af                	xor	a, a
+  1430  0609  dd77e0            	ld	(ix-32),a
+  1431  060c  dd77e1            	ld	(ix-31),a
+  1432  060f  dd77e2            	ld	(ix-30),a
+  1433  0612  dd77e3            	ld	(ix-29),a
+  1434  0615  dd36e401          	ld	(ix-28),0x01
+  1435  0619  af                	xor	a, a
+  1436  061a  dd77e5            	ld	(ix-27),a
+  1437  061d  dd77e6            	ld	(ix-26),a
+  1438  0620  dd77e7            	ld	(ix-25),a
+  1439                          ;	genUminus
+  1440                          ;	AOP_STK for _main_a_20000_10
+  1441                          ;	AOP_STK for _main_sloc15_1_0
+  1442  0623  af                	xor	a, a
+  1443  0624  dd96d8            	sub	a,(ix-40)
+  1444  0627  dd77f0            	ld	(ix-16),a
+  1445  062a  3e00              	ld	a,0x00
+  1446  062c  dd9ed9            	sbc	a,(ix-39)
+  1447  062f  dd77f1            	ld	(ix-15),a
+  1448  0632  3e00              	ld	a,0x00
+  1449  0634  dd9eda            	sbc	a,(ix-38)
+  1450  0637  dd77f2            	ld	(ix-14),a
+  1451  063a  3e00              	ld	a,0x00
+  1452  063c  dd9edb            	sbc	a,(ix-37)
+  1453  063f  dd77f3            	ld	(ix-13),a
+  1454  0642  3e00              	ld	a,0x00
+  1455  0644  dd9edc            	sbc	a,(ix-36)
+  1456  0647  dd77f4            	ld	(ix-12),a
+  1457  064a  3e00              	ld	a,0x00
+  1458  064c  dd9edd            	sbc	a,(ix-35)
+  1459  064f  dd77f5            	ld	(ix-11),a
+  1460  0652  3e00              	ld	a,0x00
+  1461  0654  dd9ede            	sbc	a,(ix-34)
+  1462  0657  dd77f6            	ld	(ix-10),a
+  1463  065a  9f                	sbc	a, a
+  1464  065b  dd96df            	sub	a,(ix-33)
+  1465  065e  dd77f7            	ld	(ix-9),a
+  1466                          ;	genMinus
+  1467                          ;	AOP_STK for _main_b_20000_10
+  1468                          ;	AOP_STK for _main_sloc16_1_0
+  1469  0661  dd7ee0            	ld	a,(ix-32)
+  1470  0664  c6ff              	add	a,0xff
+  1471  0666  dd77f8            	ld	(ix-8),a
+  1472  0669  dd7ee1            	ld	a,(ix-31)
+  1473  066c  ceff              	adc	a,0xff
+  1474  066e  dd77f9            	ld	(ix-7),a
+  1475  0671  dd7ee2            	ld	a,(ix-30)
+  1476  0674  ceff              	adc	a,0xff
+  1477  0676  dd77fa            	ld	(ix-6),a
+  1478  0679  dd7ee3            	ld	a,(ix-29)
+  1479  067c  ceff              	adc	a,0xff
+  1480  067e  dd77fb            	ld	(ix-5),a
+  1481  0681  dd7ee4            	ld	a,(ix-28)
+  1482  0684  ceff              	adc	a,0xff
+  1483  0686  dd77fc            	ld	(ix-4),a
+  1484  0689  dd7ee5            	ld	a,(ix-27)
+  1485  068c  ceff              	adc	a,0xff
+  1486  068e  dd77fd            	ld	(ix-3),a
+  1487  0691  dd7ee6            	ld	a,(ix-26)
+  1488  0694  ceff              	adc	a,0xff
+  1489  0696  dd77fe            	ld	(ix-2),a
+  1490  0699  dd7ee7            	ld	a,(ix-25)
+  1491  069c  ceff              	adc	a,0xff
+  1492  069e  dd77ff            	ld	(ix-1),a
+  1493                          ;	genCmpEq
+  1494                          ;	AOP_STK for _main_sloc15_1_0
+  1495  06a1  dd7ef0            	ld	a,(ix-16)
+  1496  06a4  d6cb              	sub	a,0xcb
+  1497  06a6  2045              	jr	NZ,l_main_00124
+  1498                          ; peephole 155 changed absolute to relative conditional jump.
+  1499                          ; peephole 65 jumped to l_main_00124$ directly instead of via l_main_00289$.
+  1500  06a8  dd7ef1            	ld	a,(ix-15)
+  1501  06ab  d604              	sub	a,0x04
+  1502  06ad  203e              	jr	NZ,l_main_00124
+  1503                          ; peephole 155 changed absolute to relative conditional jump.
+  1504                          ; peephole 65 jumped to l_main_00124$ directly instead of via l_main_00289$.
+  1505  06af  dd7ef2            	ld	a,(ix-14)
+  1506  06b2  d6fb              	sub	a,0xfb
+  1507  06b4  2037              	jr	NZ,l_main_00124
+  1508                          ; peephole 155 changed absolute to relative conditional jump.
+  1509                          ; peephole 65 jumped to l_main_00124$ directly instead of via l_main_00289$.
+  1510  06b6  dd7ef3            	ld	a,(ix-13)
+  1511  06b9  d671              	sub	a,0x71
+  1512  06bb  2030              	jr	NZ,l_main_00124
+  1513                          ; peephole 155 changed absolute to relative conditional jump.
+  1514                          ; peephole 65 jumped to l_main_00124$ directly instead of via l_main_00289$.
+  1515  06bd  dd7ef4            	ld	a,(ix-12)
+  1516  06c0  d61f              	sub	a,0x1f
+  1517  06c2  2029              	jr	NZ,l_main_00124
+  1518                          ; peephole 155 changed absolute to relative conditional jump.
+  1519                          ; peephole 65 jumped to l_main_00124$ directly instead of via l_main_00289$.
+  1520  06c4  dd7ef5            	ld	a,(ix-11)
+  1521  06c7  3d                	dec	a
+  1522  06c8  ddb6f6            	or	a,(ix-10)
+  1523  06cb  ddb6f7            	or	a,(ix-9)
+  1524                          ; peephole 62 removed jp by using inverse jump logic
+  1525                          ; peephole 149 removed unused label l_main_00289$.
+  1526  06ce  201d              	jr	NZ,l_main_00124
+  1527                          ; peephole 155 changed absolute to relative conditional jump.
+  1528                          ; peephole 63 removed jp by using inverse jump logic
+  1529                          ; peephole 149 removed unused label l_main_00290$.
+  1530                          ;	skipping generated iCode
+  1531                          ;	genCmpEq
+  1532                          ;	AOP_STK for _main_sloc16_1_0
+  1533  06d0  dd7ef8            	ld	a,(ix-8)
+  1534  06d3  dda6f9            	and	a,(ix-7)
+  1535  06d6  dda6fa            	and	a,(ix-6)
+  1536  06d9  dda6fb            	and	a,(ix-5)
+  1537  06dc  3c                	inc	a
+  1538  06dd  ddb6fc            	or	a,(ix-4)
+  1539  06e0  ddb6fd            	or	a,(ix-3)
+  1540  06e3  ddb6fe            	or	a,(ix-2)
+  1541  06e6  ddb6ff            	or	a,(ix-1)
+  1542                          ; peephole 62 removed jp by using inverse jump logic
+  1543                          ; peephole 149 removed unused label l_main_00291$.
+  1544  06e9  2002              	jr	NZ,l_main_00124
+  1545                          ; peephole 155 changed absolute to relative conditional jump.
+  1546                          ; peephole 63 removed jp by using inverse jump logic
+  1547                          ; peephole 149 removed unused label l_main_00292$.
+  1548                          ;	skipping generated iCode
+  1549                          ;	genCast
+  1550                          ;	(locations are the same)
+  1551                          ;	genOr
+  1552  06eb  cbfb              	set	7, e
+  1553                          ;	genCast
+  1554                          ;	(locations are the same)
+  1555                          ;	genCast
+  1556                          ;	(locations are the same)
+  1557                          ;	genLabel
+  1558                          l_main_00124:
+  1559                          ;	genCast
+  1560                          ;	genMove_o size 1 result type 2 source type 2 hl_dead 1
+  1561                          ;	genMove_o size 1 result type 2 source type 1 hl_dead 1
+  1562  06ed  1600              	ld	d,0x00
+  1563                          ;	genRet
+  1564                          ;	genMove_o size 2 result type 2 source type 2 hl_dead 1
+  1565                          ;	genLabel
+  1566                          ; peephole 149 removed unused label l_main_00128$.
+  1567                          ;	genEndFunction
+  1568  06ef  ddf9              	ld	sp, ix
+  1569  06f1  dde1              	pop	ix
+  1570  06f3  c9                	ret
+  1571                          ;	Total main function size at codegen: 109 bytes.
+  1572                          	SECTION IGNORE
+  1573                          
