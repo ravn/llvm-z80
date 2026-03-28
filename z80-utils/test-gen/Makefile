@@ -15,12 +15,15 @@ CFLAGS = --target=z80 -Os
 
 SUITE_DIR = ../test-runner/testcases/clang
 
-.PHONY: all gen build run clean gen-suite clean-suite
+.PHONY: all gen gen-cats build run clean gen-suite clean-suite
 
 all: gen build run
 
 gen:
 	python3 $(GEN) $(FILES) $(TESTS) $(SEED)
+
+gen-cats:
+	python3 $(GEN) 1 1 $(SEED) --categories
 
 PROM_FLAGS = -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr
 

@@ -22,6 +22,7 @@ import tempfile
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LLVM_Z80 = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
 PROGRAMS_DIR = os.path.join(SCRIPT_DIR, "programs")
+TEST_GEN_DIR = os.path.join(SCRIPT_DIR, "..", "test-gen")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 # ---------------------------------------------------------------------------
@@ -91,12 +92,36 @@ COMPILERS = {
 # Docker helpers
 # ---------------------------------------------------------------------------
 
+Z80_UTILS_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+
+def host_to_docker(path):
+    """Convert a host path to Docker container path.
+    Files under z80-utils/ → /z80utils/..., under compiler-zoo/ → /work/..."""
+    abs_path = os.path.abspath(path)
+    # Try z80-utils relative first
+    try:
+        rel = os.path.relpath(abs_path, Z80_UTILS_DIR)
+        if not rel.startswith(".."):
+            return f"/z80utils/{rel}"
+    except ValueError:
+        pass
+    # Fall back to /work relative
+    try:
+        rel = os.path.relpath(abs_path, SCRIPT_DIR)
+        if not rel.startswith(".."):
+            return f"/work/{rel}"
+    except ValueError:
+        pass
+    return abs_path  # shouldn't happen
+
 def docker_run(image, volumes, workdir, cmd, capture=True):
     """Run a command in a Docker container."""
     args = ["docker", "run", "--rm"]
     for flag, vol in volumes:
         args.extend([flag, vol])
-    args.extend(["-v", f"{workdir}:/work", "-w", "/work", image])
+    # Mount z80-utils/ as /z80utils so both compiler-zoo and test-gen are accessible
+    args.extend(["-v", f"{Z80_UTILS_DIR}:/z80utils",
+                 "-v", f"{workdir}:/work", "-w", "/work", image])
     args.extend(cmd)
     if capture:
         r = subprocess.run(args, capture_output=True, text=True, timeout=120)
@@ -243,7 +268,8 @@ def compile_clang(program, name, do_asm=False):
     out_bin = os.path.join(OUTPUT_DIR, f"{name}.clang.bin")
 
     # Compile
-    cmd = [s.format(input=f"/work/programs/{os.path.basename(program)}",
+    docker_input = host_to_docker(program)
+    cmd = [s.format(input=docker_input,
                     output_elf=f"/work/output/{name}.clang.elf")
            for s in cfg["compile"]]
     r = docker_run(cfg["docker_image"], vols, SCRIPT_DIR, cmd)
@@ -302,7 +328,8 @@ def compile_zsdcc(program, name, do_asm=False):
     out_base = os.path.join(OUTPUT_DIR, zsdcc_base)
 
     # Compile (full build with CRT)
-    cmd = [s.format(input=f"/work/programs/{os.path.basename(program)}",
+    docker_input = host_to_docker(program)
+    cmd = [s.format(input=docker_input,
                     output_base=f"/work/output/{zsdcc_base}")
            for s in cfg["compile"]]
     r = docker_run(cfg["docker_image"], vols, SCRIPT_DIR, cmd)
@@ -325,7 +352,7 @@ def compile_zsdcc(program, name, do_asm=False):
 
     # Assembly listing (source-annotated)
     if do_asm:
-        cmd = [s.format(input=f"/work/programs/{os.path.basename(program)}",
+        cmd = [s.format(input=docker_input,
                         output_asm=f"/work/output/{name}{cfg['asm_ext']}")
                for s in cfg["asm_cmd"]]
         r = docker_run(cfg["docker_image"], vols, SCRIPT_DIR, cmd)
@@ -362,12 +389,17 @@ def main():
     parser.add_argument("--program", help="Filter programs by name substring")
     parser.add_argument("--compiler", help="Comma-separated compiler names (default: all)")
     parser.add_argument("--asm", action="store_true", help="Generate assembly listings")
+    parser.add_argument("--full", action="store_true", help="Include test-gen category files")
     args = parser.parse_args()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Discover programs
     programs = sorted(glob.glob(os.path.join(PROGRAMS_DIR, "bench_*.c")))
+    # Add test-gen category files only with --full
+    if args.full:
+        test_gen = os.path.abspath(TEST_GEN_DIR)
+        programs += sorted(glob.glob(os.path.join(test_gen, "_cat_*.c")))
     if args.program:
         programs = [p for p in programs if args.program in os.path.basename(p)]
 

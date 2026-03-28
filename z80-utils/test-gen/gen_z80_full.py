@@ -625,21 +625,28 @@ def gen_file(idx, ntests, extra_flags="", skip_if=""):
     out.append("")
 
     # Helper functions (noinline to exercise calling convention)
-    out.append("""__attribute__((noinline))
+    # Use portable noinline: __attribute__ for clang/gcc, nothing for SDCC
+    out.append("""#ifdef __SDCC
+#define NOINLINE
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
+
+NOINLINE
 uint16_t call6(uint16_t a,uint16_t b,uint16_t c,
                uint16_t d,uint16_t e,uint16_t f) {
     return a+b+c+d+e+f;
 }
 
-__attribute__((noinline))
+NOINLINE
 uint16_t add2(uint16_t a, uint16_t b) { return a + b; }
 
-__attribute__((noinline))
+NOINLINE
 uint16_t sub2(uint16_t a, uint16_t b) { return a - b; }
 
 static volatile uint16_t g16;
 
-__attribute__((noinline))
+NOINLINE
 uint16_t read_g16(void) { return g16; }
 
 /* Inline-eligible helpers — same operations without noinline.
@@ -710,6 +717,8 @@ def main():
     parser.add_argument("--prefix", default="z80_edge_", help="Filename prefix")
     parser.add_argument("--extra-flags", default="", help="EXTRA-FLAGS directive for test runner")
     parser.add_argument("--skip-if", default="", help="SKIP-IF directive (e.g. 'O0')")
+    parser.add_argument("--categories", action="store_true",
+                        help="Generate one file per test category (_cat_*.c)")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -717,13 +726,103 @@ def main():
     import os
     os.makedirs(args.outdir, exist_ok=True)
 
-    for i in range(args.files):
-        path = os.path.join(args.outdir, f"{args.prefix}{i:04d}.c")
-        with open(path, "w") as f:
-            f.write(gen_file(i, args.tests, args.extra_flags, args.skip_if))
+    if args.categories:
+        # Generate one file per category with a single test instance
+        cat_generators = {
+            "hl_alias": gen_hl_alias,
+            "carry_chain": gen_carry_chain,
+            "carry_clobber": gen_carry_clobber,
+            "array": gen_array,
+            "reg_pressure": gen_reg_pressure,
+            "call6": gen_call,
+            "mixed": gen_mixed,
+            "shift": gen_shift,
+            "cmp": gen_cmp,
+            "expr": gen_expr_test,
+            "struct": gen_struct,
+            "global": gen_global,
+            "loop_for": gen_loop_for,
+            "loop_dowhile": gen_loop_dowhile,
+            "loop_while": gen_loop_while,
+            "multidim": gen_multidim_array,
+            "ptr_arith": gen_pointer_arith,
+            "bitmask": gen_bitmask,
+            "switch": gen_switch,
+            "arith32": gen_arith32,
+            "memcpy": gen_memcpy,
+            "memset": gen_memset,
+            "divmod": gen_divmod,
+            "nested": gen_nested_calls,
+            "funcptr": gen_funcptr,
+            "cmp16": gen_cmp16,
+            "volatile": gen_volatile,
+            "inline_call": gen_inline_call,
+            "inline_nested": gen_inline_nested,
+            "mixed_inline": gen_mixed_inline,
+            "inline_cond": gen_inline_cond,
+        }
+        for name, gen in cat_generators.items():
+            # Generate a file with just one test of this category
+            content = gen_file(0, 1, args.extra_flags, args.skip_if)
+            # Replace the random test with the specific category
+            # Rebuild from scratch with only this generator
+            out = []
+            out.append("/* Z80 edge-case test (auto-generated) */")
+            out.append("/* expect 0x0000 */")
+            if args.extra_flags:
+                out.append(f"/* EXTRA-FLAGS: {args.extra_flags} */")
+            out.append("")
+            out.append("typedef unsigned char uint8_t;")
+            out.append("typedef signed char int8_t;")
+            out.append("typedef unsigned short uint16_t;")
+            out.append("typedef signed short int16_t;")
+            out.append("typedef unsigned long uint32_t;")
+            out.append("")
+            out.append("""#ifdef __SDCC
+#define NOINLINE
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
 
-    print(f"Generated {args.files} files with {args.tests} tests each "
-          f"(seed={args.seed}, dir={args.outdir})")
+NOINLINE
+uint16_t call6(uint16_t a,uint16_t b,uint16_t c,
+               uint16_t d,uint16_t e,uint16_t f) {
+    return a+b+c+d+e+f;
+}
+
+NOINLINE
+uint16_t add2(uint16_t a, uint16_t b) { return a + b; }
+
+NOINLINE
+uint16_t sub2(uint16_t a, uint16_t b) { return a - b; }
+
+static volatile uint16_t g16;
+
+NOINLINE
+uint16_t read_g16(void) { return g16; }
+
+static uint16_t iadd2(uint16_t a, uint16_t b) { return a + b; }
+static uint16_t isub2(uint16_t a, uint16_t b) { return a - b; }
+static uint8_t imax8(uint8_t a, uint8_t b) { return a > b ? a : b; }
+static uint16_t iabs16(int16_t x) { return x < 0 ? -x : x; }
+""")
+            out.append("int main(void) {")
+            out.append("    int failures = 0;")
+            out.append(gen(0))
+            out.append("    return failures;")
+            out.append("}")
+            path = os.path.join(args.outdir, f"_cat_{name}.c")
+            with open(path, "w") as f:
+                f.write("\n".join(out))
+        print(f"Generated {len(cat_generators)} category files in {args.outdir}")
+    else:
+        for i in range(args.files):
+            path = os.path.join(args.outdir, f"{args.prefix}{i:04d}.c")
+            with open(path, "w") as f:
+                f.write(gen_file(i, args.tests, args.extra_flags, args.skip_if))
+
+        print(f"Generated {args.files} files with {args.tests} tests each "
+              f"(seed={args.seed}, dir={args.outdir})")
 
 if __name__ == "__main__":
     main()
