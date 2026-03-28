@@ -4,11 +4,11 @@
 ; BIT test via branching: single bit checks
 ; ==========================================================================
 
-; Bit 0 branch: AND 1; JR (nz or z depending on layout)
+; Bit 0 branch: RRCA; JR C/NC (AND $1 narrowed to rotate by peephole)
 define void @branch_bit0(i8 zeroext %val) {
 ; CHECK-LABEL: _branch_bit0:
-; CHECK:       and	#1
-; CHECK-NEXT:  jr	{{nz|z}},
+; CHECK:       rrca
+; CHECK-NEXT:  jr	{{n?c}},
   %t = and i8 %val, 1
   %c = icmp ne i8 %t, 0
   br i1 %c, label %yes, label %no

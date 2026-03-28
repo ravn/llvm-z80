@@ -2334,6 +2334,82 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     Changed = true;
   }
 
+  // --- Peephole: AND $1 + branch/ret → RRCA + carry branch/ret ---
+  // AND $1 (2B) tests bit 0 via Z flag.  RRCA (1B) rotates bit 0 into carry.
+  // Replace AND $1; JR/JP NZ → RRCA; JR/JP C (saves 1B).
+  // Replace AND $1; RET NZ → RRCA; RET C (saves 1B).
+  // Similarly AND $80; ... NZ → RLCA; ... C (bit 7 to carry).
+  // Constraint: A must be dead on the fall-through path (RRCA modifies A
+  // differently than AND).
+  for (auto &MBB : MF) {
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+         MII != MIE;) {
+      unsigned Opc = MII->getOpcode();
+      if (Opc != Z80::AND_n) { ++MII; continue; }
+
+      int64_t Imm = MII->getOperand(0).getImm();
+      unsigned RotOpc;
+      if (Imm == 1)
+        RotOpc = Z80::RRCA;  // bit 0 → carry
+      else if (Imm == 0x80)
+        RotOpc = Z80::RLCA;  // bit 7 → carry
+      else { ++MII; continue; }
+
+      auto Next = std::next(MII);
+      if (Next == MIE) { ++MII; continue; }
+
+      // Skip redundant OR A between AND and branch (re-tests Z flag).
+      auto BranchIt = Next;
+      if (BranchIt->getOpcode() == Z80::OR_A ||
+          BranchIt->getOpcode() == Z80::OR_r) {
+        BranchIt = std::next(BranchIt);
+        if (BranchIt == MIE) { ++MII; continue; }
+      }
+
+      // Map NZ → C, Z → NC (AND sets Z when bit is 0; rotate sets C when 1)
+      unsigned NextOpc = BranchIt->getOpcode();
+      unsigned NewNextOpc = 0;
+      switch (NextOpc) {
+      case Z80::JR_NZ_e:  NewNextOpc = Z80::JR_C_e; break;
+      case Z80::JR_Z_e:   NewNextOpc = Z80::JR_NC_e; break;
+      case Z80::JP_NZ_nn: NewNextOpc = Z80::JP_C_nn; break;
+      case Z80::JP_Z_nn:  NewNextOpc = Z80::JP_NC_nn; break;
+      case Z80::RET_NZ:   NewNextOpc = Z80::RET_C; break;
+      case Z80::RET_Z:    NewNextOpc = Z80::RET_NC; break;
+      default: break;
+      }
+      if (!NewNextOpc) { ++MII; continue; }
+
+      // A must be dead after the branch/ret on the fall-through path.
+      auto AfterBranch = std::next(BranchIt);
+      if (!isRegDeadAfter(AfterBranch, MBB, TRI, Z80::A)) { ++MII; continue; }
+
+      LLVM_DEBUG(dbgs() << "  AND→RRCA/RLCA peephole: " << *MII);
+      DebugLoc DL = MII->getDebugLoc();
+
+      // Erase any OR A between AND and branch.
+      if (BranchIt != Next) {
+        // Next is the OR_A, BranchIt is the branch
+        Next->eraseFromParent();
+      }
+
+      MII = MBB.erase(MII); // erase AND
+      BuildMI(MBB, MII, DL, TII->get(RotOpc));
+
+      // Replace the branch/ret condition
+      DebugLoc DL2 = BranchIt->getDebugLoc();
+      if (BranchIt->getNumOperands() > 0 && BranchIt->getOperand(0).isMBB()) {
+        MachineBasicBlock *Target = BranchIt->getOperand(0).getMBB();
+        MII = MBB.erase(BranchIt);
+        BuildMI(MBB, MII, DL2, TII->get(NewNextOpc)).addMBB(Target);
+      } else {
+        MII = MBB.erase(BranchIt);
+        BuildMI(MBB, MII, DL2, TII->get(NewNextOpc));
+      }
+      Changed = true;
+    }
+  }
+
   // --- Peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr ---
   // When a 16-bit addition is performed through HL with IX/IY as the actual
   // accumulator, replace the 5-instruction copy-add-copy sequence (8-10 bytes)

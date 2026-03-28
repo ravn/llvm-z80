@@ -88,6 +88,18 @@ static unsigned invertJRtoJP(unsigned JROpc) {
   }
 }
 
+/// Map a conditional JR/JP to the corresponding conditional RET with
+/// SAME condition. E.g., JR_NZ → RET_NZ (branch-to-RET replacement).
+static unsigned branchToCondRET(unsigned Opc) {
+  switch (Opc) {
+  case Z80::JR_Z_e:  case Z80::JP_Z_nn:  return Z80::RET_Z;
+  case Z80::JR_NZ_e: case Z80::JP_NZ_nn: return Z80::RET_NZ;
+  case Z80::JR_C_e:  case Z80::JP_C_nn:  return Z80::RET_C;
+  case Z80::JR_NC_e: case Z80::JP_NC_nn: return Z80::RET_NC;
+  default: return 0;
+  }
+}
+
 bool Z80BranchCleanup::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -167,10 +179,53 @@ bool Z80BranchCleanup::runOnMachineFunction(MachineFunction &MF) {
   ToRemove.clear();
 
 #endif
-  // Note: conditional RET with epilogue duplication was attempted but
-  // causes crashes with -ffunction-sections due to BB layout changes.
-  // The branch-over-RET optimization above handles the simpler case.
-  // TODO: fix epilogue duplication for function-sections compatibility.
+
+  // --- Branch-to-RET: JR/JP cc, ret_block → RET cc ---
+  // When a conditional branch targets a block containing only RET,
+  // replace the branch with a conditional RET (same condition).
+  // Saves 1B per instance (JR/JP = 2-3B → RET cc = 1B).
+  // Different from the disabled "branch-over-RET" above: here the branch
+  // goes TO the RET, not over it, so no condition inversion needed.
+  for (auto MBI = MF.begin(), MBE = MF.end(); MBI != MBE; ++MBI) {
+    MachineBasicBlock &MBB = *MBI;
+
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIIE = MBB.end();
+         MII != MIIE;) {
+      unsigned CondRETOpc = branchToCondRET(MII->getOpcode());
+      if (!CondRETOpc) { ++MII; continue; }
+
+      MachineBasicBlock *Target = MII->getOperand(0).getMBB();
+
+      // Target must contain only a RET.
+      auto TI = Target->getFirstNonDebugInstr();
+      if (TI == Target->end() || TI->getOpcode() != Z80::RET) {
+        ++MII; continue;
+      }
+      if (Target->getLastNonDebugInstr() != TI) {
+        ++MII; continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "Z80BranchCleanup: branch-to-RET in "
+                        << printMBBReference(MBB) << "\n");
+
+      DebugLoc DL = MII->getDebugLoc();
+      MII = MBB.erase(MII);
+      BuildMI(MBB, MII, DL, TII->get(CondRETOpc));
+
+      // Update CFG.
+      MBB.removeSuccessor(Target);
+
+      // If target has no remaining predecessors, mark for removal.
+      if (Target->pred_empty()) {
+        TI->eraseFromParent();
+        ToRemove.push_back(Target);
+      }
+      Changed = true;
+    }
+  }
+  for (MachineBasicBlock *MBB : ToRemove)
+    MBB->eraseFromParent();
+  ToRemove.clear();
 
   // --- Trampoline collapsing ---
   for (auto MBI = MF.begin(), MBE = MF.end(); MBI != MBE; ++MBI) {
