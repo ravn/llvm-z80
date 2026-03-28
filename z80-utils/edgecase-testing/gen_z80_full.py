@@ -3,7 +3,7 @@
 
 Each file is a standalone C program returning 0 on success (all tests pass)
 or non-zero on failure.  Compatible with z80-utils test runner via the
-/* expect: 0x0000 */ directive.
+/* expect 0x0000 */ directive.
 
 Usage: gen_z80_full.py <files> <tests_per_file> <seed>
 """
@@ -14,7 +14,10 @@ import sys
 # Helpers
 # ----------------------------
 def u8(): return random.randint(0, 255)
+def s8(): return random.randint(-128, 127)
 def u16(): return random.randint(0, 65535)
+def s16(): return random.randint(-32768, 32767)
+def u32(): return random.randint(0, 0xFFFFFFFF)
 
 # ----------------------------
 # HL aliasing tests
@@ -177,6 +180,354 @@ def gen_expr_test(i):
 """
 
 # ----------------------------
+# Struct field access
+# ----------------------------
+def gen_struct(i):
+    a, b, c, d = u8(), u8(), u16(), u8()
+    field = random.choice(["a", "b", "c", "d"])
+    expected = {"a": a, "b": b, "c": c & 0xFFFF, "d": d}[field]
+    cast = "uint16_t" if field == "c" else "uint8_t"
+
+    return f"""
+    {{
+        struct {{ uint8_t a; uint8_t b; uint16_t c; uint8_t d; }} s = {{{a},{b},{c},{d}}};
+        if (s.{field} != ({cast}){expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Global variables
+# ----------------------------
+# Globals are emitted as file-scope helpers, tested via function calls.
+# We use a noinline function to force the value through memory.
+def gen_global(i):
+    val = u16()
+    return f"""
+    {{
+        g16 = {val};
+        if (read_g16() != {val}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Loops (for / while / do-while)
+# ----------------------------
+def gen_loop_for(i):
+    n = random.randint(1, 20)
+    step = random.randint(1, 5)
+    expected = sum(range(0, n, step)) & 0xFFFF
+
+    return f"""
+    {{
+        uint16_t sum = 0;
+        for (uint16_t j = 0; j < {n}; j += {step}) sum += j;
+        if (sum != {expected}) failures++;
+    }}
+"""
+
+def gen_loop_dowhile(i):
+    n = random.randint(1, 30)
+    expected = n & 0xFF
+
+    return f"""
+    {{
+        uint8_t cnt = 0;
+        uint8_t k = {n};
+        do {{ cnt++; }} while (--k);
+        if (cnt != {expected}) failures++;
+    }}
+"""
+
+def gen_loop_while(i):
+    start = u8()
+    mask = 1 << random.randint(0, 7)
+    # Count iterations until bit is set after incrementing
+    v = start
+    count = 0
+    for _ in range(300):
+        v = (v + 1) & 0xFF
+        count += 1
+        if v & mask:
+            break
+
+    return f"""
+    {{
+        uint8_t v = {start};
+        uint16_t count = 0;
+        while (!((++v) & {mask})) count++;
+        count++;
+        if (count != {count}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Multi-dimensional array
+# ----------------------------
+def gen_multidim_array(i):
+    rows, cols = random.randint(2, 4), random.randint(2, 4)
+    arr = [[u8() for _ in range(cols)] for _ in range(rows)]
+    r = random.randint(0, rows - 1)
+    c = random.randint(0, cols - 1)
+    expected = arr[r][c]
+    init = ",".join("{" + ",".join(map(str, row)) + "}" for row in arr)
+
+    return f"""
+    {{
+        uint8_t m[{rows}][{cols}] = {{{init}}};
+        if (m[{r}][{c}] != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Pointer arithmetic
+# ----------------------------
+def gen_pointer_arith(i):
+    arr = [u8() for _ in range(8)]
+    offset = random.randint(0, 7)
+    expected = arr[offset]
+    init = ",".join(map(str, arr))
+
+    return f"""
+    {{
+        uint8_t buf[8] = {{{init}}};
+        uint8_t *p = buf;
+        p += {offset};
+        if (*p != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Bit manipulation (AND mask, bit test, set, clear)
+# ----------------------------
+def gen_bitmask(i):
+    val = u8()
+    bit = random.randint(0, 7)
+    op = random.choice(["test", "set", "clear", "toggle"])
+    mask = 1 << bit
+
+    if op == "test":
+        expected = 1 if (val & mask) else 0
+        return f"""
+    {{
+        uint8_t v = {val};
+        int r = (v & {mask}) ? 1 : 0;
+        if (r != {expected}) failures++;
+    }}
+"""
+    elif op == "set":
+        expected = val | mask
+        return f"""
+    {{
+        uint8_t v = {val};
+        v |= {mask};
+        if (v != {expected}) failures++;
+    }}
+"""
+    elif op == "clear":
+        expected = val & ~mask & 0xFF
+        return f"""
+    {{
+        uint8_t v = {val};
+        v &= ~(uint8_t){mask};
+        if (v != {expected}) failures++;
+    }}
+"""
+    else:  # toggle
+        expected = (val ^ mask) & 0xFF
+        return f"""
+    {{
+        uint8_t v = {val};
+        v ^= {mask};
+        if (v != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Switch statement
+# ----------------------------
+def gen_switch(i):
+    ncases = random.randint(3, 8)
+    values = random.sample(range(0, 20), ncases)
+    results = [u8() for _ in values]
+    default_val = u8()
+    test_val = random.choice(values + [99])  # 99 = default
+    if test_val == 99:
+        expected = default_val
+    else:
+        expected = results[values.index(test_val)]
+
+    cases = "\n".join(f"        case {v}: result = {r}; break;" for v, r in zip(values, results))
+
+    return f"""
+    {{
+        uint8_t input = {test_val};
+        uint8_t result;
+        switch (input) {{
+{cases}
+        default: result = {default_val}; break;
+        }}
+        if (result != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# 32-bit arithmetic
+# ----------------------------
+def gen_arith32(i):
+    a = u32()
+    b = u32()
+    op = random.choice(["+", "-", "&", "|", "^"])
+    if op == "+":
+        expected = (a + b) & 0xFFFFFFFF
+    elif op == "-":
+        expected = (a - b) & 0xFFFFFFFF
+    elif op == "&":
+        expected = a & b
+    elif op == "|":
+        expected = a | b
+    else:
+        expected = a ^ b
+
+    return f"""
+    {{
+        uint32_t a = {a}UL;
+        uint32_t b = {b}UL;
+        uint32_t r = a {op} b;
+        if (r != {expected}UL) failures++;
+    }}
+"""
+
+# ----------------------------
+# Memcpy / memset patterns (LDIR)
+# ----------------------------
+def gen_memcpy(i):
+    n = random.randint(1, 16)
+    src = [u8() for _ in range(n)]
+    idx = random.randint(0, n - 1)
+    expected = src[idx]
+    init = ",".join(map(str, src))
+
+    return f"""
+    {{
+        uint8_t src[{n}] = {{{init}}};
+        uint8_t dst[{n}];
+        for (uint8_t j = 0; j < {n}; j++) dst[j] = src[j];
+        if (dst[{idx}] != {expected}) failures++;
+    }}
+"""
+
+def gen_memset(i):
+    n = random.randint(1, 16)
+    val = u8()
+
+    return f"""
+    {{
+        uint8_t buf[{n}];
+        for (uint8_t j = 0; j < {n}; j++) buf[j] = {val};
+        if (buf[{n - 1}] != {val}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Signed division / modulo
+# ----------------------------
+def gen_divmod(i):
+    a = random.randint(-128, 127)
+    b = random.choice([x for x in range(-128, 128) if x != 0])
+    op = random.choice(["div", "mod"])
+    if op == "div":
+        # C truncates toward zero
+        import math
+        expected = int(math.trunc(a / b)) & 0xFFFF
+        return f"""
+    {{
+        int16_t r = (int16_t)((int8_t){a}) / (int16_t)((int8_t){b});
+        if ((uint16_t)r != (uint16_t){expected}) failures++;
+    }}
+"""
+    else:
+        expected = (a - int(a / b) * b) if b != 0 else 0
+        expected = expected & 0xFFFF
+        return f"""
+    {{
+        int16_t r = (int16_t)((int8_t){a}) % (int16_t)((int8_t){b});
+        if ((uint16_t)r != (uint16_t){expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Nested function calls (caller-save pressure)
+# ----------------------------
+def gen_nested_calls(i):
+    a, b, c = u8(), u8(), u8()
+    # inner(a,b) + inner(b,c) + inner(a,c)
+    inner_ab = (a + b) & 0xFFFF
+    inner_bc = (b + c) & 0xFFFF
+    inner_ac = (a + c) & 0xFFFF
+    expected = (inner_ab + inner_bc + inner_ac) & 0xFFFF
+
+    return f"""
+    {{
+        uint16_t r = add2({a},{b}) + add2({b},{c}) + add2({a},{c});
+        if (r != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Function pointer / indirect call
+# ----------------------------
+def gen_funcptr(i):
+    a, b = u8(), u8()
+    op = random.choice(["add", "sub"])
+    if op == "add":
+        expected = (a + b) & 0xFFFF
+        return f"""
+    {{
+        uint16_t (*fn)(uint16_t, uint16_t) = &add2;
+        if (fn({a},{b}) != {expected}) failures++;
+    }}
+"""
+    else:
+        expected = (a - b) & 0xFFFF
+        return f"""
+    {{
+        uint16_t (*fn)(uint16_t, uint16_t) = &sub2;
+        if (fn({a},{b}) != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# 16-bit comparison (all predicates)
+# ----------------------------
+def gen_cmp16(i):
+    a = s16()
+    b = s16()
+    pred = random.choice(["<", ">", "<=", ">=", "==", "!="])
+    expected = 1 if eval(f"{a} {pred} {b}") else 0
+
+    return f"""
+    {{
+        volatile int16_t a = {a};
+        volatile int16_t b = {b};
+        int r = (a {pred} b);
+        if (r != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Volatile I/O simulation
+# ----------------------------
+def gen_volatile(i):
+    val = u8()
+    return f"""
+    {{
+        volatile uint8_t port = {val};
+        uint8_t r = port;
+        if (r != {val}) failures++;
+    }}
+"""
+
+# ----------------------------
 # File generator
 # ----------------------------
 def gen_file(idx, ntests, extra_flags="", skip_if=""):
@@ -192,14 +543,27 @@ def gen_file(idx, ntests, extra_flags="", skip_if=""):
     out.append("typedef unsigned char uint8_t;")
     out.append("typedef signed char int8_t;")
     out.append("typedef unsigned short uint16_t;")
+    out.append("typedef signed short int16_t;")
     out.append("typedef unsigned long uint32_t;")
     out.append("")
 
+    # Helper functions (noinline to exercise calling convention)
     out.append("""__attribute__((noinline))
 uint16_t call6(uint16_t a,uint16_t b,uint16_t c,
                uint16_t d,uint16_t e,uint16_t f) {
     return a+b+c+d+e+f;
 }
+
+__attribute__((noinline))
+uint16_t add2(uint16_t a, uint16_t b) { return a + b; }
+
+__attribute__((noinline))
+uint16_t sub2(uint16_t a, uint16_t b) { return a - b; }
+
+static volatile uint16_t g16;
+
+__attribute__((noinline))
+uint16_t read_g16(void) { return g16; }
 """)
 
     out.append("int main(void) {")
@@ -215,7 +579,24 @@ uint16_t call6(uint16_t a,uint16_t b,uint16_t c,
         gen_mixed,
         gen_shift,
         gen_cmp,
-        gen_expr_test
+        gen_expr_test,
+        gen_struct,
+        gen_global,
+        gen_loop_for,
+        gen_loop_dowhile,
+        gen_loop_while,
+        gen_multidim_array,
+        gen_pointer_arith,
+        gen_bitmask,
+        gen_switch,
+        gen_arith32,
+        gen_memcpy,
+        gen_memset,
+        gen_divmod,
+        gen_nested_calls,
+        gen_funcptr,
+        gen_cmp16,
+        gen_volatile,
     ]
 
     for i in range(ntests):

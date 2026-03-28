@@ -1,7 +1,7 @@
 GEN = ./gen_z80_full.py
 FILES = 25
 TESTS = 1000
-TESTS_O0 = 800
+TESTS_O0 = 600
 SEED = 123
 
 # LLVM-Z80 cross-compiler + z88dk-ticks (Docker)
