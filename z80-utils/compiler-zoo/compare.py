@@ -243,7 +243,9 @@ def measure_tstates(image, volumes, bin_path, halt_addr):
     r = docker_run(image, volumes, SCRIPT_DIR, cmd)
     if r.returncode != 0:
         return None, None
-    output = r.stdout + r.stderr
+    # Use stdout only for parsing — stderr may contain Docker platform warnings
+    # that would corrupt the last-line T-states check.
+    output = r.stdout
     # Parse registers from trace — take the last occurrence.
     # Clang CRT: return value in HL (sdcccall convention), then HALT.
     # z88dk CRT: return value in HL, then copied to DE before __Exit.
