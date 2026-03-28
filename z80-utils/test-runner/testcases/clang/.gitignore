@@ -1,1 +1,1 @@
-test_90_edge_*.c
+test_9[0-9]_edge*.c
