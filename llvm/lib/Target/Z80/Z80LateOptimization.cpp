@@ -2391,6 +2391,101 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: PUSH rr; POP IX → PUSH rr ... POP rr (remove IX transfer) ---
+  // The register allocator saves caller-saved registers across CALLs by
+  // transferring to callee-saved IX/IY via PUSH rr; POP IX ... PUSH IX; POP rr.
+  // This costs 6B (1+2+2+1) when a simple PUSH rr ... POP rr costs only 2B (1+1).
+  // Pattern:
+  //   PUSH rr; POP IX  (adjacent — transfer to callee-saved)
+  //   ... instructions (no unmatched PUSH/POP, IX not used otherwise) ...
+  //   PUSH IX; POP rr  (adjacent — transfer back)
+  // Replace: remove POP IX and PUSH IX, saving 4B.
+  if (STI.hasZ80()) {
+    static const struct {
+      unsigned PushOpc;
+      unsigned PopOpc;
+      unsigned PushIXOpc;
+      unsigned PopIXOpc;
+      MCPhysReg IXReg;
+    } IXTransferPairs[] = {
+        {Z80::PUSH_DE, Z80::POP_DE, Z80::PUSH_IX, Z80::POP_IX, Z80::IX},
+        {Z80::PUSH_HL, Z80::POP_HL, Z80::PUSH_IX, Z80::POP_IX, Z80::IX},
+        {Z80::PUSH_BC, Z80::POP_BC, Z80::PUSH_IX, Z80::POP_IX, Z80::IX},
+        {Z80::PUSH_DE, Z80::POP_DE, Z80::PUSH_IY, Z80::POP_IY, Z80::IY},
+        {Z80::PUSH_HL, Z80::POP_HL, Z80::PUSH_IY, Z80::POP_IY, Z80::IY},
+        {Z80::PUSH_BC, Z80::POP_BC, Z80::PUSH_IY, Z80::POP_IY, Z80::IY},
+    };
+
+    for (auto &MBB : MF) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE; ++MII) {
+        for (const auto &TP : IXTransferPairs) {
+          if (MII->getOpcode() != TP.PushOpc)
+            continue;
+          auto PopIX = std::next(MII);
+          if (PopIX == MIE || PopIX->getOpcode() != TP.PopIXOpc)
+            continue;
+
+          // Scan forward for matching PUSH IX; POP rr.
+          // Verify: stack is balanced (only CALL_nn allowed, which is balanced),
+          // and IX/IY is not used by any instruction in between.
+          bool Safe = true;
+          int StackDepth = 0;
+          auto PushIX = MIE;
+          for (auto Scan = std::next(PopIX); Scan != MIE; ++Scan) {
+            unsigned SOpc = Scan->getOpcode();
+
+            // Check if this instruction uses or defines IX/IY.
+            bool TouchesIX = false;
+            for (const MachineOperand &MO : Scan->operands()) {
+              if (MO.isReg() && MO.getReg().isPhysical() &&
+                  TRI->regsOverlap(MO.getReg(), TP.IXReg))
+                TouchesIX = true;
+            }
+
+            // Found the matching PUSH IX?
+            if (SOpc == TP.PushIXOpc && StackDepth == 0) {
+              auto PopRR = std::next(Scan);
+              if (PopRR != MIE && PopRR->getOpcode() == TP.PopOpc) {
+                PushIX = Scan;
+              }
+              break;
+            }
+
+            // IX/IY used for something else — bail.
+            if (TouchesIX) { Safe = false; break; }
+
+            // Track stack balance: PUSH adds depth, POP reduces.
+            if (SOpc == Z80::PUSH_AF || SOpc == Z80::PUSH_BC ||
+                SOpc == Z80::PUSH_DE || SOpc == Z80::PUSH_HL ||
+                SOpc == Z80::PUSH_IX || SOpc == Z80::PUSH_IY)
+              ++StackDepth;
+            else if (SOpc == Z80::POP_AF || SOpc == Z80::POP_BC ||
+                     SOpc == Z80::POP_DE || SOpc == Z80::POP_HL ||
+                     SOpc == Z80::POP_IX || SOpc == Z80::POP_IY)
+              --StackDepth;
+
+            // CALL is balanced (pushes return addr, RET pops it).
+            // But unbalanced stack in between breaks the pattern.
+            if (StackDepth < 0) { Safe = false; break; }
+          }
+
+          if (!Safe || PushIX == MIE)
+            continue;
+
+          // Found valid pattern. Remove POP IX and PUSH IX (save 4B).
+          auto PopRR = std::next(PushIX);
+          LLVM_DEBUG(dbgs() << "  IX transfer peephole: PUSH rr;POP IX...PUSH IX;POP rr"
+                            << " → PUSH rr...POP rr (saves 4B)\n");
+          PushIX->eraseFromParent();
+          PopIX->eraseFromParent();
+          Changed = true;
+          break; // Restart inner loop for this MII
+        }
+      }
+    }
+  }
+
   // --- Peephole: BSS spill/reload → PUSH/POP across CALLs ---
   // With static-stack, register allocator spills use BSS direct addressing:
   //   LD (bss),A  (3B/13T)  +  LD A,(bss)  (3B/13T)  =  6B/26T per pair
