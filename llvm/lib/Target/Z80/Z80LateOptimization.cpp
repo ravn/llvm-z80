@@ -2395,6 +2395,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   // The register allocator saves caller-saved registers across CALLs by
   // transferring to callee-saved IX/IY via PUSH rr; POP IX ... PUSH IX; POP rr.
   // This costs 6B (1+2+2+1) when a simple PUSH rr ... POP rr costs only 2B (1+1).
+  // Note: CopyCost=3 on IR16 reduces but does not eliminate this pattern.
   // Pattern:
   //   PUSH rr; POP IX  (adjacent — transfer to callee-saved)
   //   ... instructions (no unmatched PUSH/POP, IX not used otherwise) ...

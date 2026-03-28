@@ -199,8 +199,15 @@ def GR16_SP : Z80Reg16Class<(add DE, BC, HL, SP)>;
 // 16-bit registers including SP (for LD rr,nn etc)
 def GR16_All : Z80Reg16Class<(add DE, HL, BC, SP)>;
 
-// Index registers only
-def IR16 : Z80Reg16Class<(add IX, IY)>;
+// Index registers only.
+// CopyCost = 3: copying to/from IX/IY requires PUSH+POP (3B) without
+// +undocumented, or 2x undoc LD (4B) with it.  This is 1.5-2x the cost
+// of GR16↔GR16 copies (2B via 2x LD r,r').  The allocator uses CopyCost
+// to weigh copy-heavy assignments — higher cost discourages the allocator
+// from routing values through IX/IY when cheaper alternatives exist.
+def IR16 : Z80Reg16Class<(add IX, IY)> {
+  let CopyCost = 3;
+}
 
 // HL or index register (for indirect addressing)
 def HLI : Z80Reg16Class<(add HL, IX, IY)>;
