@@ -66,6 +66,7 @@ COMPILERS = {
             "-Cs--fverbose-asm",
             "-Cs--disable-warning 296",
             "-pragma-define:CRT_ORG_CODE=0x0000",
+            "-pragma-define:CLIB_MALLOC_HEAP_SIZE=32768",
             "-m", "--list", "-create-app",
             "{input}", "-o", "{output_base}",
         ],
@@ -210,11 +211,16 @@ def measure_tstates(image, volumes, bin_path, halt_addr):
     if r.returncode != 0:
         return None, None
     output = r.stdout + r.stderr
-    # Parse DE register from trace — take the last occurrence of de=XXXX
-    # Format: "de=00FF," (4 hex digits, comma-separated in trace line)
+    # Parse registers from trace — take the last occurrence.
+    # Clang CRT: return value in HL (sdcccall convention), then HALT.
+    # z88dk CRT: return value in HL, then copied to DE before __Exit.
+    # We check both and prefer HL for clang, DE for z88dk.
     de = None
+    hl = None
     for m in re.finditer(r"de=([0-9a-fA-F]{4})", output):
         de = m.group(1).lower()
+    for m in re.finditer(r"hl=([0-9a-fA-F]{4})", output):
+        hl = m.group(1).lower()
     # T-states: z88dk-ticks prints the count as the last line (just a number)
     tstates = None
     lines = output.strip().splitlines()
@@ -222,7 +228,7 @@ def measure_tstates(image, volumes, bin_path, halt_addr):
         last = lines[-1].strip()
         if last.isdigit():
             tstates = int(last)
-    return tstates, de
+    return tstates, de, hl
 
 
 # ---------------------------------------------------------------------------
@@ -266,9 +272,9 @@ def compile_clang(program, name, do_asm=False):
     size = parse_clang_user_size(nm_output, size_output)
 
     # T-states
-    tstates, de = None, None
+    tstates, de, hl = None, None, None
     if halt:
-        tstates, de = measure_tstates(
+        tstates, de, hl = measure_tstates(
             cfg["docker_image"], vols,
             f"/work/output/{name}.clang.bin", halt)
 
@@ -282,6 +288,7 @@ def compile_clang(program, name, do_asm=False):
             with open(asm_path, "w") as f:
                 f.write(r.stdout)
 
+    # sdcccall(1): return value in DE
     return {"size": size, "tstates": tstates, "de": de, "correct": de is not None}
 
 
@@ -309,10 +316,10 @@ def compile_zsdcc(program, name, do_asm=False):
     halt = parse_zcc_map_halt(out_base + ".map")
 
     # T-states
-    tstates, de = None, None
+    tstates, de, hl = None, None, None
     bin_path = out_base + ".bin"
     if halt and os.path.exists(bin_path):
-        tstates, de = measure_tstates(
+        tstates, de, hl = measure_tstates(
             cfg["docker_image"], vols,
             f"/work/output/{zsdcc_base}.bin", halt)
 
@@ -323,6 +330,7 @@ def compile_zsdcc(program, name, do_asm=False):
                for s in cfg["asm_cmd"]]
         r = docker_run(cfg["docker_image"], vols, SCRIPT_DIR, cmd)
 
+    # z88dk CRT: copies return value from HL to DE before __Exit
     return {"size": size, "tstates": tstates, "de": de, "correct": de is not None}
 
 
