@@ -528,6 +528,83 @@ def gen_volatile(i):
 """
 
 # ----------------------------
+# Inline call (inlined add/sub)
+# ----------------------------
+def gen_inline_call(i):
+    a, b = u16(), u16()
+    op = random.choice(["add", "sub"])
+    if op == "add":
+        expected = (a + b) & 0xFFFF
+        return f"""
+    {{
+        uint16_t r = iadd2({a}, {b});
+        if (r != {expected}) failures++;
+    }}
+"""
+    else:
+        expected = (a - b) & 0xFFFF
+        return f"""
+    {{
+        uint16_t r = isub2({a}, {b});
+        if (r != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Inline nested (multiple inlined calls in one expression)
+# ----------------------------
+def gen_inline_nested(i):
+    a, b, c = u8(), u8(), u8()
+    # iadd2(iadd2(a,b), isub2(b,c))
+    inner1 = (a + b) & 0xFFFF
+    inner2 = (b - c) & 0xFFFF
+    expected = (inner1 + inner2) & 0xFFFF
+    return f"""
+    {{
+        uint16_t r = iadd2(iadd2({a},{b}), isub2({b},{c}));
+        if (r != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Mixed inline/noinline (stress register alloc at call boundaries)
+# ----------------------------
+def gen_mixed_inline(i):
+    a, b, c, d = u8(), u8(), u8(), u8()
+    # noinline add2(a,b) + inline iadd2(c,d)
+    expected = ((a + b) + (c + d)) & 0xFFFF
+    return f"""
+    {{
+        uint16_t r = add2({a},{b}) + iadd2({c},{d});
+        if (r != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
+# Inline max/abs (conditional inlined)
+# ----------------------------
+def gen_inline_cond(i):
+    op = random.choice(["max", "abs"])
+    if op == "max":
+        a, b = u8(), u8()
+        expected = max(a, b)
+        return f"""
+    {{
+        uint8_t r = imax8({a}, {b});
+        if (r != {expected}) failures++;
+    }}
+"""
+    else:
+        v = random.randint(-32768, 32767)
+        expected = abs(v) & 0xFFFF
+        return f"""
+    {{
+        uint16_t r = iabs16({v});
+        if (r != {expected}) failures++;
+    }}
+"""
+
+# ----------------------------
 # File generator
 # ----------------------------
 def gen_file(idx, ntests, extra_flags="", skip_if=""):
@@ -564,6 +641,14 @@ static volatile uint16_t g16;
 
 __attribute__((noinline))
 uint16_t read_g16(void) { return g16; }
+
+/* Inline-eligible helpers — same operations without noinline.
+   The compiler may inline these, testing register allocation across
+   inlined code vs the noinline variants above. */
+static uint16_t iadd2(uint16_t a, uint16_t b) { return a + b; }
+static uint16_t isub2(uint16_t a, uint16_t b) { return a - b; }
+static uint8_t imax8(uint8_t a, uint8_t b) { return a > b ? a : b; }
+static uint16_t iabs16(int16_t x) { return x < 0 ? -x : x; }
 """)
 
     out.append("int main(void) {")
@@ -597,6 +682,10 @@ uint16_t read_g16(void) { return g16; }
         gen_funcptr,
         gen_cmp16,
         gen_volatile,
+        gen_inline_call,
+        gen_inline_nested,
+        gen_mixed_inline,
+        gen_inline_cond,
     ]
 
     for i in range(ntests):

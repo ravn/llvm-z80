@@ -1182,10 +1182,19 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     }
     if (Opc == Z80::SPILL_IMM8) {
       // Store immediate to BSS: LD A,imm; LD (addr),A = 5B
+      // Must save/restore A if it's live — the SPILL_IMM8 pseudo has no
+      // implicit-def of A (correct for IX-indexed LD (IX+d),n expansion),
+      // so the register allocator may have placed a live value in A.
       int64_t Val = MI->getOperand(0).getImm();
+      bool NeedSaveA =
+          isRegLiveAt(Z80::A, MBB, std::next(MI->getIterator()), this);
+      if (NeedSaveA)
+        BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_AF));
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_n)).addImm(Val);
       auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A));
       addBSSAddr(MIB);
+      if (NeedSaveA)
+        BuildMI(MBB, MI, DL, TII.get(Z80::POP_AF));
       MI->eraseFromParent();
       return false;
     }
