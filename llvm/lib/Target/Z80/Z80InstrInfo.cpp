@@ -270,18 +270,17 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     Register SrcLo = TRI->getSubReg(SrcReg, Z80::sub_lo);
     Register SrcHi = TRI->getSubReg(SrcReg, Z80::sub_hi);
     if (DstLo && DstHi && SrcLo && SrcHi) {
-      // Without +undocumented, skip 8-bit LD for IX/IY sub-registers
-      // (IXH/IXL/IYH/IYL ops are undocumented).  Fall through to PUSH/POP.
-      bool NeedsUndoc = Z80::IR16RegClass.contains(DestReg) ||
-                         Z80::IR16RegClass.contains(SrcReg);
-      if (!NeedsUndoc || STI->hasUndocumented()) {
-        unsigned LoOp = Z80::getLD8RegOpcode(DstLo, SrcLo);
-        unsigned HiOp = Z80::getLD8RegOpcode(DstHi, SrcHi);
-        if (LoOp && HiOp) {
-          BuildMI(MBB, I, DL, get(LoOp));
-          BuildMI(MBB, I, DL, get(HiOp));
-          return;
-        }
+      // Always use 8-bit LD for IX/IY↔GR16 copies (even without
+      // +undocumented) because the PUSH/POP fallback modifies SP, breaking
+      // SP-relative addressing in functions without a frame pointer.
+      // The undocumented IXH/IXL/IYH/IYL LD opcodes work on all real Z80
+      // hardware and are supported by MAME.  See #32.
+      unsigned LoOp = Z80::getLD8RegOpcode(DstLo, SrcLo);
+      unsigned HiOp = Z80::getLD8RegOpcode(DstHi, SrcHi);
+      if (LoOp && HiOp) {
+        BuildMI(MBB, I, DL, get(LoOp));
+        BuildMI(MBB, I, DL, get(HiOp));
+        return;
       }
     }
   }
@@ -383,8 +382,9 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
 
   // Handle 8-bit copies FROM IXH/IXL/IYH/IYL to a GR8 register.
-  // These are undocumented Z80 registers (DD/FD-prefixed H/L opcodes).
-  // Route through PUSH IX/IY; POP HL to extract the byte.
+  // Try direct undocumented LD first (LD dest,IXL etc.) — avoids SP
+  // modification from PUSH/POP which breaks SP-relative addressing (#32).
+  // Fall through to PUSH/POP only for H,L destinations (no direct opcode).
   {
     bool SrcIsIXH = (SrcReg == Z80::IXH), SrcIsIXL = (SrcReg == Z80::IXL);
     bool SrcIsIYH = (SrcReg == Z80::IYH), SrcIsIYL = (SrcReg == Z80::IYL);
@@ -392,6 +392,14 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     bool SrcIsIndexLo = SrcIsIXL || SrcIsIYL;
 
     if ((SrcIsIndexHi || SrcIsIndexLo) && Z80::GR8RegClass.contains(DestReg)) {
+      // Try direct undocumented LD (works for A,B,C,D,E but not H,L)
+      unsigned DirectOp = Z80::getLD8RegOpcode(DestReg, SrcReg);
+      if (DirectOp) {
+        BuildMI(MBB, I, DL, get(DirectOp));
+        return;
+      }
+
+      // Fall back to PUSH/POP for H,L destinations (no direct IX→H/L opcode)
       unsigned PushOp = (SrcIsIXH || SrcIsIXL) ? Z80::PUSH_IX : Z80::PUSH_IY;
       Register ExtractReg = SrcIsIndexHi ? Z80::H : Z80::L;
 
@@ -430,7 +438,8 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
   }
 
   // Handle 8-bit copies TO IXH/IXL/IYH/IYL from a GR8 register.
-  // Route through HL: save HL, PUSH IX/IY; POP HL, modify, PUSH HL; POP IX/IY.
+  // Try direct undocumented LD first (LD IXL,src etc.) — avoids SP
+  // modification from PUSH/POP which breaks SP-relative addressing (#32).
   {
     bool DstIsIXH = (DestReg == Z80::IXH), DstIsIXL = (DestReg == Z80::IXL);
     bool DstIsIYH = (DestReg == Z80::IYH), DstIsIYL = (DestReg == Z80::IYL);
@@ -438,6 +447,14 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     bool DstIsIndexLo = DstIsIXL || DstIsIYL;
 
     if ((DstIsIndexHi || DstIsIndexLo) && Z80::GR8RegClass.contains(SrcReg)) {
+      // Try direct undocumented LD (works for A,B,C,D,E but not H,L)
+      unsigned DirectOp = Z80::getLD8RegOpcode(DestReg, SrcReg);
+      if (DirectOp) {
+        BuildMI(MBB, I, DL, get(DirectOp));
+        return;
+      }
+
+      // Fall back to PUSH/POP for H,L sources (no direct H/L→IX opcode)
       unsigned PushIR = (DstIsIXH || DstIsIXL) ? Z80::PUSH_IX : Z80::PUSH_IY;
       unsigned PopIR = (DstIsIXH || DstIsIXL) ? Z80::POP_IX : Z80::POP_IY;
       Register TargetReg = DstIsIndexHi ? Z80::H : Z80::L;
