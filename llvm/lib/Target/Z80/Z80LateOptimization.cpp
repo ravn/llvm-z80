@@ -853,6 +853,101 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
+    // --- Peephole: LD r,A; LD A,r2; ALU r → ALU r2 ---
+    // When the register allocator routes a commutative ALU operation through
+    // a temp register (LD E,A; LD A,D; OR E → OR D), eliminate the detour.
+    // Saves 2 bytes per instance.
+    {
+      // Map ALU opcode → register it operates on (0 = not a commutative ALU op)
+      auto getALUReg = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::OR_B: case Z80::AND_B: case Z80::XOR_B: return Z80::B;
+        case Z80::OR_C: case Z80::AND_C: case Z80::XOR_C: return Z80::C;
+        case Z80::OR_D: case Z80::AND_D: case Z80::XOR_D: return Z80::D;
+        case Z80::OR_E: case Z80::AND_E: case Z80::XOR_E: return Z80::E;
+        case Z80::OR_H: case Z80::AND_H: case Z80::XOR_H: return Z80::H;
+        case Z80::OR_L: case Z80::AND_L: case Z80::XOR_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      // Get the same ALU op but with a different register
+      auto getALUWithReg = [](unsigned Opc, MCPhysReg R) -> unsigned {
+        // Determine ALU group
+        unsigned Base;
+        switch (Opc) {
+        case Z80::OR_B: case Z80::OR_C: case Z80::OR_D:
+        case Z80::OR_E: case Z80::OR_H: case Z80::OR_L: Base = 0; break;
+        case Z80::AND_B: case Z80::AND_C: case Z80::AND_D:
+        case Z80::AND_E: case Z80::AND_H: case Z80::AND_L: Base = 1; break;
+        case Z80::XOR_B: case Z80::XOR_C: case Z80::XOR_D:
+        case Z80::XOR_E: case Z80::XOR_H: case Z80::XOR_L: Base = 2; break;
+        default: return 0;
+        }
+        static const unsigned Ops[3][6] = {
+            {Z80::OR_B,  Z80::OR_C,  Z80::OR_D,  Z80::OR_E,  Z80::OR_H,  Z80::OR_L},
+            {Z80::AND_B, Z80::AND_C, Z80::AND_D, Z80::AND_E, Z80::AND_H, Z80::AND_L},
+            {Z80::XOR_B, Z80::XOR_C, Z80::XOR_D, Z80::XOR_E, Z80::XOR_H, Z80::XOR_L},
+        };
+        switch (R) {
+        case Z80::B: return Ops[Base][0]; case Z80::C: return Ops[Base][1];
+        case Z80::D: return Ops[Base][2]; case Z80::E: return Ops[Base][3];
+        case Z80::H: return Ops[Base][4]; case Z80::L: return Ops[Base][5];
+        default: return 0;
+        }
+      };
+      // Get source register from LD A,r opcode
+      auto getLDAsrc = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+        case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+        case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      // Get dest register from LD r,A opcode
+      auto getLDrAdst = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      SmallVector<MachineInstr *, 8> ToErase2;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        // Match: LD r,A
+        MCPhysReg TempReg = getLDrAdst(MII->getOpcode());
+        if (!TempReg) continue;
+        // Skip KILLs to LD A,r2
+        auto It = std::next(MII);
+        while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
+        if (It == MIE) continue;
+        MCPhysReg SrcReg = getLDAsrc(It->getOpcode());
+        if (!SrcReg || SrcReg == TempReg) continue;
+        auto LdA = It;
+        // Skip KILLs to ALU TempReg
+        ++It;
+        while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
+        if (It == MIE) continue;
+        MCPhysReg AluReg = getALUReg(It->getOpcode());
+        if (AluReg != TempReg) continue;
+        unsigned NewOpc = getALUWithReg(It->getOpcode(), SrcReg);
+        if (!NewOpc) continue;
+        LLVM_DEBUG(dbgs() << "  Commutative ALU shortcut: "
+                          << TII->getName(MII->getOpcode()) << "; "
+                          << TII->getName(LdA->getOpcode()) << "; "
+                          << TII->getName(It->getOpcode()) << " → "
+                          << TII->getName(NewOpc) << "\n");
+        BuildMI(MBB, *It, It->getDebugLoc(), TII->get(NewOpc));
+        ToErase2.push_back(&*MII);
+        ToErase2.push_back(&*LdA);
+        ToErase2.push_back(&*It);
+        Changed = true;
+      }
+      for (auto *MI : ToErase2)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: LD L,H; LD H,0; LD A,L → LD A,H ---
     // When extracting the high byte of HL into A, the compiler sometimes
     // routes through L (LD L,H; LD H,0; LD A,L) instead of directly (LD A,H).
