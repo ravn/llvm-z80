@@ -183,7 +183,7 @@ def gen_file(idx, ntests):
     out = []
 
     out.append("/* Z80 edge-case test (auto-generated) */")
-    out.append("/* expect: 0x0000 */")
+    out.append("/* expect 0x0000 */")
     out.append("")
     out.append("typedef unsigned char uint8_t;")
     out.append("typedef signed char int8_t;")
@@ -227,21 +227,27 @@ uint16_t call6(uint16_t a,uint16_t b,uint16_t c,
 # MAIN
 # ----------------------------
 def main():
-    if len(sys.argv) != 4:
-        print("usage: gen_z80_full.py <files> <tests_per_file> <seed>")
-        return
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate Z80 edge-case tests")
+    parser.add_argument("files", type=int, help="Number of files to generate")
+    parser.add_argument("tests", type=int, help="Tests per file")
+    parser.add_argument("seed", type=int, help="Random seed")
+    parser.add_argument("--outdir", default=".", help="Output directory")
+    parser.add_argument("--prefix", default="z80_edge_", help="Filename prefix")
+    args = parser.parse_args()
 
-    files = int(sys.argv[1])
-    tests = int(sys.argv[2])
-    seed = int(sys.argv[3])
+    random.seed(args.seed)
 
-    random.seed(seed)
+    import os
+    os.makedirs(args.outdir, exist_ok=True)
 
-    for i in range(files):
-        with open(f"z80_edge_{i:04d}.c", "w") as f:
-            f.write(gen_file(i, tests))
+    for i in range(args.files):
+        path = os.path.join(args.outdir, f"{args.prefix}{i:04d}.c")
+        with open(path, "w") as f:
+            f.write(gen_file(i, args.tests))
 
-    print(f"Generated {files} files with {tests} tests each (seed={seed})")
+    print(f"Generated {args.files} files with {args.tests} tests each "
+          f"(seed={args.seed}, dir={args.outdir})")
 
 if __name__ == "__main__":
     main()

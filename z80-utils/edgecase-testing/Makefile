@@ -1,6 +1,6 @@
 GEN = ./gen_z80_full.py
 FILES = 25
-TESTS = 60
+TESTS = 1000
 SEED = 123
 
 # LLVM-Z80 cross-compiler + z88dk-ticks (Docker)
@@ -12,12 +12,21 @@ NM = /src/build/bin/llvm-nm
 
 CFLAGS = --target=z80 -Os
 
-.PHONY: all gen build run clean
+SUITE_DIR = ../test-runner/testcases/clang
+
+.PHONY: all gen build run clean gen-suite clean-suite
 
 all: gen build run
 
 gen:
 	python3 $(GEN) $(FILES) $(TESTS) $(SEED)
+
+# Generate into the clang test suite (picked up by `cargo run -- clang`)
+gen-suite:
+	python3 $(GEN) $(FILES) $(TESTS) $(SEED) --outdir $(SUITE_DIR) --prefix test_90_edge_
+
+clean-suite:
+	rm -f $(SUITE_DIR)/test_90_edge_*.c
 
 build:
 	@ok=0; fail=0; \
