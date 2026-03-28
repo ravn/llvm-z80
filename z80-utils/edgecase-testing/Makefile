@@ -21,12 +21,19 @@ all: gen build run
 gen:
 	python3 $(GEN) $(FILES) $(TESTS) $(SEED)
 
+PROM_FLAGS = -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr
+
 # Generate into the clang test suite (picked up by `cargo run -- clang`)
+# Two variants: plain (default flags) and prom (static-stack + shadow-regs)
 gen-suite:
-	python3 $(GEN) $(FILES) $(TESTS) $(SEED) --outdir $(SUITE_DIR) --prefix test_90_edge_
+	python3 $(GEN) $(FILES) $(TESTS) $(SEED) \
+		--outdir $(SUITE_DIR) --prefix test_90_edge_
+	python3 $(GEN) $(FILES) $(TESTS) $(SEED) \
+		--outdir $(SUITE_DIR) --prefix test_91_edge_prom_ \
+		--extra-flags "$(PROM_FLAGS)"
 
 clean-suite:
-	rm -f $(SUITE_DIR)/test_90_edge_*.c
+	rm -f $(SUITE_DIR)/test_90_edge_*.c $(SUITE_DIR)/test_91_edge_prom_*.c
 
 build:
 	@ok=0; fail=0; \

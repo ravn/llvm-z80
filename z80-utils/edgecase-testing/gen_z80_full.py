@@ -179,11 +179,13 @@ def gen_expr_test(i):
 # ----------------------------
 # File generator
 # ----------------------------
-def gen_file(idx, ntests):
+def gen_file(idx, ntests, extra_flags=""):
     out = []
 
     out.append("/* Z80 edge-case test (auto-generated) */")
     out.append("/* expect 0x0000 */")
+    if extra_flags:
+        out.append(f"/* EXTRA-FLAGS: {extra_flags} */")
     out.append("")
     out.append("typedef unsigned char uint8_t;")
     out.append("typedef signed char int8_t;")
@@ -234,6 +236,7 @@ def main():
     parser.add_argument("seed", type=int, help="Random seed")
     parser.add_argument("--outdir", default=".", help="Output directory")
     parser.add_argument("--prefix", default="z80_edge_", help="Filename prefix")
+    parser.add_argument("--extra-flags", default="", help="EXTRA-FLAGS directive for test runner")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -244,7 +247,7 @@ def main():
     for i in range(args.files):
         path = os.path.join(args.outdir, f"{args.prefix}{i:04d}.c")
         with open(path, "w") as f:
-            f.write(gen_file(i, args.tests))
+            f.write(gen_file(i, args.tests, args.extra_flags))
 
     print(f"Generated {args.files} files with {args.tests} tests each "
           f"(seed={args.seed}, dir={args.outdir})")
