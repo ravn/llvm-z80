@@ -220,7 +220,7 @@ def gen_loop_for(i):
     return f"""
     {{
         uint16_t sum = 0;
-        for (uint16_t j = 0; j < {n}; j += {step}) sum += j;
+        for (j = 0; j < {n}; j += {step}) sum += j;
         if (sum != {expected}) failures++;
     }}
 """
@@ -411,7 +411,7 @@ def gen_memcpy(i):
     {{
         uint8_t src[{n}] = {{{init}}};
         uint8_t dst[{n}];
-        for (uint8_t j = 0; j < {n}; j++) dst[j] = src[j];
+        for (j = 0; j < {n}; j++) dst[j] = src[j];
         if (dst[{idx}] != {expected}) failures++;
     }}
 """
@@ -423,7 +423,7 @@ def gen_memset(i):
     return f"""
     {{
         uint8_t buf[{n}];
-        for (uint8_t j = 0; j < {n}; j++) buf[j] = {val};
+        for (j = 0; j < {n}; j++) buf[j] = {val};
         if (buf[{n - 1}] != {val}) failures++;
     }}
 """
@@ -660,6 +660,7 @@ static uint16_t iabs16(int16_t x) { return x < 0 ? -x : x; }
 
     out.append("int main(void) {")
     out.append("    int failures = 0;")
+    out.append("    uint16_t j;  /* loop variable — declared here for zsdcc C scoping compat */")
 
     generators = [
         gen_hl_alias,
@@ -808,6 +809,7 @@ static uint16_t iabs16(int16_t x) { return x < 0 ? -x : x; }
 """)
             out.append("int main(void) {")
             out.append("    int failures = 0;")
+            out.append("    uint16_t j;  /* loop variable — zsdcc compat */")
             out.append(gen(0))
             out.append("    return failures;")
             out.append("}")
