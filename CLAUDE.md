@@ -237,7 +237,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - **HL hint for 16-bit loop counters** (issue #17): Parked — the 16-bit INC+NZ peephole already converts `LD HL,1; ADD HL,rr; SBC A,A; ...` to `INC rr; LD A,hi; OR lo; JR NZ` (5B). Zero instances remain in PROM. The HL hint would be a structural improvement (cleaner ISel) but has identical output.
 - **Undocumented instructions without +undocumented** (issue #13): FIXED. IY reserved without +undocumented; copyPhysReg falls through to PUSH/POP for IX/IY copies. PROM has zero undocumented instructions.
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
-- **i1 bit test materialization**: `(val & 0x80) != 0` returning `i1` generates a 13-byte XOR/CP sequence instead of 3B (RLCA+AND 1). GlobalISel's i1 legalization doesn't recognize bit test patterns. Branch cases and i8 materialization are already optimal. Low priority (C uses int/i8 for booleans, not i1).
+- **i1 bit test materialization** (was 13B, now 3-5B): `(val & 0x80) != 0` returning `i1` was generating a 13-byte XOR/CP sequence because the Legalizer transforms it to `icmp slt val, 0` and ISel's SLT materialization used generic XOR 0x80 + CP. Fixed: ISel now detects SLT/SGE against 0 and SGT/SLE against -1 in 8-bit materialization, uses RLCA; AND 1 (3B) or RLCA; AND 1; XOR 1 (5B).
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
 SDCC: 1912 bytes, Clang: 1872 bytes (40B / 2.1% smaller). Historical root causes (mostly fixed):

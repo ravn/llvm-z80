@@ -3512,6 +3512,47 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         bool InvertC = (Pred == CmpInst::ICMP_SGE || Pred == CmpInst::ICMP_SLE);
         Register CmpLHS = SwapOps ? RHS : LHS;
         Register CmpRHS = SwapOps ? LHS : RHS;
+
+        // Special case: sign bit test via RLCA.
+        // RLCA rotates bit 7 into bit 0.  AND 1 isolates it.
+        // SLT X, 0:  CmpLHS=X, CmpRHS=0,  result=bit7(X)       → 3B
+        // SGE X, 0:  CmpLHS=X, CmpRHS=0,  result=!bit7(X)      → 5B
+        // SGT X, -1: CmpLHS=-1, CmpRHS=X, result=!bit7(X)      → 5B
+        // SLE X, -1: CmpLHS=-1, CmpRHS=X, result=bit7(X)       → 3B
+        // vs generic XOR 0x80 + CP path = 13B.
+        {
+          auto getConst = [&](Register Reg) -> std::optional<int64_t> {
+            MachineInstr *Def = MRI.getVRegDef(Reg);
+            if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+              return Def->getOperand(1).getCImm()->getSExtValue();
+            return std::nullopt;
+          };
+          auto LHSVal = getConst(CmpLHS);
+          auto RHSVal = getConst(CmpRHS);
+          Register SignSrc;
+          bool NeedInvert = false;
+          if (RHSVal && *RHSVal == 0) {
+            SignSrc = CmpLHS;
+            NeedInvert = InvertC;
+          } else if (LHSVal && (*LHSVal & 0xFF) == 0xFF) {
+            SignSrc = CmpRHS;
+            NeedInvert = !InvertC;
+          }
+          if (SignSrc.isValid()) {
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    Z80::A)
+                .addReg(SignSrc);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::RLCA));
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+            if (NeedInvert)
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n))
+                  .addImm(1);
+            break;
+          }
+        }
+
+        // Generic signed comparison: XOR both operands with 0x80 to convert
+        // to unsigned, then use CP + SBC A,A to materialize result.
         // ModLHS = CmpLHS ^ 0x80
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(CmpLHS);

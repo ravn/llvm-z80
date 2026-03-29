@@ -240,17 +240,29 @@ no:
 }
 
 ; ==========================================================================
-; Known edge case: i1 return of bit test generates XOR/CP sequence
-; GlobalISel's i1 legalization doesn't recognize the bit test pattern.
-; This is rare in practice (C uses i8/int for booleans, not i1).
-; TODO: teach ISel to recognize (and i8, pow2) + (icmp ne, 0) as bit test
+; i1 bit test materialization: (val & 0x80) != 0 as i1
+; Legalizer transforms this to icmp slt val, 0.  ISel uses RLCA; AND 1.
 ; ==========================================================================
 
 define i1 @bit7_i1_return(i8 %val) {
 ; CHECK-LABEL: _bit7_i1_return:
-; CHECK:       xor
+; CHECK:       rlca
+; CHECK-NEXT:  and	#1
+; CHECK-NEXT:  ret
   %t = and i8 %val, 128
   %c = icmp ne i8 %t, 0
+  ret i1 %c
+}
+
+; i1 non-negative test: (val & 0x80) == 0 as i1
+define i1 @bit7_i1_nonneg(i8 %val) {
+; CHECK-LABEL: _bit7_i1_nonneg:
+; CHECK:       rlca
+; CHECK-NEXT:  and	#1
+; CHECK-NEXT:  xor	#1
+; CHECK-NEXT:  ret
+  %t = and i8 %val, 128
+  %c = icmp eq i8 %t, 0
   ret i1 %c
 }
 
