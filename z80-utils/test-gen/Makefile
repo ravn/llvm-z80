@@ -16,6 +16,7 @@ NM = /src/build/bin/llvm-nm
 CLANG_FLAGS = --target=z80 -Os
 SDCC_FLAGS = +z80 -compiler=sdcc -SO3 --opt-code-size --no-crt --std-c11
 SDCC_CRT = sdcc_crt.asm
+TICKS_FLAGS = -mz80 -iochar 1
 
 SUITE_DIR = ../test-runner/testcases/clang
 
@@ -93,7 +94,7 @@ run-clang:
 			error=$$((error + 1)); \
 			continue; \
 		fi; \
-		de=$$($(DOCKER_TEST) z88dk-ticks -mz80 -trace -end 0x$$halt $${base}_clang.bin 2>/dev/null \
+		de=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -trace -end 0x$$halt $${base}_clang.bin 2>/dev/null \
 			| grep -oE 'de=[0-9a-f]+' | tail -1); \
 		if [ "$$de" = "de=0000" ]; then \
 			pass=$$((pass + 1)); \
@@ -110,7 +111,7 @@ run-sdcc:
 	for f in *_sdcc.bin; do \
 		[ -f "$$f" ] || continue; \
 		base=$${f%_sdcc.bin}; \
-		hl=$$($(DOCKER_TEST) z88dk-ticks -mz80 -trace -end 3 $${base}_sdcc.bin 2>/dev/null \
+		hl=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -trace -end 3 $${base}_sdcc.bin 2>/dev/null \
 			| grep -oE '  hl=[0-9a-f]+' | tail -1 | tr -d ' '); \
 		if [ "$$hl" = "hl=0000" ]; then \
 			pass=$$((pass + 1)); \
@@ -141,8 +142,8 @@ compare: build-clang build-sdcc run-clang run-sdcc
 		sc=$$(wc -c < $${base}_clang.bin 2>/dev/null); \
 		ss=$$(wc -c < $$sf 2>/dev/null); \
 		halt=$$($(DOCKER_TEST) $(NM) $$f 2>/dev/null | awk '/_halt$$/ {print $$1}'); \
-		ct=$$($(DOCKER_TEST) z88dk-ticks -mz80 -end 0x$$halt $${base}_clang.bin 2>/dev/null | tail -1 | tr -d ' '); \
-		st=$$($(DOCKER_TEST) z88dk-ticks -mz80 -end 3 $${base}_sdcc.bin 2>/dev/null | tail -1 | tr -d ' '); \
+		ct=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -end 0x$$halt $${base}_clang.bin 2>/dev/null | tail -1 | tr -d ' '); \
+		st=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -end 3 $${base}_sdcc.bin 2>/dev/null | tail -1 | tr -d ' '); \
 		sd=$$((sc - ss)); td=$$((ct - st)); \
 		tc=$$((tc + sc)); ts=$$((ts + ss)); \
 		tt_c=$$((tt_c + ct)); tt_s=$$((tt_s + st)); \
