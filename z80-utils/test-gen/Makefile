@@ -128,25 +128,33 @@ run-sdcc:
 
 compare: build-clang build-sdcc run-clang run-sdcc
 	@echo ""; \
-	printf "%-30s %7s %7s %6s\n" "Test" "Clang" "SDCC" "Delta"; \
-	printf "%-30s %7s %7s %6s\n" "----" "-----" "----" "-----"; \
-	tc=0; ts=0; \
-	for f in *_clang.bin; do \
+	printf "%-25s %7s %7s %6s | %9s %9s %8s\n" \
+		"Test" "Clang" "SDCC" "Size" "Clang" "SDCC" "T-cyc"; \
+	printf "%-25s %7s %7s %6s | %9s %9s %8s\n" \
+		"----" "-----" "----" "-----" "-----" "----" "-----"; \
+	tc=0; ts=0; tt_c=0; tt_s=0; \
+	for f in *_clang.elf; do \
 		[ -f "$$f" ] || continue; \
-		base=$${f%_clang.bin}; \
-		sc=$$(wc -c < $$f 2>/dev/null); \
+		base=$${f%_clang.elf}; \
 		sf=$${base}_sdcc.bin; \
-		if [ -f "$$sf" ]; then \
-			ss=$$(wc -c < $$sf 2>/dev/null); \
-			printf "%-30s %6dB %6dB %+5dB\n" "$$base" "$$sc" "$$ss" "$$((sc - ss))"; \
-			tc=$$((tc + sc)); ts=$$((ts + ss)); \
-		else \
-			printf "%-30s %6dB %7s\n" "$$base" "$$sc" "n/a"; \
-			tc=$$((tc + sc)); \
-		fi; \
+		[ -f "$$sf" ] || continue; \
+		sc=$$(wc -c < $${base}_clang.bin 2>/dev/null); \
+		ss=$$(wc -c < $$sf 2>/dev/null); \
+		halt=$$($(DOCKER_TEST) $(NM) $$f 2>/dev/null | awk '/_halt$$/ {print $$1}'); \
+		ct=$$($(DOCKER_TEST) z88dk-ticks -mz80 -end 0x$$halt $${base}_clang.bin 2>/dev/null | tail -1 | tr -d ' '); \
+		st=$$($(DOCKER_TEST) z88dk-ticks -mz80 -end 3 $${base}_sdcc.bin 2>/dev/null | tail -1 | tr -d ' '); \
+		sd=$$((sc - ss)); td=$$((ct - st)); \
+		tc=$$((tc + sc)); ts=$$((ts + ss)); \
+		tt_c=$$((tt_c + ct)); tt_s=$$((tt_s + st)); \
+		szf=""; [ $$sd -gt 0 ] && szf="<<"; \
+		tf=""; [ $$td -gt 0 ] && tf="<<"; \
+		printf "%-25s %6dB %6dB %+5dB%s| %8dT %8dT %+7dT%s\n" \
+			"$$base" "$$sc" "$$ss" "$$sd" "$$szf" "$$ct" "$$st" "$$td" "$$tf"; \
 	done; \
-	printf "%-30s %7s %7s %6s\n" "----" "-----" "----" "-----"; \
-	printf "%-30s %6dB %6dB %+5dB\n" "TOTAL" "$$tc" "$$ts" "$$((tc - ts))"
+	printf "%-25s %7s %7s %6s | %9s %9s %8s\n" \
+		"----" "-----" "----" "-----" "-----" "----" "-----"; \
+	printf "%-25s %6dB %6dB %+5dB | %8dT %8dT %+7dT\n" \
+		"TOTAL" "$$tc" "$$ts" "$$((tc - ts))" "$$tt_c" "$$tt_s" "$$((tt_c - tt_s))"
 
 # --- Clean ---
 
