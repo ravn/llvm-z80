@@ -294,6 +294,17 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
        Z80::IR16RegClass.contains(DestReg)) &&
       (Z80::GR16RegClass.contains(SrcReg) ||
        Z80::IR16RegClass.contains(SrcReg))) {
+    // When IX/IY is involved without +undocumented, use COPY16_PUSHPOP pseudo
+    // to keep the PUSH/POP as a single MI.  This prevents optimization passes
+    // from inserting between them, avoiding SP corruption (issue #32).
+    // The pseudo expands to adjacent PUSH/POP in Z80ExpandPseudo.
+    if (!STI->hasUndocumented() &&
+        (Z80::IR16RegClass.contains(DestReg) ||
+         Z80::IR16RegClass.contains(SrcReg))) {
+      BuildMI(MBB, I, DL, get(Z80::COPY16_PUSHPOP), DestReg)
+          .addReg(SrcReg, getKillRegState(KillSrc));
+      return;
+    }
     unsigned PushOp = getPUSHOpcode(SrcReg);
     unsigned PopOp = getPOPOpcode(DestReg);
     if (PushOp && PopOp) {
@@ -1960,6 +1971,17 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     case Z80::SMOD16: return IsSM83 ? 78 : 64;
     default: break;
     }
+  }
+
+  // COPY16_PUSHPOP expands to PUSH src (1-2B) + POP dst (1-2B).
+  // PUSH/POP GR16 = 1B each, PUSH/POP IX/IY = 2B each (DD/FD prefix).
+  if (Opcode == Z80::COPY16_PUSHPOP) {
+    Register Src = MI.getOperand(1).getReg();
+    Register Dst = MI.getOperand(0).getReg();
+    unsigned Size = 0;
+    Size += Z80::IR16RegClass.contains(Src) ? 2 : 1; // PUSH
+    Size += Z80::IR16RegClass.contains(Dst) ? 2 : 1; // POP
+    return Size;
   }
 
   // Handle pseudo-instructions that have no encoding

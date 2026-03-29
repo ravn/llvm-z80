@@ -135,6 +135,18 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
         Modified |= expandSatArith8(MBB, Inst, TII);
         MI = MBB.end();
         break;
+      case Z80::COPY16_PUSHPOP: {
+        // Expand to adjacent PUSH src; POP dst.  Runs after all optimization
+        // passes so nothing can insert between them (issue #32).
+        Register Dst = Inst.getOperand(0).getReg();
+        Register Src = Inst.getOperand(1).getReg();
+        DebugLoc DL = Inst.getDebugLoc();
+        BuildMI(MBB, Inst, DL, TII.get(Z80::getPushOpcode(Src)));
+        BuildMI(MBB, Inst, DL, TII.get(Z80::getPopOpcode(Dst)));
+        Inst.eraseFromParent();
+        Modified = true;
+        break;
+      }
       default:
         break;
       }

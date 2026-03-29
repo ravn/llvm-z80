@@ -180,7 +180,7 @@ docker run --rm -v ~/z80/llvm-z80:/src \
 - BC last in 16-bit allocation order
 - Conditional RET (branch-over-RET pattern)
 - IX/IY allocatable as general 16-bit registers (see below)
-- Undocumented LD for IX/IY→GR16 copies (4B, SP-safe — PUSH/POP is 3B but corrupts SP-relative addressing)
+- COPY16_PUSHPOP pseudo for IX/IY→GR16 copies (3B documented PUSH/POP, SP-safe via single-MI expansion in Z80ExpandPseudo after optimization passes)
 - Register allocation hints: DE/BC preferred for ADD/SUB HL,rr operands (avoids IX/IY)
 - CostPerUse: IX=1, IY=2 (IY higher because it's never FP, so allocator picks it freely; extra cost discourages low-pressure use)
 - Post-RA peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr
@@ -209,7 +209,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - All pseudo expansions handle IX/IY sub-registers (IXH/IXL/IYH/IYL)
 - MAME fully supports all undocumented Z80 instructions — safe for testing
 - Verified: CP/M boots in MAME with IX/IY-allocatable clang-built PROM
-- **IX/IY copy preference**: `PUSH IX; POP DE` (3B, documented) preferred over `LD E,IXL; LD D,IXH` (4B, undocumented) for 16-bit IX/IY→GR16 register copies
+- **IX/IY copy preference**: `COPY16_PUSHPOP` pseudo (3B, documented PUSH/POP) for IX/IY copies without `+undocumented`. With `+undocumented`, uses `LD E,IXL; LD D,IXH` (4B, undocumented LD via 8-bit path)
 - **Asymmetry**: `ADD IX,rr` exists (rr=BC/DE/IX/SP) but `ADD HL,IX` does not. Values used as ADD HL,rr operands are hinted to DE/BC to avoid costly IX/IY extraction
 - **EX (SP),IX/IY** (2B): swaps IX/IY with top-of-stack. `PUSH HL; EX (SP),IX; POP DE` moves HL→IX and IX→DE simultaneously (4B). Useful for transferring a running sum into IX for `ADD IX,rr` accumulation
 - **ADD IX/IY peephole**: post-RA pattern `PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX` → `ADD IX,rr` (saves 6-8B). Also handles `ADD IX,IX` (left shift)
@@ -239,7 +239,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - **PUSH/POP for IY copies crashes when IY is allocatable** (issue #14): Using PUSH/POP instead of undocumented LD for IY copies changes code layout enough to trigger a latent regalloc bug ('y' screen crash). Workaround: reserve IY without +undocumented.
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1912 bytes, Clang: 1906 bytes (6B / 0.3% smaller). Verified: boots CP/M in MAME. Historical root causes (mostly fixed):
+SDCC: 1912 bytes, Clang: 1872 bytes (40B / 2.1% smaller). Historical root causes (mostly fixed):
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **BSS correctness fix** (+60B): Fixed bug where SPILL/RELOAD_GR16 in expandPostRAPseudo used direct BSS addressing for stack arguments (wrong address). Now correctly uses IX-indexed (6B vs 3-4B per access). Recovery requires mixed-mode BSS (direct for locals, IX for stack args).
 3. **IY prefix overhead** (~35B): FD-prefixed instructions. CostPerUse=2 doesn't help because spilling is worse.
@@ -251,7 +251,7 @@ Boot section optimized: `start()` at address 0x0000 (no JP indirection), unified
 
 Top 3 worst functions: fdc_read_data (+95B), check_sysfile (+59B), lookup_sectors (+54B). Optimization plan in `glowing-bouncing-dream.md`.
 
-**PUSH/POP for IX/IY copies corrupts SP**: Using `PUSH IX; POP DE` (3B) instead of `LD E,IXL; LD D,IXH` (4B) saves 1 byte but modifies SP, breaking SP-relative addressing in surrounding code. Always use undocumented LD for IX/IY extraction in `copyPhysReg`.
+**PUSH/POP for IX/IY copies** (issue #32): FIXED. `copyPhysReg` now emits `COPY16_PUSHPOP` pseudo (single MI) instead of raw `PUSH IX; POP DE` for IX/IY copies without `+undocumented`. The pseudo expands to adjacent PUSH/POP in `Z80ExpandPseudo` (after all optimization passes), preventing passes from inserting between them. Documented instructions only, no +undocumented required. LateOptimization peepholes (IX constant propagation, ADD IX, IX transfer) updated to match the pseudo.
 
 ### Bug Reports
 File bugs in `ravn/llvm-z80` only, never upstream LLVM. Collect crash artifacts (preprocessed source, run script) into a zip.

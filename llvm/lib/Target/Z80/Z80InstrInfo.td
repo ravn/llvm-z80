@@ -1190,6 +1190,16 @@ class Z80Pseudo<dag outs, dag ins> : Instruction {
   let isCodeGenOnly = true;
 }
 
+// 16-bit register copy via PUSH src; POP dst for IX/IY without +undocumented.
+// Emitted as a single MI by copyPhysReg to prevent optimization passes from
+// inserting between PUSH and POP, which causes SP-relative addressing
+// corruption (issue #32). Expanded to adjacent PUSH/POP in Z80ExpandPseudo
+// (which runs after Z80LateOptimization).
+def COPY16_PUSHPOP : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
+  let mayStore = true;
+  let mayLoad = true;
+}
+
 // Spill/Reload pseudo instructions for stack slots (frame index).
 // No static Defs: small offsets expand to IX+d (no clobbers), large offsets
 // are expanded in eliminateFrameIndex with register scavenging.

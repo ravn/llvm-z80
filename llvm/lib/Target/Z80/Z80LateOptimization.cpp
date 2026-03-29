@@ -19,6 +19,7 @@
 
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
+#include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -433,6 +434,24 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           Modifications.push_back({&*MII, Delta});
           continue;
         }
+        // COPY16_PUSHPOP pseudo extraction pattern (issue #32).
+        // Single MI that expands to PUSH IX; POP rr in Z80ExpandPseudo.
+        if (Opc == Z80::COPY16_PUSHPOP) {
+          Register Src = MII->getOperand(1).getReg();
+          Register Dst = MII->getOperand(0).getReg();
+          if (Src == Z80::IX && Z80::GR16RegClass.contains(Dst)) {
+            Extractions.push_back(
+                {&*MII, nullptr, Dst, CumulativeDelta});
+            continue;
+          }
+          // COPY16_PUSHPOP involving IX but not as simple extraction.
+          if (Src == Z80::IX || Dst == Z80::IX) {
+            IXUsedOther = true;
+            continue;
+          }
+          if (Src == Z80::IY || Dst == Z80::IY) IYUsedInBody = true;
+          continue;
+        }
         // PUSH IX; POP rr extraction pattern.
         if (Opc == Z80::PUSH_IX) {
           auto NextIt = std::next(MII);
@@ -517,7 +536,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             auto &NewOp = NewMI->getOperand(NewMI->getNumExplicitOperands() - 1);
             NewOp.setOffset(NewOp.getOffset() + Ext.AdjustmentAtPoint);
           }
-          Ext.PopMI->eraseFromParent();
+          if (Ext.PopMI)
+            Ext.PopMI->eraseFromParent();
           Ext.PushMI->eraseFromParent();
         }
         for (auto &Mod : Modifications)
@@ -2411,36 +2431,68 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   }
 
   // --- Peephole: PUSH IX; POP HL; ADD HL,rr; PUSH HL; POP IX → ADD IX,rr ---
+  // Also matches: COPY16_PUSHPOP HL,IX; ADD HL,rr; COPY16_PUSHPOP IX,HL
   // When a 16-bit addition is performed through HL with IX/IY as the actual
-  // accumulator, replace the 5-instruction copy-add-copy sequence (8-10 bytes)
-  // with a single ADD IX,rr or ADD IY,rr (2 bytes).
+  // accumulator, replace the copy-add-copy sequence with ADD IX,rr (2 bytes).
   // Also handles ADD HL,HL → ADD IX,IX (left shift by 1).
   if (STI.hasZ80()) {
     for (auto &MBB : MF) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
         unsigned Opc = MII->getOpcode();
-        // Match: PUSH IX or PUSH IY
-        bool IsIX = (Opc == Z80::PUSH_IX);
-        bool IsIY = (Opc == Z80::PUSH_IY);
+
+        // Determine if this starts an IX/IY→HL copy (PUSH+POP or pseudo).
+        bool IsIX = false, IsIY = false;
+        bool IsPseudoCopy = false;
+        if (Opc == Z80::PUSH_IX) IsIX = true;
+        else if (Opc == Z80::PUSH_IY) IsIY = true;
+        else if (Opc == Z80::COPY16_PUSHPOP) {
+          Register Src = MII->getOperand(1).getReg();
+          Register Dst = MII->getOperand(0).getReg();
+          if (Dst == Z80::HL) {
+            if (Src == Z80::IX) { IsIX = true; IsPseudoCopy = true; }
+            else if (Src == Z80::IY) { IsIY = true; IsPseudoCopy = true; }
+          }
+        }
         if (!IsIX && !IsIY) { ++MII; continue; }
 
-        auto I1 = MII;       // PUSH IX/IY
-        auto I2 = std::next(I1);
-        if (I2 == MIE || I2->getOpcode() != Z80::POP_HL) { ++MII; continue; }
-        auto I3 = std::next(I2);
+        // For PUSH+POP form: I1=PUSH, I2=POP HL, I3=ADD
+        // For pseudo form: I1=COPY16_PUSHPOP, I3=ADD (no I2)
+        auto I1 = MII;
+        MachineBasicBlock::iterator I2, I3;
+        if (IsPseudoCopy) {
+          I2 = MIE; // no POP instruction
+          I3 = std::next(I1);
+        } else {
+          I2 = std::next(I1);
+          if (I2 == MIE || I2->getOpcode() != Z80::POP_HL) { ++MII; continue; }
+          I3 = std::next(I2);
+        }
         if (I3 == MIE) { ++MII; continue; }
-        // I3 must be ADD HL,BC or ADD HL,DE or ADD HL,HL
         unsigned AddOpc = I3->getOpcode();
         if (AddOpc != Z80::ADD_HL_BC && AddOpc != Z80::ADD_HL_DE &&
             AddOpc != Z80::ADD_HL_HL) { ++MII; continue; }
-        auto I4 = std::next(I3);
-        if (I4 == MIE || I4->getOpcode() != Z80::PUSH_HL) { ++MII; continue; }
-        auto I5 = std::next(I4);
-        unsigned ExpectedPop = IsIX ? Z80::POP_IX : Z80::POP_IY;
-        if (I5 == MIE || I5->getOpcode() != ExpectedPop) { ++MII; continue; }
 
-        // Determine replacement opcode
+        // Match the HL→IX/IY copy after ADD (PUSH+POP or pseudo).
+        auto I4 = std::next(I3);
+        if (I4 == MIE) { ++MII; continue; }
+        MachineBasicBlock::iterator I5;
+        bool EndIsPseudo = false;
+        if (I4->getOpcode() == Z80::COPY16_PUSHPOP) {
+          Register Dst4 = I4->getOperand(0).getReg();
+          Register Src4 = I4->getOperand(1).getReg();
+          Register ExpIR = IsIX ? Z80::IX : Z80::IY;
+          if (Src4 != Z80::HL || Dst4 != ExpIR) { ++MII; continue; }
+          I5 = MIE; // no separate POP
+          EndIsPseudo = true;
+        } else {
+          if (I4->getOpcode() != Z80::PUSH_HL) { ++MII; continue; }
+          I5 = std::next(I4);
+          unsigned ExpectedPop = IsIX ? Z80::POP_IX : Z80::POP_IY;
+          if (I5 == MIE || I5->getOpcode() != ExpectedPop) { ++MII; continue; }
+        }
+
+        // Determine replacement opcode.
         unsigned NewOpc = 0;
         if (IsIX) {
           if (AddOpc == Z80::ADD_HL_BC) NewOpc = Z80::ADD_IX_BC;
@@ -2456,10 +2508,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         LLVM_DEBUG(dbgs() << "  ADD IX/IY peephole: PUSH;POP;ADD;PUSH;POP → "
                           << TII->getName(NewOpc) << "\n");
         DebugLoc DL = I3->getDebugLoc();
-        I5->eraseFromParent();
+        if (I5 != MIE) I5->eraseFromParent();
         I4->eraseFromParent();
         I3->eraseFromParent();
-        I2->eraseFromParent();
+        if (I2 != MIE) I2->eraseFromParent();
         MII = MBB.erase(I1);
         BuildMI(MBB, MII, DL, TII->get(NewOpc));
         Changed = true;
@@ -2467,17 +2519,24 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
-  // --- Peephole: PUSH rr; POP IX → PUSH rr ... POP rr (remove IX transfer) ---
+  // --- Peephole: IX/IY transfer elimination ---
   // The register allocator saves caller-saved registers across CALLs by
   // transferring to callee-saved IX/IY via PUSH rr; POP IX ... PUSH IX; POP rr.
   // This costs 6B (1+2+2+1) when a simple PUSH rr ... POP rr costs only 2B (1+1).
+  // Also matches COPY16_PUSHPOP pseudo form (issue #32):
+  //   COPY16_PUSHPOP IX, rr ... COPY16_PUSHPOP rr, IX → PUSH rr ... POP rr
   // Note: CopyCost=3 on IR16 reduces but does not eliminate this pattern.
-  // Pattern:
-  //   PUSH rr; POP IX  (adjacent — transfer to callee-saved)
-  //   ... instructions (no unmatched PUSH/POP, IX not used otherwise) ...
-  //   PUSH IX; POP rr  (adjacent — transfer back)
-  // Replace: remove POP IX and PUSH IX, saving 4B.
   if (STI.hasZ80()) {
+    // Helper: check if an instruction touches a given register.
+    auto touchesReg = [&](const MachineInstr &MI, MCPhysReg Reg) {
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isReg() && MO.getReg().isPhysical() &&
+            TRI->regsOverlap(MO.getReg(), Reg))
+          return true;
+      }
+      return false;
+    };
+
     static const struct {
       unsigned PushOpc;
       unsigned PopOpc;
@@ -2496,6 +2555,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     for (auto &MBB : MF) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE; ++MII) {
+
+        // --- Form 1: PUSH rr; POP IX ... PUSH IX; POP rr ---
         for (const auto &TP : IXTransferPairs) {
           if (MII->getOpcode() != TP.PushOpc)
             continue;
@@ -2503,36 +2564,18 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (PopIX == MIE || PopIX->getOpcode() != TP.PopIXOpc)
             continue;
 
-          // Scan forward for matching PUSH IX; POP rr.
-          // Verify: stack is balanced (only CALL_nn allowed, which is balanced),
-          // and IX/IY is not used by any instruction in between.
           bool Safe = true;
           int StackDepth = 0;
           auto PushIX = MIE;
           for (auto Scan = std::next(PopIX); Scan != MIE; ++Scan) {
             unsigned SOpc = Scan->getOpcode();
-
-            // Check if this instruction uses or defines IX/IY.
-            bool TouchesIX = false;
-            for (const MachineOperand &MO : Scan->operands()) {
-              if (MO.isReg() && MO.getReg().isPhysical() &&
-                  TRI->regsOverlap(MO.getReg(), TP.IXReg))
-                TouchesIX = true;
-            }
-
-            // Found the matching PUSH IX?
+            if (touchesReg(*Scan, TP.IXReg)) { Safe = false; break; }
             if (SOpc == TP.PushIXOpc && StackDepth == 0) {
               auto PopRR = std::next(Scan);
-              if (PopRR != MIE && PopRR->getOpcode() == TP.PopOpc) {
+              if (PopRR != MIE && PopRR->getOpcode() == TP.PopOpc)
                 PushIX = Scan;
-              }
               break;
             }
-
-            // IX/IY used for something else — bail.
-            if (TouchesIX) { Safe = false; break; }
-
-            // Track stack balance: PUSH adds depth, POP reduces.
             if (SOpc == Z80::PUSH_AF || SOpc == Z80::PUSH_BC ||
                 SOpc == Z80::PUSH_DE || SOpc == Z80::PUSH_HL ||
                 SOpc == Z80::PUSH_IX || SOpc == Z80::PUSH_IY)
@@ -2541,23 +2584,69 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                      SOpc == Z80::POP_DE || SOpc == Z80::POP_HL ||
                      SOpc == Z80::POP_IX || SOpc == Z80::POP_IY)
               --StackDepth;
-
-            // CALL is balanced (pushes return addr, RET pops it).
-            // But unbalanced stack in between breaks the pattern.
             if (StackDepth < 0) { Safe = false; break; }
           }
-
           if (!Safe || PushIX == MIE)
             continue;
-
-          // Found valid pattern. Remove POP IX and PUSH IX (save 4B).
-          auto PopRR = std::next(PushIX);
           LLVM_DEBUG(dbgs() << "  IX transfer peephole: PUSH rr;POP IX...PUSH IX;POP rr"
                             << " → PUSH rr...POP rr (saves 4B)\n");
           PushIX->eraseFromParent();
           PopIX->eraseFromParent();
           Changed = true;
-          break; // Restart inner loop for this MII
+          break;
+        }
+
+        // --- Form 2: COPY16_PUSHPOP IX, rr ... COPY16_PUSHPOP rr, IX ---
+        // Replace with PUSH rr ... POP rr (saves 4B).
+        if (MII->getOpcode() == Z80::COPY16_PUSHPOP) {
+          Register Dst1 = MII->getOperand(0).getReg();
+          Register Src1 = MII->getOperand(1).getReg();
+          if (!Z80::IR16RegClass.contains(Dst1)) continue;
+          if (Z80::IR16RegClass.contains(Src1)) continue; // IX→IY, skip
+          MCPhysReg IXReg = Dst1; // IX or IY
+          Register RR = Src1;     // the GR16 being saved
+
+          // Scan for matching reverse copy.
+          bool Safe = true;
+          auto EndCopy = MIE;
+          int StackDepth = 0;
+          for (auto Scan = std::next(MII->getIterator()); Scan != MIE; ++Scan) {
+            unsigned SOpc = Scan->getOpcode();
+            if (touchesReg(*Scan, IXReg)) {
+              // Check if this IS the matching reverse copy.
+              if (SOpc == Z80::COPY16_PUSHPOP && StackDepth == 0) {
+                Register Dst2 = Scan->getOperand(0).getReg();
+                Register Src2 = Scan->getOperand(1).getReg();
+                if (Src2 == IXReg && Dst2 == RR) {
+                  EndCopy = Scan;
+                }
+              }
+              break; // IX/IY touched — stop scanning either way
+            }
+            if (SOpc == Z80::PUSH_AF || SOpc == Z80::PUSH_BC ||
+                SOpc == Z80::PUSH_DE || SOpc == Z80::PUSH_HL ||
+                SOpc == Z80::PUSH_IX || SOpc == Z80::PUSH_IY)
+              ++StackDepth;
+            else if (SOpc == Z80::POP_AF || SOpc == Z80::POP_BC ||
+                     SOpc == Z80::POP_DE || SOpc == Z80::POP_HL ||
+                     SOpc == Z80::POP_IX || SOpc == Z80::POP_IY)
+              --StackDepth;
+            if (StackDepth < 0) { Safe = false; break; }
+          }
+          if (!Safe || EndCopy == MIE) continue;
+
+          LLVM_DEBUG(dbgs() << "  IX transfer peephole: COPY16_PUSHPOP pair"
+                            << " → PUSH rr...POP rr (saves 4B)\n");
+          // Replace start COPY16_PUSHPOP IX, rr with PUSH rr.
+          DebugLoc DL1 = MII->getDebugLoc();
+          // Replace end COPY16_PUSHPOP rr, IX with POP rr.
+          DebugLoc DL2 = EndCopy->getDebugLoc();
+          BuildMI(MBB, *EndCopy, DL2, TII->get(Z80::getPopOpcode(RR)));
+          EndCopy->eraseFromParent();
+          auto NextMII = MBB.erase(MII);
+          BuildMI(MBB, NextMII, DL1, TII->get(Z80::getPushOpcode(RR)));
+          MII = std::prev(NextMII); // will be incremented by the loop
+          Changed = true;
         }
       }
     }
