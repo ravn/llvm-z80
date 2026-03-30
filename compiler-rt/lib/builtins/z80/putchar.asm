@@ -5,14 +5,15 @@
 ;===------------------------------------------------------------------------===;
 ; _putchar - Write character to console
 ;
-; Input:  A = character (sdcccall(1): first i8 arg in A)
+; Input:  int putchar(int c) — sdcccall(1): i16 in HL, char in L
 ; Output: DE = character (return value)
 ;
 ; Uses z88dk-ticks -iochar 1 for console output.
 ; Port 1 is mapped to stdout by z88dk-ticks.
 ;===------------------------------------------------------------------------===;
 _putchar:
+	ld	a, l		; char from L (low byte of HL)
 	out	(0x01), a	; write character to iochar port
-	ld	e, a		; return value in DE
-	ld	d, #0
+	ld	e, l		; return value in DE
+	ld	d, h
 	ret
