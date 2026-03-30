@@ -1,78 +1,80 @@
-# Clang Z80 Examples
+# Clang Z80 → CP/M .COM
 
-## Build Pipelines
+## How to build CP/M binaries
 
-### Pipeline 1: ELF (native clang, no external tools)
+Use the ELF → elf2rel → SDCC linker pipeline. This compiles through clang's
+full optimization pipeline (including `copyPhysReg` expansion), then converts
+the ELF object to SDCC `.rel` format for linking with `sdldz80`.
 
 ```bash
-clang --target=z80 -Os -nostdinc -c program.c -o program.o
-ld.lld --gc-sections -T cpm.ld cpm_crt0.o program.o z80_rt.a -o program.elf
-llvm-objcopy -O binary program.elf PROGRAM.COM
+# 1. Compile to ELF object (runs all LLVM passes, no undocumented instructions)
+clang --target=z80 -Os -nostdinc -ffunction-sections -fdata-sections \
+  -c program.c -o program.o
+
+# 2. Convert ELF → SDCC .rel
+elf2rel program.o program.rel
+
+# 3. Link with SDCC linker (selective: only pulls needed library members)
+sdldz80 -m -i -b _CODE=0x0100 output \
+  cpm_crt0_sdcc.rel \
+  program.rel \
+  -k /path/to/z80/lib/ -l z80_rt
+
+# 4. Convert Intel HEX → CP/M .COM binary
+makebin -s 65536 output.ihx output_full.bin
+dd if=output_full.bin of=PROGRAM.COM bs=1 skip=256 count=<code_size>
+
+# 5. Run
 z88dk-ticks -iochar 1 PROGRAM.COM
 ```
 
-- Selective linking via `--gc-sections` + `z80_rt.a`
-- `putchar()` uses port 1 (`-iochar 1` in z88dk-ticks)
-- Smallest binaries (81B hello world)
-- CRT files: `cpm.ld`, `cpm_crt0.o` in `compiler-rt/lib/builtins/z80/`
+### Why this pipeline
 
-### Pipeline 2: ELF → elf2rel → SDCC linker
+- **Correct code**: clang's full pass pipeline runs, including `ExpandPostRAPseudos`
+  which expands register copies to documented instructions. The SDCC assembly path
+  (`--target=z80-unknown-none-sdcc -c`) skips this and emits undocumented `LD A,IYH` (#37).
+- **Selective linking**: `sdldz80 -l z80_rt` only pulls in library members that
+  resolve undefined symbols (e.g. `__mulsi3`, `__modhi3` for arithmetic).
+- **No z88dk dependency**: uses only clang + elf2rel + sdldz80 + makebin.
 
-```bash
-clang --target=z80 -Os -nostdinc -c program.c -o program.o
-elf2rel program.o program.rel
-sdldz80 -m -i -b _CODE=0x0100 out cpm_crt0_sdcc.rel program.rel -k <libdir> -l z80_rt
-makebin -s 65536 out.ihx out_full.bin
-dd if=out_full.bin of=PROGRAM.COM bs=1 skip=256 count=<code_size>
+### Runtime library
+
+`z80_rt.lib` provides:
+- Arithmetic: `__mulsi3`, `__divmodsi3`, `__mulhi3`, etc.
+- String/memory: `memcpy`, `memset`, `strlen`, `strcmp`, etc.
+- Float (IEEE 754): `__addsf3`, `__mulsf3`, `__divsf3`, etc.
+- I/O: `putchar` (port 1, for z88dk-ticks `-iochar 1`)
+
+### CRT files
+
+| File | Purpose |
+|------|---------|
+| `cpm_crt0_sdcc.asm` | CP/M CRT: BSS init, call main, JP 0 exit |
+| `cpm.ld` | Linker script for ELF path (org 0x0100) |
+| `putchar.asm` | Port-based putchar for z88dk-ticks |
+
+### Code size from map file
+
+After linking, check `output.map` for `_CODE` size:
 ```
-
-- Bypasses sdasz80 (avoids undocumented instruction issue #37)
-- Selective linking via SDCC `.lib` archive
-- Works with all Z80 programs including those using IY
-
-### Pipeline 3: Assembly conversion → z88dk stdlib
-
-```bash
-clang --target=z80 -Os -nostdinc -fno-builtin -S program.c -o program.s
-clang2z88dk.sh program.s program.asm
-sed 's/_cmain/_main/g' program.asm > final.asm
-zcc +cpm -compiler=sdcc final.asm -o PROGRAM -create-app
-z88dk-ticks PROGRAM.COM
+_CODE ... size <hex>
 ```
-
-- Uses z88dk's full libc (printf, stdio, file I/O)
-- Declare z88dk functions with `__attribute__((sdcccall(0)))`
-- Name entry point `cmain` (renamed to `main` in asm conversion)
-- `z88dk_compat.h` maps z88dk macros for `#include <stdio.h>`
-
-### Why `cmain` → `main` rename?
-
-Clang ignores `__attribute__((sdcccall(0)))` on `main` — it always uses
-sdcccall(1) return convention (DE). z88dk's CRT expects sdcccall(0) return
-(HL). Workaround: name the function `cmain` so the attribute is respected,
-then rename to `_main` in the assembly output.
 
 ## Examples
 
-### hello_cpm.c — Minimal (81 bytes)
-
-Pipeline 1. Custom putchar via port 1. No stdlib.
-
-### hello_cpm_stdlib.c — Full stdio (7812 bytes)
-
-Pipeline 3. `#include <stdio.h>` via z88dk. Uses z88dk's printf.
-
 ### mandelbrot.c — Fixed-point 8.8 (905 bytes)
 
-Pipeline 2. 80x25 ASCII Mandelbrot using integer arithmetic.
-335M T-states (~84ms at 4MHz).
+80x25 ASCII Mandelbrot. 335M T-states (~84ms at 4MHz).
 
 ### mandelbrot_float.c — IEEE 754 float (3555 bytes)
 
-Pipeline 2. Same output using `float`. Soft-float from compiler-rt.
-965M T-states (~241ms at 4MHz). ~3x slower than fixed-point.
+Same output using `float`. 965M T-states (~241ms at 4MHz). ~3x slower.
 
-## Optimization Level Comparison (mandelbrot.c)
+### hello_cpm.c — Minimal hello world (81 bytes)
+
+Uses `putchar()` only. No printf, no stdlib.
+
+### Optimization comparison (mandelbrot.c)
 
 | Flag | T-states | Notes |
 |------|----------|-------|
@@ -82,33 +84,46 @@ Pipeline 2. Same output using `float`. Soft-float from compiler-rt.
 | `-Oz` | 338.1M | 0.8% slower |
 | `-O1` | 341.7M | 1.9% slower |
 
-Inner loop is dominated by runtime library calls (`__mulsi3`, `__modhi3`),
-so optimization level has minimal impact on execution speed.
+Inner loop dominated by runtime library calls — optimization level barely matters.
 
 ## Known Issues
 
-- **#36**: `va_arg` broken — blocks native `printf` (use z88dk pipeline 3)
-- **#37**: `LD A,IYH` emitted without `+undocumented` — use `elf2rel` pipeline 2
-- **putchar duplicate**: `z80_rt.lib` has both `putchar.rel` and `cpm_putchar.rel` (warning, harmless)
+- **#36**: `va_arg` broken — blocks native `printf`
+- **#37**: `LD A,IYH` without `+undocumented` — the elf2rel pipeline avoids this
 
-## z88dk_compat.h
+---
 
-Maps z88dk calling convention macros to clang attributes for `#include <stdio.h>`:
+## TODO later
 
-```c
-#define __LIB__    __attribute__((sdcccall(0)))
-#define __smallc   __attribute__((sdcccall(0)))
-#define __preserves_regs(...)
+### Native ELF pipeline (no elf2rel/sdldz80)
+
+```bash
+clang --target=z80 -Os -nostdinc -c program.c -o program.o
+ld.lld --gc-sections -T cpm.ld cpm_crt0.o program.o z80_rt.a -o program.elf
+llvm-objcopy -O binary program.elf PROGRAM.COM
 ```
 
-## Files
+Simpler (no elf2rel step) and produces the smallest binaries (81B hello).
+Blocked for programs using IY by #37 (ld.lld doesn't have the issue but
+the ELF putchar.asm reads from L which is correct — this path works for
+programs that don't trigger the IYH codegen bug).
 
-| File | Purpose |
-|------|---------|
-| `cpm.ld` | CP/M linker script (org 0x0100) |
-| `cpm_crt0.asm` | CP/M CRT for ELF path |
-| `cpm_crt0_sdcc.asm` | CP/M CRT for SDCC path |
-| `cpm_putchar.asm` | BDOS putchar (CALL 5) |
-| `putchar.asm` | Port-based putchar (-iochar 1) |
-| `clang2z88dk.sh` | Assembly converter (clang .s → z88dk .asm) |
-| `z88dk_compat.h` | z88dk header compatibility |
+### z88dk stdlib integration (printf via z88dk)
+
+```bash
+clang --target=z80 -Os -S program.c -o program.s
+clang2z88dk.sh program.s program.asm
+zcc +cpm -compiler=sdcc program.asm -o PROGRAM -create-app
+```
+
+Uses z88dk's full libc (printf, stdio). Requires:
+- `z88dk_compat.h` to map calling convention macros
+- `cmain` → `main` rename (clang ignores sdcccall(0) on main)
+- `clang2z88dk.sh` to strip ELF directives and fix label names
+- Blocked by #37 for programs using IY (assembly path, not elf2rel)
+
+### Native libc with printf
+
+Requires fixing #36 (va_arg codegen bug). Headers exist in
+`compiler-rt/lib/builtins/z80/include/` and `printf.c` is written
+but produces blank output due to va_arg returning wrong values.
