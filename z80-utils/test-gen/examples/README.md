@@ -1,60 +1,114 @@
-# Clang Z80 → CP/M .COM Examples
+# Clang Z80 Examples
 
-## hello_cpm.c — Minimal (84 bytes, no stdlib)
+## Build Pipelines
 
-Uses custom `cpm_crt0.asm` + `cpm_putchar.asm`. No z88dk dependency.
-
-```bash
-clang --target=z80 -Os -nostdinc -c hello_cpm.c -o hello.o
-ld.lld -Tcpm.ld cpm_crt0.o hello.o cpm_putchar.o z80_rt.a -o hello.elf
-llvm-objcopy -O binary hello.elf HELLO.COM
-z88dk-ticks HELLO.COM
-```
-
-## hello_cpm_stdlib.c — Full stdio via z88dk (7855 bytes)
-
-Uses `#include <stdio.h>` with z88dk's standard library. Needs the
-`clang2z88dk.sh` conversion and `zcc +cpm` for linking.
+### Pipeline 1: ELF (native clang, no external tools)
 
 ```bash
-# Compile
-clang --target=z80 -Os -nostdinc -fno-builtin \
-  -include z88dk_compat.h -isystem <z88dk>/include/_DEVELOPMENT/sdcc \
-  -S hello_cpm_stdlib.c -o hello.s
-
-# Convert assembly + link
-clang2z88dk.sh hello.s hello.asm
-sed 's/_cmain/_main/g' hello.asm > hello_final.asm
-zcc +cpm -compiler=sdcc hello_final.asm -o HELLO -create-app
-
-# Run
-z88dk-ticks HELLO.COM
+clang --target=z80 -Os -nostdinc -c program.c -o program.o
+ld.lld --gc-sections -T cpm.ld cpm_crt0.o program.o z80_rt.a -o program.elf
+llvm-objcopy -O binary program.elf PROGRAM.COM
+z88dk-ticks -iochar 1 PROGRAM.COM
 ```
+
+- Selective linking via `--gc-sections` + `z80_rt.a`
+- `putchar()` uses port 1 (`-iochar 1` in z88dk-ticks)
+- Smallest binaries (81B hello world)
+- CRT files: `cpm.ld`, `cpm_crt0.o` in `compiler-rt/lib/builtins/z80/`
+
+### Pipeline 2: ELF → elf2rel → SDCC linker
+
+```bash
+clang --target=z80 -Os -nostdinc -c program.c -o program.o
+elf2rel program.o program.rel
+sdldz80 -m -i -b _CODE=0x0100 out cpm_crt0_sdcc.rel program.rel -k <libdir> -l z80_rt
+makebin -s 65536 out.ihx out_full.bin
+dd if=out_full.bin of=PROGRAM.COM bs=1 skip=256 count=<code_size>
+```
+
+- Bypasses sdasz80 (avoids undocumented instruction issue #37)
+- Selective linking via SDCC `.lib` archive
+- Works with all Z80 programs including those using IY
+
+### Pipeline 3: Assembly conversion → z88dk stdlib
+
+```bash
+clang --target=z80 -Os -nostdinc -fno-builtin -S program.c -o program.s
+clang2z88dk.sh program.s program.asm
+sed 's/_cmain/_main/g' program.asm > final.asm
+zcc +cpm -compiler=sdcc final.asm -o PROGRAM -create-app
+z88dk-ticks PROGRAM.COM
+```
+
+- Uses z88dk's full libc (printf, stdio, file I/O)
+- Declare z88dk functions with `__attribute__((sdcccall(0)))`
+- Name entry point `cmain` (renamed to `main` in asm conversion)
+- `z88dk_compat.h` maps z88dk macros for `#include <stdio.h>`
 
 ### Why `cmain` → `main` rename?
 
-Clang treats `main` specially: it ignores `__attribute__((sdcccall(0)))` on
-`main` and always generates sdcccall(1) return convention (`ld de,0; ret`).
-But z88dk's CRT calls `_main` with sdcccall(0) and expects return in HL
-(`ld hl,0; ret`).
+Clang ignores `__attribute__((sdcccall(0)))` on `main` — it always uses
+sdcccall(1) return convention (DE). z88dk's CRT expects sdcccall(0) return
+(HL). Workaround: name the function `cmain` so the attribute is respected,
+then rename to `_main` in the assembly output.
 
-Workaround: name the function `cmain` in C (so clang respects the sdcccall(0)
-attribute), then rename `_cmain` → `_main` in the assembly output. The
-`clang2z88dk.sh` converter handles this.
+## Examples
 
-This is a clang frontend limitation — it hardcodes `main`'s calling convention.
-A proper fix would teach clang's Z80 target to respect sdcccall attributes on
-main, or add a `-fdefault-calling-conv=sdcccall0` flag.
+### hello_cpm.c — Minimal (81 bytes)
 
-### z88dk_compat.h
+Pipeline 1. Custom putchar via port 1. No stdlib.
 
-Maps z88dk's calling convention macros (`__LIB__`, `__smallc`, `__vasmallc`)
-to clang's `__attribute__((sdcccall(0)))`. Include before z88dk headers:
+### hello_cpm_stdlib.c — Full stdio (7812 bytes)
+
+Pipeline 3. `#include <stdio.h>` via z88dk. Uses z88dk's printf.
+
+### mandelbrot.c — Fixed-point 8.8 (905 bytes)
+
+Pipeline 2. 80x25 ASCII Mandelbrot using integer arithmetic.
+335M T-states (~84ms at 4MHz).
+
+### mandelbrot_float.c — IEEE 754 float (3555 bytes)
+
+Pipeline 2. Same output using `float`. Soft-float from compiler-rt.
+965M T-states (~241ms at 4MHz). ~3x slower than fixed-point.
+
+## Optimization Level Comparison (mandelbrot.c)
+
+| Flag | T-states | Notes |
+|------|----------|-------|
+| `-O2` | 335.5M | Fastest |
+| `-O3` | 335.5M | Same as O2 |
+| `-Os` | 335.5M | Same speed, smallest code |
+| `-Oz` | 338.1M | 0.8% slower |
+| `-O1` | 341.7M | 1.9% slower |
+
+Inner loop is dominated by runtime library calls (`__mulsi3`, `__modhi3`),
+so optimization level has minimal impact on execution speed.
+
+## Known Issues
+
+- **#36**: `va_arg` broken — blocks native `printf` (use z88dk pipeline 3)
+- **#37**: `LD A,IYH` emitted without `+undocumented` — use `elf2rel` pipeline 2
+- **putchar duplicate**: `z80_rt.lib` has both `putchar.rel` and `cpm_putchar.rel` (warning, harmless)
+
+## z88dk_compat.h
+
+Maps z88dk calling convention macros to clang attributes for `#include <stdio.h>`:
 
 ```c
-clang ... -include z88dk_compat.h -isystem <z88dk_headers> ...
+#define __LIB__    __attribute__((sdcccall(0)))
+#define __smallc   __attribute__((sdcccall(0)))
+#define __preserves_regs(...)
 ```
 
-This makes z88dk's `printf`, `puts`, etc. use stack-based argument passing,
-matching the z88dk library's expectations. Internal functions in your code
-still use clang's default sdcccall(1) (register-based, more efficient).
+## Files
+
+| File | Purpose |
+|------|---------|
+| `cpm.ld` | CP/M linker script (org 0x0100) |
+| `cpm_crt0.asm` | CP/M CRT for ELF path |
+| `cpm_crt0_sdcc.asm` | CP/M CRT for SDCC path |
+| `cpm_putchar.asm` | BDOS putchar (CALL 5) |
+| `putchar.asm` | Port-based putchar (-iochar 1) |
+| `clang2z88dk.sh` | Assembly converter (clang .s → z88dk .asm) |
+| `z88dk_compat.h` | z88dk header compatibility |
