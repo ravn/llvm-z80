@@ -53,9 +53,13 @@ for line in lines:
         out.append('\tdefb 0')
         continue
 
-    # Replace dots in local labels: L_.str.1 → L_str_1
+    # Replace dots in all labels: L_.str.1 → L_str_1, .LBB0_1 → LBB0_1
+    s = re.sub(r'\.LBB', 'LBB', s)
     s = re.sub(r'L_\.(\w+)\.(\w+)', r'L_\1_\2', s)
     s = re.sub(r'L_\.(\w+)', r'L_\1', s)
+
+    # Strip LLVM loop comments
+    s = re.sub(r'\s*;.*Inner Loop Header.*', '', s)
 
     # Track defined labels and called symbols
     m2 = re.match(r'^(\w+):', s)

@@ -1,8 +1,9 @@
-#define Z88DK __attribute__((sdcccall(0)))
-extern Z88DK int printf(const char *fmt, ...);
+#include <stdio.h>
 
-/* Name this 'cmain' — we'll rename to 'main' in the asm conversion */
-Z88DK int cmain(void) {
-    printf("Hello World!\n");
+int cmain(void) {
+    int i;
+    for (i = 1; i <= 5; i++) {
+        printf("%d * 7 = %d\n", i, i * 7);
+    }
     return 0;
 }
