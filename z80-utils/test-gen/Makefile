@@ -112,7 +112,7 @@ run-sdcc:
 		[ -f "$$f" ] || continue; \
 		base=$${f%_sdcc.bin}; \
 		hl=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -trace -end 3 $${base}_sdcc.bin 2>/dev/null \
-			| grep -oE '  hl=[0-9a-f]+' | tail -1 | tr -d ' '); \
+			| grep -aoE '  hl=[0-9a-f]+' | tail -1 | tr -d ' '); \
 		if [ "$$hl" = "hl=0000" ]; then \
 			pass=$$((pass + 1)); \
 		elif [ -z "$$hl" ]; then \
@@ -142,8 +142,8 @@ compare: build-clang build-sdcc run-clang run-sdcc
 		sc=$$(wc -c < $${base}_clang.bin 2>/dev/null); \
 		ss=$$(wc -c < $$sf 2>/dev/null); \
 		halt=$$($(DOCKER_TEST) $(NM) $$f 2>/dev/null | awk '/_halt$$/ {print $$1}'); \
-		ct=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -end 0x$$halt $${base}_clang.bin 2>/dev/null | tail -1 | tr -d ' '); \
-		st=$$($(DOCKER_TEST) z88dk-ticks $(TICKS_FLAGS) -end 3 $${base}_sdcc.bin 2>/dev/null | tail -1 | tr -d ' '); \
+		ct=$$($(DOCKER_TEST) z88dk-ticks -mz80 -end 0x$$halt $${base}_clang.bin 2>/dev/null); \
+		st=$$($(DOCKER_TEST) z88dk-ticks -mz80 -end 3 $${base}_sdcc.bin 2>/dev/null); \
 		sd=$$((sc - ss)); td=$$((ct - st)); \
 		tc=$$((tc + sc)); ts=$$((ts + ss)); \
 		tt_c=$$((tt_c + ct)); tt_s=$$((tt_s + st)); \

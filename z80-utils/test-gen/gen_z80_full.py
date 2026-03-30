@@ -33,7 +33,7 @@ def gen_hl_alias(i):
         uint16_t b = a + 1;
         uint16_t c = *p;
 
-        if (a != c) failures++;
+        if (a != c) FAIL(__LINE__);
     }}
 """
 
@@ -49,7 +49,7 @@ def gen_carry_chain(i):
     {{
         uint16_t x = {a};
         x = x + {b};
-        if (x != {expected}) failures++;
+        if (x != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -61,7 +61,7 @@ def gen_carry_clobber(i):
         volatile uint8_t t = 0;
         uint16_t z = y + 1;
 
-        if (z != 0x0101) failures++;
+        if (z != 0x0101) FAIL(__LINE__);
     }}
 """
 
@@ -77,7 +77,7 @@ def gen_array(i):
     return f"""
     {{
         uint8_t a[6] = {{{init}}};
-        if (a[{idx}] != {val}) failures++;
+        if (a[{idx}] != {val}) FAIL(__LINE__);
     }}
 """
 
@@ -92,7 +92,7 @@ def gen_reg_pressure(i):
     return f"""
     {{
         uint16_t r = {expr};
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -107,7 +107,7 @@ def gen_call(i):
     return f"""
     {{
         uint16_t r = call6({argstr});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -122,7 +122,7 @@ def gen_mixed(i):
     return f"""
     {{
         uint16_t r = (uint16_t)((uint8_t){a}) + (uint16_t){b};
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -138,7 +138,7 @@ def gen_shift(i):
     {{
         uint8_t x = {val};
         x <<= {shift};
-        if (x != {expected}) failures++;
+        if (x != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -155,7 +155,7 @@ def gen_cmp(i):
         int8_t a = {a};
         int8_t b = {b};
         int r = (a < b);
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -175,7 +175,7 @@ def gen_expr_test(i):
 
     return f"""
     {{
-        if (((uint16_t){expr}) != {val}) failures++;
+        if (((uint16_t){expr}) != {val}) FAIL(__LINE__);
     }}
 """
 
@@ -191,7 +191,7 @@ def gen_struct(i):
     return f"""
     {{
         struct {{ uint8_t a; uint8_t b; uint16_t c; uint8_t d; }} s = {{{a},{b},{c},{d}}};
-        if (s.{field} != ({cast}){expected}) failures++;
+        if (s.{field} != ({cast}){expected}) FAIL(__LINE__);
     }}
 """
 
@@ -205,7 +205,7 @@ def gen_global(i):
     return f"""
     {{
         g16 = {val};
-        if (read_g16() != {val}) failures++;
+        if (read_g16() != {val}) FAIL(__LINE__);
     }}
 """
 
@@ -221,7 +221,7 @@ def gen_loop_for(i):
     {{
         uint16_t sum = 0;
         for (j = 0; j < {n}; j += {step}) sum += j;
-        if (sum != {expected}) failures++;
+        if (sum != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -234,7 +234,7 @@ def gen_loop_dowhile(i):
         uint8_t cnt = 0;
         uint8_t k = {n};
         do {{ cnt++; }} while (--k);
-        if (cnt != {expected}) failures++;
+        if (cnt != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -256,7 +256,7 @@ def gen_loop_while(i):
         uint16_t count = 0;
         while (!((++v) & {mask})) count++;
         count++;
-        if (count != {count}) failures++;
+        if (count != {count}) FAIL(__LINE__);
     }}
 """
 
@@ -274,7 +274,7 @@ def gen_multidim_array(i):
     return f"""
     {{
         uint8_t m[{rows}][{cols}] = {{{init}}};
-        if (m[{r}][{c}] != {expected}) failures++;
+        if (m[{r}][{c}] != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -292,7 +292,7 @@ def gen_pointer_arith(i):
         uint8_t buf[8] = {{{init}}};
         uint8_t *p = buf;
         p += {offset};
-        if (*p != {expected}) failures++;
+        if (*p != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -311,7 +311,7 @@ def gen_bitmask(i):
     {{
         uint8_t v = {val};
         int r = (v & {mask}) ? 1 : 0;
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
     elif op == "set":
@@ -320,7 +320,7 @@ def gen_bitmask(i):
     {{
         uint8_t v = {val};
         v |= {mask};
-        if (v != {expected}) failures++;
+        if (v != {expected}) FAIL(__LINE__);
     }}
 """
     elif op == "clear":
@@ -329,7 +329,7 @@ def gen_bitmask(i):
     {{
         uint8_t v = {val};
         v &= ~(uint8_t){mask};
-        if (v != {expected}) failures++;
+        if (v != {expected}) FAIL(__LINE__);
     }}
 """
     else:  # toggle
@@ -338,7 +338,7 @@ def gen_bitmask(i):
     {{
         uint8_t v = {val};
         v ^= {mask};
-        if (v != {expected}) failures++;
+        if (v != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -366,7 +366,7 @@ def gen_switch(i):
 {cases}
         default: result = {default_val}; break;
         }}
-        if (result != {expected}) failures++;
+        if (result != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -393,7 +393,7 @@ def gen_arith32(i):
         uint32_t a = {a}UL;
         uint32_t b = {b}UL;
         uint32_t r = a {op} b;
-        if (r != {expected}UL) failures++;
+        if (r != {expected}UL) FAIL(__LINE__);
     }}
 """
 
@@ -412,7 +412,7 @@ def gen_memcpy(i):
         uint8_t src[{n}] = {{{init}}};
         uint8_t dst[{n}];
         for (j = 0; j < {n}; j++) dst[j] = src[j];
-        if (dst[{idx}] != {expected}) failures++;
+        if (dst[{idx}] != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -424,7 +424,7 @@ def gen_memset(i):
     {{
         uint8_t buf[{n}];
         for (j = 0; j < {n}; j++) buf[j] = {val};
-        if (buf[{n - 1}] != {val}) failures++;
+        if (buf[{n - 1}] != {val}) FAIL(__LINE__);
     }}
 """
 
@@ -442,7 +442,7 @@ def gen_divmod(i):
         return f"""
     {{
         int16_t r = (int16_t)((int8_t){a}) / (int16_t)((int8_t){b});
-        if ((uint16_t)r != (uint16_t){expected}) failures++;
+        if ((uint16_t)r != (uint16_t){expected}) FAIL(__LINE__);
     }}
 """
     else:
@@ -451,7 +451,7 @@ def gen_divmod(i):
         return f"""
     {{
         int16_t r = (int16_t)((int8_t){a}) % (int16_t)((int8_t){b});
-        if ((uint16_t)r != (uint16_t){expected}) failures++;
+        if ((uint16_t)r != (uint16_t){expected}) FAIL(__LINE__);
     }}
 """
 
@@ -469,7 +469,7 @@ def gen_nested_calls(i):
     return f"""
     {{
         uint16_t r = add2({a},{b}) + add2({b},{c}) + add2({a},{c});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -484,7 +484,7 @@ def gen_funcptr(i):
         return f"""
     {{
         uint16_t (*fn)(uint16_t, uint16_t) = &add2;
-        if (fn({a},{b}) != {expected}) failures++;
+        if (fn({a},{b}) != {expected}) FAIL(__LINE__);
     }}
 """
     else:
@@ -492,7 +492,7 @@ def gen_funcptr(i):
         return f"""
     {{
         uint16_t (*fn)(uint16_t, uint16_t) = &sub2;
-        if (fn({a},{b}) != {expected}) failures++;
+        if (fn({a},{b}) != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -510,7 +510,7 @@ def gen_cmp16(i):
         volatile int16_t a = {a};
         volatile int16_t b = {b};
         int r = (a {pred} b);
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -523,7 +523,7 @@ def gen_volatile(i):
     {{
         volatile uint8_t port = {val};
         uint8_t r = port;
-        if (r != {val}) failures++;
+        if (r != {val}) FAIL(__LINE__);
     }}
 """
 
@@ -538,7 +538,7 @@ def gen_inline_call(i):
         return f"""
     {{
         uint16_t r = iadd2({a}, {b});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
     else:
@@ -546,7 +546,7 @@ def gen_inline_call(i):
         return f"""
     {{
         uint16_t r = isub2({a}, {b});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -562,7 +562,7 @@ def gen_inline_nested(i):
     return f"""
     {{
         uint16_t r = iadd2(iadd2({a},{b}), isub2({b},{c}));
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -576,7 +576,7 @@ def gen_mixed_inline(i):
     return f"""
     {{
         uint16_t r = add2({a},{b}) + iadd2({c},{d});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -591,7 +591,7 @@ def gen_inline_cond(i):
         return f"""
     {{
         uint8_t r = imax8({a}, {b});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
     else:
@@ -600,7 +600,7 @@ def gen_inline_cond(i):
         return f"""
     {{
         uint16_t r = iabs16({v});
-        if (r != {expected}) failures++;
+        if (r != {expected}) FAIL(__LINE__);
     }}
 """
 
@@ -623,6 +623,22 @@ def gen_file(idx, ntests, extra_flags="", skip_if=""):
     out.append("typedef signed short int16_t;")
     out.append("typedef unsigned long uint32_t;")
     out.append("")
+
+    # Console I/O for z88dk-ticks (-iochar 1)
+    out.append("""#ifdef __SDCC
+static void z80_putchar(char c) { c; __asm__("ld a,l\\nout (0x01),a"); }
+#else
+static void z80_putchar(char c) { __asm volatile("out (1),a" : : "a"(c)); }
+#endif
+static void z80_print(const char *s) { while (*s) z80_putchar(*s++); }
+static void z80_print_u16(unsigned short n) {
+    char buf[6]; int i = 0;
+    if (n == 0) { z80_putchar('0'); return; }
+    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
+    while (i > 0) z80_putchar(buf[--i]);
+}
+#define FAIL(line) do { z80_print("FAIL "); z80_print_u16(line); z80_putchar('\\n'); failures++; } while(0)
+""")
 
     # Helper functions (noinline to exercise calling convention)
     # Use portable noinline: __attribute__ for clang/gcc, nothing for SDCC
@@ -700,6 +716,8 @@ static uint16_t iabs16(int16_t x) { return x < 0 ? -x : x; }
         g = random.choice(generators)
         out.append(g(i))
 
+    out.append("    if (failures == 0) z80_print(\"PASS\\n\");")
+    out.append("    else { z80_print(\"TOTAL FAILURES: \"); z80_print_u16(failures); z80_putchar('\\n'); }")
     out.append("    return failures;")
     out.append("}")
 
@@ -780,6 +798,20 @@ def main():
             out.append("typedef unsigned long uint32_t;")
             out.append("")
             out.append("""#ifdef __SDCC
+static void z80_putchar(char c) { c; __asm__("ld a,l\\nout (0x01),a"); }
+#else
+static void z80_putchar(char c) { __asm volatile("out (1),a" : : "a"(c)); }
+#endif
+static void z80_print(const char *s) { while (*s) z80_putchar(*s++); }
+static void z80_print_u16(unsigned short n) {
+    char buf[6]; int i = 0;
+    if (n == 0) { z80_putchar('0'); return; }
+    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
+    while (i > 0) z80_putchar(buf[--i]);
+}
+#define FAIL(line) do { z80_print("FAIL "); z80_print_u16(line); z80_putchar('\\n'); failures++; } while(0)
+
+#ifdef __SDCC
 #define NOINLINE
 #else
 #define NOINLINE __attribute__((noinline))
@@ -811,6 +843,8 @@ static uint16_t iabs16(int16_t x) { return x < 0 ? -x : x; }
             out.append("    int failures = 0;")
             out.append("    uint16_t j;  /* loop variable — zsdcc compat */")
             out.append(gen(0))
+            out.append("    if (failures == 0) z80_print(\"PASS\\n\");")
+            out.append("    else { z80_print(\"TOTAL FAILURES: \"); z80_print_u16(failures); z80_putchar('\\n'); }")
             out.append("    return failures;")
             out.append("}")
             path = os.path.join(args.outdir, f"_cat_{name}.c")
