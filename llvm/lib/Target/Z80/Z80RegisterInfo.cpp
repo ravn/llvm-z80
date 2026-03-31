@@ -137,14 +137,14 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // IX: reserved when used as frame pointer (hasFP=true), free otherwise.
-  // IY: always allocatable on Z80. Previously reserved without +undocumented
-  // due to undocumented XOR IYH/IYL in XOR_CMP expansion (#14). Fixed in
-  // session #19: XOR_CMP now extracts via PUSH/POP, COPY16_PUSHPOP handles
-  // 16-bit copies.
-  const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
-  if (TFI->hasFP(MF))
-    Reserved.set(Z80::IX);
+  // IX and IY: always reserved on Z80.
+  // IX/IY allocation was attempted but produces incorrect code in large
+  // functions under the greedy register allocator (#38). The feature is
+  // incomplete — IY is not callee-saved, and the allocator's spill/split
+  // decisions for IY under high register pressure are unreliable.
+  // Tracked for future work in #38.
+  Reserved.set(Z80::IX);
+  Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
     Reserved.set(Z80::IX);
     Reserved.set(Z80::IY);

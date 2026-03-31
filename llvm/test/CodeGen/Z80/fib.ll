@@ -9,7 +9,7 @@ define i16 @fib(i16 %n) {
 ; CHECK-O0-LABEL: _fib:
 ; The loop body: ADD for fibonacci, then fused EQ compare-and-branch
 ; CMP+BR fusion: G_ICMP EQ + G_BRCOND → XOR-based compare + JP Z
-; CHECK-O0:       add hl,de
+; CHECK-O0:       add hl,
 ; CHECK-O0:       xor
 ; CHECK-O0:       or
 ; CHECK-O0:       jp z,
