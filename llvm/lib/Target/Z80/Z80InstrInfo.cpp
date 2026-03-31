@@ -796,6 +796,36 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // Zero extend 8-bit to 16-bit: LD lo,src; LD hi,0
     Register DstReg = MI.getOperand(0).getReg();
     Register SrcReg = MI.getOperand(1).getReg();
+
+    // IX/IY destination without +undocumented: route through HL + PUSH/POP.
+    // Direct LD IXL,src / LD IXH,0 are undocumented instructions.
+    if (Z80::IR16RegClass.contains(DstReg) && !STI->hasUndocumented()) {
+      LivePhysRegs LiveRegs(*TRI);
+      LiveRegs.addLiveOuts(MBB);
+      for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+        LiveRegs.stepBackward(*I);
+      bool HLLive =
+          LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+      if (HLLive)
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+      // Copy source to L (skip if already there)
+      if (SrcReg != Z80::L) {
+        unsigned CopyOp = Z80::getLD8RegOpcode(Z80::L, SrcReg);
+        if (!CopyOp)
+          return false;
+        BuildMI(MBB, MI, DL, get(CopyOp));
+      }
+      // LD H,0
+      BuildMI(MBB, MI, DL, get(Z80::LD_H_n)).addImm(0);
+      // Transfer HL → IX/IY
+      BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+      BuildMI(MBB, MI, DL, get(Z80::getPopOpcode(DstReg)));
+      if (HLLive)
+        BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+      MI.eraseFromParent();
+      return true;
+    }
+
     Register LoReg = TRI->getSubReg(DstReg, Z80::sub_lo);
     Register HiReg = TRI->getSubReg(DstReg, Z80::sub_hi);
     if (!LoReg || !HiReg)
@@ -822,6 +852,42 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // LD A,src; LD lo,A; RLCA; SBC A,A; LD hi,A
     Register DstReg = MI.getOperand(0).getReg();
     Register SrcReg = MI.getOperand(1).getReg();
+
+    // IX/IY destination without +undocumented: sign-extend into HL, then
+    // PUSH HL; POP IX/IY.  LD IXL,A / LD IXH,A are undocumented.
+    if (Z80::IR16RegClass.contains(DstReg) && !STI->hasUndocumented()) {
+      LivePhysRegs LiveRegs(*TRI);
+      LiveRegs.addLiveOuts(MBB);
+      for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+        LiveRegs.stepBackward(*I);
+      bool HLLive =
+          LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+      if (HLLive)
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+      // Copy source to A (for sign-bit extraction)
+      if (SrcReg != Z80::A) {
+        unsigned CopyToA = Z80::getLD8RegOpcode(Z80::A, SrcReg);
+        if (!CopyToA)
+          return false;
+        BuildMI(MBB, MI, DL, get(CopyToA));
+      }
+      // LD L,A (low byte = source)
+      if (SrcReg != Z80::L)
+        BuildMI(MBB, MI, DL, get(Z80::LD_L_A));
+      // RLCA; SBC A,A → A = sign extension byte
+      BuildMI(MBB, MI, DL, get(Z80::RLCA));
+      BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+      // LD H,A (high byte = sign extension)
+      BuildMI(MBB, MI, DL, get(Z80::LD_H_A));
+      // Transfer HL → IX/IY
+      BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+      BuildMI(MBB, MI, DL, get(Z80::getPopOpcode(DstReg)));
+      if (HLLive)
+        BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+      MI.eraseFromParent();
+      return true;
+    }
+
     Register LoReg = TRI->getSubReg(DstReg, Z80::sub_lo);
     Register HiReg = TRI->getSubReg(DstReg, Z80::sub_hi);
     if (!LoReg || !HiReg)
@@ -1783,6 +1849,61 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // LD A,src_hi; ADD A,A; SBC A,A; LD dst_lo,A; LD dst_hi,A
     Register DstReg = MI.getOperand(0).getReg();
     Register SrcReg = MI.getOperand(1).getReg();
+    bool SrcIsIR = Z80::IR16RegClass.contains(SrcReg);
+    bool DstIsIR = Z80::IR16RegClass.contains(DstReg);
+
+    // Without +undocumented, IX/IY sub-registers (IXH/IXL/IYH/IYL) cannot be
+    // accessed directly.  Route through HL via PUSH/POP.
+    if ((SrcIsIR || DstIsIR) && !STI->hasUndocumented()) {
+      LivePhysRegs LiveRegs(*TRI);
+      LiveRegs.addLiveOuts(MBB);
+      for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+        LiveRegs.stepBackward(*I);
+      bool HLLive =
+          LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+
+      // Step 1: Get source high byte into A.
+      if (SrcIsIR) {
+        // Extract via PUSH IX/IY; POP HL; LD A,H
+        // (HL might be the destination — save it if live and not dst)
+        if (HLLive && DstReg != Z80::HL)
+          BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        BuildMI(MBB, MI, DL, get(Z80::getPushOpcode(SrcReg)));
+        BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+        BuildMI(MBB, MI, DL, get(Z80::LD_A_H));
+        if (HLLive && DstReg != Z80::HL)
+          BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+      } else {
+        Register SrcHi = TRI->getSubReg(SrcReg, Z80::sub_hi);
+        BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, SrcHi)));
+      }
+
+      // Step 2: ADD A,A; SBC A,A — compute sign extension byte
+      BuildMI(MBB, MI, DL, get(Z80::ADD_A_A));
+      BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+
+      // Step 3: Write A to both bytes of destination.
+      if (DstIsIR) {
+        // Build result in HL, transfer via PUSH HL; POP IX/IY
+        if (HLLive)
+          BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        BuildMI(MBB, MI, DL, get(Z80::LD_L_A));
+        BuildMI(MBB, MI, DL, get(Z80::LD_H_A));
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        BuildMI(MBB, MI, DL, get(Z80::getPopOpcode(DstReg)));
+        if (HLLive)
+          BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+      } else {
+        Register DstLo = TRI->getSubReg(DstReg, Z80::sub_lo);
+        Register DstHi = TRI->getSubReg(DstReg, Z80::sub_hi);
+        BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(DstLo, Z80::A)));
+        BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(DstHi, Z80::A)));
+      }
+
+      MI.eraseFromParent();
+      return true;
+    }
+
     Register SrcHi = TRI->getSubReg(SrcReg, Z80::sub_hi);
     Register DstHi = TRI->getSubReg(DstReg, Z80::sub_hi);
     Register DstLo = TRI->getSubReg(DstReg, Z80::sub_lo);

@@ -478,15 +478,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         for (const auto &MO : MII->operands()) {
           if (!MO.isReg()) continue;
           Register R = MO.getReg();
-          if (R == Z80::IX) IsIXUse = true;
-          if (R == Z80::IY) IYUsedInBody = true;
+          if (R == Z80::IX || R == Z80::IXH || R == Z80::IXL) IsIXUse = true;
+          if (R == Z80::IY || R == Z80::IYH || R == Z80::IYL) IYUsedInBody = true;
         }
         for (MCPhysReg R : TII->get(Opc).implicit_uses()) {
-          if (R == Z80::IX) IsIXUse = true;
-          if (R == Z80::IY) IYUsedInBody = true;
+          if (R == Z80::IX || R == Z80::IXH || R == Z80::IXL) IsIXUse = true;
+          if (R == Z80::IY || R == Z80::IYH || R == Z80::IYL) IYUsedInBody = true;
         }
         for (MCPhysReg R : TII->get(Opc).implicit_defs()) {
-          if (R == Z80::IX) IsIXUse = true;
+          if (R == Z80::IX || R == Z80::IXH || R == Z80::IXL) IsIXUse = true;
           if (R == Z80::IY) IYUsedInBody = true;
         }
         if (TII->getInstSizeInBytes(*MII) >= 3) {
