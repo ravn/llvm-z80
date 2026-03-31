@@ -473,6 +473,53 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           continue;
         }
 
+        // Undocumented sub-register extraction pattern:
+        // LD lo,IXL; LD hi,IXH → extracts IX into a register pair.
+        // Recognizes BC (C,B), DE (E,D), HL (L,H) targets.
+        if (STI.hasUndocumented()) {
+          auto getIXSubExtract = [](unsigned Opc) -> std::pair<unsigned,bool> {
+            // Returns {dest_reg, is_high} or {0, false} if not an IX sub-reg extract.
+            switch (Opc) {
+            case Z80::LD_B_IXH: return {Z80::B, true};
+            case Z80::LD_C_IXL: return {Z80::C, false};
+            case Z80::LD_D_IXH: return {Z80::D, true};
+            case Z80::LD_E_IXL: return {Z80::E, false};
+            case Z80::LD_A_IXH: return {Z80::A, true};
+            case Z80::LD_A_IXL: return {Z80::A, false};
+            case Z80::LD_B_IXL: return {Z80::B, false};
+            case Z80::LD_C_IXH: return {Z80::C, true};
+            case Z80::LD_D_IXL: return {Z80::D, false};
+            case Z80::LD_E_IXH: return {Z80::E, true};
+            default: return {0, false};
+            }
+          };
+          auto [Dst1, IsHi1] = getIXSubExtract(Opc);
+          if (Dst1) {
+            auto NextIt = std::next(MII);
+            if (NextIt != MIE) {
+              auto [Dst2, IsHi2] = getIXSubExtract(NextIt->getOpcode());
+              // Must extract both halves (one lo, one hi) into a matching pair.
+              if (Dst2 && IsHi1 != IsHi2) {
+                Register Lo = IsHi1 ? Dst2 : Dst1;
+                Register Hi = IsHi1 ? Dst1 : Dst2;
+                unsigned TargetReg = 0;
+                if (Lo == Z80::C && Hi == Z80::B) TargetReg = Z80::BC;
+                else if (Lo == Z80::E && Hi == Z80::D) TargetReg = Z80::DE;
+                else if (Lo == Z80::L && Hi == Z80::H) TargetReg = Z80::HL;
+                if (TargetReg) {
+                  Extractions.push_back(
+                      {&*MII, &*NextIt, TargetReg, CumulativeDelta});
+                  ++MII; // skip second instruction
+                  continue;
+                }
+              }
+            }
+            // Single sub-reg extract without pair: unknown IX use.
+            IXUsedOther = true;
+            continue;
+          }
+        }
+
         // Check for IX-indexed or other IX references.
         bool IsIXUse = false;
         for (const auto &MO : MII->operands()) {
