@@ -617,18 +617,27 @@ def gen_file(idx, ntests, extra_flags="", skip_if=""):
     if skip_if:
         out.append(f"/* SKIP-IF: {skip_if} */")
     out.append("")
-    out.append("typedef unsigned char uint8_t;")
-    out.append("typedef signed char int8_t;")
-    out.append("typedef unsigned short uint16_t;")
-    out.append("typedef signed short int16_t;")
-    out.append("typedef unsigned long uint32_t;")
-    out.append("")
+    # Use <stdint.h> when available (native/clang), manual typedefs for Z80/SDCC
+    out.append("""#if defined(__z80__) || defined(__SDCC)
+typedef unsigned char uint8_t;
+typedef signed char int8_t;
+typedef unsigned short uint16_t;
+typedef signed short int16_t;
+typedef unsigned long uint32_t;
+#else
+#include <stdint.h>
+#endif
+""")
 
-    # Console I/O for z88dk-ticks (-iochar 1)
+
+    # Console I/O: z88dk-ticks on Z80/SDCC, putchar on native
     out.append("""#ifdef __SDCC
 static void z80_putchar(char c) { c; __asm__("ld a,l\\nout (0x01),a"); }
-#else
+#elif defined(__z80__)
 static void z80_putchar(char c) { __asm volatile("out (1),a" : : "a"(c)); }
+#else
+#include <stdio.h>
+static void z80_putchar(char c) { putchar(c); }
 #endif
 static void z80_print(const char *s) { while (*s) z80_putchar(*s++); }
 static void z80_print_u16(unsigned short n) {
