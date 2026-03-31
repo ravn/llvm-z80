@@ -33,6 +33,8 @@ gen-cats:
 	python3 $(GEN) 1 1 $(SEED) --categories
 
 PROM_FLAGS = -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr
+# Max tests per file at O2/O3 (64KB binary limit, ~22B/test, 3KB headroom)
+TESTS_O2O3 = 2850
 
 gen-suite:
 	python3 $(GEN) $(FILES) $(TESTS_O0) $(SEED) \
@@ -40,6 +42,12 @@ gen-suite:
 	python3 $(GEN) $(FILES) $(TESTS_O0) $(SEED) \
 		--outdir $(SUITE_DIR) --prefix test_91_edge_prom_ \
 		--extra-flags "$(PROM_FLAGS)"
+	python3 $(GEN) $(FILES) $(TESTS_O2O3) $(SEED) \
+		--outdir $(SUITE_DIR) --prefix test_92_edge_O2O3_ \
+		--skip-if "O0 O1 Os Oz"
+	python3 $(GEN) $(FILES) $(TESTS_O2O3) $(SEED) \
+		--outdir $(SUITE_DIR) --prefix test_93_edge_prom_O2O3_ \
+		--extra-flags "$(PROM_FLAGS)" --skip-if "O0 O1 Os Oz"
 
 clean-suite:
 	rm -f $(SUITE_DIR)/test_9[0-3]_edge*.c

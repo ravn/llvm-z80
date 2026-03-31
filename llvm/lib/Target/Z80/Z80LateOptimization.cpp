@@ -2751,7 +2751,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
 
     auto sameAddress = [](const MachineInstr &A, const MachineInstr &B) -> bool {
       // Compare the address operand (operand 0 for both store and load).
-      return A.getOperand(0).isIdenticalTo(B.getOperand(0));
+      // MO_MCSymbol::isIdenticalTo only compares the symbol pointer, NOT
+      // the offset.  We must also compare offsets to distinguish e.g.
+      // __sfrend-10 from __sfrend-16.
+      const MachineOperand &MOA = A.getOperand(0);
+      const MachineOperand &MOB = B.getOperand(0);
+      if (!MOA.isIdenticalTo(MOB))
+        return false;
+      if (MOA.isMCSymbol())
+        return MOA.getOffset() == MOB.getOffset();
+      return true;
     };
 
     for (MachineBasicBlock &MBB : MF) {
@@ -2770,12 +2779,23 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         int PushPopBytes = 1; // initial PUSH
         int BssBytes = SI->StoreBytes;
         SmallVector<MachineBasicBlock::iterator, 4> Loads;
-        // Track PUSH/POP balance for the same register pair.
-        // Our PUSH will be at the store position.  If an existing POP of
-        // the same pair appears between our PUSH and the matching load,
-        // it would steal our value (LIFO).  Similarly, if a previous
-        // conversion inserted a PUSH/POP pair, we must not interleave.
+        // Track PUSH/POP balance for ALL register pairs (not just ours).
+        // PUSH/POP is LIFO: if another register is pushed between our
+        // PUSH and POP, our POP would get the wrong value.  We must
+        // ensure the stack depth (from all PUSH/POP instructions) is 0
+        // at each of our matching loads.
         int StackDepth = 0;
+
+        auto isAnyPush = [](unsigned Opc) {
+          return Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
+                 Opc == Z80::PUSH_HL || Opc == Z80::PUSH_AF ||
+                 Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY;
+        };
+        auto isAnyPop = [](unsigned Opc) {
+          return Opc == Z80::POP_BC || Opc == Z80::POP_DE ||
+                 Opc == Z80::POP_HL || Opc == Z80::POP_AF ||
+                 Opc == Z80::POP_IX || Opc == Z80::POP_IY;
+        };
 
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
@@ -2786,11 +2806,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             break;
           }
 
-          // Track PUSH/POP of the same register pair between our store
-          // and its matching load.  A negative depth means an existing
-          // POP would consume our pushed value before we reach it.
-          if (SOpc == SI->PushOpc) StackDepth++;
-          if (SOpc == SI->PopOpc) {
+          // Track ALL PUSH/POP instructions between our store and
+          // its matching load.  Any unbalanced push means our POP
+          // would retrieve a different register's value.
+          if (isAnyPush(SOpc)) StackDepth++;
+          if (isAnyPop(SOpc)) {
             StackDepth--;
             if (StackDepth < 0) { Conflict = true; break; }
           }
@@ -2801,6 +2821,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           // Matching load from the same address.
           if (isMatchingLoad(SI->StoreOpc, SOpc) && sameAddress(*MII, *Scan)) {
             if (!HasCall) continue; // load before any call — not a cross-call spill
+            // Stack must be balanced at each reload point.
+            if (StackDepth != 0) { Conflict = true; break; }
             Loads.push_back(Scan);
             LoadCount++;
             PushPopBytes += 1; // POP
@@ -2817,6 +2839,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (StackDepth != 0) Conflict = true;
 
         if (Conflict || LoadCount == 0) continue;
+
+        // Check that no other basic block references the same BSS address.
+        // The PUSH/POP conversion is local to this block — if another block
+        // loads from the same slot, it expects the value to be in BSS.
+        {
+          bool UsedElsewhere = false;
+          for (MachineBasicBlock &OtherMBB : MF) {
+            if (&OtherMBB == &MBB) continue;
+            for (MachineInstr &OtherMI : OtherMBB) {
+              if ((OtherMI.getOpcode() == SI->LoadOpc ||
+                   OtherMI.getOpcode() == SI->StoreOpc) &&
+                  sameAddress(*MII, OtherMI)) {
+                UsedElsewhere = true;
+                break;
+              }
+            }
+            if (UsedElsewhere) break;
+          }
+          if (UsedElsewhere) continue;
+        }
 
         // Cost: PUSH (1B) + N*POP (N B) + (N-1)*re-PUSH ((N-1) B) = 2N B.
         // Original: store (S B) + N*load (N*L B).
