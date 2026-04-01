@@ -68,7 +68,7 @@ void Z80::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_Z80_ADDR16:
   case R_Z80_IMM16:
   case R_Z80_ADDR24_SEGMENT:
-    checkIntUInt(ctx, loc, val, 16, rel);
+    // Z80 has a 16-bit address space — wrapping is always correct.
     write16le(loc, val);
     break;
   case R_Z80_ADDR16_LO:

@@ -1785,9 +1785,53 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
   default:
     return false;
 
+  case TargetOpcode::G_PTRTOINT: {
+    // Fold ptrtoint(GV + const) → LD rr, GV + const (issue #46).
+    // Avoids separate LD + ADD for linker symbol arithmetic.
+    Register DstReg = MI.getOperand(0).getReg();
+    Register SrcReg = MI.getOperand(1).getReg();
+    const LLT DstTy = MRI.getType(DstReg);
+    if (STI.hasZ80() && DstTy.getSizeInBits() == 16) {
+      MachineInstr *SrcDef = MRI.getVRegDef(SrcReg);
+      if (SrcDef && SrcDef->getOpcode() == TargetOpcode::G_PTR_ADD) {
+        Register BaseReg = SrcDef->getOperand(1).getReg();
+        Register OffReg = SrcDef->getOperand(2).getReg();
+        MachineInstr *BaseDef = MRI.getVRegDef(BaseReg);
+        MachineInstr *OffDef = MRI.getVRegDef(OffReg);
+        if (BaseDef &&
+            BaseDef->getOpcode() == TargetOpcode::G_GLOBAL_VALUE &&
+            OffDef &&
+            OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          const GlobalValue *GV = BaseDef->getOperand(1).getGlobal();
+          int64_t GVOffset = BaseDef->getOperand(1).getOffset() +
+                             OffDef->getOperand(1).getCImm()->getSExtValue();
+          if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::LD_r16_nn),
+                  DstReg)
+              .addGlobalAddress(GV, GVOffset);
+          MI.eraseFromParent();
+          return true;
+        }
+      }
+    }
+    // Fall through to COPY.
+    const LLT SrcTy = MRI.getType(SrcReg);
+    const TargetRegisterClass *DstRC =
+        DstTy.getSizeInBits() <= 8 ? &Z80::GR8RegClass : &Z80::GR16RegClass;
+    const TargetRegisterClass *SrcRC =
+        SrcTy.getSizeInBits() <= 8 ? &Z80::GR8RegClass : &Z80::GR16RegClass;
+    if (!RBI.constrainGenericRegister(DstReg, *DstRC, MRI) ||
+        !RBI.constrainGenericRegister(SrcReg, *SrcRC, MRI))
+      return false;
+    BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+        .addReg(SrcReg);
+    MI.eraseFromParent();
+    return true;
+  }
+
   case TargetOpcode::G_FREEZE:
   case TargetOpcode::G_INTTOPTR:
-  case TargetOpcode::G_PTRTOINT:
   case TargetOpcode::G_BITCAST: {
     // These are no-ops at the machine level. Lower to a COPY.
     Register DstReg = MI.getOperand(0).getReg();
@@ -2144,6 +2188,43 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    // Direct addressing for constant address loads (Z80 only).
+    // G_LOAD(G_INTTOPTR(G_CONSTANT addr)) → LD A,(addr) or LD HL,(addr)
+    // G_LOAD(G_CONSTANT p(addr)) → LD A,(addr) or LD HL,(addr)
+    if (STI.hasZ80()) {
+      int64_t ConstAddr = -1;
+      if (AddrDef) {
+        if (AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+          Register IntReg = AddrDef->getOperand(1).getReg();
+          MachineInstr *IntDef = MRI.getVRegDef(IntReg);
+          if (IntDef && IntDef->getOpcode() == TargetOpcode::G_CONSTANT)
+            ConstAddr = IntDef->getOperand(1).getCImm()->getZExtValue() & 0xFFFF;
+        } else if (AddrDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          ConstAddr = AddrDef->getOperand(1).getCImm()->getZExtValue() & 0xFFFF;
+        }
+      }
+      if (ConstAddr >= 0) {
+        if (DstTy.getSizeInBits() <= 8) {
+          if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_nnind)).addImm(ConstAddr);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+              .addReg(Z80::A);
+          MI.eraseFromParent();
+          return true;
+        }
+        if (DstTy.getSizeInBits() <= 16) {
+          if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_HL_nnind)).addImm(ConstAddr);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+              .addReg(Z80::HL);
+          MI.eraseFromParent();
+          return true;
+        }
+      }
+    }
+
     // Fallback: indirect addressing via BC, DE, or HL.
     // LOAD8_IND accepts any GR16 register, so regalloc can choose BC/DE/HL
     // freely. This avoids forcing the address into HL, reducing register
@@ -2324,6 +2405,45 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
               .addReg(SrcReg);
           BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_HL))
               .addGlobalAddress(GV, GVOffset);
+          MI.eraseFromParent();
+          return true;
+        }
+      }
+    }
+
+    // Direct addressing for constant address stores (Z80 only).
+    // G_STORE(val, G_INTTOPTR(G_CONSTANT addr)) → LD (addr),A or LD (addr),HL
+    // G_STORE(val, G_CONSTANT p(addr)) → LD (addr),A or LD (addr),HL
+    // Handles casts like *(volatile word *)0x0001 = value.
+    if (STI.hasZ80()) {
+      MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
+      int64_t ConstAddr = -1;
+      if (AddrDef) {
+        if (AddrDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+          Register IntReg = AddrDef->getOperand(1).getReg();
+          MachineInstr *IntDef = MRI.getVRegDef(IntReg);
+          if (IntDef && IntDef->getOpcode() == TargetOpcode::G_CONSTANT)
+            ConstAddr = IntDef->getOperand(1).getCImm()->getZExtValue() & 0xFFFF;
+        } else if (AddrDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          ConstAddr = AddrDef->getOperand(1).getCImm()->getZExtValue() & 0xFFFF;
+        }
+      }
+      if (ConstAddr >= 0) {
+        if (SrcTy.getSizeInBits() <= 8) {
+          if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(SrcReg);
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A)).addImm(ConstAddr);
+          MI.eraseFromParent();
+          return true;
+        }
+        if (SrcTy.getSizeInBits() <= 16) {
+          if (!RBI.constrainGenericRegister(SrcReg, Z80::GR16RegClass, MRI))
+            return false;
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(SrcReg);
+          BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_HL)).addImm(ConstAddr);
           MI.eraseFromParent();
           return true;
         }

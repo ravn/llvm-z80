@@ -2920,6 +2920,125 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- BSS load forwarding (static-stack mode) ---
+  // Track values at absolute BSS addresses within each basic block.
+  // Eliminates redundant loads when the value is already in a register.
+  // Modeled on the IX-indexed store-to-load forwarding above (lines 2098-2184).
+  if (STI.staticStack()) {
+    using BSSKey = std::pair<const MCSymbol *, int64_t>;
+    DenseMap<BSSKey, MCPhysReg> BSSAvail;
+
+    // Map opcode to the register involved in a BSS load/store.
+    auto getBSSLoadDst = [](unsigned Opc) -> Register {
+      switch (Opc) {
+      case Z80::LD_A_nnind:  return Z80::A;
+      case Z80::LD_HL_nnind: return Z80::HL;
+      case Z80::LD_DE_nnind: return Z80::DE;
+      case Z80::LD_BC_nnind: return Z80::BC;
+      default: return Register();
+      }
+    };
+    auto getBSSStoreSrc = [](unsigned Opc) -> Register {
+      switch (Opc) {
+      case Z80::LD_nnind_A:  return Z80::A;
+      case Z80::LD_nnind_HL: return Z80::HL;
+      case Z80::LD_nnind_DE: return Z80::DE;
+      case Z80::LD_nnind_BC: return Z80::BC;
+      default: return Register();
+      }
+    };
+
+    auto getBSSKey = [](const MachineInstr &MI) -> BSSKey {
+      const MachineOperand &MO = MI.getOperand(0);
+      if (MO.isMCSymbol())
+        return {MO.getMCSymbol(), MO.getOffset()};
+      return {nullptr, 0};
+    };
+
+    // Invalidate BSSAvail entries where the value register overlaps
+    // with a clobbered register.
+    auto invalidateBSSReg = [&](MCPhysReg ClobberedReg) {
+      SmallVector<BSSKey, 4> ToErase;
+      for (auto &KV : BSSAvail) {
+        if (TRI->regsOverlap(KV.second, ClobberedReg))
+          ToErase.push_back(KV.first);
+      }
+      for (auto &K : ToErase)
+        BSSAvail.erase(K);
+    };
+
+    for (MachineBasicBlock &MBB : MF) {
+      BSSAvail.clear();
+
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        MachineInstr &MI = *MII++;
+        unsigned Opc = MI.getOpcode();
+
+        // BSS store: track the value.
+        Register StoreSrc = getBSSStoreSrc(Opc);
+        if (StoreSrc.isValid()) {
+          BSSKey Key = getBSSKey(MI);
+          if (Key.first) {
+            BSSAvail[Key] = StoreSrc;
+          }
+          continue;
+        }
+
+        // BSS load: check if value is already available.
+        Register LoadDst = getBSSLoadDst(Opc);
+        if (LoadDst.isValid()) {
+          BSSKey Key = getBSSKey(MI);
+          if (Key.first) {
+            auto It = BSSAvail.find(Key);
+            if (It != BSSAvail.end()) {
+              MCPhysReg SrcReg = It->second;
+              if (LoadDst == SrcReg) {
+                // Value already in the correct register — eliminate load.
+                LLVM_DEBUG(dbgs() << "  BSS: eliminating redundant load: "
+                                  << MI);
+                MI.eraseFromParent();
+                Changed = true;
+                continue;
+              }
+              // Value in a different register — try register copy.
+              // Only for 8-bit (A) loads where we can use LD r,r'.
+              unsigned NewOpc = getLD8Opcode(LoadDst, SrcReg);
+              if (NewOpc) {
+                LLVM_DEBUG(dbgs() << "  BSS: forwarding load to reg copy: "
+                                  << MI);
+                invalidateBSSReg(LoadDst);
+                BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(NewOpc));
+                MI.eraseFromParent();
+                Changed = true;
+                BSSAvail[Key] = LoadDst;
+                continue;
+              }
+            }
+          }
+          // Couldn't forward — record the new value.
+          invalidateBSSReg(LoadDst);
+          if (Key.first)
+            BSSAvail[Key] = LoadDst;
+          continue;
+        }
+
+        // CALL or unmodeled side effects: invalidate everything.
+        if (MI.isCall() || MI.hasUnmodeledSideEffects()) {
+          BSSAvail.clear();
+          continue;
+        }
+
+        // Any other instruction: invalidate entries for defined registers.
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isReg() && MO.isDef() && MO.getReg().isPhysical())
+            invalidateBSSReg(MO.getReg());
+        }
+        for (MCPhysReg Def : TII->get(Opc).implicit_defs())
+          invalidateBSSReg(Def);
+      }
+    }
+  }
+
   return Changed;
 }
 

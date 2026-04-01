@@ -191,6 +191,7 @@ docker run --rm -v ~/z80/llvm-z80:/src \
 - LD rr,nn; INC/DEC rr → LD rr,nn±1: fold adjacent 16-bit increment/decrement into the preceding immediate load. Handles both immediate and symbol operands. Saves 1B per instance (16B on PROM)
 - Single-call-site inlining: areInlineCompatible allows inlining internal functions with hasOneUse() (one caller). Eliminates CALL+RET overhead without code duplication. Multi-call-site functions blocked to prevent spill pressure
 - BSS spill→PUSH/POP peephole (Z80LateOptimization): converts BSS store+load pairs across CALLs to cheaper PUSH/POP (2B vs 6-8B). Three safety guards (issue #41): (1) cross-block check — skip if any other MBB references the same BSS address, (2) cross-register stack depth — track ALL PUSH/POP for LIFO correctness, not just same-register pair, (3) MCSymbol offset comparison — `MO_MCSymbol::isIdenticalTo` only compares symbol pointer, not offset; explicit `getOffset()` check needed to distinguish e.g. `__sfrend-10` from `__sfrend-16`
+- Direct addressing for constant address loads/stores (issue #45): `G_STORE(val, inttoptr(const))` → `LD (nn),A` (8-bit, 3B) or `LD (nn),HL` (16-bit, 3B) instead of indirect via register pair. Same for loads. Saves 1-3B per access. BIOS wboot_c: `*(volatile word *)0x0001 = val` now emits `LD ($1),HL` instead of `LD HL,$1; LD (HL),E; INC HL; LD (HL),D`
 
 ### Investigated: Direct BSS addressing instead of IX-indexed
 With static stack, locals have fixed BSS addresses. Most IX accesses are 16-bit pairs:
@@ -241,7 +242,7 @@ IX and IY are in GR16 (last, least preferred — CostPerUse=1 for DD/FD prefix o
 - **i1 bit test materialization** (was 13B, now 3-5B): `(val & 0x80) != 0` returning `i1` was generating a 13-byte XOR/CP sequence because the Legalizer transforms it to `icmp slt val, 0` and ISel's SLT materialization used generic XOR 0x80 + CP. Fixed: ISel now detects SLT/SGE against 0 and SGT/SLE against -1 in 8-bit materialization, uses RLCA; AND 1 (3B) or RLCA; AND 1; XOR 1 (5B).
 
 ### Code Size: Clang vs SDCC (RC700 PROM)
-SDCC: 1912 bytes, Clang: 1848 bytes (64B / 3.3% smaller). Historical root causes (mostly fixed):
+SDCC: 1912 bytes, Clang: 1842 bytes (70B / 3.7% smaller). Historical root causes (mostly fixed):
 1. **IX frame overhead** (~80B): PUSH IX + LD IX,addr + POP IX per function (10 functions × 8B). hasFP=false with static-stack would save this but has a runtime bug (parked).
 2. **BSS correctness fix** (+60B): Fixed bug where SPILL/RELOAD_GR16 in expandPostRAPseudo used direct BSS addressing for stack arguments (wrong address). Now correctly uses IX-indexed (6B vs 3-4B per access). Recovery requires mixed-mode BSS (direct for locals, IX for stack args).
 3. **IY prefix overhead** (~35B): FD-prefixed instructions. CostPerUse=2 doesn't help because spilling is worse.
