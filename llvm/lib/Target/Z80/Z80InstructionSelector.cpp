@@ -2189,8 +2189,10 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     }
 
     // Direct addressing for constant address loads (Z80 only).
-    // G_LOAD(G_INTTOPTR(G_CONSTANT addr)) → LD A,(addr) or LD HL,(addr)
-    // G_LOAD(G_CONSTANT p(addr)) → LD A,(addr) or LD HL,(addr)
+    // 16-bit: G_LOAD(G_INTTOPTR(G_CONSTANT addr)) → LD HL,(addr)
+    // 8-bit direct addressing (LD A,(nn)) disabled: forcing all 8-bit
+    // constant-address loads through A causes excessive register pressure
+    // in large functions, leading to incorrect spill decisions (#51).
     if (STI.hasZ80()) {
       int64_t ConstAddr = -1;
       if (AddrDef) {
@@ -2204,16 +2206,7 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         }
       }
       if (ConstAddr >= 0) {
-        if (DstTy.getSizeInBits() <= 8) {
-          if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
-            return false;
-          BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_nnind)).addImm(ConstAddr);
-          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
-              .addReg(Z80::A);
-          MI.eraseFromParent();
-          return true;
-        }
-        if (DstTy.getSizeInBits() <= 16) {
+        if (DstTy.getSizeInBits() <= 16 && DstTy.getSizeInBits() > 8) {
           if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
             return false;
           BuildMI(MBB, MI, DL, TII.get(Z80::LD_HL_nnind)).addImm(ConstAddr);
@@ -2429,16 +2422,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         }
       }
       if (ConstAddr >= 0) {
-        if (SrcTy.getSizeInBits() <= 8) {
-          if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
-            return false;
-          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
-              .addReg(SrcReg);
-          BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A)).addImm(ConstAddr);
-          MI.eraseFromParent();
-          return true;
-        }
-        if (SrcTy.getSizeInBits() <= 16) {
+        // 8-bit direct store (LD (nn),A) disabled: see load comment (#51).
+        if (SrcTy.getSizeInBits() <= 16 && SrcTy.getSizeInBits() > 8) {
           if (!RBI.constrainGenericRegister(SrcReg, Z80::GR16RegClass, MRI))
             return false;
           BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
