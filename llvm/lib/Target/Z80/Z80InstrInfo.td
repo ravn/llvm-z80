@@ -1203,11 +1203,15 @@ def COPY16_PUSHPOP : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
 // Spill/Reload pseudo instructions for stack slots (frame index).
 // No static Defs: small offsets expand to IX+d (no clobbers), large offsets
 // are expanded in eliminateFrameIndex with register scavenging.
-def SPILL_GR16 : Z80Pseudo<(outs), (ins GR16:$src, i32imm:$fi, i32imm:$offset)> {
+// Accept Anyi16 (not just GR16) — the allocator may widen the register
+// class to Anyi16 via getLargestLegalSuperClass or class intersection.
+// The expansion in eliminateFrameIndex handles all physical registers
+// in Anyi16 (DE, HL, BC, IX, IY, SP).  See issue #51.
+def SPILL_GR16 : Z80Pseudo<(outs), (ins Anyi16:$src, i32imm:$fi, i32imm:$offset)> {
   let mayStore = true;
   let mayLoad = false;
 }
-def RELOAD_GR16 : Z80Pseudo<(outs GR16:$dst), (ins i32imm:$fi, i32imm:$offset)> {
+def RELOAD_GR16 : Z80Pseudo<(outs Anyi16:$dst), (ins i32imm:$fi, i32imm:$offset)> {
   let mayLoad = true;
   let mayStore = false;
   // Allow rematerialization for loads from immutable stack slots (e.g. incoming

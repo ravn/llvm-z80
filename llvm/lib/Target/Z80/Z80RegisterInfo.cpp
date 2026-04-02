@@ -189,8 +189,11 @@ Z80RegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
                                            const MachineFunction &) const {
   if (RC->hasSuperClass(&Z80::Anyi8RegClass))
     return &Z80::Anyi8RegClass;
-  if (RC->hasSuperClass(&Z80::Anyi16RegClass))
-    return &Z80::Anyi16RegClass;
+  // Return GR16, not Anyi16.  Anyi16 includes SP which is never allocatable,
+  // and the SPILL_GR16/RELOAD_GR16 pseudos only accept GR16.  Widening to
+  // Anyi16 causes "Illegal virtual register" errors (#51).
+  if (RC->hasSuperClass(&Z80::GR16RegClass))
+    return &Z80::GR16RegClass;
   return RC;
 }
 
