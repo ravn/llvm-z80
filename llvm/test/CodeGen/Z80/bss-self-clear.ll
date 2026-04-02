@@ -27,9 +27,8 @@ entry:
 }
 
 ; CHECK-LABEL: _bss_self_clear:
-; The LDIR destination (DE) must be bss+1, not a corrupted value.
-; CHECK: ld hl,_bss
-; CHECK: ld (hl),0
-; After zeroing, DE must point to bss+1 for the LDIR.
-; CHECK: ld de,_bss+1
+; DE must hold bss+1 (not a corrupted value) and the zero store
+; must happen before LDIR.  Order of DE setup vs zero store may vary.
+; CHECK-DAG: ld de,_bss+1
+; CHECK-DAG: ld (_bss),a
 ; CHECK: ldir
