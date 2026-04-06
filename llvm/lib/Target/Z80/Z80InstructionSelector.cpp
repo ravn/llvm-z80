@@ -3095,6 +3095,18 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         }
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
             .addReg(Z80::A);
+      } else if (ShiftAmt >= 6 && !STI.hasSM83()) {
+        // Z80: RRCA × (8-N) + AND mask is shorter than ADD A,A × N.
+        //   SHL 6: 2× RRCA + AND $C0 = 4B (vs 6B)  — saves 2B
+        //   SHL 7: 1× RRCA + AND $80 = 3B (vs 7B)  — saves 4B
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(SrcReg);
+        for (int64_t i = 0; i < 8 - ShiftAmt; i++)
+          BuildMI(MBB, MI, DL, TII.get(Z80::RRCA));
+        BuildMI(MBB, MI, DL, TII.get(Z80::AND_n))
+            .addImm((0xFF << ShiftAmt) & 0xFF);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
       } else if (ShiftAmt > 0) {
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(SrcReg);
