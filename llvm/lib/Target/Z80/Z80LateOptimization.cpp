@@ -1211,6 +1211,79 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole: comparison reversal ---
+    // LD r,A; LD A,#imm; CP r; JR C/JR NC/JP C/JP NC
+    //   → CP #(imm+1); JR NC/JR C/JP NC/JP C  (when imm < 255)
+    // or → CP #(imm-1); JR C/JR NC/JP C/JP NC  (when imm > 0, for NC→C)
+    // The compiler generates "imm < reg" by loading imm into A and
+    // comparing against the saved register. Since "imm < reg" is the
+    // same as "reg >= imm+1", we can use CP (imm+1) directly on A.
+    // Saves 3 bytes (LD r,A + LD A,imm + CP r = 4B → CP imm = 2B).
+    if (STI.hasZ80()) {
+      // Map LD r,A opcodes to their corresponding CP r opcode.
+      auto getLdFromA = [](unsigned Opc) -> unsigned {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::CP_B;
+        case Z80::LD_C_A: return Z80::CP_C;
+        case Z80::LD_D_A: return Z80::CP_D;
+        case Z80::LD_E_A: return Z80::CP_E;
+        case Z80::LD_H_A: return Z80::CP_H;
+        case Z80::LD_L_A: return Z80::CP_L;
+        default: return 0;
+        }
+      };
+      // Map carry-based branch to its inverse.
+      auto flipCarryBranch = [](unsigned Opc)
+          -> std::pair<unsigned, bool> {
+        switch (Opc) {
+        case Z80::JR_C_e:  return {Z80::JR_NC_e, true};
+        case Z80::JR_NC_e: return {Z80::JR_C_e, true};
+        case Z80::JP_C_nn: return {Z80::JP_NC_nn, true};
+        case Z80::JP_NC_nn:return {Z80::JP_C_nn, true};
+        default: return {0, false};
+        }
+      };
+
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        unsigned ExpCP = getLdFromA(MII->getOpcode());
+        if (!ExpCP) { ++MII; continue; }
+
+        auto I0 = MII; // LD r,A
+        auto I1 = std::next(I0); if (I1 == MIE) { ++MII; continue; }
+        // I1 must be LD A,#imm
+        if (I1->getOpcode() != Z80::LD_A_n) { ++MII; continue; }
+        int64_t Imm = I1->getOperand(0).getImm();
+
+        auto I2 = std::next(I1); if (I2 == MIE) { ++MII; continue; }
+        // I2 must be CP r (matching the register from LD r,A)
+        if (I2->getOpcode() != ExpCP) { ++MII; continue; }
+
+        auto I3 = std::next(I2); if (I3 == MIE) { ++MII; continue; }
+        // I3 must be a carry-based branch
+        auto [FlippedBr, IsCarry] = flipCarryBranch(I3->getOpcode());
+        if (!IsCarry) { ++MII; continue; }
+
+        // "imm < A_orig" (JR C) → "A_orig >= imm+1" → CP (imm+1); JR NC
+        // "imm >= A_orig" (JR NC) → "A_orig < imm+1" → CP (imm+1); JR C
+        // Only valid when imm < 255 (imm+1 doesn't overflow 8 bits).
+        if (Imm >= 255) { ++MII; continue; }
+
+        DebugLoc DL = I0->getDebugLoc();
+        MachineBasicBlock *Target = I3->getOperand(0).getMBB();
+        LLVM_DEBUG(dbgs() << "  Comparison reversal: LD r,A; LD A,#"
+                          << Imm << "; CP r; branch → CP #" << (Imm + 1)
+                          << "; flipped branch\n");
+        BuildMI(MBB, *I0, DL, TII->get(Z80::CP_n)).addImm((Imm + 1) & 0xFF);
+        BuildMI(MBB, *I0, DL, TII->get(FlippedBr)).addMBB(Target);
+        I3->eraseFromParent();
+        I2->eraseFromParent();
+        I1->eraseFromParent();
+        MII = MBB.erase(I0);
+        Changed = true;
+      }
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,
