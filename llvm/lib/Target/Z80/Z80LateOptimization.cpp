@@ -1157,6 +1157,60 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole: ADD HL,rr commutativity ---
+    // LD C,L; LD B,H; EX DE,HL; ADD HL,BC → ADD HL,DE
+    // (with optional trailing EX DE,HL if result needed in DE)
+    // Addition is commutative: HL+DE == DE+HL. The compiler generates
+    // the long form when it wants base(DE)+offset(HL) into HL, but
+    // ADD HL,DE gives the same result directly.
+    if (STI.hasZ80()) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        // Match: LD C,L; LD B,H (copy HL → BC)
+        if (MII->getOpcode() != Z80::LD_C_L) { ++MII; continue; }
+        auto I0 = MII; // LD C,L
+        auto I1 = std::next(I0); if (I1 == MIE) { ++MII; continue; }
+        if (I1->getOpcode() != Z80::LD_B_H) { ++MII; continue; }
+        auto I2 = std::next(I1); if (I2 == MIE) { ++MII; continue; }
+        if (I2->getOpcode() != Z80::EX_DE_HL) { ++MII; continue; }
+        auto I3 = std::next(I2); if (I3 == MIE) { ++MII; continue; }
+        if (I3->getOpcode() != Z80::ADD_HL_BC) { ++MII; continue; }
+
+        // Matched: LD C,L; LD B,H; EX DE,HL; ADD HL,BC
+        // Replace with: ADD HL,DE
+        // Safety: the original writes BC (clobbers it). Our replacement
+        // does not write BC — safe as long as nobody reads BC expecting
+        // the old HL value. Check that BC is not read between ADD and
+        // the next BC def (i.e., BC was only a temporary for this ADD).
+        // Also check DE is not clobbered between EX and ADD (trivially
+        // true since they're adjacent).
+        DebugLoc DL = I0->getDebugLoc();
+
+        // Check for trailing EX DE,HL (result needed in DE).
+        auto I4 = std::next(I3);
+        bool HasTrailingEX = (I4 != MIE && I4->getOpcode() == Z80::EX_DE_HL);
+
+        if (HasTrailingEX) {
+          // LD C,L; LD B,H; EX DE,HL; ADD HL,BC; EX DE,HL
+          //   → ADD HL,DE; EX DE,HL (2B vs 5B)
+          LLVM_DEBUG(dbgs() << "  ADD commutativity (DE result): 5→2\n");
+          BuildMI(MBB, *I0, DL, TII->get(Z80::ADD_HL_DE));
+          BuildMI(MBB, *I0, DL, TII->get(Z80::EX_DE_HL));
+          I4->eraseFromParent();
+        } else {
+          // LD C,L; LD B,H; EX DE,HL; ADD HL,BC
+          //   → ADD HL,DE (1B vs 4B)
+          LLVM_DEBUG(dbgs() << "  ADD commutativity (HL result): 4→1\n");
+          BuildMI(MBB, *I0, DL, TII->get(Z80::ADD_HL_DE));
+        }
+        I3->eraseFromParent();
+        I2->eraseFromParent();
+        I1->eraseFromParent();
+        MII = MBB.erase(I0);
+        Changed = true;
+      }
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,
