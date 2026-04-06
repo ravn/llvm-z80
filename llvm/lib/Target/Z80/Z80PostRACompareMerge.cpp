@@ -18,6 +18,11 @@
 // This pass removes OR_A when the Z flag is already valid from a preceding
 // instruction that defines FLAGS and operates on A.
 //
+// Cross-block: if ALL predecessors end with Z valid for A (no flag/A
+// clobbering between the last flag-setter and block exit), the successor
+// can start with ZFlagValid = true. This catches loop headers where both
+// the entry and back-edge set Z for A.
+//
 //===----------------------------------------------------------------------===//
 
 #include "Z80PostRACompareMerge.h"
@@ -71,53 +76,83 @@ static bool modifiesAWithoutFlags(const MachineInstr &MI) {
   return ModifiesA && !definesFlags(MI);
 }
 
+/// Returns true if MI sets FLAGS based on A's value (Z reflects A==0).
+static bool setsZForA(const MachineInstr &MI) {
+  if (!definesFlags(MI))
+    return false;
+  for (const MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && MO.isDef() && MO.getReg() == Z80::A)
+      return true;
+  }
+  if (MI.getDesc().hasImplicitDefOfPhysReg(Z80::A))
+    return true;
+  // CP doesn't def A but sets Z based on A's comparison.
+  unsigned Opc = MI.getOpcode();
+  if (Opc == Z80::CP_r || Opc == Z80::CP_n ||
+      Opc == Z80::CP_HLind || Opc == Z80::CP_IXd)
+    return true;
+  return false;
+}
+
+/// Scan a block and return the ZFlagValid state at its exit.
+/// Also optionally collect OR_A instructions to erase when ZFlagValid.
+static bool scanBlock(MachineBasicBlock &MBB, bool ZFlagValid,
+                      SmallVectorImpl<MachineInstr *> *ToErase) {
+  for (MachineInstr &MI : MBB) {
+    if (MI.getOpcode() == Z80::OR_A && ZFlagValid) {
+      if (ToErase)
+        ToErase->push_back(&MI);
+      continue;
+    }
+
+    if (MI.isCall() || MI.isReturn() || MI.isInlineAsm() || MI.isPseudo()) {
+      ZFlagValid = false;
+      continue;
+    }
+
+    // Branches don't clobber flags — they read them. Don't reset here;
+    // flags remain valid for the exit state (fall-through to successor).
+    if (MI.isBranch())
+      continue;
+
+    if (definesFlags(MI)) {
+      ZFlagValid = setsZForA(MI);
+      continue;
+    }
+
+    if (modifiesAWithoutFlags(MI))
+      ZFlagValid = false;
+  }
+  return ZFlagValid;
+}
+
 bool Z80PostRACompareMerge::runOnMachineFunction(MachineFunction &MF) {
   bool Changed = false;
 
+  // Pass 1: compute ZFlagValidAtExit for each block (no erasure).
+  DenseMap<MachineBasicBlock *, bool> ExitValid;
+  for (MachineBasicBlock &MBB : MF)
+    ExitValid[&MBB] = scanBlock(MBB, /*ZFlagValid=*/false, nullptr);
+
+  // Pass 2: for each block, check if ALL predecessors have ZFlagValid
+  // at exit. If so, start with ZFlagValid = true. Then erase redundant OR A.
   for (MachineBasicBlock &MBB : MF) {
-    bool ZFlagValid = false;
-    SmallVector<MachineInstr *, 4> ToErase;
-
-    for (MachineInstr &MI : MBB) {
-      if (MI.getOpcode() == Z80::OR_A && ZFlagValid) {
-        LLVM_DEBUG(dbgs() << "  Removing redundant: " << MI);
-        ToErase.push_back(&MI);
-        continue;
-      }
-
-      if (MI.isCall() || MI.isReturn() || MI.isInlineAsm() ||
-          MI.isBranch() || MI.isPseudo()) {
-        ZFlagValid = false;
-        continue;
-      }
-
-      if (definesFlags(MI)) {
-        // Check if this instruction also operates on A, meaning Z
-        // reflects A's value. OR_A tests A, so we can only elide it
-        // when the preceding instruction set Z for A specifically.
-        bool SetsZForA = false;
-        for (const MachineOperand &MO : MI.operands()) {
-          if (MO.isReg() && MO.isDef() && MO.getReg() == Z80::A) {
-            SetsZForA = true;
-            break;
-          }
+    bool EntryValid = false;
+    if (!MBB.pred_empty()) {
+      EntryValid = true;
+      for (MachineBasicBlock *Pred : MBB.predecessors()) {
+        if (!ExitValid[Pred]) {
+          EntryValid = false;
+          break;
         }
-        if (MI.getDesc().hasImplicitDefOfPhysReg(Z80::A))
-          SetsZForA = true;
-        // CP doesn't def A but sets Z based on A's comparison.
-        if (MI.getOpcode() == Z80::CP_r || MI.getOpcode() == Z80::CP_n ||
-            MI.getOpcode() == Z80::CP_HLind || MI.getOpcode() == Z80::CP_IXd)
-          SetsZForA = true;
-
-        ZFlagValid = SetsZForA;
-        continue;
       }
-
-      if (modifiesAWithoutFlags(MI))
-        ZFlagValid = false;
     }
 
+    SmallVector<MachineInstr *, 4> ToErase;
+    scanBlock(MBB, EntryValid, &ToErase);
+
     for (MachineInstr *MI : ToErase) {
+      LLVM_DEBUG(dbgs() << "  Removing redundant: " << *MI);
       MI->eraseFromParent();
       Changed = true;
     }
