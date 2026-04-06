@@ -1393,6 +1393,87 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole: redundant LD A,reg removal (issue #60) ---
+    // When LD reg,A is followed by LD A,reg with no A-modifying or
+    // reg-modifying instructions between, the second LD is redundant.
+    // Pattern: LD reg,A; [non-clobbering instrs]; LD A,reg → remove LD A,reg
+    // Also handles LD A,(addr); LD reg,A; [non-clobbering]; LD A,reg.
+    // Saves 1 byte per instance.
+    {
+      // Get the LD A,reg opcode for a given register, or 0.
+      auto getLDArOpc = [](MCPhysReg R) -> unsigned {
+        switch (R) {
+        case Z80::B: return Z80::LD_A_B; case Z80::C: return Z80::LD_A_C;
+        case Z80::D: return Z80::LD_A_D; case Z80::E: return Z80::LD_A_E;
+        case Z80::H: return Z80::LD_A_H; case Z80::L: return Z80::LD_A_L;
+        default: return 0;
+        }
+      };
+
+      // Get dest register from LD r,A opcode, or 0.
+      auto getLDrAdst60 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+
+      SmallVector<MachineInstr *, 8> ToErase60;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        // Match: LD reg,A
+        MCPhysReg SaveReg = getLDrAdst60(MII->getOpcode());
+        if (!SaveReg) continue;
+        unsigned ExpReload = getLDArOpc(SaveReg);
+        if (!ExpReload) continue;
+
+        // Scan forward (up to 8 instructions) for LD A,reg.
+        // Bail if A or reg is modified, or if we hit a CALL/label/etc.
+        bool Found = false;
+        auto It = std::next(MachineBasicBlock::iterator(&*MII));
+        for (int Limit = 8; Limit > 0 && It != MIE; --Limit, ++It) {
+          if (It->getOpcode() == TargetOpcode::KILL) { ++Limit; continue; }
+
+          // Found the redundant reload?
+          if (It->getOpcode() == ExpReload) {
+            Found = true;
+            break;
+          }
+
+          // Check if this instruction modifies A or the saved register.
+          // CALLs, returns, and other control flow (except branches) bail out.
+          if (It->isCall() || It->isReturn()) break;
+          bool ClobbersA = false, ClobbersReg = false;
+          for (const MachineOperand &MO : It->operands()) {
+            if (MO.isRegMask()) {
+              // RegMask clobbers most registers — bail conservatively.
+              ClobbersA = true; ClobbersReg = true; break;
+            }
+            if (!MO.isReg() || !MO.getReg().isPhysical() || !MO.isDef())
+              continue;
+            if (TRI->regsOverlap(MO.getReg(), Z80::A))
+              ClobbersA = true;
+            if (TRI->regsOverlap(MO.getReg(), SaveReg))
+              ClobbersReg = true;
+          }
+
+          if (ClobbersA || ClobbersReg) break;
+
+          // CP, OR A, AND, etc. set FLAGS but don't modify A's value.
+          // We check the actual def operands above, so CP is safe (no A def).
+        }
+
+        if (Found) {
+          LLVM_DEBUG(dbgs() << "  Redundant LD A,reg: removing " << *It);
+          ToErase60.push_back(&*It);
+          Changed = true;
+        }
+      }
+      for (auto *MI : ToErase60)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,
@@ -3272,6 +3353,30 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         for (MCPhysReg Def : TII->get(Opc).implicit_defs())
           invalidateBSSReg(Def);
       }
+    }
+  }
+
+  // --- Pass: JP → JR branch shortening (issue #58) ---
+  // Convert all JP Z/NZ/C/NC and unconditional JP to JR equivalents.
+  // BranchRelaxation (which runs after this pass) will widen any JR
+  // that can't reach its target back to JP. Net effect: branches that
+  // fit in ±127 bytes become JR (2B), saving 1B each.
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      unsigned NewOpc = 0;
+      switch (MI.getOpcode()) {
+      case Z80::JP_nn:    NewOpc = Z80::JR_e; break;
+      case Z80::JP_Z_nn:  NewOpc = Z80::JR_Z_e; break;
+      case Z80::JP_NZ_nn: NewOpc = Z80::JR_NZ_e; break;
+      case Z80::JP_C_nn:  NewOpc = Z80::JR_C_e; break;
+      case Z80::JP_NC_nn: NewOpc = Z80::JR_NC_e; break;
+      default: continue;
+      }
+      // Only convert MBB-target branches (not symbol/immediate targets).
+      if (!MI.getOperand(0).isMBB()) continue;
+      LLVM_DEBUG(dbgs() << "  JP→JR shortening: " << MI);
+      MI.setDesc(TII->get(NewOpc));
+      Changed = true;
     }
   }
 

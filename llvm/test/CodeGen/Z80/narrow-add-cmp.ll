@@ -5,13 +5,13 @@
 @var1 = external global i8
 @var2 = external global i8
 
-; EQ branch: ADD A,C; JP C,fallthrough; CP r; JP Z,target
+; EQ branch: ADD A,C; JR C,fallthrough; CP r; JR Z,target
 define i16 @narrow_add_cmp_eq() {
 ; CHECK-LABEL: _narrow_add_cmp_eq:
 ; CHECK:       add a,#32
-; CHECK-NEXT:  jp c,
+; CHECK-NEXT:  jr c,
 ; CHECK-NEXT:  cp
-; CHECK-NEXT:  jp z,
+; CHECK-NEXT:  jr z,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
@@ -26,13 +26,13 @@ else:
   ret i16 0
 }
 
-; NE branch: ADD A,C; JP C,target; CP r; JP NZ,target
+; NE branch: ADD A,C; JR C,target; CP r; JR NZ,target
 define i16 @narrow_add_cmp_ne() {
 ; CHECK-LABEL: _narrow_add_cmp_ne:
 ; CHECK:       add a,#32
-; CHECK-NEXT:  jp c,
+; CHECK-NEXT:  jr c,
 ; CHECK-NEXT:  cp
-; CHECK-NEXT:  jp nz,
+; CHECK-NEXT:  jr nz,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
@@ -51,9 +51,9 @@ else:
 define i16 @narrow_add_cmp_commuted() {
 ; CHECK-LABEL: _narrow_add_cmp_commuted:
 ; CHECK:       add a,#32
-; CHECK-NEXT:  jp c,
+; CHECK-NEXT:  jr c,
 ; CHECK-NEXT:  cp
-; CHECK-NEXT:  jp nz,
+; CHECK-NEXT:  jr nz,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16

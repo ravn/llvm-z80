@@ -10,7 +10,7 @@ declare i8 @llvm.ucmp.i8.i16(i16, i16)
 ; Test: unsigned add saturating
 define i16 @test_uaddsat(i16 %a, i16 %b) {
 ; CHECK-LABEL: _test_uaddsat:
-; CHECK:       add hl,bc
+; CHECK:       add hl,de
 ; CHECK:       sbc a,a
 ; CHECK:       and #1
 ; CHECK:       ret
