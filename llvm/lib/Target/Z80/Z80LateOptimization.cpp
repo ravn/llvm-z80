@@ -1282,6 +1282,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           unsigned Opc3 = I3->getOpcode();
           if (definesA(Opc3)) {
             ADead = true;
+          } else if (I3->isReturn()) {
+            // RET/RETI/RETN — A is dead after return.
+            ADead = true;
           } else if (Opc3 == Z80::OR_A && std::next(I3) != MIE &&
                      isZNZBranch(std::next(I3)->getOpcode())) {
             // OR A; JR Z/NZ — the OR A is a redundant flag test.
@@ -1291,6 +1294,19 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           } else if (isZNZBranch(Opc3)) {
             ADead = checkADeadAfterBranch(I3);
           }
+        } else {
+          // End of basic block with no terminator (fallthrough) — check
+          // if all successors define A before using it.
+          ADead = true;
+          for (MachineBasicBlock *Succ : MBB.successors()) {
+            if (Succ->empty() || !definesA(Succ->front().getOpcode())) {
+              ADead = false;
+              break;
+            }
+          }
+          // No successors means unreachable — A is dead.
+          if (MBB.succ_empty())
+            ADead = true;
         }
         if (!ADead) { ++MII; continue; }
 

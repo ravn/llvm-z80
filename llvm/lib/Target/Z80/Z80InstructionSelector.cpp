@@ -2620,6 +2620,26 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         tryFIFold(BaseReg, OffReg, DstReg, Z80::ADD_HL_FI))
       return true;
 
+    // Fold G_PTR_ADD(G_GLOBAL_VALUE @sym, G_CONSTANT off) → LD rr, sym+off.
+    // Both operands are link-time constants, so the linker resolves the sum.
+    // This saves 4 bytes (LD DE,off; LD HL,sym; ADD HL,DE → LD rr,sym+off).
+    // The same fold already exists for G_LOAD, G_STORE, and G_PTRTOINT.
+    {
+      MachineInstr *BaseDef = MRI.getVRegDef(BaseReg);
+      if (BaseDef && BaseDef->getOpcode() == TargetOpcode::G_GLOBAL_VALUE &&
+          OffDef && OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+        const GlobalValue *GV = BaseDef->getOperand(1).getGlobal();
+        int64_t GVOffset = BaseDef->getOperand(1).getOffset() +
+                           OffDef->getOperand(1).getCImm()->getSExtValue();
+        if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::LD_r16_nn), DstReg)
+            .addGlobalAddress(GV, GVOffset);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
+
     if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(BaseReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(OffReg, Z80::GR16_BCDERegClass, MRI))
@@ -2829,6 +2849,41 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         return true;
       }
 
+      // Try SUB (HL) fusion: if Src2 is a single-use G_LOAD, use
+      // SUB (HL) to compare A directly with memory (saves 1-2 bytes).
+      {
+        MachineInstr *LoadDef = MRI.getVRegDef(Src2Reg);
+        if (LoadDef && LoadDef->getOpcode() == TargetOpcode::G_LOAD &&
+            MRI.hasOneNonDBGUse(Src2Reg) &&
+            !(LoadDef->hasOneMemOperand() &&
+              (*LoadDef->memoperands_begin())->getAddrSpace() != 0)) {
+          Register PtrReg = LoadDef->getOperand(1).getReg();
+          if (RBI.constrainGenericRegister(PtrReg, Z80::GR16RegClass, MRI) &&
+              RBI.constrainGenericRegister(Src1Reg, Z80::GR8RegClass, MRI) &&
+              RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI)) {
+            const TargetRegisterClass *PtrRC = MRI.getRegClass(PtrReg);
+            const TargetRegisterClass *HLRC =
+                TRI.getCommonSubClass(PtrRC, &Z80::HLIRegClass);
+            if (HLRC) {
+              MRI.setRegClass(PtrReg, HLRC);
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                      Z80::HL)
+                  .addReg(PtrReg);
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                      Z80::A)
+                  .addReg(Src1Reg);
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_HLind));
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                      DstReg)
+                  .addReg(Z80::A);
+              LoadDef->eraseFromParent();
+              MI.eraseFromParent();
+              return true;
+            }
+          }
+        }
+      }
+
       // Constrain registers
       if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI) ||
           !RBI.constrainGenericRegister(Src1Reg, Z80::GR8RegClass, MRI) ||
@@ -2957,6 +3012,49 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           std::swap(Src1Reg, Src2Reg);
         auto ImmVal = getConst8(Src2Reg);
 
+        // Try AND (HL) fusion: if an operand is a single-use G_LOAD,
+        // use AND (HL) to AND A directly with memory.
+        if (!ImmVal) {
+          auto tryAndHLFuse = [&](Register LoadReg, Register OtherReg) -> bool {
+            MachineInstr *LoadDef = MRI.getVRegDef(LoadReg);
+            if (!LoadDef || LoadDef->getOpcode() != TargetOpcode::G_LOAD)
+              return false;
+            if (!MRI.hasOneNonDBGUse(LoadReg))
+              return false;
+            if (LoadDef->hasOneMemOperand() &&
+                (*LoadDef->memoperands_begin())->getAddrSpace() != 0)
+              return false;
+            Register PtrReg = LoadDef->getOperand(1).getReg();
+            if (!RBI.constrainGenericRegister(PtrReg, Z80::GR16RegClass, MRI) ||
+                !RBI.constrainGenericRegister(OtherReg, Z80::GR8RegClass, MRI))
+              return false;
+            const TargetRegisterClass *PtrRC = MRI.getRegClass(PtrReg);
+            const TargetRegisterClass *HLRC =
+                TRI.getCommonSubClass(PtrRC, &Z80::HLIRegClass);
+            if (!HLRC)
+              return false;
+            MRI.setRegClass(PtrReg, HLRC);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    Z80::HL)
+                .addReg(PtrReg);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    Z80::A)
+                .addReg(OtherReg);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_HLind));
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    DstReg)
+                .addReg(Z80::A);
+            LoadDef->eraseFromParent();
+            return true;
+          };
+          // AND is commutative — try both sides.
+          if (tryAndHLFuse(Src2Reg, Src1Reg) ||
+              tryAndHLFuse(Src1Reg, Src2Reg)) {
+            MI.eraseFromParent();
+            return true;
+          }
+        }
+
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(Src1Reg);
         if (ImmVal)
@@ -3024,6 +3122,52 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         if (getConst8(Src1Reg) && !getConst8(Src2Reg))
           std::swap(Src1Reg, Src2Reg);
         auto ImmVal = getConst8(Src2Reg);
+
+        // Try OR/XOR (HL) fusion: if an operand is a single-use G_LOAD,
+        // use OR/XOR (HL) to operate A directly with memory.
+        if (!ImmVal) {
+          unsigned HLOpc = (Opcode == TargetOpcode::G_OR) ? Z80::OR_HLind
+                                                          : Z80::XOR_HLind;
+          auto tryOrXorHLFuse = [&](Register LoadReg,
+                                    Register OtherReg) -> bool {
+            MachineInstr *LoadDef = MRI.getVRegDef(LoadReg);
+            if (!LoadDef || LoadDef->getOpcode() != TargetOpcode::G_LOAD)
+              return false;
+            if (!MRI.hasOneNonDBGUse(LoadReg))
+              return false;
+            if (LoadDef->hasOneMemOperand() &&
+                (*LoadDef->memoperands_begin())->getAddrSpace() != 0)
+              return false;
+            Register PtrReg = LoadDef->getOperand(1).getReg();
+            if (!RBI.constrainGenericRegister(PtrReg, Z80::GR16RegClass, MRI) ||
+                !RBI.constrainGenericRegister(OtherReg, Z80::GR8RegClass, MRI))
+              return false;
+            const TargetRegisterClass *PtrRC = MRI.getRegClass(PtrReg);
+            const TargetRegisterClass *HLRC =
+                TRI.getCommonSubClass(PtrRC, &Z80::HLIRegClass);
+            if (!HLRC)
+              return false;
+            MRI.setRegClass(PtrReg, HLRC);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    Z80::HL)
+                .addReg(PtrReg);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    Z80::A)
+                .addReg(OtherReg);
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(HLOpc));
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                    DstReg)
+                .addReg(Z80::A);
+            LoadDef->eraseFromParent();
+            return true;
+          };
+          // OR/XOR are commutative — try both sides.
+          if (tryOrXorHLFuse(Src2Reg, Src1Reg) ||
+              tryOrXorHLFuse(Src1Reg, Src2Reg)) {
+            MI.eraseFromParent();
+            return true;
+          }
+        }
 
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(Src1Reg);
