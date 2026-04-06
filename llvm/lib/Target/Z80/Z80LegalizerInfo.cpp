@@ -123,7 +123,13 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   // G_UADDO: unsigned add with overflow (returns result + overflow flag)
   // G_UADDE: unsigned add with carry in (for chaining)
   // These are used when narrowing 32-bit+ operations
-  getActionDefinitionsBuilder({G_UADDO, G_SADDO})
+  // G_UADDO is legal for i8 (ADD A,r + carry) and i16 (ADD HL,rr + carry).
+  // G_SADDO only for i16 (ADC HL,rr sets P/V for signed overflow).
+  getActionDefinitionsBuilder(G_UADDO)
+      .legalFor({{S8, S1}, {S16, S1}})
+      .clampScalar(0, S8, S16)
+      .minScalar(1, S1);
+  getActionDefinitionsBuilder(G_SADDO)
       .legalFor({{S16, S1}})
       .clampScalar(0, S16, S16)
       .minScalar(1, S1);
@@ -137,7 +143,11 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   // Unlike G_UADDE which uses hardware carry, signed overflow needs arithmetic.
   getActionDefinitionsBuilder(G_SADDE).lower();
 
-  getActionDefinitionsBuilder({G_USUBO, G_SSUBO})
+  getActionDefinitionsBuilder(G_USUBO)
+      .legalFor({{S8, S1}, {S16, S1}})
+      .clampScalar(0, S8, S16)
+      .minScalar(1, S1);
+  getActionDefinitionsBuilder(G_SSUBO)
       .legalFor({{S16, S1}})
       .clampScalar(0, S16, S16)
       .minScalar(1, S1);

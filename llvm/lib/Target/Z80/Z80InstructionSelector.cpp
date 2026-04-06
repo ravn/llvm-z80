@@ -4769,6 +4769,51 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     Register Src2Reg = MI.getOperand(3).getReg();
     const LLT DstTy = MRI.getType(DstReg);
 
+    if (DstTy.getSizeInBits() <= 8) {
+      // 8-bit unsigned add with overflow: ADD A,r sets carry flag.
+      if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI) ||
+          !RBI.constrainGenericRegister(Src1Reg, Z80::GR8RegClass, MRI) ||
+          !RBI.constrainGenericRegister(Src2Reg, Z80::GR8RegClass, MRI))
+        return false;
+
+      // Check for constant RHS to use ADD_A_n
+      MachineInstr *Src2Def = MRI.getVRegDef(Src2Reg);
+      bool Src2IsConst = Src2Def &&
+                         Src2Def->getOpcode() == TargetOpcode::G_CONSTANT;
+
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+          .addReg(Src1Reg);
+      if (Src2IsConst) {
+        int64_t Val = Src2Def->getOperand(1).getCImm()->getSExtValue();
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD_A_n))
+            .addImm(Val & 0xFF);
+      } else {
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD_A_r))
+            .addReg(Src2Reg);
+      }
+
+      if (!MRI.use_nodbg_empty(OverflowReg)) {
+        // Overflow is used — save sum, then materialize carry.
+        if (!RBI.constrainGenericRegister(OverflowReg, Z80::GR8RegClass, MRI))
+          return false;
+        // Save the sum before SBC A,A destroys it.
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
+        // SBC A,A; AND 1 → A = carry (0 or 1)
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SBC_A_A));
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                OverflowReg)
+            .addReg(Z80::A);
+      } else {
+        // Overflow unused — just copy the sum.
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
+      }
+      MI.eraseFromParent();
+      return true;
+    }
+
     if (DstTy.getSizeInBits() <= 16) {
       if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI) ||
           !RBI.constrainGenericRegister(Src1Reg, Z80::GR16_BCDERegClass, MRI) ||
@@ -4952,6 +4997,46 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     Register Src1Reg = MI.getOperand(2).getReg();
     Register Src2Reg = MI.getOperand(3).getReg();
     const LLT DstTy = MRI.getType(DstReg);
+
+    if (DstTy.getSizeInBits() <= 8) {
+      // 8-bit unsigned sub with borrow: SUB A,r sets carry on borrow.
+      if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI) ||
+          !RBI.constrainGenericRegister(Src1Reg, Z80::GR8RegClass, MRI) ||
+          !RBI.constrainGenericRegister(Src2Reg, Z80::GR8RegClass, MRI))
+        return false;
+
+      MachineInstr *Src2Def = MRI.getVRegDef(Src2Reg);
+      bool Src2IsConst = Src2Def &&
+                         Src2Def->getOpcode() == TargetOpcode::G_CONSTANT;
+
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+          .addReg(Src1Reg);
+      if (Src2IsConst) {
+        int64_t Val = Src2Def->getOperand(1).getCImm()->getSExtValue();
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_n))
+            .addImm(Val & 0xFF);
+      } else {
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_r))
+            .addReg(Src2Reg);
+      }
+
+      if (!MRI.use_nodbg_empty(OverflowReg)) {
+        if (!RBI.constrainGenericRegister(OverflowReg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SBC_A_A));
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY),
+                OverflowReg)
+            .addReg(Z80::A);
+      } else {
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
+      }
+      MI.eraseFromParent();
+      return true;
+    }
 
     if (DstTy.getSizeInBits() <= 16) {
       if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI) ||
