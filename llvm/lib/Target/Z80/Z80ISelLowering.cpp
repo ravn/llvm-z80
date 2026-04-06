@@ -54,6 +54,13 @@ Z80TargetLowering::Z80TargetLowering(const Z80TargetMachine &TM,
   // Z80 has limited jump table support
   setMaximumJumpTableSize(std::min(256u, getMaximumJumpTableSize()));
 
+  // On Z80, jump table dispatch costs ~19 bytes (zero-extend, table lookup,
+  // indirect jump) + 2 bytes per entry.  Cascaded CP/JR Z branches cost ~4
+  // bytes per case.  Jump tables only win for ≥8 cases.  The LLVM default
+  // is 4, which generates jump tables for 4-case IOBYTE dispatches that are
+  // 15+ bytes larger than the equivalent if-else chain.
+  setMinimumJumpTableEntries(8);
+
   // Z80 has no conditional move instruction, so SELECT is always expanded
   // to a branch sequence. Prefer branches over selects since they avoid
   // computing both sides of the conditional.

@@ -730,6 +730,52 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // correctly when the register allocator places the counter in B (enabled
     // by the B-last GR8 allocation order + DJNZ register hint).
 
+    // --- Peephole: DEC A; LD B,A; [OR A;] JR NZ → DJNZ (Z80 only) ---
+    // When the loop counter is in B but the decrement goes through A:
+    //   DEC A (1B) + LD B,A (1B) + [OR A (1B)] + JR NZ (2B) = 4-5 bytes
+    //   → DJNZ (2B), saves 2-3 bytes.
+    // DEC A sets Z; LD B,A preserves flags; OR A is redundant (flags already
+    // set by DEC A); JR NZ tests Z from DEC A. DJNZ decrements B and branches
+    // if B≠0 — same semantics.
+    // Requires: A is dead after the sequence (DJNZ doesn't update A).
+    if (STI.hasZ80()) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        if (MII->getOpcode() != Z80::DEC_A) { ++MII; continue; }
+        auto I1 = MII;
+        auto I2 = std::next(I1);
+        if (I2 == MIE || I2->getOpcode() != Z80::LD_B_A) {
+          ++MII; continue;
+        }
+        auto I3 = std::next(I2);
+        if (I3 == MIE) { ++MII; continue; }
+        // Optional OR A between LD B,A and JR NZ
+        MachineInstr *OrToErase = nullptr;
+        auto IBranch = I3;
+        if (I3->getOpcode() == Z80::OR_A) {
+          OrToErase = &*I3;
+          IBranch = std::next(I3);
+          if (IBranch == MIE) { ++MII; continue; }
+        }
+        if (IBranch->getOpcode() != Z80::JR_NZ_e) {
+          ++MII; continue;
+        }
+        // A must be dead after the JR NZ (DJNZ doesn't touch A).
+        if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::A)) {
+          ++MII; continue;
+        }
+        MachineBasicBlock *TargetMBB = IBranch->getOperand(0).getMBB();
+        DebugLoc DL = I1->getDebugLoc();
+        LLVM_DEBUG(dbgs() << "  DEC A; LD B,A; [OR A;] JR NZ → DJNZ\n");
+        IBranch->eraseFromParent();
+        if (OrToErase) OrToErase->eraseFromParent();
+        I2->eraseFromParent();
+        MII = MBB.erase(I1);
+        BuildMI(MBB, MII, DL, TII->get(Z80::DJNZ_e)).addMBB(TargetMBB);
+        Changed = true;
+      }
+    }
+
     // --- Peephole: DEC B; JR NZ → DJNZ (Z80 only) ---
     // DJNZ is a 2-byte instruction that decrements B and branches if non-zero.
     // Replaces DEC B (1 byte) + JR NZ (2 bytes) = 3 bytes with DJNZ (2 bytes).
@@ -1282,6 +1328,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           unsigned Opc3 = I3->getOpcode();
           if (definesA(Opc3)) {
             ADead = true;
+          } else if (I3->isReturn()) {
+            // RET/RETI/RETN — A is dead after return.
+            ADead = true;
           } else if (Opc3 == Z80::OR_A && std::next(I3) != MIE &&
                      isZNZBranch(std::next(I3)->getOpcode())) {
             // OR A; JR Z/NZ — the OR A is a redundant flag test.
@@ -1291,6 +1340,19 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           } else if (isZNZBranch(Opc3)) {
             ADead = checkADeadAfterBranch(I3);
           }
+        } else {
+          // End of basic block with no terminator (fallthrough) — check
+          // if all successors define A before using it.
+          ADead = true;
+          for (MachineBasicBlock *Succ : MBB.successors()) {
+            if (Succ->empty() || !definesA(Succ->front().getOpcode())) {
+              ADead = false;
+              break;
+            }
+          }
+          // No successors means unreachable — A is dead.
+          if (MBB.succ_empty())
+            ADead = true;
         }
         if (!ADead) { ++MII; continue; }
 
