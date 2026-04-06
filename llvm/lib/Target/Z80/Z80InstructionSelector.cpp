@@ -31,6 +31,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsZ80.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -75,6 +76,12 @@ private:
       Register RhsW3, MachineRegisterInfo &MRI, const DebugLoc &DL,
       CmpInst::Predicate &NormalizedPred, bool FusedBranch = false);
 
+  /// Check if a 16-bit virtual register provably has its high byte always zero.
+  /// Walks the def chain through G_PHI, G_CONSTANT, G_ADD (nuw), G_ZEXT, etc.
+  /// Used to narrow 16-bit EQ/NE comparisons to 8-bit (CP instead of SUB+OR).
+  bool isHighByteProvablyZero(Register Reg, MachineRegisterInfo &MRI,
+                              SmallPtrSetImpl<MachineInstr *> &Visited);
+
   /// Count foldable G_LOAD→G_ADD/SUB/PTR_ADD patterns in a BB.
   /// Used to decide if register pressure is high enough to justify folding.
   unsigned countFoldablePatternsInBB(MachineBasicBlock &MBB,
@@ -95,6 +102,64 @@ Z80InstructionSelector::Z80InstructionSelector(const Z80TargetMachine &TM,
                                                Z80Subtarget &STI,
                                                Z80RegisterBankInfo &RBI)
     : TII(*STI.getInstrInfo()), TRI(*STI.getRegisterInfo()), RBI(RBI) {}
+
+/// Check if a 16-bit virtual register provably has its high byte always zero.
+/// Walks the def chain through G_PHI, G_CONSTANT, G_ADD (nuw), G_ZEXT.
+/// Returns true only when we can prove it; false means "don't know".
+bool Z80InstructionSelector::isHighByteProvablyZero(
+    Register Reg, MachineRegisterInfo &MRI,
+    SmallPtrSetImpl<MachineInstr *> &Visited) {
+  if (!Reg.isVirtual())
+    return false;
+  MachineInstr *Def = MRI.getVRegDef(Reg);
+  if (!Def)
+    return false;
+
+  // Cycle detection: if we've already visited this def (PHI cycle), return
+  // true — cycles don't disprove the property, only non-cycle leaves can.
+  if (!Visited.insert(Def).second)
+    return true;
+
+  switch (Def->getOpcode()) {
+  case TargetOpcode::G_CONSTANT: {
+    int64_t Val = Def->getOperand(1).getCImm()->getSExtValue();
+    return Val >= 0 && Val <= 255;
+  }
+  case TargetOpcode::G_ZEXT:
+  case TargetOpcode::G_ANYEXT: {
+    Register Src = Def->getOperand(1).getReg();
+    LLT SrcTy = MRI.getType(Src);
+    return SrcTy.getSizeInBits() <= 8;
+  }
+  case TargetOpcode::G_PHI: {
+    for (unsigned I = 1, E = Def->getNumOperands(); I < E; I += 2) {
+      Register InReg = Def->getOperand(I).getReg();
+      if (!isHighByteProvablyZero(InReg, MRI, Visited))
+        return false;
+    }
+    return true;
+  }
+  case TargetOpcode::G_ADD: {
+    if (!(Def->getFlag(MachineInstr::NoUWrap)))
+      return false;
+    Register LHS = Def->getOperand(1).getReg();
+    Register RHS = Def->getOperand(2).getReg();
+    return isHighByteProvablyZero(LHS, MRI, Visited) &&
+           isHighByteProvablyZero(RHS, MRI, Visited);
+  }
+  case Z80::INC16:
+  case Z80::DEC16: {
+    // INC16/DEC16 is selected from G_ADD/G_SUB +/-1.
+    // If the source has high byte zero, the result does too, provided the
+    // loop exit constant is <= 255 (checked by the caller — we only reach
+    // isHighByteProvablyZero when ConstVal is in [0,255]).
+    Register Src = Def->getOperand(1).getReg();
+    return isHighByteProvablyZero(Src, MRI, Visited);
+  }
+  default:
+    return false;
+  }
+}
 
 /// Count how many 16-bit G_ADD/G_SUB/G_PTR_ADD in the BB have a single-use
 /// G_LOAD from a frame index as an operand.  When this count exceeds the
@@ -996,16 +1061,34 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         VarReg = RHS;
 
       if (VarReg.isValid() && !STI.hasSM83()) {
-        // Z80: Optimized small-constant EQ/NE test via SUB+OR.
+        // Z80: Optimized small-constant EQ/NE test.
+        // If high byte is provably zero, use 8-bit CP (3B) instead of
+        // SUB+OR H (5B).  Otherwise fall back to SUB+OR H.
         if (!RBI.constrainGenericRegister(VarReg, Z80::GR16RegClass, MRI))
           return false;
+        SmallPtrSet<MachineInstr *, 8> Visited;
+        bool HighByteZero = isHighByteProvablyZero(VarReg, MRI, Visited);
+        LLVM_DEBUG(dbgs() << "  Small-const EQ/NE: VarReg=" << VarReg
+                          << " ConstVal=" << ConstVal
+                          << " HighByteZero=" << HighByteZero << "\n");
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
             .addReg(VarReg);
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(Z80::L);
-        if (ConstVal != 0)
-          BuildMI(MBB, MI, DL, TII.get(Z80::SUB_n)).addImm(ConstVal);
-        BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::H);
+        if (HighByteZero) {
+          // High byte proven zero: 8-bit compare suffices.
+          //   C==0: OR A (test A for zero, 1B)
+          //   C>0:  CP C (2B)
+          if (ConstVal != 0)
+            BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(ConstVal);
+          else
+            BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::A);
+        } else {
+          // General case: test both bytes.
+          if (ConstVal != 0)
+            BuildMI(MBB, MI, DL, TII.get(Z80::SUB_n)).addImm(ConstVal);
+          BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::H);
+        }
       } else if (STI.hasSM83()) {
         // Check if RHS is constant 0 — use lightweight OR-based zero test.
         bool RHSIsZero = false;
