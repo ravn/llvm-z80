@@ -2058,7 +2058,7 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     const LLT DstTy = MRI.getType(DstReg);
     const DebugLoc &DL = MI.getDebugLoc();
 
-    // Port I/O: address_space(2) → IN A,(n)
+    // Port I/O: address_space(2) → IN A,(n) or IN A,(C)
     if (MI.hasOneMemOperand() &&
         (*MI.memoperands_begin())->getAddrSpace() == Z80::AS_IO) {
       if (DstTy.getSizeInBits() > 8)
@@ -2078,11 +2078,19 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           PortAddr = AddrDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
         }
       }
-      if (PortAddr < 0)
-        return false; // Non-constant port address not yet supported
       if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
         return false;
-      BuildMI(MBB, MI, DL, TII.get(Z80::IN_A_n)).addImm(PortAddr);
+      if (PortAddr >= 0) {
+        // Constant port address: use IN A,(n) — 2B, faster.
+        BuildMI(MBB, MI, DL, TII.get(Z80::IN_A_n)).addImm(PortAddr);
+      } else {
+        // Non-constant port address (e.g., from PHI in conditional port I/O,
+        // see #44): use IN A,(C). Address goes through BC register pair.
+        if (!RBI.constrainGenericRegister(AddrReg, Z80::GR16RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::BC).addReg(AddrReg);
+        BuildMI(MBB, MI, DL, TII.get(Z80::IN_A_C));
+      }
       BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg).addReg(Z80::A);
       MI.eraseFromParent();
       return true;
@@ -2354,7 +2362,7 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     const LLT SrcTy = MRI.getType(SrcReg);
     const DebugLoc &DL = MI.getDebugLoc();
 
-    // Port I/O: address_space(2) → OUT (n),A
+    // Port I/O: address_space(2) → OUT (n),A or OUT (C),A
     if (MI.hasOneMemOperand() &&
         (*MI.memoperands_begin())->getAddrSpace() == Z80::AS_IO) {
       if (SrcTy.getSizeInBits() > 8)
@@ -2371,12 +2379,23 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           PortAddr = AddrDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
         }
       }
-      if (PortAddr < 0)
-        return false;
       if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
         return false;
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(SrcReg);
-      BuildMI(MBB, MI, DL, TII.get(Z80::OUT_n_A)).addImm(PortAddr);
+      if (PortAddr >= 0) {
+        // Constant port address: use OUT (n),A — 2B, faster.
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(SrcReg);
+        BuildMI(MBB, MI, DL, TII.get(Z80::OUT_n_A)).addImm(PortAddr);
+      } else {
+        // Non-constant port address (e.g., from PHI in conditional port I/O,
+        // see #44): use OUT (C),A. Address goes through BC register pair.
+        // Truncate the 16-bit pointer to 8 bits via the low byte (LD C,L
+        // after constraining AddrReg to a GR16 / extracting C).
+        if (!RBI.constrainGenericRegister(AddrReg, Z80::GR16RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::BC).addReg(AddrReg);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(SrcReg);
+        BuildMI(MBB, MI, DL, TII.get(Z80::OUT_C_A));
+      }
       MI.eraseFromParent();
       return true;
     }

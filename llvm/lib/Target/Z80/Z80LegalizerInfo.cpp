@@ -325,14 +325,17 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
       [](const LegalityQuery &) { return true; });
 
   // PHI nodes
+  // P2 (port I/O address space) is 16-bit like P0 — both are legal for PHI.
+  // Without P2 here, conditional port_out (e.g., SIO channel A vs B) crashes
+  // the Legalizer. See ravn/llvm-z80#44.
   getActionDefinitionsBuilder(G_PHI)
-      .legalFor({S8, S16, P0})
+      .legalFor({S8, S16, P0, P2})
       .widenScalarToNextPow2(0)
       .clampScalar(0, S8, S16);
 
   // Freeze - converts undef to a deterministic value. No-op at codegen level.
   getActionDefinitionsBuilder(G_FREEZE)
-      .legalFor({S8, S16, P0})
+      .legalFor({S8, S16, P0, P2})
       .widenScalarToNextPow2(0)
       .clampScalar(0, S8, S16);
 
