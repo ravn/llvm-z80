@@ -3218,12 +3218,55 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Redundant PUSH AF/POP AF around BSS spill ---
+  // When A already holds the source register's value, the SPILL_GR8 expansion
+  // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
+  // The push/copy/pop is unnecessary — A already has the right value.
+  // Collapse to: LD A,r; LD (addr),A  (saves 3B per instance).
+  for (MachineBasicBlock &MBB : MF) {
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      auto I0 = MII++;
+      // Match I0: LD A,<reg>
+      Register SrcReg = getLDArSrcReg(I0->getOpcode());
+      if (!SrcReg.isValid())
+        continue;
+      // Match I1: PUSH AF
+      auto I1 = MII;
+      if (I1 == MIE || I1->getOpcode() != Z80::PUSH_AF)
+        continue;
+      // Match I2: LD A,<same reg>
+      auto I2 = std::next(I1);
+      if (I2 == MIE || I2->getOpcode() != I0->getOpcode())
+        continue;
+      // Match I3: LD (addr),A
+      auto I3 = std::next(I2);
+      if (I3 == MIE || I3->getOpcode() != Z80::LD_nnind_A)
+        continue;
+      // Match I4: POP AF
+      auto I4 = std::next(I3);
+      if (I4 == MIE || I4->getOpcode() != Z80::POP_AF)
+        continue;
+
+      LLVM_DEBUG(dbgs() << "  BSS spill push/pop elim: " << *I0
+                        << "  removing PUSH AF + LD A,r + POP AF\n");
+      // Remove PUSH AF, redundant LD A,r, and POP AF.  Keep I0 and I3.
+      MBB.erase(I1);
+      MBB.erase(I2);
+      MII = MBB.erase(I4);
+      Changed = true;
+    }
+  }
+
   // --- BSS load forwarding (static-stack mode) ---
   // Track values at absolute BSS addresses within each basic block.
   // Eliminates redundant loads when the value is already in a register.
   // Modeled on the IX-indexed store-to-load forwarding above (lines 2098-2184).
+  // Handles both MCSymbol (__sfrend_*) and GlobalValue (C globals) operands.
   if (STI.staticStack()) {
-    using BSSKey = std::pair<const MCSymbol *, int64_t>;
+    // Key: pointer to either MCSymbol or GlobalValue + offset.
+    // MCSymbol and GlobalValue are allocated from different pools, so
+    // pointer values never collide.
+    using BSSKey = std::pair<const void *, int64_t>;
     DenseMap<BSSKey, MCPhysReg> BSSAvail;
 
     // Map opcode to the register involved in a BSS load/store.
@@ -3250,7 +3293,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       const MachineOperand &MO = MI.getOperand(0);
       if (MO.isMCSymbol())
         return {MO.getMCSymbol(), MO.getOffset()};
+      if (MO.isGlobal())
+        return {MO.getGlobal(), MO.getOffset()};
       return {nullptr, 0};
+    };
+
+    // Check if the instruction has a volatile memoperand.
+    auto isVolatileAccess = [](const MachineInstr &MI) -> bool {
+      for (auto *MMO : MI.memoperands())
+        if (MMO->isVolatile())
+          return true;
+      return false;
     };
 
     // Invalidate BSSAvail entries where the value register overlaps
@@ -3272,20 +3325,28 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MachineInstr &MI = *MII++;
         unsigned Opc = MI.getOpcode();
 
-        // BSS store: track the value.
+        // BSS store: track the value (skip volatile).
         Register StoreSrc = getBSSStoreSrc(Opc);
         if (StoreSrc.isValid()) {
           BSSKey Key = getBSSKey(MI);
           if (Key.first) {
-            BSSAvail[Key] = StoreSrc;
+            if (isVolatileAccess(MI))
+              BSSAvail.erase(Key);
+            else
+              BSSAvail[Key] = StoreSrc;
           }
           continue;
         }
 
-        // BSS load: check if value is already available.
+        // BSS load: check if value is already available (skip volatile).
         Register LoadDst = getBSSLoadDst(Opc);
         if (LoadDst.isValid()) {
           BSSKey Key = getBSSKey(MI);
+          if (isVolatileAccess(MI)) {
+            // Volatile load: don't forward, invalidate register.
+            invalidateBSSReg(LoadDst);
+            continue;
+          }
           if (Key.first) {
             auto It = BSSAvail.find(Key);
             if (It != BSSAvail.end()) {
