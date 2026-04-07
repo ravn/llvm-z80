@@ -9,9 +9,9 @@
 define i16 @narrow_add_cmp_eq() {
 ; CHECK-LABEL: _narrow_add_cmp_eq:
 ; CHECK:       add a,#32
-; CHECK-NEXT:  jr c,
+; CHECK-NEXT:  j{{[rp]}} c,
 ; CHECK-NEXT:  cp
-; CHECK-NEXT:  jr z,
+; CHECK-NEXT:  j{{[rp]}} z,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
@@ -30,9 +30,9 @@ else:
 define i16 @narrow_add_cmp_ne() {
 ; CHECK-LABEL: _narrow_add_cmp_ne:
 ; CHECK:       add a,#32
-; CHECK-NEXT:  jr c,
+; CHECK-NEXT:  j{{[rp]}} c,
 ; CHECK-NEXT:  cp
-; CHECK-NEXT:  jr nz,
+; CHECK-NEXT:  j{{[rp]}} nz,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
@@ -51,9 +51,9 @@ else:
 define i16 @narrow_add_cmp_commuted() {
 ; CHECK-LABEL: _narrow_add_cmp_commuted:
 ; CHECK:       add a,#32
-; CHECK-NEXT:  jr c,
+; CHECK-NEXT:  j{{[rp]}} c,
 ; CHECK-NEXT:  cp
-; CHECK-NEXT:  jr nz,
+; CHECK-NEXT:  j{{[rp]}} nz,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16

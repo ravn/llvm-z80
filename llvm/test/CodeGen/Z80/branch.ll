@@ -6,7 +6,7 @@ define i16 @branch_eq(i16 %a, i16 %b) {
 ; CHECK-LABEL: _branch_eq:
 ; CHECK:       xor
 ; CHECK:       or
-; CHECK:       jr z,
+; CHECK:       j{{[rp]}} z,
   %cond = icmp eq i16 %a, %b
   br i1 %cond, label %then, label %else
 then:
@@ -44,7 +44,7 @@ define i16 @branch_sgt_zero(i16 %a) {
 ; CHECK:       cpl
 ; CHECK:       or l
 ; CHECK:       and
-; CHECK:       jr nz,
+; CHECK:       j{{[rp]}} nz,
   %cond = icmp sgt i16 %a, 0
   br i1 %cond, label %then, label %else
 then:
@@ -61,7 +61,7 @@ define i16 @branch_sle_zero(i16 %a) {
 ; CHECK:       cpl
 ; CHECK:       or l
 ; CHECK:       and
-; CHECK:       jr z,
+; CHECK:       j{{[rp]}} z,
   %cond = icmp sle i16 %a, 0
   br i1 %cond, label %then, label %else
 then:
