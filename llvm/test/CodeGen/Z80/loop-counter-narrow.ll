@@ -15,9 +15,13 @@ declare void @use_byte(i8 zeroext) nounwind
 ; Loop 0..6 with i16 counter used as GEP index.
 ; The counter is i16 but range is [0,7), so high byte is always 0.
 ; Fused branch: should emit CP 7, not SUB 7; OR H.
+; Issue #62: also verify the dead HL copy (ld l,e; ld h,d) is eliminated
+; before the compare. The peephole detects HL is dead-stored (reassigned
+; before any use) and replaces `ld l,e; ld h,d; ld a,l` with `ld a,e`.
 define void @loop_counter_narrow() nounwind {
 ; CHECK-LABEL: _loop_counter_narrow:
-; CHECK:       cp #7
+; CHECK:       ld a,e
+; CHECK-NEXT:  cp #7
 ; CHECK-NOT:   or h
 ; CHECK-NOT:   or b
 entry:
@@ -42,7 +46,8 @@ exit:
 ; Same pattern but with NE predicate.
 define void @loop_counter_narrow_ne() nounwind {
 ; CHECK-LABEL: _loop_counter_narrow_ne:
-; CHECK:       cp #7
+; CHECK:       ld a,e
+; CHECK-NEXT:  cp #7
 ; CHECK-NOT:   or h
 ; CHECK-NOT:   or b
 entry:

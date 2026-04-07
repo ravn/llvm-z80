@@ -1097,6 +1097,85 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: dead HL copy in pre-compare narrowed loop (issue #62) ---
+    // Pattern: LD L,r1; LD H,r2; LD A,L; CP #imm; ...; LD HL,nn
+    //   → LD A,r1; CP #imm; ...; LD HL,nn  (saves 2B per instance)
+    // Occurs when ISel emits BC/DE → HL copy before extracting low byte
+    // for narrowed compare (#59), but HL is dead-stored: it's reassigned
+    // before any read of H or any other read of L.
+    {
+      // Map LD L,r opcode → source register (must not be A or L itself).
+      auto getLDLsrcOther = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_L_B: return Z80::B; case Z80::LD_L_C: return Z80::C;
+        case Z80::LD_L_D: return Z80::D; case Z80::LD_L_E: return Z80::E;
+        case Z80::LD_L_H: return Z80::H;
+        default: return MCPhysReg(0);
+        }
+      };
+      // Map LD H,r opcode → source register (must not be A or H itself).
+      auto getLDHsrcOther = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_H_B: return Z80::B; case Z80::LD_H_C: return Z80::C;
+        case Z80::LD_H_D: return Z80::D; case Z80::LD_H_E: return Z80::E;
+        case Z80::LD_H_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      // Map source GR8 register → LD A,r opcode.
+      auto getLDArOpc = [](MCPhysReg R) -> unsigned {
+        switch (R) {
+        case Z80::B: return Z80::LD_A_B; case Z80::C: return Z80::LD_A_C;
+        case Z80::D: return Z80::LD_A_D; case Z80::E: return Z80::LD_A_E;
+        case Z80::H: return Z80::LD_A_H; case Z80::L: return Z80::LD_A_L;
+        default: return 0;
+        }
+      };
+
+      SmallVector<MachineInstr *, 6> ToErase62;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        // I0: LD L, r1
+        MCPhysReg LSrc = getLDLsrcOther(MII->getOpcode());
+        if (!LSrc) continue;
+        auto I0 = MII;
+
+        // I1: LD H, r2 (skip KILLs)
+        auto It = std::next(I0);
+        while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
+        if (It == MIE) continue;
+        MCPhysReg HSrc = getLDHsrcOther(It->getOpcode());
+        if (!HSrc) continue;
+        auto I1 = It;
+
+        // I2: LD A, L (skip KILLs)
+        ++It;
+        while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
+        if (It == MIE || It->getOpcode() != Z80::LD_A_L) continue;
+        auto I2 = It;
+
+        // After I2, both H and L must be dead (next access is a redefinition).
+        auto AfterI2 = std::next(I2);
+        if (!isRegDeadAfter(AfterI2, MBB, TRI, Z80::H)) continue;
+        if (!isRegDeadAfter(AfterI2, MBB, TRI, Z80::L)) continue;
+
+        // Replace LD A,L with LD A,LSrc (to read the source register directly).
+        unsigned NewOpc = getLDArOpc(LSrc);
+        if (!NewOpc) continue;
+        LLVM_DEBUG(dbgs() << "  Dead HL copy in narrowed compare: removing "
+                          << *I0 << "    " << *I1
+                          << "  rewriting " << *I2);
+        BuildMI(MBB, *I2, I2->getDebugLoc(), TII->get(NewOpc));
+        ToErase62.push_back(&*I0);
+        ToErase62.push_back(&*I1);
+        ToErase62.push_back(&*I2);
+        Changed = true;
+        // Advance MII past the erased instructions.
+        MII = std::prev(AfterI2);
+      }
+      for (auto *MI : ToErase62)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: 16-bit increment overflow test ---
     // Pattern A (9 instr, 16B): LD HL,1; ADD HL,rr; SBC A,A; AND 1;
     //   LD lo,L; LD hi,H; XOR 1; AND 1; JR NZ → INC rr; LD A,hi; OR lo; JR NZ
