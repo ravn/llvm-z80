@@ -1,12 +1,12 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
 
 ; Test conditional branch based on 16-bit equality comparison
-; CMP+BR fusion: G_ICMP EQ + G_BRCOND → XOR-based compare + JP Z
+; CMP+BR fusion: G_ICMP EQ + G_BRCOND → XOR-based compare + JR Z
 define i16 @branch_eq(i16 %a, i16 %b) {
 ; CHECK-LABEL: _branch_eq:
 ; CHECK:       xor
 ; CHECK:       or
-; CHECK:       jp z,
+; CHECK:       jr z,
   %cond = icmp eq i16 %a, %b
   br i1 %cond, label %then, label %else
 then:
@@ -44,7 +44,7 @@ define i16 @branch_sgt_zero(i16 %a) {
 ; CHECK:       cpl
 ; CHECK:       or l
 ; CHECK:       and
-; CHECK:       jp nz,
+; CHECK:       jr nz,
   %cond = icmp sgt i16 %a, 0
   br i1 %cond, label %then, label %else
 then:
@@ -61,7 +61,7 @@ define i16 @branch_sle_zero(i16 %a) {
 ; CHECK:       cpl
 ; CHECK:       or l
 ; CHECK:       and
-; CHECK:       jp z,
+; CHECK:       jr z,
   %cond = icmp sle i16 %a, 0
   br i1 %cond, label %then, label %else
 then:
