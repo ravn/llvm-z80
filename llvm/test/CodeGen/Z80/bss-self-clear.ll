@@ -28,7 +28,9 @@ entry:
 
 ; CHECK-LABEL: _bss_self_clear:
 ; DE must hold bss+1 (not a corrupted value) and the zero store
-; must happen before LDIR.  Order of DE setup vs zero store may vary.
+; must happen before LDIR. With the LD (nn),A → LD (HL),A peephole,
+; the store may be via HL after loading HL with _bss (saves 2B).
 ; CHECK-DAG: ld de,_bss+1
-; CHECK-DAG: ld (_bss),a
+; CHECK-DAG: ld hl,_bss
+; CHECK-DAG: ld (hl),a
 ; CHECK: ldir

@@ -1534,6 +1534,87 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole: LD (sym),A + LD HL,sym → LD HL,sym + LD (HL),A ---
+    // When the same constant address is stored to and then loaded into HL
+    // (e.g., for a subsequent memcpy/load), reorder to use indirect store
+    // via HL. Saves 2B per match: `LD (nn),A` (3B) → `LD (HL),A` (1B)
+    // (the LD HL,nn is needed anyway). The reorder is safe when nothing
+    // between the store and the LD HL uses HL or A.
+    {
+      SmallVector<MachineInstr *, 4> ToErase64;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        // I0: LD (nn),A — must have a symbol/global operand
+        if (MII->getOpcode() != Z80::LD_nnind_A) continue;
+        if (MII->getNumOperands() < 1) continue;
+        const MachineOperand &StoreAddr = MII->getOperand(0);
+        if (!StoreAddr.isMCSymbol() && !StoreAddr.isGlobal() &&
+            !StoreAddr.isSymbol())
+          continue;
+        auto I0 = MII;
+
+        // Scan forward (up to 8 instructions) for LD HL,nn with the
+        // same address operand. Bail if HL or A is modified between.
+        auto It = std::next(I0);
+        MachineBasicBlock::iterator FoundLdHL = MIE;
+        for (int Limit = 8; Limit > 0 && It != MIE; --Limit, ++It) {
+          if (It->getOpcode() == TargetOpcode::KILL) { ++Limit; continue; }
+          // Check for matching LD HL,nn
+          if (It->getOpcode() == Z80::LD_HL_nn &&
+              It->getNumOperands() >= 1) {
+            const MachineOperand &LdAddr = It->getOperand(0);
+            bool match = false;
+            if (StoreAddr.isMCSymbol() && LdAddr.isMCSymbol() &&
+                StoreAddr.getMCSymbol() == LdAddr.getMCSymbol() &&
+                StoreAddr.getOffset() == LdAddr.getOffset())
+              match = true;
+            else if (StoreAddr.isGlobal() && LdAddr.isGlobal() &&
+                     StoreAddr.getGlobal() == LdAddr.getGlobal() &&
+                     StoreAddr.getOffset() == LdAddr.getOffset())
+              match = true;
+            if (match) {
+              FoundLdHL = It;
+              break;
+            }
+          }
+          // Check for HL or A clobber (bail)
+          if (It->isCall() || It->isReturn() || It->isInlineAsm() ||
+              It->isBranch())
+            break;
+          bool ClobbersHL = false, ClobbersA = false;
+          for (const MachineOperand &MO : It->operands()) {
+            if (MO.isRegMask()) { ClobbersHL = ClobbersA = true; break; }
+            if (!MO.isReg() || !MO.getReg().isPhysical() || !MO.isDef())
+              continue;
+            if (TRI->regsOverlap(MO.getReg(), Z80::HL))
+              ClobbersHL = true;
+            if (TRI->regsOverlap(MO.getReg(), Z80::A))
+              ClobbersA = true;
+          }
+          if (ClobbersHL || ClobbersA) break;
+        }
+        if (FoundLdHL == MIE) continue;
+
+        // Reorder: move LD HL,nn before the store, replace store with
+        // LD (HL),A. The LD HL,nn becomes the first instruction of
+        // the new sequence at the original store position.
+        DebugLoc DL = I0->getDebugLoc();
+        // Build LD HL,nn at the I0 position (cloning the operand).
+        auto NewLdHL = BuildMI(MBB, *I0, DL, TII->get(Z80::LD_HL_nn));
+        for (const MachineOperand &MO : FoundLdHL->operands())
+          NewLdHL.add(MO);
+        // Build LD (HL),A at the I0 position (replaces the original store).
+        BuildMI(MBB, *I0, DL, TII->get(Z80::LD_HLind_A));
+        LLVM_DEBUG(dbgs() << "  LD (nn),A + LD HL,nn → LD HL,nn + LD (HL),A\n");
+        ToErase64.push_back(&*I0);
+        ToErase64.push_back(&*FoundLdHL);
+        Changed = true;
+        // Advance MII past the new instructions to avoid re-matching.
+        MII = std::next(I0);
+      }
+      for (auto *MI : ToErase64)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: redundant LD A,reg removal (issue #60) ---
     // When LD reg,A is followed by LD A,reg with no A-modifying or
     // reg-modifying instructions between, the second LD is redundant.
