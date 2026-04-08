@@ -23,6 +23,7 @@
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -2938,6 +2939,198 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     Term->eraseFromParent();
     CallIt->eraseFromParent();
     Changed = true;
+  }
+
+  // --- Cross-block redundant LD A,r removal (issue #60) ---
+  //
+  // Forward dataflow tracking when register A is known to equal an 8-bit
+  // GR8 register. The single-block peephole earlier in this pass handles
+  // the in-block case; this pass extends it across basic block boundaries.
+  //
+  // The motivating example (fdc_get_result_bytes in autoload PROM):
+  //     ld   d,a       ; A == D after this point
+  //     cp   #2        ; CP doesn't touch A
+  //     jr   nz,.L1    ; branch — A still == D on both edges
+  //   .Lret:
+  //     ld   a,d       ; REDUNDANT — A still == D
+  //     ret
+  //   .L1:
+  //     ld   a,d       ; REDUNDANT — A still == D
+  //     or   a
+  //     ...
+  //
+  // State per program point: A is Top (initial for unprocessed MBBs),
+  // Reg(r) (A == r), or Bottom (no fact known).
+  //
+  // Transfer:
+  //   LD r,A          → Reg(r)         (A's value now also lives in r)
+  //   LD A,r          → Reg(r)         (and if Known was already r, the
+  //                                     LD is dead and removable)
+  //   def of A or current Known.r → Bottom
+  //   regmask (CALL)  → Bottom
+  //   CP, OR A, branches, etc. that don't def A or Known.r → unchanged
+  //
+  // Meet (intersection over predecessor exits at MBB entry):
+  //   Top ⊓ x = x;  Bottom ⊓ x = Bottom
+  //   Reg(r) ⊓ Reg(r) = Reg(r);  Reg(r) ⊓ Reg(s) = Bottom (r ≠ s)
+  //
+  // Limitation: tracks only ONE register at a time (most recently set).
+  // If both `LD D,A` and `LD E,A` are seen, only Reg(E) is remembered.
+  // Sufficient for the issue #60 patterns; can be extended to a set if
+  // future cases warrant.
+  {
+    enum AKKind : uint8_t { AK_Top = 0, AK_Bottom = 1, AK_Reg = 2 };
+    struct AK {
+      uint8_t Kind = AK_Top;
+      MCPhysReg Reg = 0;
+      bool operator==(const AK &O) const {
+        return Kind == O.Kind && (Kind != AK_Reg || Reg == O.Reg);
+      }
+    };
+    auto akTop = []() { AK a; a.Kind = AK_Top; return a; };
+    auto akBot = []() { AK a; a.Kind = AK_Bottom; return a; };
+    auto akReg = [](MCPhysReg R) { AK a; a.Kind = AK_Reg; a.Reg = R; return a; };
+    auto akMeet = [&](AK X, AK Y) -> AK {
+      if (X.Kind == AK_Top) return Y;
+      if (Y.Kind == AK_Top) return X;
+      if (X.Kind == AK_Bottom || Y.Kind == AK_Bottom) return akBot();
+      return X.Reg == Y.Reg ? X : akBot();
+    };
+
+    // LD A,r → r, else 0.
+    auto ldA_src60x = [](unsigned Opc) -> MCPhysReg {
+      switch (Opc) {
+      case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+      case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+      case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+      default: return 0;
+      }
+    };
+    // LD r,A → r, else 0.
+    auto ldR_A_dst60x = [](unsigned Opc) -> MCPhysReg {
+      switch (Opc) {
+      case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+      case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+      case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+      default: return 0;
+      }
+    };
+
+    // Apply transfer for one instruction. If `Redundant` is non-null and the
+    // instruction is a LD A,r whose effect is a no-op given Known, set it.
+    auto step60x = [&](MachineInstr &MI, AK Known, bool *Redundant) -> AK {
+      if (Redundant) *Redundant = false;
+      if (MI.isDebugInstr())
+        return Known;
+      unsigned Opc = MI.getOpcode();
+      if (Opc == TargetOpcode::KILL || Opc == TargetOpcode::IMPLICIT_DEF)
+        return Known;
+
+      // LD A,r — sets Known to r. Redundant if A already equals r.
+      if (MCPhysReg Src = ldA_src60x(Opc)) {
+        if (Known.Kind == AK_Reg && Known.Reg == Src && Redundant)
+          *Redundant = true;
+        return akReg(Src);
+      }
+      // LD r,A — A's value is now in r as well. We deliberately bypass the
+      // generic clobber check for r, because we want Known := r afterwards
+      // even though r is being defined.
+      if (MCPhysReg Dst = ldR_A_dst60x(Opc))
+        return akReg(Dst);
+
+      // OR A and AND A are idempotent on A's value (A := A op A == A);
+      // they only update FLAGS. Treat them as not clobbering A even though
+      // their MCInstrDesc declares an implicit def of A. Without this,
+      // Known is dropped after the OR A that typically follows a save+test
+      // sequence, defeating the cross-block reload elimination on the
+      // fall-through path. LD A,A is similarly a no-op.
+      if (Opc == Z80::OR_A || Opc == Z80::AND_A || Opc == Z80::LD_A_A)
+        return Known;
+
+      // Anything else: scan operands + implicit defs for clobbers of A
+      // or the currently-tracked Known.Reg.
+      bool ClobberA = false, ClobberKnown = false;
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isRegMask()) {
+          // CALL et al. — A is caller-saved per sdcccall, treat as clobbered.
+          ClobberA = true; ClobberKnown = true; break;
+        }
+        if (!MO.isReg() || !MO.isDef() || !MO.getReg().isPhysical())
+          continue;
+        Register R = MO.getReg();
+        if (TRI->regsOverlap(R, Z80::A))
+          ClobberA = true;
+        if (Known.Kind == AK_Reg && TRI->regsOverlap(R, Known.Reg))
+          ClobberKnown = true;
+      }
+      for (MCPhysReg D : MI.getDesc().implicit_defs()) {
+        if (TRI->regsOverlap(D, Z80::A))
+          ClobberA = true;
+        if (Known.Kind == AK_Reg && TRI->regsOverlap(D, Known.Reg))
+          ClobberKnown = true;
+      }
+      if (ClobberA || ClobberKnown)
+        return akBot();
+      return Known;
+    };
+
+    // Iterate Entry/Exit per MBB to fixpoint. RPO seeds the first pass;
+    // a small fixed iteration cap handles back-edges (loops).
+    DenseMap<MachineBasicBlock *, AK> EntryAK, ExitAK;
+    for (auto &MBB : MF) {
+      EntryAK[&MBB] = akTop();
+      ExitAK[&MBB] = akTop();
+    }
+    if (!MF.empty())
+      EntryAK[&MF.front()] = akBot();
+
+    SmallVector<MachineBasicBlock *, 32> RPO;
+    for (auto *BB : ReversePostOrderTraversal<MachineFunction *>(&MF))
+      RPO.push_back(BB);
+
+    bool DfChanged = true;
+    int Iter = 0;
+    while (DfChanged && Iter++ < 16) {
+      DfChanged = false;
+      for (auto *BB : RPO) {
+        if (BB != &MF.front()) {
+          AK E = akTop();
+          for (auto *Pred : BB->predecessors())
+            E = akMeet(E, ExitAK[Pred]);
+          if (!(EntryAK[BB] == E)) {
+            EntryAK[BB] = E;
+            DfChanged = true;
+          }
+        }
+        AK K = EntryAK[BB];
+        for (auto &MI : *BB)
+          K = step60x(MI, K, nullptr);
+        if (!(ExitAK[BB] == K)) {
+          ExitAK[BB] = K;
+          DfChanged = true;
+        }
+      }
+    }
+
+    // Removal pass: walk each MBB applying step from EntryAK; collect
+    // LD A,r whose effect is a no-op given current Known.
+    SmallVector<MachineInstr *, 16> ToErase60x;
+    for (auto &MBB : MF) {
+      AK K = EntryAK[&MBB];
+      for (auto &MI : MBB) {
+        bool Red = false;
+        AK Next = step60x(MI, K, &Red);
+        if (Red) {
+          LLVM_DEBUG(dbgs() << "  Cross-block redundant LD A,r: " << MI);
+          ToErase60x.push_back(&MI);
+        }
+        K = Next;
+      }
+    }
+    for (auto *MI : ToErase60x) {
+      MI->eraseFromParent();
+      Changed = true;
+    }
   }
 
   // --- Peephole: AND $1 + branch/ret → RRCA + carry branch/ret ---
