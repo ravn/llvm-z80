@@ -3657,6 +3657,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
   // The push/copy/pop is unnecessary — A already has the right value.
   // Collapse to: LD A,r; LD (addr),A  (saves 3B per instance).
+  //
+  // The cross-block #60 pass earlier in this run may have already removed
+  // the second LD A,r (because A == r is established by the first one),
+  // leaving the 4-instruction form: LD A,r; PUSH AF; LD (addr),A; POP AF.
+  // We match both forms.
   for (MachineBasicBlock &MBB : MF) {
     for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
       auto I0 = MII++;
@@ -3668,24 +3673,40 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       auto I1 = MII;
       if (I1 == MIE || I1->getOpcode() != Z80::PUSH_AF)
         continue;
-      // Match I2: LD A,<same reg>
       auto I2 = std::next(I1);
-      if (I2 == MIE || I2->getOpcode() != I0->getOpcode())
+      if (I2 == MIE)
         continue;
-      // Match I3: LD (addr),A
-      auto I3 = std::next(I2);
-      if (I3 == MIE || I3->getOpcode() != Z80::LD_nnind_A)
+
+      // Two accepted shapes:
+      //   5-instr (original):  LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
+      //   4-instr (post #60):  LD A,r; PUSH AF;        LD (addr),A; POP AF
+      //
+      // In the 5-instr form I2 is the duplicate LD A,<same reg> and I3 is
+      // LD (addr),A.  In the 4-instr form I2 is already LD (addr),A.
+      MachineBasicBlock::iterator IDupLdAr = MIE;
+      MachineBasicBlock::iterator IStore;
+      if (I2->getOpcode() == I0->getOpcode()) {
+        IDupLdAr = I2;
+        IStore = std::next(I2);
+        if (IStore == MIE)
+          continue;
+      } else {
+        IStore = I2;
+      }
+      if (IStore->getOpcode() != Z80::LD_nnind_A)
         continue;
-      // Match I4: POP AF
-      auto I4 = std::next(I3);
+
+      auto I4 = std::next(IStore);
       if (I4 == MIE || I4->getOpcode() != Z80::POP_AF)
         continue;
 
       LLVM_DEBUG(dbgs() << "  BSS spill push/pop elim: " << *I0
-                        << "  removing PUSH AF + LD A,r + POP AF\n");
-      // Remove PUSH AF, redundant LD A,r, and POP AF.  Keep I0 and I3.
+                        << "  removing PUSH AF"
+                        << (IDupLdAr != MIE ? " + LD A,r" : "")
+                        << " + POP AF\n");
       MBB.erase(I1);
-      MBB.erase(I2);
+      if (IDupLdAr != MIE)
+        MBB.erase(IDupLdAr);
       MII = MBB.erase(I4);
       Changed = true;
     }
