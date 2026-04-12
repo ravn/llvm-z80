@@ -1520,11 +1520,39 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Only valid when imm < 255 (imm+1 doesn't overflow 8 bits).
         if (Imm >= 255) { ++MII; continue; }
 
+        // The LD r,A (I0) writes a physical register. If that register
+        // is live-out of this basic block (used in a successor), we
+        // cannot erase I0 — only the LD A,imm + CP r + branch.
+        // Bug #69: erasing I0 unconditionally lost the discriminant for
+        // switch-on-byte-field patterns where the same value is compared
+        // in a successor block.
+        MCPhysReg SavedReg = 0;
+        for (const auto &MO : I0->operands()) {
+          if (MO.isReg() && MO.isDef()) { SavedReg = MO.getReg(); break; }
+        }
+        bool SavedRegLiveOut = false;
+        if (SavedReg) {
+          for (const MachineBasicBlock *Succ : MBB.successors()) {
+            if (Succ->isLiveIn(SavedReg)) {
+              SavedRegLiveOut = true;
+              break;
+            }
+          }
+        }
+
         DebugLoc DL = I0->getDebugLoc();
         MachineBasicBlock *Target = I3->getOperand(0).getMBB();
         LLVM_DEBUG(dbgs() << "  Comparison reversal: LD r,A; LD A,#"
                           << Imm << "; CP r; branch → CP #" << (Imm + 1)
-                          << "; flipped branch\n");
+                          << "; flipped branch"
+                          << (SavedRegLiveOut ? " (keeping LD r,A)" : "")
+                          << "\n");
+        if (SavedRegLiveOut) {
+          // The saved register is live-out: emit LD r,A before the CP
+          // so the discriminant is preserved for successor blocks.
+          // Issue #69: without this, the successor reads a stale register.
+          BuildMI(MBB, *I0, DL, TII->get(I0->getOpcode()));
+        }
         BuildMI(MBB, *I0, DL, TII->get(Z80::CP_n)).addImm((Imm + 1) & 0xFF);
         BuildMI(MBB, *I0, DL, TII->get(FlippedBr)).addMBB(Target);
         I3->eraseFromParent();
