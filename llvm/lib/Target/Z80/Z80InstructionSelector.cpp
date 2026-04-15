@@ -3074,6 +3074,45 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           }
         }
 
+        // Try LSHR+AND → RRCA+AND fusion: if the non-constant source is a
+        // single-use G_LSHR by a constant, use RRCA (1B) instead of SRL (2B).
+        // RRCA rotates bit0→bit7; safe when AND mask clears the top N bits.
+        if (ImmVal && MRI.hasOneNonDBGUse(Src1Reg)) {
+          MachineInstr *ShiftDef = MRI.getVRegDef(Src1Reg);
+          if (ShiftDef &&
+              ShiftDef->getOpcode() == TargetOpcode::G_LSHR) {
+            Register ShiftSrc = ShiftDef->getOperand(1).getReg();
+            Register ShiftAmtReg = ShiftDef->getOperand(2).getReg();
+            MachineInstr *ShiftAmtDef = MRI.getVRegDef(ShiftAmtReg);
+            if (ShiftAmtDef &&
+                ShiftAmtDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+              int64_t ShiftAmt =
+                  ShiftAmtDef->getOperand(1).getCImm()->getZExtValue();
+              if (ShiftAmt > 0 && ShiftAmt < 8 &&
+                  ((*ImmVal >> (8 - ShiftAmt)) == 0)) {
+                if (RBI.constrainGenericRegister(ShiftSrc, Z80::GR8RegClass,
+                                                 MRI)) {
+                  BuildMI(MBB, MI, MI.getDebugLoc(),
+                          TII.get(TargetOpcode::COPY), Z80::A)
+                      .addReg(ShiftSrc);
+                  for (int64_t i = 0; i < ShiftAmt; i++)
+                    BuildMI(MBB, MI, MI.getDebugLoc(),
+                            TII.get(Z80::RRCA));
+                  BuildMI(MBB, MI, MI.getDebugLoc(),
+                          TII.get(Z80::AND_n))
+                      .addImm(*ImmVal & 0xFF);
+                  BuildMI(MBB, MI, MI.getDebugLoc(),
+                          TII.get(TargetOpcode::COPY), DstReg)
+                      .addReg(Z80::A);
+                  ShiftDef->eraseFromParent();
+                  MI.eraseFromParent();
+                  return true;
+                }
+              }
+            }
+          }
+        }
+
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(Src1Reg);
         if (ImmVal)
