@@ -1851,6 +1851,156 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: LDIR aftermath -- DE post-state reuse (issue #78) ---
+    //
+    // After LDIR, DE = dst + count.  IR patterns like
+    //   __builtin_memcpy(dst, src, N);  dst_ptr += N;  return dst_ptr;
+    // currently emit a 7-byte reconstruction:
+    //   LD_HL_nnind <dst_spill>   ; reload original dst from spill
+    //   LD_DE_nn N                 ; reload count
+    //   ADD_HL_DE                  ; HL = dst + N
+    // even though DE after LDIR already holds dst + N.
+    //
+    // Replace with `LD H,D; LD L,E` (2 bytes) so HL gets the post-
+    // LDIR DE value directly.  Count and slot are validated by
+    // looking back for the matching `LD_BC_nn N` that fed LDIR, and
+    // the matching `LD_nnind_HL <slot>` spill that wrote the slot.
+    // Conservative -- bail if either is missing or doesn't match.
+    {
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        if (MII->getOpcode() != Z80::LDIR) { ++MII; continue; }
+        auto Ldir = MII;
+        // Look forward for the reconstruction triple.
+        auto It = std::next(Ldir);
+        while (It != MBB.end() && It->isMetaInstruction()) ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_HL_nnind) {
+          ++MII; continue;
+        }
+        auto LdHL = It;
+        if (!LdHL->getOperand(0).isMCSymbol() &&
+            !LdHL->getOperand(0).isGlobal() &&
+            !LdHL->getOperand(0).isImm()) { ++MII; continue; }
+        ++It;
+        while (It != MBB.end() && It->isMetaInstruction()) ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_DE_nn ||
+            !It->getOperand(0).isImm()) { ++MII; continue; }
+        auto LdDE = It;
+        int64_t ReloadCount = LdDE->getOperand(0).getImm();
+        ++It;
+        while (It != MBB.end() && It->isMetaInstruction()) ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::ADD_HL_DE) {
+          ++MII; continue;
+        }
+        auto AddHL = It;
+        // Look back for matching LD_BC_nn N (LDIR's count) and proof
+        // that DE pre-LDIR equals the value at <slot>.  Two acceptable
+        // proofs:
+        //   (1) LD_nnind_HL <slot>: HL was spilled to slot, then later
+        //       loaded back into HL and EX_DE_HL'd into DE for LDIR.
+        //   (2) LD_DE_nnind <slot>: DE was loaded directly from slot.
+        // In either case, no LD_nnind_* <slot> may appear between the
+        // proof and LDIR (slot mustn't be re-written).  PreSpill is the
+        // case-(1) instruction we erase as redundant; for case (2) it
+        // stays nullptr.
+        int64_t LdirCount = -1;
+        MachineInstr *PreSpill = nullptr;
+        bool ProofFromDeLoad = false;
+        bool FoundCount = false;
+        bool SlotClobbered = false;
+        for (auto Back = std::prev(Ldir);
+             Back != MBB.begin(); --Back) {
+          if (Back->isMetaInstruction()) continue;
+          if (!FoundCount && Back->getOpcode() == Z80::LD_BC_nn &&
+              Back->getOperand(0).isImm()) {
+            LdirCount = Back->getOperand(0).getImm();
+            FoundCount = true;
+            continue;
+          }
+          // A store to <slot> between the proof and LDIR invalidates it.
+          if ((Back->getOpcode() == Z80::LD_nnind_DE ||
+               Back->getOpcode() == Z80::LD_nnind_BC) &&
+              Back->getOperand(0).isIdenticalTo(LdHL->getOperand(0))) {
+            SlotClobbered = true;
+            break;
+          }
+          if (Back->getOpcode() == Z80::LD_nnind_HL &&
+              Back->getOperand(0).isIdenticalTo(LdHL->getOperand(0))) {
+            PreSpill = &*Back;
+            break;
+          }
+          if (Back->getOpcode() == Z80::LD_DE_nnind &&
+              Back->getOperand(0).isIdenticalTo(LdHL->getOperand(0))) {
+            ProofFromDeLoad = true;
+            break;
+          }
+        }
+        // Allow ReloadCount to differ from LdirCount by ±1: post-LDIR
+        // DE = slot + LdirCount, so the triple computes (DE ± 1) which
+        // we can patch up with a single INC/DEC.
+        int64_t Diff = ReloadCount - LdirCount;
+        if (SlotClobbered || Diff < -1 || Diff > 1 ||
+            (PreSpill == nullptr && !ProofFromDeLoad)) {
+          ++MII; continue;
+        }
+
+        // Look one more instruction ahead.  Three downstream shapes:
+        //   (a) EX_DE_HL: result feeds a return-via-DE swap; drop the
+        //       triple+swap (Diff==0), or replace with INC/DEC DE
+        //       (Diff==±1) — DE already holds dst+count.
+        //   (b) LD_nnind_HL <same_slot>: result writes back to the
+        //       same spill slot the pre-LDIR HL was loaded from --
+        //       replace with INC/DEC DE (if Diff!=0) then LD (slot),DE.
+        //   (c) other consumer: replace triple with LD_H_D; LD_L_E
+        //       (and INC/DEC HL if Diff!=0) so HL gets the DE post-LDIR
+        //       value (±1), then proceed.
+        auto AfterAdd = std::next(AddHL);
+        while (AfterAdd != MBB.end() && AfterAdd->isMetaInstruction())
+          ++AfterAdd;
+        bool DropEx = (AfterAdd != MBB.end() &&
+                       AfterAdd->getOpcode() == Z80::EX_DE_HL);
+        // StoreBack: any LD (target),HL after the triple — replace with
+        // LD (target),DE.  Target slot need not match the spill slot.
+        bool StoreBack = (!DropEx && AfterAdd != MBB.end() &&
+                          AfterAdd->getOpcode() == Z80::LD_nnind_HL);
+
+        DebugLoc DL = LdHL->getDebugLoc();
+        unsigned Saved = 0;
+        unsigned PreSpillBytes = PreSpill ? 3 : 0;
+        unsigned FixupBytes = (Diff == 0) ? 0 : 1; // INC/DEC = 1 byte
+        unsigned IncDecDE = (Diff > 0) ? Z80::INC_DE : Z80::DEC_DE;
+        unsigned IncDecHL = (Diff > 0) ? Z80::INC_HL : Z80::DEC_HL;
+        if (DropEx) {
+          if (Diff != 0)
+            BuildMI(MBB, LdHL, DL, TII->get(IncDecDE));
+          AfterAdd->eraseFromParent();
+          Saved = 8 + PreSpillBytes - FixupBytes;
+        } else if (StoreBack) {
+          if (Diff != 0)
+            BuildMI(MBB, LdHL, DL, TII->get(IncDecDE));
+          auto MIB = BuildMI(MBB, LdHL, DL, TII->get(Z80::LD_nnind_DE));
+          MIB.add(AfterAdd->getOperand(0));  // target of trailing store
+          AfterAdd->eraseFromParent();
+          Saved = (7 + 3) - 4 - FixupBytes + PreSpillBytes;
+        } else {
+          BuildMI(MBB, LdHL, DL, TII->get(Z80::LD_H_D));
+          BuildMI(MBB, LdHL, DL, TII->get(Z80::LD_L_E));
+          if (Diff != 0)
+            BuildMI(MBB, LdHL, DL, TII->get(IncDecHL));
+          Saved = 7 - 2 - FixupBytes + PreSpillBytes;
+        }
+        LdHL->eraseFromParent();
+        LdDE->eraseFromParent();
+        AddHL->eraseFromParent();
+        if (PreSpill)
+          PreSpill->eraseFromParent();
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "  #78: LDIR aftermath DE-reuse rewrite ("
+                          << Saved << " B saved)\n");
+        // Continue from instruction after LDIR.
+        MII = std::next(Ldir);
+      }
+    }
+
     // --- Peephole: HL save-via-BC roundtrip (issue #84) ---
     //
     // Pattern-fill loop bodies emitted by GISel for sequences like
