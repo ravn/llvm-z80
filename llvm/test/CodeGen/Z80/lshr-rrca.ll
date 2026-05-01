@@ -11,7 +11,7 @@ define i8 @lshr2_and3(i8 zeroext %val) {
 ; CHECK-LABEL: _lshr2_and3:
 ; CHECK:       rrca
 ; CHECK-NEXT:  rrca
-; CHECK-NEXT:  and	a,#3
+; CHECK-NEXT:  and	#3
   %shr = lshr i8 %val, 2
   %and = and i8 %shr, 3
   ret i8 %and
@@ -25,7 +25,7 @@ define i8 @lshr3_and3(i8 zeroext %val) {
 ; CHECK:       rrca
 ; CHECK-NEXT:  rrca
 ; CHECK-NEXT:  rrca
-; CHECK-NEXT:  and	a,#3
+; CHECK-NEXT:  and	#3
   %shr = lshr i8 %val, 3
   %and = and i8 %shr, 3
   ret i8 %and
@@ -38,7 +38,7 @@ define i8 @lshr4_and3(i8 zeroext %val) {
 ; CHECK-NEXT:  rrca
 ; CHECK-NEXT:  rrca
 ; CHECK-NEXT:  rrca
-; CHECK-NEXT:  and	a,#3
+; CHECK-NEXT:  and	#3
   %shr = lshr i8 %val, 4
   %and = and i8 %shr, 3
   ret i8 %and
@@ -71,7 +71,7 @@ define i8 @lshr5_and3(i8 zeroext %val) {
 ; CHECK-NEXT:  rrca
 ; CHECK-NEXT:  rrca
 ; CHECK-NEXT:  rrca
-; CHECK-NEXT:  and	a,#3
+; CHECK-NEXT:  and	#3
   %shr = lshr i8 %val, 5
   %and = and i8 %shr, 3
   ret i8 %and
@@ -81,7 +81,7 @@ define i8 @lshr5_and3(i8 zeroext %val) {
 define i8 @lshr1_and1f(i8 zeroext %val) {
 ; CHECK-LABEL: _lshr1_and1f:
 ; CHECK:       rrca
-; CHECK-NEXT:  and	a,#31
+; CHECK-NEXT:  and	#31
   %shr = lshr i8 %val, 1
   %and = and i8 %shr, 31
   ret i8 %and

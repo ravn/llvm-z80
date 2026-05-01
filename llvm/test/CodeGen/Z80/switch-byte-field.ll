@@ -25,9 +25,11 @@ declare void @case_default()
 ; case 3   → case_default()
 define void @switch_byte_field() {
 ; CHECK-LABEL: _switch_byte_field:
-; CHECK:       ld	a, (_iobyte)
-; CHECK:       srl	a
-; CHECK:       srl	a
+; CHECK:       ld	a,(_iobyte)
+; The lshr-by-2 + and-#3 lowers to rrca×2 + and #3 (issue #71 -- the
+; mask clears the top 2 bits that RRCA contaminates, so SRL→RRCA is safe).
+; CHECK:       rrca
+; CHECK:       rrca
 ; CHECK:       and	#3
 ;
 ; The comparison reversal peephole folds LD r,A + LD A,#imm + CP r
@@ -36,7 +38,7 @@ define void @switch_byte_field() {
 ; CHECK:       cp	#2
 ;
 ; The second comparison must NOT use a stale register.
-; CHECK-NOT:   ld	a, d
+; CHECK-NOT:   ld	a,d
 ; CHECK:       cp	#2
   %raw = load volatile i8, ptr @iobyte
   %shifted = lshr i8 %raw, 2
