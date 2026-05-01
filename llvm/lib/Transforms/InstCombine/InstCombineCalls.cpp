@@ -163,6 +163,15 @@ Instruction *InstCombinerImpl::SimplifyAnyMemTransfer(AnyMemTransferInst *MI) {
   if (Size > 8 || (Size&(Size-1)))
     return nullptr;  // If not 1/2/4/8 bytes, exit.
 
+  // Only fold to single load+store if the target supports the resulting
+  // integer width natively.  On 8/16-bit targets (Z80, AVR, etc.), folding
+  // 4-byte memcpy to `load i32 / store i32` produces multi-instruction
+  // legalization that's far bigger than a memcpy/LDIR runtime call.
+  // (ravn/llvm-z80 #87/#73: 8-byte memcpy → load i64 / store i64 → ~43 B
+  // of inline 16-bit chunks vs ~12 B for LDIR.)
+  if (!DL.isLegalInteger(Size << 3))
+    return nullptr;
+
   // If it is an atomic and alignment is less than the size then we will
   // introduce the unaligned memory access which will be later transformed
   // into libcall in CodeGen. This is not evident performance gain so disable
