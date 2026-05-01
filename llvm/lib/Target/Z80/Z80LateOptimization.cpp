@@ -1915,6 +1915,115 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: consecutive `LD A,n; LD (addr),A` chain (issue #85) ---
+    //
+    // When ≥3 consecutive byte stores write to consecutive addresses,
+    // replace the chain with a single LD HL,base + repeated
+    // LD (HL),n; INC HL.  Per-pair cost: 2+3 = 5 B (current) vs 2+1
+    // = 3 B (HL-walked, after one-time 3 B `ld hl, base` setup).
+    //
+    //   N=2: 10 B → 11 B  (loss; skip)
+    //   N=3: 15 B → 11 B  (save 4 B)
+    //   N=4: 20 B → 14 B  (save 6 B)
+    //   ...
+    //
+    // The peephole walks the MBB, accumulates a maximal run of
+    //   { LD A,imm; LD (addr),A }
+    // pairs whose addresses are an arithmetic-1 progression, and
+    // rewrites the run when length ≥ 3.  No flag-establishing
+    // instructions in between (the `LD A,n` and `LD (nn),A` set no
+    // flags, but a `CALL` or arithmetic op between would split the
+    // run).  Side-effect-free reads are tolerated; we conservatively
+    // require the inter-store instructions to be just the LD A,n
+    // for the next pair.
+    {
+      // Address descriptor: either a numeric immediate or
+      // (global symbol, offset).  Two stores are "consecutive" if
+      // both descriptors match on the symbol part and differ in
+      // offset by exactly one.
+      struct AddrKey {
+        const GlobalValue *GV; // nullptr for immediate
+        int64_t Off;           // numeric address (when GV==nullptr) or offset
+        bool isConsecutive(const AddrKey &Prev) const {
+          return GV == Prev.GV && Off == Prev.Off + 1;
+        }
+      };
+      auto getStoreAddr = [&](MachineInstr &MI) -> std::optional<AddrKey> {
+        if (MI.getOpcode() != Z80::LD_nnind_A) return std::nullopt;
+        const MachineOperand &Op = MI.getOperand(0);
+        if (Op.isImm())
+          return AddrKey{nullptr, Op.getImm()};
+        if (Op.isGlobal())
+          return AddrKey{Op.getGlobal(), (int64_t)Op.getOffset()};
+        return std::nullopt;
+      };
+      auto buildBaseAddr = [&](MachineInstrBuilder &MIB,
+                               const AddrKey &K) {
+        if (K.GV)
+          MIB.addGlobalAddress(K.GV, K.Off);
+        else
+          MIB.addImm(K.Off);
+      };
+
+      auto MII = MBB.begin();
+      const auto MIE = MBB.end();
+      while (MII != MIE) {
+        // Look for the head of a run: LD A,imm0; LD (addr0),A.
+        if (MII->getOpcode() != Z80::LD_A_n ||
+            !MII->getOperand(0).isImm()) {
+          ++MII; continue;
+        }
+        auto It2 = std::next(MachineBasicBlock::iterator(&*MII));
+        if (It2 == MIE) break;
+        auto firstAddr = getStoreAddr(*It2);
+        if (!firstAddr) { ++MII; continue; }
+
+        // Collect run: each subsequent pair must be
+        //   LD A,imm_k; LD (addr_k),A   with addr_k = addr0 + k.
+        struct Pair { MachineInstr *LdAn; MachineInstr *LdNnA; uint8_t Imm; };
+        SmallVector<Pair, 8> Run;
+        Run.push_back({&*MII, &*It2,
+                       (uint8_t)MII->getOperand(0).getImm()});
+        auto It3 = std::next(It2);
+        while (It3 != MIE) {
+          if (It3->getOpcode() != Z80::LD_A_n ||
+              !It3->getOperand(0).isImm()) break;
+          auto It4 = std::next(It3);
+          if (It4 == MIE) break;
+          auto a = getStoreAddr(*It4);
+          AddrKey expected{firstAddr->GV,
+                           firstAddr->Off + (int64_t)Run.size()};
+          if (!a || a->GV != expected.GV || a->Off != expected.Off) break;
+          Run.push_back({&*It3, &*It4,
+                         (uint8_t)It3->getOperand(0).getImm()});
+          It3 = std::next(It4);
+        }
+
+        if (Run.size() >= 3) {
+          // Rewrite: ld hl, base; { ld (hl), imm; inc hl }+
+          // Drop the trailing INC HL after the last store (one-byte save).
+          DebugLoc DL = MII->getDebugLoc();
+          auto MIB = BuildMI(MBB, MII, DL, TII->get(Z80::LD_HL_nn));
+          buildBaseAddr(MIB, *firstAddr);
+          for (size_t k = 0; k < Run.size(); ++k) {
+            BuildMI(MBB, MII, DL, TII->get(Z80::LD_HLind_n))
+                .addImm(Run[k].Imm);
+            if (k + 1 < Run.size())
+              BuildMI(MBB, MII, DL, TII->get(Z80::INC_HL));
+          }
+          for (auto &P : Run) {
+            P.LdAn->eraseFromParent();
+            P.LdNnA->eraseFromParent();
+          }
+          Changed = true;
+          MII = It3; // resume after the run
+          continue;
+        }
+        // Run too short (1 or 2 pairs); advance past the head pair only.
+        MII = std::next(It2);
+      }
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,
