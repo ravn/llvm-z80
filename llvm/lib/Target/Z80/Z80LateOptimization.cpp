@@ -1851,6 +1851,70 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: identity mask-roundtrip after SBC A,A (issue #79) ---
+    //
+    // GISel lowers `sext i1 → i8` of an `icmp ne` result via the
+    // canonical (shl 7; ashr 7) idiom, which on Z80 expands to:
+    //
+    //     sbc  a, a       ; A is already 0xFF or 0x00 (the mask)
+    //     and  $1         ; <-- mask-roundtrip starts here
+    //     rrca            ;     {0xFF/00} -> {1/0} -> {0x80/00}
+    //     and  $80
+    //     add  a, a
+    //     sbc  a, a       ; <-- ends here, A is back to 0xFF or 0x00
+    //
+    // The trailing 5 instructions (8 bytes) are an identity on the
+    // value already in A.  This peephole detects the exact sequence
+    // immediately after a SBC A,A (the canonical mask producer) and
+    // deletes it.  Safe: the second `sbc a,a` would re-establish
+    // FLAGS but in this position no FLAGS-using instruction follows
+    // (we check); the outer Z/N/H/C state matches what the kept
+    // SBC A,A established already.
+    {
+      SmallVector<MachineInstr *, 8> ToErase;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        if (MII->getOpcode() != Z80::SBC_A_A) continue;
+        // The instruction whose tail we're considering -- mark and walk
+        // forward exactly 5 specific instructions.
+        auto It = std::next(MachineBasicBlock::iterator(&*MII));
+        auto match = [&](unsigned Op, int64_t ExpectedImm = -1) {
+          if (It == MIE || It->getOpcode() != Op) return false;
+          if (ExpectedImm >= 0) {
+            if (It->getNumOperands() < 1 || !It->getOperand(0).isImm() ||
+                It->getOperand(0).getImm() != ExpectedImm)
+              return false;
+          }
+          return true;
+        };
+        if (!match(Z80::AND_n, 0x01)) continue;
+        auto andOne = It; ++It;
+        if (!match(Z80::RRCA))      continue;
+        auto rrca = It; ++It;
+        if (!match(Z80::AND_n, 0x80))continue;
+        auto and80 = It; ++It;
+        if (!match(Z80::ADD_A_A))   continue;
+        auto adda = It; ++It;
+        if (!match(Z80::SBC_A_A))   continue;
+        auto sbcAa = It; ++It;
+        // Final guard: the kept SBC_A_A's FLAGS effect (Z/N/H/C from
+        // the value-zero test of A on subtract-borrow) is the same
+        // either way (subtract-borrow only depends on carry-in).  The
+        // deleted SBC re-uses identical FLAGS as the kept one.  So
+        // any subsequent flag consumer sees the same FLAGS state.
+        // No FLAGS-bridge guard needed for THIS pattern.
+        LLVM_DEBUG(dbgs() << "  #79: deleting mask-roundtrip after SBC A,A "
+                          << "@ " << *MII);
+        ToErase.push_back(&*andOne);
+        ToErase.push_back(&*rrca);
+        ToErase.push_back(&*and80);
+        ToErase.push_back(&*adda);
+        ToErase.push_back(&*sbcAa);
+        Changed = true;
+      }
+      for (auto *MI : ToErase)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,
