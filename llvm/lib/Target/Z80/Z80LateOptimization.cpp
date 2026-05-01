@@ -3268,6 +3268,50 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     Changed = true;
   }
 
+  // --- Peephole: cross-MBB CALL ; <fall through> ; RET → JP (issue #75) ---
+  // When an MBB ends with CALL_nn (no explicit branch) and falls through
+  // to an MBB whose first instruction is RET, the CALL can become a
+  // TAILJMP -- the callee's RET will return directly to our caller.
+  // Saves 1 byte per site.
+  //
+  // Same stack-arg safety check as the single-MBB version: no PUSHes
+  // before the CALL in the producing MBB.  We don't touch the RET'ing
+  // MBB; it remains as a target for any other predecessor.
+  for (auto &MBB : MF) {
+    auto Term = MBB.getLastNonDebugInstr();
+    if (Term == MBB.end() || Term->getOpcode() != Z80::CALL_nn)
+      continue;
+    // Must have a single fall-through successor.
+    if (MBB.succ_size() != 1) continue;
+    MachineBasicBlock *Next = *MBB.succ_begin();
+    // Successor's first non-debug instruction must be RET.
+    auto NextFirst = Next->getFirstNonDebugInstr();
+    if (NextFirst == Next->end() || NextFirst->getOpcode() != Z80::RET)
+      continue;
+    // Stack-args safety check.
+    bool HasPush = false;
+    for (auto It = MBB.begin(); It != Term; ++It) {
+      if (It->isDebugInstr()) continue;
+      unsigned Opc = It->getOpcode();
+      if (Opc == Z80::PUSH_AF || Opc == Z80::PUSH_BC ||
+          Opc == Z80::PUSH_DE || Opc == Z80::PUSH_HL ||
+          Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY) {
+        HasPush = true; break;
+      }
+    }
+    if (HasPush) continue;
+    // Replace CALL with TAILJMP, drop the fall-through to the RET MBB.
+    LLVM_DEBUG(dbgs() << "  CALL → JP (cross-MBB tail call): " << *Term);
+    MachineOperand &CallTarget = Term->getOperand(0);
+    DebugLoc DL = Term->getDebugLoc();
+    BuildMI(MBB, *Term, DL, TII->get(Z80::TAILJMP)).add(CallTarget);
+    Term->eraseFromParent();
+    // TAILJMP is isReturn, so no fall-through happens.  Remove the CFG
+    // edge so successor MBB liveness reflects this.
+    MBB.removeSuccessor(Next);
+    Changed = true;
+  }
+
   // --- Cross-block redundant LD A,r removal (issue #60) ---
   //
   // Forward dataflow tracking when register A is known to equal an 8-bit
