@@ -347,6 +347,39 @@ DJNZ + LDIR-seed land, these are largely subsumed.
 **#12, #16, #40, #43, #74.**  IX vs static-stack vs push/pop spills.
 Sizing question — wants a per-function cost model.
 
+## Implementation status (2026-05-01)
+
+Clusters tackled:
+
+- ✅ **Cluster 4 (known-value)**: #60 imm form + #83 — landed in
+  `Z80LateOptimization.cpp` (~130 line known-A peephole).  cpnos-rom
+  payload 1750 → 1746 B (-4 B).  #79 (mask-from-flag) untouched —
+  out of scope for post-RA peephole.
+- ✅ **Cluster 5 (direct-address)**: #90 — landed in
+  `Z80InstructionSelector.cpp` G_TRUNC fold (~30 line peephole).
+  cpnos-rom .init 646 → 643 B (-3 B).  #80 closed without code
+  change — investigation showed `ld bc/de,(nn)` ED-prefix is 4 B,
+  same as `ld hl,(nn); ex de,hl` — no real size win.
+- ✅ **Cluster 1 (8-bit primacy) regression locks**: #77 do-while
+  form already DJNZs (`djnz-u8-counter.ll` pins behavior); #86
+  basic switches already use 8-bit `cp` (`u8-switch-cmp.ll`
+  pins).  Open: #77 `while(n--)` form (counter forced into C
+  with per-iter round-trip — small win, no cpnos-rom hits) and
+  #86 sparse-switch-on-truncated-i16 (compiler retains i16 ops
+  through the case chain; bigger win but harder fix needing
+  legalizer/combiner work).
+
+Not-yet-tackled:
+
+- Cluster 2 (DJNZ + LDIR family): #88 seed-LDIR, #78 LDIR
+  aftermath, #50 unrolled LDI, #64 LDDR-for-memmove
+- Cluster 3 (memcpy thresholds): #73, #87 small-memcpy unroll
+- Cluster 6: subsumed by 2+4
+- Cluster 7: large; do last
+
+Cumulative cpnos-rom impact: payload 1750 → 1746 B; init 647 →
+643 B.  Z80 lit suite: 63/63 PASS at every commit.
+
 ## Implementation roadmap
 
 Suggested order, tackling clusters from cheap-and-impactful first:
