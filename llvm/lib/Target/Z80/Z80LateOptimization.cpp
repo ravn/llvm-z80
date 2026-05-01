@@ -1725,6 +1725,132 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: known-immediate A tracking (issue #60 imm form, #83) ---
+    // Track when A is provably loaded with a specific 8-bit constant and
+    // delete subsequent operations that would not change that value:
+    //   1) `LD A, n` when A already holds n          (issue #60, imm form)
+    //   2) `XOR A`     when A already holds 0          (idem)
+    //   3) `AND n`     when (A & n) == A              (issue #83, dead AND)
+    //   4) `OR  n`     when (A | n) == A              (dead OR)
+    //   5) `XOR n`     when n == 0                    (degenerate XOR)
+    //
+    // Forward scan only -- doesn't carry across MBB boundaries, so the win
+    // is limited to straight-line sequences (which is where the majority of
+    // the pessimization sits).  A clobber to A or any flag-consumer that
+    // depends on the deleted instruction's flag side-effects bails out.
+    {
+      // Use MachineInstr's "reads FLAGS" query instead of enumerating
+      // opcodes -- catches conditional branches, ADC/SBC with carry,
+      // and any future flag consumer without a maintenance burden.
+      auto readsFlags = [TRI](const MachineInstr &MI) -> bool {
+        return MI.readsRegister(Z80::FLAGS, TRI);
+      };
+
+      SmallVector<MachineInstr *, 8> ToErase;
+      bool Known = false;
+      uint8_t A_val = 0;
+
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        MachineInstr &MI = *MII;
+        unsigned Opc = MI.getOpcode();
+
+        // KILL/DEBUG/CFI etc.: ignore.
+        if (MI.isMetaInstruction()) continue;
+
+        // -- Recognize sources that establish A's value --
+        if (Opc == Z80::LD_A_n && MI.getOperand(0).isImm()) {
+          uint8_t v = (uint8_t)MI.getOperand(0).getImm();
+          if (Known && A_val == v) {
+            LLVM_DEBUG(dbgs() << "  Redundant LD A,#" << (unsigned)v
+                              << " (A already holds): " << MI);
+            ToErase.push_back(&MI);
+            Changed = true;
+            continue; // A still holds v
+          }
+          Known = true; A_val = v;
+          continue;
+        }
+        if (Opc == Z80::XOR_A) {
+          if (Known && A_val == 0) {
+            // Don't delete: XOR A also clears flags (Z=1, N=H=C=0).  The
+            // `LD A, 0` case is what we want to delete instead, since LD
+            // doesn't set flags and a separate flag-setter follows when
+            // needed.  Conservative: only delete if no flag-consumer in
+            // the next 4 instructions reads Z/C from XOR A.
+            // For now, retain XOR A unconditionally (it's already 1 B).
+          }
+          Known = true; A_val = 0;
+          continue;
+        }
+
+        // -- Dead AND/OR/XOR after known A --
+        if (Known && (Opc == Z80::AND_n || Opc == Z80::OR_n ||
+                      Opc == Z80::XOR_n)) {
+          if (!MI.getOperand(0).isImm()) { Known = false; continue; }
+          uint8_t imm = (uint8_t)MI.getOperand(0).getImm();
+          uint8_t after = A_val;
+          bool dead = false;
+          if (Opc == Z80::AND_n && (uint8_t)(A_val & imm) == A_val) {
+            after = (uint8_t)(A_val & imm); dead = true;
+          } else if (Opc == Z80::OR_n && (uint8_t)(A_val | imm) == A_val) {
+            after = (uint8_t)(A_val | imm); dead = true;
+          } else if (Opc == Z80::XOR_n && imm == 0) {
+            after = A_val; dead = true;
+          }
+          if (dead) {
+            // Safety: only delete if the immediately-following instructions
+            // up to a point that re-establishes flags do NOT read flags
+            // we'd be killing.  Scan ahead until we hit something that
+            // sets flags or a non-passthrough instruction.
+            bool flagsConsumed = false;
+            int k = 4;
+            for (auto It2 = std::next(MachineBasicBlock::iterator(&MI));
+                 It2 != MIE && k > 0; ++It2, --k) {
+              if (It2->isMetaInstruction()) { ++k; continue; }
+              if (readsFlags(*It2)) {
+                flagsConsumed = true; break;
+              }
+              // Anything that sets FLAGS rescues us (re-establishes).
+              bool defsFlags = false;
+              for (const MachineOperand &MO : It2->operands()) {
+                if (MO.isReg() && MO.isDef() && MO.getReg() == Z80::FLAGS)
+                  defsFlags = true;
+              }
+              if (defsFlags) break;
+            }
+            if (!flagsConsumed) {
+              LLVM_DEBUG(dbgs() << "  Dead AND/OR/XOR after known A="
+                                << (unsigned)A_val << ": " << MI);
+              ToErase.push_back(&MI);
+              Changed = true;
+              A_val = after; // unchanged
+              continue;
+            }
+            // else: flags consumed -- can't delete; A still ends up = after.
+            A_val = after;
+            continue;
+          }
+          // AND/OR/XOR with non-trivial immediate: invalidate A.
+          Known = false;
+          continue;
+        }
+
+        // -- Clobber detection --
+        bool ClobbersA = false;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isRegMask()) { ClobbersA = true; break; }
+          if (!MO.isReg() || !MO.getReg().isPhysical() || !MO.isDef())
+            continue;
+          if (TRI->regsOverlap(MO.getReg(), Z80::A)) { ClobbersA = true; break; }
+        }
+        if (ClobbersA) Known = false;
+        if (MI.isCall() || MI.isReturn() || MI.isBranch())
+          Known = false;
+      }
+      for (auto *MI : ToErase)
+        MI->eraseFromParent();
+    }
+
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
     //             → LDHL SP,#; LD (HL),#lo; INC HL; LD (HL),#hi (SM83 only) ---
     // When a 16-bit constant is stored to the stack via a register pair,

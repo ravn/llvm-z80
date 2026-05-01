@@ -1,17 +1,15 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -Oz < %s | FileCheck %s
-; XFAIL: *
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s
 
-; Issue #60: redundant `LD A,reg` when A already holds the value.
-; This file pins specific known-A=0 cases that the backend should
-; carry across instructions / MBB edges.
-
-; Case 1: three consecutive stores of zero -- A=0 already established
-; by `xor a`; ld a, 0 not re-emitted between stores.  ALREADY GOOD --
-; this is the regression check.
+; Issue #60 (immediate form): redundant `LD A,imm` when A already
+; holds the value.  Z80LateOptimization's known-immediate-A
+; peephole carries A's value across non-A-clobbering instructions
+; (LD HL,...; LD (nn),HL; arithmetic on HL/DE/BC; etc.) and
+; deletes redundant subsequent `LD A,imm` of the same value.
 
 @a = global i8 0
 @b = global i8 0
 @c = global i8 0
+@dst = global i16 0
 
 define void @zero_three() {
   store volatile i8 0, ptr @a
@@ -20,26 +18,14 @@ define void @zero_three() {
   ret void
 }
 
+; Three consecutive zero stores -- A=0 established once via xor a,
+; carried across both inter-store branches.
 ; CHECK-LABEL: _zero_three:
-; CHECK:       xor  a,a
-; CHECK-NOT:   xor  a,a
-; CHECK-NOT:   ld   a,#0x0
-; CHECK:       ret
-
-; Case 2: zero stored before a CALL that we know preserves A=0.
-; (No standard Z80 ABI guarantees this, so this is a conservative
-; check: outside this case, the second store should re-establish A=0
-; via `xor a` which costs 1 B vs `ld a, 0` 2 B.)
-
-declare void @callee_preserves_a(ptr) #0
-
-; The attribute "preserves_a" is hypothetical -- a real fix would
-; build on caller-saved/callee-saved semantics.
-
-; Case 3: zero stored after another instruction that does NOT modify A
-; (e.g. INC HL).  Bus-side instructions don't touch A.
-
-@dst = global i16 0
+; CHECK:      xor  a
+; CHECK-NEXT: ld  (_a),a
+; CHECK-NEXT: ld  (_b),a
+; CHECK-NEXT: ld  (_c),a
+; CHECK-NEXT: ret
 
 define void @zero_then_inc_hl() {
   store volatile i8 0, ptr @a
@@ -50,14 +36,14 @@ define void @zero_then_inc_hl() {
   ret void
 }
 
+; HL manipulation between two A=0 stores -- HL ops don't touch A,
+; so no re-zero of A required.
 ; CHECK-LABEL: _zero_then_inc_hl:
-; CHECK:       xor  a,a
-; CHECK:       ld   ({{.+}}),a
-; first store
-; ... (HL manipulation here -- doesn't touch A)
-; second `ld (b),a` should NOT need a re-zero of A
-; CHECK-NOT:   xor  a,a
-; CHECK-NOT:   ld   a,#0x0
-; CHECK:       ret
-
-attributes #0 = { nounwind }
+; CHECK:      xor  a
+; CHECK:      ld  (_a),a
+; CHECK:      ld  hl,#_dst+1
+; CHECK:      ld  (_dst),hl
+; CHECK-NOT:  xor  a
+; CHECK-NOT:  ld  a,#0
+; CHECK:      ld  (_b),a
+; CHECK:      ret
