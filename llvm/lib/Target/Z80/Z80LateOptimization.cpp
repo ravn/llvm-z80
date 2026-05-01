@@ -23,6 +23,7 @@
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -1519,11 +1520,39 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Only valid when imm < 255 (imm+1 doesn't overflow 8 bits).
         if (Imm >= 255) { ++MII; continue; }
 
+        // The LD r,A (I0) writes a physical register. If that register
+        // is live-out of this basic block (used in a successor), we
+        // cannot erase I0 — only the LD A,imm + CP r + branch.
+        // Bug #69: erasing I0 unconditionally lost the discriminant for
+        // switch-on-byte-field patterns where the same value is compared
+        // in a successor block.
+        MCPhysReg SavedReg = 0;
+        for (const auto &MO : I0->operands()) {
+          if (MO.isReg() && MO.isDef()) { SavedReg = MO.getReg(); break; }
+        }
+        bool SavedRegLiveOut = false;
+        if (SavedReg) {
+          for (const MachineBasicBlock *Succ : MBB.successors()) {
+            if (Succ->isLiveIn(SavedReg)) {
+              SavedRegLiveOut = true;
+              break;
+            }
+          }
+        }
+
         DebugLoc DL = I0->getDebugLoc();
         MachineBasicBlock *Target = I3->getOperand(0).getMBB();
         LLVM_DEBUG(dbgs() << "  Comparison reversal: LD r,A; LD A,#"
                           << Imm << "; CP r; branch → CP #" << (Imm + 1)
-                          << "; flipped branch\n");
+                          << "; flipped branch"
+                          << (SavedRegLiveOut ? " (keeping LD r,A)" : "")
+                          << "\n");
+        if (SavedRegLiveOut) {
+          // The saved register is live-out: emit LD r,A before the CP
+          // so the discriminant is preserved for successor blocks.
+          // Issue #69: without this, the successor reads a stale register.
+          BuildMI(MBB, *I0, DL, TII->get(I0->getOpcode()));
+        }
         BuildMI(MBB, *I0, DL, TII->get(Z80::CP_n)).addImm((Imm + 1) & 0xFF);
         BuildMI(MBB, *I0, DL, TII->get(FlippedBr)).addMBB(Target);
         I3->eraseFromParent();
@@ -1693,6 +1722,132 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
       }
       for (auto *MI : ToErase60)
+        MI->eraseFromParent();
+    }
+
+    // --- Peephole: known-immediate A tracking (issue #60 imm form, #83) ---
+    // Track when A is provably loaded with a specific 8-bit constant and
+    // delete subsequent operations that would not change that value:
+    //   1) `LD A, n` when A already holds n          (issue #60, imm form)
+    //   2) `XOR A`     when A already holds 0          (idem)
+    //   3) `AND n`     when (A & n) == A              (issue #83, dead AND)
+    //   4) `OR  n`     when (A | n) == A              (dead OR)
+    //   5) `XOR n`     when n == 0                    (degenerate XOR)
+    //
+    // Forward scan only -- doesn't carry across MBB boundaries, so the win
+    // is limited to straight-line sequences (which is where the majority of
+    // the pessimization sits).  A clobber to A or any flag-consumer that
+    // depends on the deleted instruction's flag side-effects bails out.
+    {
+      // Use MachineInstr's "reads FLAGS" query instead of enumerating
+      // opcodes -- catches conditional branches, ADC/SBC with carry,
+      // and any future flag consumer without a maintenance burden.
+      auto readsFlags = [TRI](const MachineInstr &MI) -> bool {
+        return MI.readsRegister(Z80::FLAGS, TRI);
+      };
+
+      SmallVector<MachineInstr *, 8> ToErase;
+      bool Known = false;
+      uint8_t A_val = 0;
+
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        MachineInstr &MI = *MII;
+        unsigned Opc = MI.getOpcode();
+
+        // KILL/DEBUG/CFI etc.: ignore.
+        if (MI.isMetaInstruction()) continue;
+
+        // -- Recognize sources that establish A's value --
+        if (Opc == Z80::LD_A_n && MI.getOperand(0).isImm()) {
+          uint8_t v = (uint8_t)MI.getOperand(0).getImm();
+          if (Known && A_val == v) {
+            LLVM_DEBUG(dbgs() << "  Redundant LD A,#" << (unsigned)v
+                              << " (A already holds): " << MI);
+            ToErase.push_back(&MI);
+            Changed = true;
+            continue; // A still holds v
+          }
+          Known = true; A_val = v;
+          continue;
+        }
+        if (Opc == Z80::XOR_A) {
+          if (Known && A_val == 0) {
+            // Don't delete: XOR A also clears flags (Z=1, N=H=C=0).  The
+            // `LD A, 0` case is what we want to delete instead, since LD
+            // doesn't set flags and a separate flag-setter follows when
+            // needed.  Conservative: only delete if no flag-consumer in
+            // the next 4 instructions reads Z/C from XOR A.
+            // For now, retain XOR A unconditionally (it's already 1 B).
+          }
+          Known = true; A_val = 0;
+          continue;
+        }
+
+        // -- Dead AND/OR/XOR after known A --
+        if (Known && (Opc == Z80::AND_n || Opc == Z80::OR_n ||
+                      Opc == Z80::XOR_n)) {
+          if (!MI.getOperand(0).isImm()) { Known = false; continue; }
+          uint8_t imm = (uint8_t)MI.getOperand(0).getImm();
+          uint8_t after = A_val;
+          bool dead = false;
+          if (Opc == Z80::AND_n && (uint8_t)(A_val & imm) == A_val) {
+            after = (uint8_t)(A_val & imm); dead = true;
+          } else if (Opc == Z80::OR_n && (uint8_t)(A_val | imm) == A_val) {
+            after = (uint8_t)(A_val | imm); dead = true;
+          } else if (Opc == Z80::XOR_n && imm == 0) {
+            after = A_val; dead = true;
+          }
+          if (dead) {
+            // Safety: only delete if the immediately-following instructions
+            // up to a point that re-establishes flags do NOT read flags
+            // we'd be killing.  Scan ahead until we hit something that
+            // sets flags or a non-passthrough instruction.
+            bool flagsConsumed = false;
+            int k = 4;
+            for (auto It2 = std::next(MachineBasicBlock::iterator(&MI));
+                 It2 != MIE && k > 0; ++It2, --k) {
+              if (It2->isMetaInstruction()) { ++k; continue; }
+              if (readsFlags(*It2)) {
+                flagsConsumed = true; break;
+              }
+              // Anything that sets FLAGS rescues us (re-establishes).
+              bool defsFlags = false;
+              for (const MachineOperand &MO : It2->operands()) {
+                if (MO.isReg() && MO.isDef() && MO.getReg() == Z80::FLAGS)
+                  defsFlags = true;
+              }
+              if (defsFlags) break;
+            }
+            if (!flagsConsumed) {
+              LLVM_DEBUG(dbgs() << "  Dead AND/OR/XOR after known A="
+                                << (unsigned)A_val << ": " << MI);
+              ToErase.push_back(&MI);
+              Changed = true;
+              A_val = after; // unchanged
+              continue;
+            }
+            // else: flags consumed -- can't delete; A still ends up = after.
+            A_val = after;
+            continue;
+          }
+          // AND/OR/XOR with non-trivial immediate: invalidate A.
+          Known = false;
+          continue;
+        }
+
+        // -- Clobber detection --
+        bool ClobbersA = false;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isRegMask()) { ClobbersA = true; break; }
+          if (!MO.isReg() || !MO.getReg().isPhysical() || !MO.isDef())
+            continue;
+          if (TRI->regsOverlap(MO.getReg(), Z80::A)) { ClobbersA = true; break; }
+        }
+        if (ClobbersA) Known = false;
+        if (MI.isCall() || MI.isReturn() || MI.isBranch())
+          Known = false;
+      }
+      for (auto *MI : ToErase)
         MI->eraseFromParent();
     }
 
@@ -2940,6 +3095,198 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     Changed = true;
   }
 
+  // --- Cross-block redundant LD A,r removal (issue #60) ---
+  //
+  // Forward dataflow tracking when register A is known to equal an 8-bit
+  // GR8 register. The single-block peephole earlier in this pass handles
+  // the in-block case; this pass extends it across basic block boundaries.
+  //
+  // The motivating example (fdc_get_result_bytes in autoload PROM):
+  //     ld   d,a       ; A == D after this point
+  //     cp   #2        ; CP doesn't touch A
+  //     jr   nz,.L1    ; branch — A still == D on both edges
+  //   .Lret:
+  //     ld   a,d       ; REDUNDANT — A still == D
+  //     ret
+  //   .L1:
+  //     ld   a,d       ; REDUNDANT — A still == D
+  //     or   a
+  //     ...
+  //
+  // State per program point: A is Top (initial for unprocessed MBBs),
+  // Reg(r) (A == r), or Bottom (no fact known).
+  //
+  // Transfer:
+  //   LD r,A          → Reg(r)         (A's value now also lives in r)
+  //   LD A,r          → Reg(r)         (and if Known was already r, the
+  //                                     LD is dead and removable)
+  //   def of A or current Known.r → Bottom
+  //   regmask (CALL)  → Bottom
+  //   CP, OR A, branches, etc. that don't def A or Known.r → unchanged
+  //
+  // Meet (intersection over predecessor exits at MBB entry):
+  //   Top ⊓ x = x;  Bottom ⊓ x = Bottom
+  //   Reg(r) ⊓ Reg(r) = Reg(r);  Reg(r) ⊓ Reg(s) = Bottom (r ≠ s)
+  //
+  // Limitation: tracks only ONE register at a time (most recently set).
+  // If both `LD D,A` and `LD E,A` are seen, only Reg(E) is remembered.
+  // Sufficient for the issue #60 patterns; can be extended to a set if
+  // future cases warrant.
+  {
+    enum AKKind : uint8_t { AK_Top = 0, AK_Bottom = 1, AK_Reg = 2 };
+    struct AK {
+      uint8_t Kind = AK_Top;
+      MCPhysReg Reg = 0;
+      bool operator==(const AK &O) const {
+        return Kind == O.Kind && (Kind != AK_Reg || Reg == O.Reg);
+      }
+    };
+    auto akTop = []() { AK a; a.Kind = AK_Top; return a; };
+    auto akBot = []() { AK a; a.Kind = AK_Bottom; return a; };
+    auto akReg = [](MCPhysReg R) { AK a; a.Kind = AK_Reg; a.Reg = R; return a; };
+    auto akMeet = [&](AK X, AK Y) -> AK {
+      if (X.Kind == AK_Top) return Y;
+      if (Y.Kind == AK_Top) return X;
+      if (X.Kind == AK_Bottom || Y.Kind == AK_Bottom) return akBot();
+      return X.Reg == Y.Reg ? X : akBot();
+    };
+
+    // LD A,r → r, else 0.
+    auto ldA_src60x = [](unsigned Opc) -> MCPhysReg {
+      switch (Opc) {
+      case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+      case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+      case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+      default: return 0;
+      }
+    };
+    // LD r,A → r, else 0.
+    auto ldR_A_dst60x = [](unsigned Opc) -> MCPhysReg {
+      switch (Opc) {
+      case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+      case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+      case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+      default: return 0;
+      }
+    };
+
+    // Apply transfer for one instruction. If `Redundant` is non-null and the
+    // instruction is a LD A,r whose effect is a no-op given Known, set it.
+    auto step60x = [&](MachineInstr &MI, AK Known, bool *Redundant) -> AK {
+      if (Redundant) *Redundant = false;
+      if (MI.isDebugInstr())
+        return Known;
+      unsigned Opc = MI.getOpcode();
+      if (Opc == TargetOpcode::KILL || Opc == TargetOpcode::IMPLICIT_DEF)
+        return Known;
+
+      // LD A,r — sets Known to r. Redundant if A already equals r.
+      if (MCPhysReg Src = ldA_src60x(Opc)) {
+        if (Known.Kind == AK_Reg && Known.Reg == Src && Redundant)
+          *Redundant = true;
+        return akReg(Src);
+      }
+      // LD r,A — A's value is now in r as well. We deliberately bypass the
+      // generic clobber check for r, because we want Known := r afterwards
+      // even though r is being defined.
+      if (MCPhysReg Dst = ldR_A_dst60x(Opc))
+        return akReg(Dst);
+
+      // OR A and AND A are idempotent on A's value (A := A op A == A);
+      // they only update FLAGS. Treat them as not clobbering A even though
+      // their MCInstrDesc declares an implicit def of A. Without this,
+      // Known is dropped after the OR A that typically follows a save+test
+      // sequence, defeating the cross-block reload elimination on the
+      // fall-through path. LD A,A is similarly a no-op.
+      if (Opc == Z80::OR_A || Opc == Z80::AND_A || Opc == Z80::LD_A_A)
+        return Known;
+
+      // Anything else: scan operands + implicit defs for clobbers of A
+      // or the currently-tracked Known.Reg.
+      bool ClobberA = false, ClobberKnown = false;
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isRegMask()) {
+          // CALL et al. — A is caller-saved per sdcccall, treat as clobbered.
+          ClobberA = true; ClobberKnown = true; break;
+        }
+        if (!MO.isReg() || !MO.isDef() || !MO.getReg().isPhysical())
+          continue;
+        Register R = MO.getReg();
+        if (TRI->regsOverlap(R, Z80::A))
+          ClobberA = true;
+        if (Known.Kind == AK_Reg && TRI->regsOverlap(R, Known.Reg))
+          ClobberKnown = true;
+      }
+      for (MCPhysReg D : MI.getDesc().implicit_defs()) {
+        if (TRI->regsOverlap(D, Z80::A))
+          ClobberA = true;
+        if (Known.Kind == AK_Reg && TRI->regsOverlap(D, Known.Reg))
+          ClobberKnown = true;
+      }
+      if (ClobberA || ClobberKnown)
+        return akBot();
+      return Known;
+    };
+
+    // Iterate Entry/Exit per MBB to fixpoint. RPO seeds the first pass;
+    // a small fixed iteration cap handles back-edges (loops).
+    DenseMap<MachineBasicBlock *, AK> EntryAK, ExitAK;
+    for (auto &MBB : MF) {
+      EntryAK[&MBB] = akTop();
+      ExitAK[&MBB] = akTop();
+    }
+    if (!MF.empty())
+      EntryAK[&MF.front()] = akBot();
+
+    SmallVector<MachineBasicBlock *, 32> RPO;
+    for (auto *BB : ReversePostOrderTraversal<MachineFunction *>(&MF))
+      RPO.push_back(BB);
+
+    bool DfChanged = true;
+    int Iter = 0;
+    while (DfChanged && Iter++ < 16) {
+      DfChanged = false;
+      for (auto *BB : RPO) {
+        if (BB != &MF.front()) {
+          AK E = akTop();
+          for (auto *Pred : BB->predecessors())
+            E = akMeet(E, ExitAK[Pred]);
+          if (!(EntryAK[BB] == E)) {
+            EntryAK[BB] = E;
+            DfChanged = true;
+          }
+        }
+        AK K = EntryAK[BB];
+        for (auto &MI : *BB)
+          K = step60x(MI, K, nullptr);
+        if (!(ExitAK[BB] == K)) {
+          ExitAK[BB] = K;
+          DfChanged = true;
+        }
+      }
+    }
+
+    // Removal pass: walk each MBB applying step from EntryAK; collect
+    // LD A,r whose effect is a no-op given current Known.
+    SmallVector<MachineInstr *, 16> ToErase60x;
+    for (auto &MBB : MF) {
+      AK K = EntryAK[&MBB];
+      for (auto &MI : MBB) {
+        bool Red = false;
+        AK Next = step60x(MI, K, &Red);
+        if (Red) {
+          LLVM_DEBUG(dbgs() << "  Cross-block redundant LD A,r: " << MI);
+          ToErase60x.push_back(&MI);
+        }
+        K = Next;
+      }
+    }
+    for (auto *MI : ToErase60x) {
+      MI->eraseFromParent();
+      Changed = true;
+    }
+  }
+
   // --- Peephole: AND $1 + branch/ret → RRCA + carry branch/ret ---
   // AND $1 (2B) tests bit 0 via Z flag.  RRCA (1B) rotates bit 0 into carry.
   // Replace AND $1; JR/JP NZ → RRCA; JR/JP C (saves 1B).
@@ -3464,6 +3811,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
   // The push/copy/pop is unnecessary — A already has the right value.
   // Collapse to: LD A,r; LD (addr),A  (saves 3B per instance).
+  //
+  // The cross-block #60 pass earlier in this run may have already removed
+  // the second LD A,r (because A == r is established by the first one),
+  // leaving the 4-instruction form: LD A,r; PUSH AF; LD (addr),A; POP AF.
+  // We match both forms.
   for (MachineBasicBlock &MBB : MF) {
     for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
       auto I0 = MII++;
@@ -3475,24 +3827,40 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       auto I1 = MII;
       if (I1 == MIE || I1->getOpcode() != Z80::PUSH_AF)
         continue;
-      // Match I2: LD A,<same reg>
       auto I2 = std::next(I1);
-      if (I2 == MIE || I2->getOpcode() != I0->getOpcode())
+      if (I2 == MIE)
         continue;
-      // Match I3: LD (addr),A
-      auto I3 = std::next(I2);
-      if (I3 == MIE || I3->getOpcode() != Z80::LD_nnind_A)
+
+      // Two accepted shapes:
+      //   5-instr (original):  LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
+      //   4-instr (post #60):  LD A,r; PUSH AF;        LD (addr),A; POP AF
+      //
+      // In the 5-instr form I2 is the duplicate LD A,<same reg> and I3 is
+      // LD (addr),A.  In the 4-instr form I2 is already LD (addr),A.
+      MachineBasicBlock::iterator IDupLdAr = MIE;
+      MachineBasicBlock::iterator IStore;
+      if (I2->getOpcode() == I0->getOpcode()) {
+        IDupLdAr = I2;
+        IStore = std::next(I2);
+        if (IStore == MIE)
+          continue;
+      } else {
+        IStore = I2;
+      }
+      if (IStore->getOpcode() != Z80::LD_nnind_A)
         continue;
-      // Match I4: POP AF
-      auto I4 = std::next(I3);
+
+      auto I4 = std::next(IStore);
       if (I4 == MIE || I4->getOpcode() != Z80::POP_AF)
         continue;
 
       LLVM_DEBUG(dbgs() << "  BSS spill push/pop elim: " << *I0
-                        << "  removing PUSH AF + LD A,r + POP AF\n");
-      // Remove PUSH AF, redundant LD A,r, and POP AF.  Keep I0 and I3.
+                        << "  removing PUSH AF"
+                        << (IDupLdAr != MIE ? " + LD A,r" : "")
+                        << " + POP AF\n");
       MBB.erase(I1);
-      MBB.erase(I2);
+      if (IDupLdAr != MIE)
+        MBB.erase(IDupLdAr);
       MII = MBB.erase(I4);
       Changed = true;
     }

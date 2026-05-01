@@ -3074,6 +3074,45 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           }
         }
 
+        // Try LSHR+AND → RRCA+AND fusion: if the non-constant source is a
+        // single-use G_LSHR by a constant, use RRCA (1B) instead of SRL (2B).
+        // RRCA rotates bit0→bit7; safe when AND mask clears the top N bits.
+        if (ImmVal && MRI.hasOneNonDBGUse(Src1Reg)) {
+          MachineInstr *ShiftDef = MRI.getVRegDef(Src1Reg);
+          if (ShiftDef &&
+              ShiftDef->getOpcode() == TargetOpcode::G_LSHR) {
+            Register ShiftSrc = ShiftDef->getOperand(1).getReg();
+            Register ShiftAmtReg = ShiftDef->getOperand(2).getReg();
+            MachineInstr *ShiftAmtDef = MRI.getVRegDef(ShiftAmtReg);
+            if (ShiftAmtDef &&
+                ShiftAmtDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+              int64_t ShiftAmt =
+                  ShiftAmtDef->getOperand(1).getCImm()->getZExtValue();
+              if (ShiftAmt > 0 && ShiftAmt < 8 &&
+                  ((*ImmVal >> (8 - ShiftAmt)) == 0)) {
+                if (RBI.constrainGenericRegister(ShiftSrc, Z80::GR8RegClass,
+                                                 MRI)) {
+                  BuildMI(MBB, MI, MI.getDebugLoc(),
+                          TII.get(TargetOpcode::COPY), Z80::A)
+                      .addReg(ShiftSrc);
+                  for (int64_t i = 0; i < ShiftAmt; i++)
+                    BuildMI(MBB, MI, MI.getDebugLoc(),
+                            TII.get(Z80::RRCA));
+                  BuildMI(MBB, MI, MI.getDebugLoc(),
+                          TII.get(Z80::AND_n))
+                      .addImm(*ImmVal & 0xFF);
+                  BuildMI(MBB, MI, MI.getDebugLoc(),
+                          TII.get(TargetOpcode::COPY), DstReg)
+                      .addReg(Z80::A);
+                  ShiftDef->eraseFromParent();
+                  MI.eraseFromParent();
+                  return true;
+                }
+              }
+            }
+          }
+        }
+
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(Src1Reg);
         if (ImmVal)
@@ -4562,6 +4601,41 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
 
     if (MRI.getType(DstReg).getSizeInBits() == 8 &&
         MRI.getType(SrcReg).getSizeInBits() == 16) {
+      // Issue #90: fold trunc(lshr(i16, 8)) → COPY sub_hi.  When the
+      // i16 source is a link-time-resolved symbol (G_GLOBAL_VALUE /
+      // G_PTR_ADD / G_PTRTOINT), the current lowering walks
+      // sub_hi → L → H=0 → COPY DstReg,L (4 instr, 7B).  The fused
+      // form is COPY DstReg, sub_hi(Src) = 1 instr (just `ld a, h`
+      // if Src ends up in HL, or `ld a, d` if in DE).  Saves 3 B per
+      // call site in patterns like
+      //   take_byte((uint8_t)((uintptr_t)sym >> 8))
+      // which appear in IM2 vector-table setup, page-aligned table
+      // base extraction, and byte-arg helpers.
+      MachineInstr *LShr = MRI.getVRegDef(SrcReg);
+      if (LShr && LShr->getOpcode() == TargetOpcode::G_LSHR &&
+          MRI.hasOneNonDBGUse(SrcReg)) {
+        Register InnerSrc = LShr->getOperand(1).getReg();
+        Register ShAmtReg = LShr->getOperand(2).getReg();
+        MachineInstr *ShAmtDef = MRI.getVRegDef(ShAmtReg);
+        if (ShAmtDef && ShAmtDef->getOpcode() == TargetOpcode::G_CONSTANT &&
+            MRI.getType(InnerSrc).getSizeInBits() == 16) {
+          int64_t ShAmt =
+              ShAmtDef->getOperand(1).getCImm()->getZExtValue();
+          if (ShAmt == 8) {
+            // Direct sub_hi extract -- byte at offset 8 of an i16.
+            if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI) ||
+                !RBI.constrainGenericRegister(InnerSrc, Z80::GR16RegClass, MRI))
+              return false;
+            BuildMI(MBB, MI, MI.getDebugLoc(),
+                    TII.get(TargetOpcode::COPY), DstReg)
+                .addReg(InnerSrc, RegState{}, Z80::sub_hi);
+            LShr->eraseFromParent();
+            MI.eraseFromParent();
+            return true;
+          }
+        }
+      }
+
       // Try to fold trunc(sdiv/srem(sext i8, sext i8)) → 8-bit div/rem
       // directly. Since GlobalISel selects in reverse order, G_SDIV/G_SREM
       // hasn't been selected yet, so we can inspect and consume it.

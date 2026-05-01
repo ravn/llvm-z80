@@ -76,7 +76,15 @@ static bool modifiesAWithoutFlags(const MachineInstr &MI) {
   return ModifiesA && !definesFlags(MI);
 }
 
-/// Returns true if MI sets FLAGS based on A's value (Z reflects A==0).
+/// Returns true if MI sets the Z flag to reflect (A == 0) — i.e., the
+/// instruction defines A and FLAGS together, and the Z flag of the result
+/// is the standard "result-is-zero" indication. This is what `OR A`
+/// computes, so any subsequent OR A is redundant.
+///
+/// CP r / CP n / CP (HL) / CP (IX+d) do NOT qualify: they leave A
+/// unchanged and set Z based on (A - operand), i.e. (A == operand).
+/// A subsequent OR A would test (A == 0), which is a different question.
+/// Treating CP as Z-for-A here was a long-standing miscompile.
 static bool setsZForA(const MachineInstr &MI) {
   if (!definesFlags(MI))
     return false;
@@ -85,11 +93,6 @@ static bool setsZForA(const MachineInstr &MI) {
       return true;
   }
   if (MI.getDesc().hasImplicitDefOfPhysReg(Z80::A))
-    return true;
-  // CP doesn't def A but sets Z based on A's comparison.
-  unsigned Opc = MI.getOpcode();
-  if (Opc == Z80::CP_r || Opc == Z80::CP_n ||
-      Opc == Z80::CP_HLind || Opc == Z80::CP_IXd)
     return true;
   return false;
 }
