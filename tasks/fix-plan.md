@@ -466,6 +466,48 @@ contains:
 6. **Size delta** — measured against rcbios + cpnos-rom builds (the
    two known-good Z80 codebases in this workspace).
 
+## Infrastructure follow-ups (low priority, but cheap)
+
+- [ ] **CI: GitHub Actions workflow for Z80 lit suite.**  Two
+      pre-existing test stalenesses (`lshr-rrca.ll`, `switch-byte-field.ll`)
+      landed broken on their introducing commits because the lit suite
+      wasn't gated.  Adding `.github/workflows/lit.yml` would catch
+      this class of regression at PR time.
+
+      Sketch (gates only on Z80 target / test path changes):
+      ```yaml
+      on:
+        pull_request:
+          paths:
+            - 'llvm/lib/Target/Z80/**'
+            - 'llvm/test/CodeGen/Z80/**'
+            - 'clang/cmake/caches/Z80.cmake'
+        push:
+          branches: [main]
+      jobs:
+        z80-lit:
+          runs-on: ubuntu-latest
+          steps:
+            - uses: actions/checkout@v4
+            - uses: hendrikmuhs/ccache-action@v1
+              with: { key: z80-lit }
+            - run: |
+                cmake -C clang/cmake/caches/Z80.cmake -G Ninja -S llvm -B build \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+                ninja -C build llc clang FileCheck not count llvm-config
+                build/bin/llvm-lit -v llvm/test/CodeGen/Z80/
+      ```
+
+      Cost: free (public repo).  Wall-clock per PR: ~4-8 min cached,
+      ~25-35 min cold.  The Z80-only cmake cache shrinks the build
+      versus upstream LLVM's full suite.
+
+      Optional matrix entry: also run `cargo run -- clang` from
+      `z80-utils/test-runner/` for the integration suite -- needs
+      z88dk-ticks pre-installed via the `llvm-z80-test` Docker image
+      that CLAUDE.md describes.
+
 ## Open questions for upstream
 
 - What's `jacobly0`'s plan for the Z80 backend?  Last activity ~2025;
