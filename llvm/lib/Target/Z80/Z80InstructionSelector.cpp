@@ -4601,6 +4601,41 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
 
     if (MRI.getType(DstReg).getSizeInBits() == 8 &&
         MRI.getType(SrcReg).getSizeInBits() == 16) {
+      // Issue #90: fold trunc(lshr(i16, 8)) → COPY sub_hi.  When the
+      // i16 source is a link-time-resolved symbol (G_GLOBAL_VALUE /
+      // G_PTR_ADD / G_PTRTOINT), the current lowering walks
+      // sub_hi → L → H=0 → COPY DstReg,L (4 instr, 7B).  The fused
+      // form is COPY DstReg, sub_hi(Src) = 1 instr (just `ld a, h`
+      // if Src ends up in HL, or `ld a, d` if in DE).  Saves 3 B per
+      // call site in patterns like
+      //   take_byte((uint8_t)((uintptr_t)sym >> 8))
+      // which appear in IM2 vector-table setup, page-aligned table
+      // base extraction, and byte-arg helpers.
+      MachineInstr *LShr = MRI.getVRegDef(SrcReg);
+      if (LShr && LShr->getOpcode() == TargetOpcode::G_LSHR &&
+          MRI.hasOneNonDBGUse(SrcReg)) {
+        Register InnerSrc = LShr->getOperand(1).getReg();
+        Register ShAmtReg = LShr->getOperand(2).getReg();
+        MachineInstr *ShAmtDef = MRI.getVRegDef(ShAmtReg);
+        if (ShAmtDef && ShAmtDef->getOpcode() == TargetOpcode::G_CONSTANT &&
+            MRI.getType(InnerSrc).getSizeInBits() == 16) {
+          int64_t ShAmt =
+              ShAmtDef->getOperand(1).getCImm()->getZExtValue();
+          if (ShAmt == 8) {
+            // Direct sub_hi extract -- byte at offset 8 of an i16.
+            if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI) ||
+                !RBI.constrainGenericRegister(InnerSrc, Z80::GR16RegClass, MRI))
+              return false;
+            BuildMI(MBB, MI, MI.getDebugLoc(),
+                    TII.get(TargetOpcode::COPY), DstReg)
+                .addReg(InnerSrc, RegState{}, Z80::sub_hi);
+            LShr->eraseFromParent();
+            MI.eraseFromParent();
+            return true;
+          }
+        }
+      }
+
       // Try to fold trunc(sdiv/srem(sext i8, sext i8)) → 8-bit div/rem
       // directly. Since GlobalISel selects in reverse order, G_SDIV/G_SREM
       // hasn't been selected yet, so we can inspect and consume it.
