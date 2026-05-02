@@ -9,14 +9,16 @@
 ;
 ; LLVM core's LoopRotate is gated on Function::hasMinSize() at -Oz (see
 ; LoopRotation.cpp:72 — Threshold forced to 0 when minsize is set), so it
-; refuses to rotate -Oz functions regardless of header size.  This file
-; exercises the Z80 target-specific Z80LoopRotate pass that bypasses that
-; gate by calling LoopRotation() directly with a non-zero threshold.
+; refuses to rotate -Oz functions regardless of header size.  The Z80
+; target-specific Z80LoopRotate pass bypasses that gate by calling
+; LoopRotation() directly with a non-zero threshold.
 ;
-; The pass is gated behind `-z80-loop-rotate` (default off) until #97 (BC
-; ping-pong in single-BB self-loops) is fixed — the rotated form exposes
-; that coalescing failure and currently regresses size on cpnos-rom.  Once
-; #97 closes the default should flip to true.
+; The pass remains gated behind `-z80-loop-rotate` (default off).  The
+; original gate was #97 (BC ping-pong in rotated single-BB self-loops),
+; which is now closed by the post-RA peephole in Z80LateOptimization.cpp.
+; A second regression — rotated loops containing a CALL force BSS-spills
+; of the loop carrier across the call (rcbios +33 B, cpnos-rom +4 B in
+; 2026-05-02 measurement) — keeps the default off pending follow-up work.
 
 define void @countdown(ptr %p) {
 entry:
