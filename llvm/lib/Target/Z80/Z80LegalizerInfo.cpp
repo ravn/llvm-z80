@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
+#include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
@@ -417,10 +418,11 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder(G_ABS).lower();
 
   // G_MEMCPY: inline LDIR on Z80 (forward copy, no overlap handling).
-  // G_MEMMOVE: libcall to _memmove (handles overlapping regions).
-  // C memcpy is undefined for overlap; use memmove when overlap is possible.
+  // G_MEMMOVE: inline LDIR or LDDR when the dst-src direction is
+  // statically known; otherwise libcall to _memmove.  See the custom
+  // legalizer in legalizeCustom() below.
   getActionDefinitionsBuilder(G_MEMCPY).custom();
-  getActionDefinitionsBuilder(G_MEMMOVE).libcall();
+  getActionDefinitionsBuilder(G_MEMMOVE).custom();
 
   // G_MEMSET needs custom handling: promote i8 val to i16 (C 'int')
   // before lowering to libcall, so calling convention assigns it correctly
@@ -1078,6 +1080,108 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     MIRBuilder.buildCopy(Register(Z80::BC), Size);
     MIRBuilder.buildInstr(Z80::LDIR);
 
+    MI.eraseFromParent();
+    return true;
+  }
+
+  case TargetOpcode::G_MEMMOVE: {
+    // memmove: like memcpy, but must handle overlapping regions
+    // correctly.  When the dst-vs-src direction is statically
+    // determinable we can pick LDIR (forward, dst <= src) or LDDR
+    // (backward, dst >= src) inline; otherwise fall back to libcall
+    // _memmove.  Operands: 0=dst, 1=src, 2=size, 3=tailcall.
+    Register DstPtr = MI.getOperand(0).getReg();
+    Register SrcPtr = MI.getOperand(1).getReg();
+    Register Size = MI.getOperand(2).getReg();
+
+    const auto &STI = MIRBuilder.getMF().getSubtarget<Z80Subtarget>();
+    if (!STI.hasZ80()) {
+      // SM83 lacks LDIR/LDDR -- always libcall.
+      auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
+      if (Result != LegalizerHelper::Legalized)
+        return false;
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Determine the dst-src direction.
+    // - Same register: copy is a no-op.
+    // - DstPtr = G_PTR_ADD(SrcPtr, c): direction = sign(c).
+    // - SrcPtr = G_PTR_ADD(DstPtr, c): direction = sign(-c).
+    // - Both = G_PTR_ADD(commonBase, ci): direction = sign(c_dst - c_src).
+    // - Otherwise: unknown.
+    enum class Direction { LDIR, LDDR, NoOp, Unknown };
+    Direction Dir = Direction::Unknown;
+    if (DstPtr == SrcPtr) {
+      Dir = Direction::NoOp;
+    } else {
+      auto getPtrAddOff = [&](Register Ptr, Register &Base) -> std::optional<int64_t> {
+        MachineInstr *Def = MRI.getVRegDef(Ptr);
+        if (!Def || Def->getOpcode() != TargetOpcode::G_PTR_ADD)
+          return std::nullopt;
+        Base = Def->getOperand(1).getReg();
+        Register OffReg = Def->getOperand(2).getReg();
+        return getIConstantVRegSExtVal(OffReg, MRI);
+      };
+      Register DstBase, SrcBase;
+      auto DstOff = getPtrAddOff(DstPtr, DstBase);
+      auto SrcOff = getPtrAddOff(SrcPtr, SrcBase);
+
+      auto setFromDelta = [&](int64_t Delta) {
+        if (Delta == 0)
+          Dir = Direction::NoOp;
+        else if (Delta < 0)
+          Dir = Direction::LDIR;
+        else
+          Dir = Direction::LDDR;
+      };
+
+      if (DstOff && SrcBase == Register() && SrcPtr == DstBase) {
+        // DstPtr = SrcPtr + DstOff
+        setFromDelta(*DstOff);
+      } else if (SrcOff && DstBase == Register() && DstPtr == SrcBase) {
+        // SrcPtr = DstPtr + SrcOff -> DstPtr = SrcPtr - SrcOff
+        setFromDelta(-*SrcOff);
+      } else if (DstOff && SrcOff && DstBase == SrcBase) {
+        // Both share a common base; direction is sign of DstOff-SrcOff.
+        setFromDelta(*DstOff - *SrcOff);
+      }
+    }
+
+    if (Dir == Direction::NoOp) {
+      MI.eraseFromParent();
+      return true;
+    }
+    if (Dir == Direction::Unknown) {
+      auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
+      if (Result != LegalizerHelper::Legalized)
+        return false;
+      MI.eraseFromParent();
+      return true;
+    }
+
+    MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+
+    if (Dir == Direction::LDIR) {
+      MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
+      MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::LDIR);
+    } else { // LDDR
+      // LDDR copies backward: HL = src + size - 1, DE = dst + size - 1,
+      // BC = size, then decrement HL/DE/BC each iteration.
+      LLT S16 = LLT::scalar(16);
+      auto One = MIRBuilder.buildConstant(S16, 1);
+      auto SizeM1 = MIRBuilder.buildSub(S16, Size, One);
+      auto SrcEnd =
+          MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr, SizeM1);
+      auto DstEnd =
+          MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, SizeM1);
+      MIRBuilder.buildCopy(Register(Z80::HL), SrcEnd);
+      MIRBuilder.buildCopy(Register(Z80::DE), DstEnd);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::LDDR);
+    }
     MI.eraseFromParent();
     return true;
   }

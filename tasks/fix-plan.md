@@ -501,19 +501,14 @@ contains:
 
 ## Backlog (parked / later)
 
-- **memcpy with compile-time-constant length: lower as inline LD+LDIR/
-  LDDR for simple call sites.**  Currently a `call _memcpy` runtime
-  stub fires whenever the IR has a non-`@llvm.memcpy.inline` form.  At
-  least when (a) the length is a compile-time constant fitting in 16
-  bits, (b) the call has no other complexity (no volatile, no scoped
-  AAMDNodes that block), and (c) we know src/dst direction is forward
-  (or pickable as backward via LDDR), we should emit a single
-  `LD HL,src; LD DE,dst; LD BC,N; LDIR` (or LDDR) inline.  This is
-  the same lowering the backend already does for `llvm.memcpy.inline`;
-  generalising it to *all* constant-length memcpys would close a class
-  of "size regression after refactor to memcpy()" complaints.
-  Investigation needed: figure out where the runtime-call fallback is
-  picked, gate it on `!isVolatile && isa<ConstantInt>(Length)`.
+- **LDDR codegen quality.**  Inline memmove via LDDR works (issue
+  closed in `Z80LegalizerInfo` G_MEMMOVE custom case) but the
+  `LD HL,src+size-1; LD DE,dst+size-1; LD BC,size` setup is bigger
+  than it needs to be when Size is a constant -- the legalizer emits
+  separate G_SUB and G_PTR_ADD ops that the regalloc spills HL through
+  BSS in the worst case.  Constant-fold Size−1 and the two pointer
+  adds at G_MEMMOVE legalization time so the asm collapses to direct
+  immediate loads.
 
 ## Infrastructure follow-ups (low priority, but cheap)
 
