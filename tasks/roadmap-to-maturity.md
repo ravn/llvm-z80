@@ -488,61 +488,93 @@ on path filters (`llvm/lib/Target/Z80/**`,
 
 ## 10.  Collaboration protocol with @zlfn
 
-Per @zlfn's stated preference (issue #8 thread):
+**Timing constraint (user directive 2026-05-02):**
+Do **not** engage `llvm-z80/llvm-z80` (file upstream issues, open
+PRs, comment on @zlfn's tracking issues, etc.) until **something
+substantial is ready**.  Premature engagement wastes maintainer
+attention on speculative directions.
 
-### 10.1  For each fix
+### 10.1  Phase split: workspace mode → engagement mode
 
-  1. Discover, prototype, and stabilize on `ravn/llvm-z80` working
-     branch.
-  2. Open or update `ravn/llvm-z80` issue to track the workspace
-     view (already standard).
-  3. Open `llvm-z80/llvm-z80` issue describing the problem upstream-
-     style: minimal repro, expected behavior, observed behavior,
-     proposed fix outline.  Wait for @zlfn acknowledgement (or 1-2
-     days) before coding to avoid duplicate work.
-  4. Submit `llvm-z80/llvm-z80` PR with: targeted commits, lit test,
-     code review-ready commit message, no "AI-generated" tags
-     (just well-written code).
-  5. After merge upstream, sync `ravn/llvm-z80` from
+Two distinct phases of operation:
+
+**Workspace mode (current):**
+  - All work on `ravn/llvm-z80` working branches.
+  - Issue tracking on `ravn/llvm-z80` only.
+  - No issues, PRs, or comments on `llvm-z80/llvm-z80`.
+  - No comments on @zlfn's tracking issues (#13, etc.).
+  - Quality bar still LLVM-grade so the work is presentable when
+    engagement mode opens.
+
+**Engagement mode (after substantial body of work is ready):**
+  - Coordinated batch delivery to `llvm-z80/llvm-z80`.
+  - Per @zlfn's preference (issue #8 thread): open issue first,
+    then PR.
+  - Multi-PR clusters: state the plan in the cluster tracking
+    issue first so @zlfn can give early feedback.
+  - AI-assisted contributions accepted with test cases + human
+    review.
+
+### 10.2  Definition of "substantial"
+
+Engagement mode opens when **at minimum** the following are true:
+
+  - All correctness bugs (#28, #36, #38, #63, #81) closed locally
+    with lit tests proving each fix and no regressions on the lit
+    suite or real-workload tests.
+  - One coherent cluster of pessimization fixes (likely Cluster A
+    regalloc or Cluster B spill mechanism) closed locally with the
+    same standard.
+  - Test infrastructure (CI, size baseline) ready to demonstrate
+    the work doesn't regress.
+  - A coordinated narrative for the upstream issues + PRs: each
+    one's purpose, dependencies, expected reviewer effort.
+
+In rough plan-phase terms: engagement mode is appropriate after
+**Phase 2 (correctness sweep) plus at least Phase 3 substantially
+progressed**, not before.
+
+### 10.3  Engagement-mode protocol (for reference; do not act on
+this until substantial)
+
+When engagement mode opens, the per-fix protocol becomes:
+  1. Discover, prototype, stabilize on `ravn/llvm-z80`.
+  2. Update `ravn/llvm-z80` issue with the workspace view.
+  3. Open `llvm-z80/llvm-z80` issue: minimal repro, observed vs
+     expected, proposed fix outline.  Wait for @zlfn
+     acknowledgement (or 1-2 days) before opening the PR.
+  4. Submit `llvm-z80/llvm-z80` PR with: targeted commits, lit
+     test, review-ready commit message.
+  5. After merge, sync `ravn/llvm-z80` from
      `llvm-z80/llvm-z80:main`.
 
-### 10.2  For investigation issues
-
-(#28, #38, #63, #96, #98 all marked "investigation"):
-
-  - Do the investigation on `ravn/llvm-z80` first.
-  - When ground truth is established, file findings as a
-    `llvm-z80/llvm-z80` issue.  This may close several
-    `ravn/llvm-z80` issues simultaneously.
-
-### 10.3  For core-LLVM modifications
+### 10.4  For core-LLVM modifications
 
 Anything that touches files outside `llvm/lib/Target/Z80/` is a
-core-LLVM modification.  Per zlfn's #13:
+core-LLVM modification.  Per zlfn's #13 (which we are NOT
+commenting on yet — see 10.1):
 
-  - Discuss first with @zlfn before opening a PR.  Coordinate via
-    issue comment on #13 or a fresh issue cross-referencing #13.
+  - Discuss with @zlfn (in engagement mode) before opening a PR.
   - Justify why the change is needed and why a target hook is
     insufficient.
   - Prefer adding a target hook to making generic-pass changes.
 
-### 10.4  AI-assisted contribution etiquette
+### 10.5  AI-assisted contribution etiquette
 
-Per @zlfn's stance:
+Per @zlfn's stance (issue #8):
   - AI assistance is welcome.  Test cases required.  Human review
     is essential.
   - Don't tag PRs as "AI-generated" — the standard is "well-
     reviewed code", not "human-only code".
-  - Acknowledge AI use in commit trailers if appropriate
-    (`Co-Authored-By: Claude ...` per existing project convention).
+  - `Co-Authored-By: Claude ...` trailers in commit messages are
+    fine per existing project convention.
 
-### 10.5  Collaboration cadence
+### 10.6  Collaboration cadence (engagement mode)
 
   - Don't surprise @zlfn with large PRs.
-  - For multi-PR clusters, state the plan up front in the cluster
-    tracking issue so @zlfn can give early feedback.
-  - Be patient — @zlfn is a solo maintainer with a day job.  Their
-    response cadence in #8 was 1-3 days.
+  - For multi-PR clusters, state the plan up front.
+  - Be patient — @zlfn is a solo maintainer.  Response cadence in
+    #8 was 1-3 days.
 
 ## 11.  Quality bar
 
@@ -699,11 +731,15 @@ Order:
 
 ### 12.8  Phase 8 — Late-opt migration
 
+By this phase, engagement mode (Section 10.2) has likely opened.
+
 For each peephole classified "migrate" in the Phase 1 audit:
-  - Open `llvm-z80/llvm-z80` issue describing the upstream-area
-    target.
+  - In engagement mode: open `llvm-z80/llvm-z80` issue describing
+    the upstream-area target.  In workspace mode (if engagement
+    hasn't opened yet): track on `ravn/llvm-z80` only.
   - Implement the upstream-area fix.
-  - Land the upstream-area fix.
+  - Land the upstream-area fix (in `ravn/llvm-z80` first; promote
+    to `llvm-z80/llvm-z80` per engagement-mode protocol).
   - Remove the peephole.
   - Verify no regression via CI + size baseline.
 
@@ -825,18 +861,28 @@ If the eventual goal is reached:
 
 ## 15.  Immediate next actions (week 1)
 
+Per Section 10.1, all of these stay within `ravn/llvm-z80`.  Do
+not file or comment on `llvm-z80/llvm-z80` until engagement mode
+opens (Section 10.2).
+
 1. **Review this plan with the user.**  Get explicit go/no-go on
    each phase before starting.
 2. **Update `tasks/fix-plan.md`** to reference this roadmap as the
    master and itself as the per-cluster engineering doc.
-3. **Open `llvm-z80/llvm-z80` issue** introducing this roadmap to
-   @zlfn.  Format: short summary + links to the design docs in
-   `ravn/llvm-z80/llvm-z80/tasks/`.  Get @zlfn's reaction before
-   starting Phase 1.
-4. **Phase 1 prep**: 
-   - Sketch CI workflow YAML (don't merge yet — get @zlfn's
-     review first).
-   - Begin late-opt audit reading.
+3. **Phase 1 prep on `ravn/llvm-z80`**:
+   - Begin late-opt audit reading
+     (`Z80LateOptimization.cpp`).  Output: per-peephole
+     classification keep/migrate/delete.
+   - Sketch CI workflow YAML for the `ravn/llvm-z80` fork (private
+     testbed).  Run it on the workspace.  Once stable, it can be
+     proposed to `llvm-z80/llvm-z80` in engagement mode.
+   - Stand up per-function size baseline tracker.
+4. **Phase 2 dispatch**: pick the first correctness bug (#81 is
+   smallest; recommended starting move).  Investigate and fix on a
+   `ravn/llvm-z80` working branch.  Lit test in
+   `llvm/test/CodeGen/Z80/`.  Do NOT open any
+   `llvm-z80/llvm-z80` issue or PR for this yet — accumulate fixes
+   locally until substantial.
 
 ## 16.  Out of scope (explicit)
 
