@@ -1681,11 +1681,15 @@ bool Z80RegisterInfo::getRegAllocationHints(
     if (It == End || It->getOpcode() != Z80::DEC_A)
       continue;
     // Check if the MBB containing this DEC has a conditional NZ branch
-    // as terminator. This indicates the counter controls a loop that
-    // could benefit from DJNZ (inner loop). Outer loops use unconditional
-    // JR and should NOT get the B hint.
+    // back to itself (self-back-edge). A self-back-edge marks an
+    // innermost single-MBB loop -- the safest place to fire DJNZ.
+    // For nested do-while loops, the OUTER counter's dec/jr_nz lives
+    // in the outer.latch MBB which branches back to the outer header
+    // (a different MBB), not to itself; the INNER counter's dec/jr_nz
+    // lives in a self-looping MBB. Issue #92.
     const MachineBasicBlock *DecMBB = Use.getParent();
     bool FeedsCondNZ = false;
+    bool IsSelfBackEdge = false;
     // Scan all terminators, not just the last — an unconditional branch
     // after the conditional (non-fallthrough exit) would hide JP_NZ.
     for (auto TI = DecMBB->terminators().begin(),
@@ -1694,15 +1698,30 @@ bool Z80RegisterInfo::getRegAllocationHints(
       unsigned TermOpc = TI->getOpcode();
       if (TermOpc == Z80::JR_NZ_e || TermOpc == Z80::JP_NZ_nn) {
         FeedsCondNZ = true;
+        if (TI->getNumOperands() > 0 && TI->getOperand(0).isMBB() &&
+            TI->getOperand(0).getMBB() == DecMBB)
+          IsSelfBackEdge = true;
         break;
       }
     }
-    if (FeedsCondNZ) {
-      // Inner loop counter: hint B for DJNZ.
+    if (IsSelfBackEdge) {
+      // Innermost loop counter: hint B for DJNZ.
       LLVM_DEBUG(dbgs() << "  DJNZ hint: " << printReg(VirtReg, this)
-                        << " is an inner loop counter, hinting B\n");
+                        << " is an innermost loop counter, hinting B\n");
       if (is_contained(Order, Z80::B) && !is_contained(Hints, Z80::B))
         Hints.insert(Hints.begin(), Z80::B);
+    } else if (FeedsCondNZ) {
+      // dec/jr_nz that branches to a DIFFERENT MBB: this is the latch of
+      // a multi-block loop, typically the outer of a nested pair. Avoid
+      // B so the inner self-looping counter can claim it.
+      LLVM_DEBUG(dbgs() << "  DJNZ anti-hint: " << printReg(VirtReg, this)
+                        << " is an outer/multi-block loop counter, avoiding B\n");
+      static const MCPhysReg NonB[] = {Z80::D, Z80::E, Z80::H,
+                                        Z80::L, Z80::C};
+      for (MCPhysReg R : NonB) {
+        if (is_contained(Order, R) && !is_contained(Hints, R))
+          Hints.insert(Hints.begin(), R);
+      }
     } else {
       // Outer loop counter (feeds unconditional branch or OR A; JR NZ
       // that the peephole already reduced): AVOID B so inner loops can
