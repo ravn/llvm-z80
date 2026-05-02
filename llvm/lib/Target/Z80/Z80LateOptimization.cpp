@@ -2199,6 +2199,117 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole: u8 switch range-check 16-bit → 8-bit (issue #86) ---
+    //
+    // GISel switch lowering on a u8 discriminator widens to i16 for
+    // the jump-table index BEFORE the bound check, so the bound check
+    // costs 9 B / 16-bit subtract:
+    //
+    //     DEC_A             ; offset = c - min
+    //     LD_L_A             ; widen low byte
+    //     LD_H_n 0           ; widen high byte
+    //     LD_DE_nn N         ; load limit
+    //     LD_A_E
+    //     SUB_L
+    //     LD_A_D
+    //     SBC_A_H            ; HL <=> DE
+    //     JR_NC/JP_NC default
+    //
+    // The same check is `CP N; JR_NC default` in 3 B, since A is the
+    // u8 offset.  Reorder so the bound check uses the 8-bit form, and
+    // the widen happens AFTER (when we know the bound check passed
+    // and we'll need HL for jump-table indexing).
+    //
+    // Net: 9 B → 5 B (CP_n 2 B + JR_NC_e 2 B + LD_L_A/LD_H_n 0 still
+    // needed at 3 B, was already accounted) -- save 4 B per switch.
+    {
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        if (MII->getOpcode() != Z80::LD_L_A) { ++MII; continue; }
+        auto LdLA = MII;
+        auto It = std::next(LdLA);
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_H_n ||
+            !It->getOperand(0).isImm() ||
+            It->getOperand(0).getImm() != 0) {
+          ++MII; continue;
+        }
+        auto LdHN = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_DE_nn ||
+            !It->getOperand(0).isImm()) {
+          ++MII; continue;
+        }
+        int64_t Limit = It->getOperand(0).getImm();
+        // Limit must fit in 8 bits for `CP n` to be equivalent.
+        if (Limit < 0 || Limit > 255) { ++MII; continue; }
+        auto LdDE = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_A_E) {
+          ++MII; continue;
+        }
+        auto LdAE = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::SUB_L) {
+          ++MII; continue;
+        }
+        auto SubL = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_A_D) {
+          ++MII; continue;
+        }
+        auto LdAD = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::SBC_A_H) {
+          ++MII; continue;
+        }
+        auto SbcAH = It; ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+        // Branch must be a carry-conditional out of the bound-check.
+        unsigned BrOpc = It->getOpcode();
+        if (BrOpc != Z80::JR_NC_e && BrOpc != Z80::JP_NC_nn &&
+            BrOpc != Z80::JR_C_e && BrOpc != Z80::JP_C_nn) {
+          ++MII; continue;
+        }
+        auto Br = It;
+
+        // The DE high byte (D) is implicitly used by SBC -- it's read
+        // here as the high byte of the limit.  After our rewrite, DE
+        // is dead.  Conservative check: the LD_DE_nn defined DE just
+        // for this comparison; if anything between LD_DE_nn and SbcAH
+        // reads DE outside this chain, we'd already have bailed (none
+        // of the matched instructions read DE except by name).
+        // Same with HL -- after the rewrite, LD_L_A and LD_H_n 0
+        // remain for jump-table indexing on the fall-through path.
+
+        // The 16-bit chain computes `DE - HL = limit - offset`, so
+        // carry-out is set iff offset > limit (out of range).
+        // `CP_n limit` computes `A - limit`, so carry-out is set iff
+        // offset < limit (in range).  These are *inverse* flags, so
+        // the branch condition must flip.
+        unsigned NewBrOpc;
+        switch (BrOpc) {
+        case Z80::JR_NC_e: NewBrOpc = Z80::JR_C_e; break;
+        case Z80::JP_NC_nn: NewBrOpc = Z80::JP_C_nn; break;
+        case Z80::JR_C_e:  NewBrOpc = Z80::JR_NC_e; break;
+        case Z80::JP_C_nn: NewBrOpc = Z80::JP_NC_nn; break;
+        default: ++MII; continue;
+        }
+
+        DebugLoc DL = LdLA->getDebugLoc();
+        // Insert CP_n Limit before LdLA, then keep LD_L_A / LD_H_n 0
+        // after (they preserve A / set H, neither touches flags).
+        BuildMI(MBB, LdLA, DL, TII->get(Z80::CP_n)).addImm(Limit);
+        LdDE->eraseFromParent();
+        LdAE->eraseFromParent();
+        SubL->eraseFromParent();
+        LdAD->eraseFromParent();
+        SbcAH->eraseFromParent();
+        // Replace branch with flipped condition, same target.
+        DebugLoc BrDL = Br->getDebugLoc();
+        auto NewBr = BuildMI(MBB, Br, BrDL, TII->get(NewBrOpc));
+        NewBr.add(Br->getOperand(0));
+        Br->eraseFromParent();
+
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "  #86: u8 switch range-check 16->8 bit\n");
+        MII = std::next(LdHN);
+      }
+    }
+
     // --- Peephole: identity mask-roundtrip after SBC A,A (issue #79) ---
     //
     // GISel lowers `sext i1 → i8` of an `icmp ne` result via the
