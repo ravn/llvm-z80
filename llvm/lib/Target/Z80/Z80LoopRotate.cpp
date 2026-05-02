@@ -63,16 +63,14 @@ using namespace llvm;
 // when rotation runs by default — rotated loops with a CALL inside
 // force regalloc to BSS-spill the loop counter / pointer across the
 // CALL, which more than offsets the head-test `or a` savings #77a is
-// after.  Closing #77a productively needs either (a) a peephole that
-// rewrites the spill-around-CALL shape, or (b) a regalloc cost-model
-// tweak to rematerialize cheap loop carriers across the call.  Until
-// then the pass exists for opt-in (-mllvm -z80-loop-rotate=true) and
-// gates #77a for testing; the default stays off.
+// after.  Tracked as ravn/llvm-z80#100; full breadcrumb in
+// `llvm-z80/tasks/followup-77a-rotation-around-call.md`.  Until #100
+// closes the default stays off; the pass is opt-in via
+// `-mllvm -z80-loop-rotate=true`.
 static cl::opt<bool>
     EnableZ80LoopRotate("z80-loop-rotate", cl::init(false), cl::Hidden,
                         cl::desc("Enable Z80 target-specific loop rotation "
-                                 "(off by default — see comment for the open "
-                                 "rotation-around-CALL spill regression)"));
+                                 "(off by default; gates on #100)"));
 
 namespace {
 

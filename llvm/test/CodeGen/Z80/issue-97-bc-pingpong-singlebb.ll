@@ -19,7 +19,7 @@
 ; The harder i16-counter sub-case (counter and pointer compete for HL,
 ; so the peephole can't simply drop the ping-pong) is pinned in the
 ; sibling test `issue-97a-bc-pingpong-i16-counter.ll` and tracked as
-; a follow-up issue.
+; ravn/llvm-z80#99.
 
 ; --- Canonical shape: do-while-decrement countdown with i16 store.
 ; Matches cpnos-rom's setup_ivt pattern after rotation.

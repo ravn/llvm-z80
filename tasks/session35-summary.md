@@ -44,7 +44,7 @@ next gating constraint on #77a.
 
 ## Filed this session
 
-- **#97a** (issue-97a-bc-pingpong-i16-counter.ll, XFAIL): the i16-counter
+- **#99 (was #97a in working notes)** (issue-97a-bc-pingpong-i16-counter.ll, XFAIL): the i16-counter
   rotated-loop sub-case where the counter and pointer compete for HL.
   Closing it requires either a regalloc-level swap (counter → BC,
   pointer → HL) or a more invasive peephole that rewrites every
@@ -52,17 +52,16 @@ next gating constraint on #77a.
   in cpnos-rom or rcbios today (counters are i8 / DJNZ-eligible) so
   parked.
 
-- **Rotation-around-CALL spill regression** (sub-issue under #77a):
-  with `Z80LoopRotate` on, rotated loops that contain a CALL force
-  regalloc to BSS-spill the loop carrier across the call.  Measured
-  in `_netboot_mpm`'s inner banner loop: 28 B → 47 B (+19 B for the
-  loop alone, +28 B for the function).  rcbios BIOS +33 B, cpnos-rom
-  +4 B end-to-end.  Possible fixes: (a) post-RA peephole rewriting
-  the spill-around-CALL shape, (b) regalloc cost-model tweak to
-  rematerialize cheap loop carriers across the call, (c) keep rotation
-  default-off until either lands.  Documented inline in
-  `Z80LoopRotate.cpp` and in the `issue-77a-loop-rotate.ll` test
-  header.
+- **#100** rotation-around-CALL spill regression (sub-issue under
+  #77a): with `Z80LoopRotate` on, rotated loops that contain a CALL
+  force regalloc to BSS-spill the loop carrier across the call.
+  Measured in `_netboot_mpm`'s inner banner loop: 28 B → 47 B (+19 B
+  for the loop alone, +28 B for the function).  rcbios BIOS +33 B,
+  cpnos-rom +4 B end-to-end.  Possible fixes: (a) post-RA peephole
+  rewriting the spill-around-CALL shape, (b) regalloc cost-model
+  tweak to rematerialize cheap loop carriers across the call, (c)
+  keep rotation default-off until either lands.  Full breadcrumb in
+  `tasks/followup-77a-rotation-around-call.md`.
 
 ## Files touched
 
@@ -113,8 +112,10 @@ verified unchanged from session 33 baseline.
 
 ## Still open
 
-- **#77a** loop rotation: pass exists, gated off-by-default.  Waiting
-  on rotation-around-CALL spill rewrite.
-- **#97a** i16-counter sub-case (this session's filing).
-- **#94 / #98 / #92 (closed) / #89 / #95** regalloc cluster — same
-  family, deferred to a dedicated regalloc-hint session.
+- **#77 / #77a** loop rotation: pass exists, gated off-by-default.
+  Waiting on #100 (rotation-around-CALL spill rewrite).
+- **#99** i16-counter sub-case of #97 (filed this session).
+- **#100** rotation-around-CALL BSS-spill regression (filed this
+  session).  Direct gate on #77a default-on.
+- **#94 / #98 / #89 / #95** regalloc cluster — same family,
+  deferred to a dedicated regalloc-hint session.

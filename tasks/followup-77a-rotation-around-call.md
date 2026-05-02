@@ -1,8 +1,10 @@
 # Follow-up: close #77a by handling rotation-around-CALL spills
 
-**Status:** open.  Filed end of session 35 (2026-05-02).
-**Gates:** ravn/llvm-z80#77a (Z80LoopRotate default-on).
-**Sibling:** ravn/llvm-z80#97 (closed in session 35).
+**Status:** open.  Tracked as **ravn/llvm-z80#100**.  Filed end of
+session 35 (2026-05-02).
+**Gates:** ravn/llvm-z80#77 / #77a (Z80LoopRotate default-on).
+**Sibling:** ravn/llvm-z80#97 (closed in session 35) and #99
+(i16-counter sub-case).
 
 ## Why this note exists
 

@@ -2,9 +2,9 @@
 ;
 ; XFAIL: *
 ;
-; Issue ravn/llvm-z80#97 i16-counter sub-case: harder sibling of the
-; main #97 issue.  The post-RA peephole (option 2) closed the i8-counter
-; cases by dropping the BC ping-pong and keeping the pointer in HL — but
+; Issue ravn/llvm-z80#99 (filed end of session 35): the i16-counter
+; sub-case of #97 (closed via post-RA peephole in Z80LateOptimization.cpp).
+; The peephole drops the BC ping-pong and keeps the pointer in HL, but
 ; here the counter is also i16 and competes with the pointer for HL.
 ;
 ; Today's MIR (before late-opt) for this shape spills the counter to

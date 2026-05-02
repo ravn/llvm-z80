@@ -18,7 +18,8 @@
 ; which is now closed by the post-RA peephole in Z80LateOptimization.cpp.
 ; A second regression — rotated loops containing a CALL force BSS-spills
 ; of the loop carrier across the call (rcbios +33 B, cpnos-rom +4 B in
-; 2026-05-02 measurement) — keeps the default off pending follow-up work.
+; 2026-05-02 measurement) — is tracked as #100 and keeps the default
+; off pending follow-up work.
 
 define void @countdown(ptr %p) {
 entry:
