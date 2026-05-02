@@ -1,5 +1,12 @@
 # Plan: clang/Z80 code-density work after session 35
 
+> **SUPERSEDED 2026-05-02 by `backend-completion-roadmap.md`.**
+> The user reframed the work: the Z80 backend is preliminary, not
+> finished, and the goal is to **finish it correctly**, not to
+> chase BIOS bytes.  The roadmap reorganizes the same fixes around
+> backend-area completion.  This file is preserved for reference.
+
+
 **Date:** 2026-05-02.  Author session: post-#35 remeasure.
 **Working directory:** `/Users/ravn/z80/`.
 **Governing principle (memory `feedback_root_cause_over_peephole.md`):**
