@@ -535,7 +535,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
         for (MCPhysReg R : TII->get(Opc).implicit_defs()) {
           if (R == Z80::IX || R == Z80::IXH || R == Z80::IXL) IsIXUse = true;
-          if (R == Z80::IY) IYUsedInBody = true;
+          if (R == Z80::IY || R == Z80::IYH || R == Z80::IYL) IYUsedInBody = true;
         }
         if (TII->getInstSizeInBytes(*MII) >= 3) {
           StringRef Name = TII->getName(Opc);
