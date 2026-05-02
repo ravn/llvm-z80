@@ -4584,9 +4584,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
 
           // Matching load from the same address.
           if (isMatchingLoad(SI->StoreOpc, SOpc) && sameAddress(*MII, *Scan)) {
-            if (!HasCall) continue; // load before any call — not a cross-call spill
-            // Stack must be balanced at each reload point.
+            // Stack must be balanced at each reload point.  Issue #74:
+            // the prior `if (!HasCall) continue` skipped pure register-
+            // pressure spills (no CALL between store/load) which is exactly
+            // the case PUSH/POP wins on too -- the StackDepth check is
+            // already the right safety guard.
             if (StackDepth != 0) { Conflict = true; break; }
+            (void)HasCall;
             Loads.push_back(Scan);
             LoadCount++;
             PushPopBytes += 1; // POP
