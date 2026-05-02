@@ -48,6 +48,11 @@ define void @memmove_src_after_dst(ptr %dst) {
 
 
 ; --- common-base GEPs: dst=buf+8, src=buf+2 → dst>src → LDDR ---------
+; #91: with constant Size, the legalizer constant-folds Size-1 and the
+; chained G_PTR_ADD offsets so each end pointer becomes one
+; G_PTR_ADD(@buf, k); the existing ISel fold then emits a direct
+; `LD HL, _buf+const`.  Result: src+31 = _buf+33, dst+31 = _buf+39,
+; LDDR -- no register juggling, no BSS spill.
 define void @memmove_global_offsets() {
   %dst = getelementptr inbounds i8, ptr @buf, i16 8
   %src = getelementptr inbounds i8, ptr @buf, i16 2
@@ -56,8 +61,11 @@ define void @memmove_global_offsets() {
 }
 ; CHECK-LABEL: _memmove_global_offsets:
 ; CHECK-NOT:  call _memmove
-; CHECK:      lddr
-; CHECK:      ret
+; CHECK:      ld  hl,_buf+33
+; CHECK-NEXT: ld  de,_buf+39
+; CHECK-NEXT: ld  bc,32
+; CHECK-NEXT: lddr
+; CHECK-NEXT: ret
 
 
 ; --- identical pointers: no-op ---------------------------------------

@@ -1169,14 +1169,50 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       MIRBuilder.buildInstr(Z80::LDIR);
     } else { // LDDR
       // LDDR copies backward: HL = src + size - 1, DE = dst + size - 1,
-      // BC = size, then decrement HL/DE/BC each iteration.
+      // BC = size, then decrement HL/DE/BC each iteration (#91).
+      //
+      // When Size is a G_CONSTANT, fold Size-1 directly and walk
+      // through any chained G_PTR_ADD constants on SrcPtr/DstPtr so
+      // SrcEnd/DstEnd become a single G_PTR_ADD with the total
+      // offset.  The existing G_PTR_ADD(G_GLOBAL_VALUE, const) ISel
+      // pattern then emits `LD HL, base+const` directly.
       LLT S16 = LLT::scalar(16);
-      auto One = MIRBuilder.buildConstant(S16, 1);
-      auto SizeM1 = MIRBuilder.buildSub(S16, Size, One);
-      auto SrcEnd =
-          MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr, SizeM1);
-      auto DstEnd =
-          MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, SizeM1);
+      auto SizeC = getIConstantVRegSExtVal(Size, MRI);
+
+      auto buildEndPtr = [&](Register Ptr, int64_t ExtraOff) -> Register {
+        // Walk Ptr back through chained G_PTR_ADD with constant offsets.
+        Register Base = Ptr;
+        int64_t Total = ExtraOff;
+        while (true) {
+          MachineInstr *Def = MRI.getVRegDef(Base);
+          if (!Def || Def->getOpcode() != TargetOpcode::G_PTR_ADD)
+            break;
+          auto OffC =
+              getIConstantVRegSExtVal(Def->getOperand(2).getReg(), MRI);
+          if (!OffC)
+            break;
+          Total += *OffC;
+          Base = Def->getOperand(1).getReg();
+        }
+        if (Total == 0)
+          return Base;
+        auto Off = MIRBuilder.buildConstant(S16, Total);
+        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+      };
+
+      Register SrcEnd, DstEnd;
+      if (SizeC) {
+        int64_t Off = *SizeC - 1;
+        SrcEnd = buildEndPtr(SrcPtr, Off);
+        DstEnd = buildEndPtr(DstPtr, Off);
+      } else {
+        auto One = MIRBuilder.buildConstant(S16, 1);
+        auto SizeM1 = MIRBuilder.buildSub(S16, Size, One);
+        SrcEnd = MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr, SizeM1)
+                     .getReg(0);
+        DstEnd = MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, SizeM1)
+                     .getReg(0);
+      }
       MIRBuilder.buildCopy(Register(Z80::HL), SrcEnd);
       MIRBuilder.buildCopy(Register(Z80::DE), DstEnd);
       MIRBuilder.buildCopy(Register(Z80::BC), Size);
