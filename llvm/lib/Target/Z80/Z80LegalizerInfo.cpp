@@ -1071,6 +1071,17 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return true;
     }
 
+    // CRITICAL: LDIR with BC=0 runs 65536 iterations, trashing 64 KB of
+    // memory.  When Size is a known constant 0, drop the op entirely
+    // (#63).  For variable Size that may be 0 the caller is responsible
+    // for the guard; only -O0 + small constant inits exercise the bug.
+    if (auto SizeC = getIConstantVRegSExtVal(Size, MRI)) {
+      if (*SizeC == 0) {
+        MI.eraseFromParent();
+        return true;
+      }
+    }
+
     MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
 
     // LDIR: HL=source, DE=destination, BC=byte count.
@@ -1102,6 +1113,15 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         return false;
       MI.eraseFromParent();
       return true;
+    }
+
+    // CRITICAL: LDIR/LDDR with BC=0 runs 65536 iterations.  When Size
+    // is a known constant 0, drop the op entirely (#63).
+    if (auto SizeC = getIConstantVRegSExtVal(Size, MRI)) {
+      if (*SizeC == 0) {
+        MI.eraseFromParent();
+        return true;
+      }
     }
 
     // Determine the dst-src direction.
@@ -1244,6 +1264,18 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return true;
     }
 
+    // CRITICAL: when the LDIR-fill pattern below is fed BC=0 (which is
+    // size-1 for size==1), LDIR runs 65536 iterations and trashes 64 KB
+    // of memory.  When Size is a known constant, special-case the
+    // degenerate sizes (#63):
+    //   size==0 → no-op, drop the MI;
+    //   size==1 → emit only the leading single-byte store, skip LDIR.
+    auto SizeC = getIConstantVRegSExtVal(Size, MRI);
+    if (SizeC && *SizeC == 0) {
+      MI.eraseFromParent();
+      return true;
+    }
+
     // Inline memset using LDIR fill: LD (HL),val; DE=HL+1; BC=n-1; LDIR.
     // This copies the fill byte forward through the buffer.
     MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
@@ -1252,6 +1284,11 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
     MIRBuilder.buildCopy(Register(Z80::A), ValReg);
     MIRBuilder.buildInstr(Z80::LD_HLind_A);
+
+    if (SizeC && *SizeC == 1) {
+      MI.eraseFromParent();
+      return true;
+    }
 
     // DE = HL + 1 (destination for LDIR)
     LLT S16 = LLT::scalar(16);
