@@ -39,6 +39,7 @@
 #include "Z80ExpandPseudo.h"
 #include "Z80FixupImplicitDefs.h"
 #include "Z80IndexIV.h"
+#include "Z80LoopIdiomFill.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -62,6 +63,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80PostLegalizerCombinerPass(PR);
   initializeZ80FixupImplicitDefsPass(PR);
   initializeZ80LateOptimizationPass(PR);
+  initializeZ80LoopIdiomFillLegacyPassPass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
@@ -147,12 +149,28 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
         }
         return false;
       });
+  PB.registerPipelineParsingCallback(
+      [](StringRef Name, FunctionPassManager &PM,
+         ArrayRef<PassBuilder::PipelineElement>) {
+        if (Name == "z80-loop-idiom-fill") {
+          PM.addPass(Z80LoopIdiomFill());
+          return true;
+        }
+        return false;
+      });
 
   PB.registerLateLoopOptimizationsEPCallback(
       [](LoopPassManager &PM, OptimizationLevel Level) {
         if (Level != OptimizationLevel::O0) {
           PM.addPass(Z80IndexIV());
         }
+      });
+  // Pattern-fill rewrite is a Function-level pass (it walks loops itself
+  // so the legacy-PM wrapper can share the body).
+  PB.registerVectorizerStartEPCallback(
+      [](FunctionPassManager &PM, OptimizationLevel Level) {
+        if (Level != OptimizationLevel::O0)
+          PM.addPass(Z80LoopIdiomFill());
       });
 }
 
@@ -215,8 +233,12 @@ void Z80PassConfig::addIRPasses() {
   addPass(createLowerAtomicPass());
 
   TargetPassConfig::addIRPasses();
-  if (getOptLevel() != CodeGenOptLevel::None)
+  if (getOptLevel() != CodeGenOptLevel::None) {
     addPass(createInstructionCombiningPass());
+    // Pattern-fill rewrite (issue #88).  Runs from llc's IR pipeline
+    // here; clang's pipeline picks it up via PassBuilder hook.
+    addPass(createZ80LoopIdiomFillLegacyPass());
+  }
 }
 
 bool Z80PassConfig::addPreISel() { return false; }

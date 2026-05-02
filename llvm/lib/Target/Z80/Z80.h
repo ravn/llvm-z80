@@ -26,6 +26,7 @@ void initializeZ80ExpandPseudoPass(PassRegistry &);
 void initializeZ80FixupImplicitDefsPass(PassRegistry &);
 void initializeZ80IndexIVPass(PassRegistry &);
 void initializeZ80LateOptimizationPass(PassRegistry &);
+void initializeZ80LoopIdiomFillLegacyPassPass(PassRegistry &);
 void initializeZ80LowerSelectPass(PassRegistry &);
 void initializeZ80PostRAScavengingPass(PassRegistry &);
 void initializeZ80ShiftRotateChainPass(PassRegistry &);

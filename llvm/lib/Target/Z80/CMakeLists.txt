@@ -35,6 +35,7 @@ add_llvm_target(Z80CodeGen
   Z80FrameLowering.cpp
   Z80ISelLowering.cpp
   Z80IndexIV.cpp
+  Z80LoopIdiomFill.cpp
   Z80InlineAsmLowering.cpp
   Z80InstrCost.cpp
   Z80InstrInfo.cpp
