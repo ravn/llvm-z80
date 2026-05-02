@@ -347,7 +347,89 @@ DJNZ + LDIR-seed land, these are largely subsumed.
 **#12, #16, #40, #43, #74.**  IX vs static-stack vs push/pop spills.
 Sizing question — wants a per-function cost model.
 
-## Implementation status (2026-05-02)
+## Session 36 update (2026-05-02 evening)
+
+User reinforced framing:
+
+  > "I want you to aim for the correct way to implement things, not
+  >  the fastest.  I want your code to be in the same spirit as the
+  >  rest of the code base.  If this means reverting previously
+  >  work, that is fine.  The ultimate goal for the compiler work
+  >  is to submit back to the main project [official llvm backend]
+  >  and have the changes accepted."
+
+This re-affirms what this plan already states ("Goal: land upstream-
+ready patches with reproducers + lit tests + measured size/speed
+deltas") and adds two explicit permissions:
+
+  - **Reverting prior fork-only work is OK** when it would not
+    survive upstream review.
+  - **Quality > speed** — match the spirit of the existing codebase
+    (see `llvm-z80/CLAUDE.md`'s "Design Goal: Z80 Instruction-Driven
+    Code Generation" section).
+
+Memories saved for future sessions:
+  - `project_z80_backend_unfinished.md`
+  - `project_z80_upstream_goal.md`
+
+### Session-36 specific findings
+
+1. **Phase A (load-after-store dead-load diagnostic) failed.**
+   Investigated the four-line shape `LD HL,(nn); op; LD (nn),HL;
+   LD HL,(nn)` in `_isr_crt`.  All occurrences were at *volatile*
+   addresses (rtc0/timer1/timer2/delay_ticks); the post-store reload
+   is mandated by C semantics, not a missed optimization.  Scanner
+   over BIOS asm finds **0** instances at non-volatile addresses.
+   Detail: `tasks/phase-a-findings.md`.
+
+2. **New cluster identified: regalloc completion** (#94, #95, #98,
+   #89, #99, #100).  Common root cause: Z80 backend inherits LLVM's
+   generic regalloc cost model without enough Z80-target overrides.
+   Decomposed into four sub-phases (DJNZ-as-primary; remat framework;
+   TTI for IV form; reg-class swap-hint).  Detail:
+   `tasks/phase-c-regalloc-investigation.md`.
+
+3. **Backend-area audit framework** sketched as a complementary
+   view to the cluster framing.  Detail:
+   `tasks/backend-completion-roadmap.md`.
+
+These additions slot into this plan's existing structure as a new
+**Cluster 8: regalloc completion** alongside the existing 1-7.
+
+### Cluster 8: regalloc completion (NEW)
+
+Issues: **#94, #95, #98, #89, #99, #100** plus the parked
+constraints from #15, #16, #20, #74-family.
+
+Sub-phases (per `phase-c-regalloc-investigation.md`):
+
+| Sub | What | Closes | Layer |
+| --- | --- | --- | --- |
+| 8.1 | DJNZ as primary instruction (model B-dead-on-fall-through) | #94, #98 | TableGen + ISel |
+| 8.2 | Remat framework for cheap Z80 forms (`LD r,nn`, `LD HL,nn`, `LD r,(nn)` non-vol) | #15, #89, #100 | InstrInfo + regalloc cost model |
+| 8.3 | Z80 `TargetTransformInfo` for IV form preference | #95 | New `Z80TargetTransformInfo.{h,cpp}` |
+| 8.4 | Regalloc swap-hint for competing-class registers | #99 | `getRegAllocationHints` extension |
+
+Sub-phase 8.1 is the recommended starting move: smallest scope,
+highest hit rate, removes the post-RA DJNZ peephole entirely (a
+strict peephole→primary migration matching the upstream-acceptance
+bar).  Order: 8.1 → 8.2 → 8.3 → 8.4.
+
+### Late-opt peephole audit (deferred to after Cluster 8)
+
+After Clusters 1-8 land, walk `Z80LateOptimization.cpp` end-to-end
+per `peephole-vs-root-cause.md` and classify each peephole:
+*keep* (Z80-ISA-specific), *migrate* (replace with upstream-area
+fix), *delete* (subsumed).  This is the "peephole spring cleaning"
+phase that brings the backend to upstream-acceptance shape.
+
+Counter-examples (peepholes that should stay): `EX DE,HL` register
+swap, `BIT n,A`, `SBC A,A` carry materialization, `RRCA`, `JR` vs
+`JP` selection, `EX (SP),IX/IY` for atomic stack-register exchange.
+These are Z80-ISA-only patterns with no IR/MIR representation and
+are legitimate late-opt residents.
+
+## Implementation status (2026-05-02 morning, pre-session-36)
 
 Clusters tackled:
 

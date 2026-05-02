@@ -1,9 +1,22 @@
 # Z80 backend completion roadmap
 
-**Date:** 2026-05-02.
+**Date:** 2026-05-02 (session 36).
 **Branch:** `session-36-code-density-plan` in llvm-z80.
-**Supersedes:** `plan-code-density-2026-05-02.md` (which framed the
-work as a "code density sprint").
+**Relationship to other plan docs:**
+  - **`fix-plan.md`** is the canonical plan for the project.  It
+    predates this file and covers Clusters 1-7 (8-bit primacy, DJNZ +
+    LDIR, memcpy thresholds, known-value, direct-address, loop-body,
+    calling conv).  This roadmap **complements** fix-plan.md by
+    adding the regalloc-completion work (DJNZ-as-primary, remat
+    framework) that emerged from sessions 33-35.
+  - **`plan-code-density-2026-05-02.md`** was a false start by this
+    session.  Marked superseded.
+
+The frame-of-reference here ("16 backend areas to audit") is
+orthogonal to fix-plan.md's cluster framing.  Both views are valid:
+clusters group related symptoms; backend areas group related
+infrastructure.  A given fix lands in one area but may close issues
+across multiple clusters.
 
 ## 1.  Reframing
 
