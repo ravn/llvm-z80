@@ -6,6 +6,7 @@ mod display;
 mod emulator;
 mod llc;
 mod run_all;
+mod runtime;
 mod sdcc;
 mod suite;
 mod utils;

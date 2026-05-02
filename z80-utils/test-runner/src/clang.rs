@@ -3,6 +3,7 @@ use std::process::Command;
 
 use crate::config::{OptLevel, Paths, Target};
 use crate::emulator;
+use crate::runtime::{self, ElfRuntime};
 use crate::suite::*;
 
 const COMPILE_TIMEOUT: u64 = 30;
@@ -59,6 +60,18 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
     let mut result = SuiteResult::default();
     let reg_name = config.target.reg_name();
 
+    // Build crt0 + compiler-rt builtin objects once for this run.  The
+    // suite is unusable without them, so a failure here aborts every test
+    // up front rather than silently producing "_halt symbol not found".
+    let elf_rt = match runtime::ensure_elf(paths, config.target, &clang) {
+        Ok(rt) => rt,
+        Err(e) => {
+            let tag = format!("clang_{}_runtime", config.target.triple());
+            result.add(TestResult::fatal(&tag, format!("ELF runtime: {e}")), on_result, reg_name);
+            return result;
+        }
+    };
+
     let tests = discover_tests(&test_dir, "test_", "c");
     let suffix = config.tag_suffix();
     let active = config.active_options();
@@ -104,6 +117,7 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
                 &flags,
                 &test_dir,
                 &source,
+                &elf_rt,
             );
             result.add(r, on_result, reg_name);
         }
@@ -121,23 +135,30 @@ fn run_single(
     extra_flags: &[&str],
     work_dir: &PathBuf,
     source: &str,
+    elf_rt: &ElfRuntime,
 ) -> TestResult {
     let tmp_dir = unique_tmp_dir(work_dir);
     let _ = std::fs::create_dir_all(&tmp_dir);
 
+    let test_obj = tmp_dir.join(format!("{tag}.o"));
     let elf = tmp_dir.join(format!("{tag}.elf"));
     let bin = tmp_dir.join(format!("{tag}.bin"));
 
-    // Compile + link (integrated assembler + lld → ELF)
+    // Compile to object only — the link step injects crt0 + compiler-rt
+    // builtins + linker script explicitly so that _start, _halt, .bss
+    // layout, and ___mulhi3 / ___udivhi3 / etc. are all resolved.
     let mut cmd = Command::new(clang.as_os_str());
     cmd.arg(format!("--target={}", target.triple()));
     cmd.arg(format!("-{}", opt.clang_flag()));
+    cmd.arg("-c");
+    cmd.arg("-nostdlib");
+    cmd.arg("-ffreestanding");
     for flag in extra_flags {
         cmd.arg(flag);
     }
     cmd.arg(test_file.as_os_str());
     cmd.arg("-o");
-    cmd.arg(elf.as_os_str());
+    cmd.arg(test_obj.as_os_str());
 
     match run_cmd_timeout(&mut cmd, COMPILE_TIMEOUT) {
         Err(e) => {
@@ -148,6 +169,33 @@ fn run_single(
             let err = extract_error(&stderr);
             remove_tmp_dir(&tmp_dir);
             return TestResult::fatal(tag, err);
+        }
+        _ => {}
+    }
+
+    // Link: ld.lld -T <triple>.ld --gc-sections crt0.o test.o builtins/*.o
+    let lld = clang.parent().unwrap().join("ld.lld");
+    let mut link = Command::new(lld.as_os_str());
+    link.arg("--gc-sections");
+    link.arg("-T");
+    link.arg(elf_rt.linker_script.as_os_str());
+    link.arg(elf_rt.crt0_obj.as_os_str());
+    link.arg(test_obj.as_os_str());
+    for obj in &elf_rt.builtin_objs {
+        link.arg(obj.as_os_str());
+    }
+    link.arg("-o");
+    link.arg(elf.as_os_str());
+
+    match run_cmd_timeout(&mut link, COMPILE_TIMEOUT) {
+        Err(e) => {
+            remove_tmp_dir(&tmp_dir);
+            return TestResult::fatal(tag, format!("link {e}"));
+        }
+        Ok((code, _, stderr)) if code != 0 => {
+            let err = extract_error(&stderr);
+            remove_tmp_dir(&tmp_dir);
+            return TestResult::fatal(tag, format!("link: {err}"));
         }
         _ => {}
     }
