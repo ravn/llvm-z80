@@ -841,6 +841,79 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
+    // --- Peephole: A-via-(HL) via-r → direct LD r,(HL) / LD (HL),r (#76) ---
+    //
+    // Z80 has direct LD r,(HL) and LD (HL),r for every 8-bit GP register.
+    // GISel sometimes emits the 2-instruction A-via path:
+    //   LD A,(HL); LD r,A         -- 2 B / 11 T   (vs LD r,(HL): 1 B / 7 T)
+    //   LD A,r;     LD (HL),A     -- 2 B /  8 T   (vs LD (HL),r: 1 B / 7 T)
+    // when A is dead after the copy.  Replace with the direct form.
+    // Safety: neither LD r,(HL) nor LD (HL),r touches FLAGS, matching the
+    // original sequence; the only liveness check needed is that A is
+    // dead after the second instruction.
+    {
+      auto getLDrAdst76 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto getLDArSrc76 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+        case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+        case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        auto Next = std::next(MII);
+        if (Next == MBB.end()) { ++MII; continue; }
+        unsigned Opc0 = MII->getOpcode();
+        unsigned Opc1 = Next->getOpcode();
+
+        // (1) LD A,(HL); LD r,A → LD r,(HL).
+        if (Opc0 == Z80::LD_A_HLind) {
+          MCPhysReg Dst = getLDrAdst76(Opc1);
+          if (Dst && isRegDeadAfter(std::next(Next), MBB, TRI, Z80::A)) {
+            unsigned NewOpc = Z80::getLoadHLindOpcode(Dst);
+            if (NewOpc) {
+              LLVM_DEBUG(dbgs() << "  #76: LD A,(HL); LD r,A → LD r,(HL)\n");
+              BuildMI(MBB, MII, MII->getDebugLoc(), TII->get(NewOpc));
+              auto AfterNext = std::next(Next);
+              MII->eraseFromParent();
+              Next->eraseFromParent();
+              MII = AfterNext;
+              Changed = true;
+              continue;
+            }
+          }
+        }
+
+        // (2) LD A,r; LD (HL),A → LD (HL),r.
+        if (Opc1 == Z80::LD_HLind_A) {
+          MCPhysReg Src = getLDArSrc76(Opc0);
+          if (Src && isRegDeadAfter(std::next(Next), MBB, TRI, Z80::A)) {
+            unsigned NewOpc = Z80::getStoreHLindOpcode(Src);
+            if (NewOpc) {
+              LLVM_DEBUG(dbgs() << "  #76: LD A,r; LD (HL),A → LD (HL),r\n");
+              BuildMI(MBB, MII, MII->getDebugLoc(), TII->get(NewOpc));
+              auto AfterNext = std::next(Next);
+              MII->eraseFromParent();
+              Next->eraseFromParent();
+              MII = AfterNext;
+              Changed = true;
+              continue;
+            }
+          }
+        }
+
+        ++MII;
+      }
+    }
+
     // --- Peephole: OR A; LD r,0; JR Z → OR A; LD r,A; JR Z ---
     // In select lowering: OR A; LD r,0; JR Z skip; LD r,imm; skip:
     // After OR A, if A==0 the JR Z is taken with r=0 (correct via LD r,A).

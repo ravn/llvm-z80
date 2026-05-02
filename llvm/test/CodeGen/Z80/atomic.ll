@@ -41,7 +41,9 @@ define i8 @atomic_rmw_add_i8(ptr %p, i8 %val) nounwind {
 define i8 @atomic_rmw_xchg_i8(ptr %p, i8 %val) nounwind {
 ; CHECK-LABEL: atomic_rmw_xchg_i8:
 ; CHECK-NOT:   call
-; CHECK:       ld a,(hl)
+; The original load may go directly to a non-A register (issue #76
+; peephole), so accept either `ld a,(hl)` or `ld r,(hl)` for some r.
+; CHECK:       ld {{[abcdehl]}},(hl)
 ; CHECK:       ld (hl),
 ; SM83-LABEL: atomic_rmw_xchg_i8:
 ; SM83-NOT:   call
