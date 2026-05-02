@@ -4175,11 +4175,31 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                  Opc == Z80::POP_IX || Opc == Z80::POP_IY;
         };
 
+        // All BSS load opcodes — used to detect orphan loads from the
+        // same slot to a register pair other than the spilled one.
+        // Issue #82: converting our spill+matching-reload to PUSH/POP
+        // while leaving such an orphan read from BSS produces a stale
+        // load (the slot is never written since PUSH/POP went to the
+        // stack, not the slot).  Bail when seen.
+        auto isAnyBssLoad = [](unsigned Opc) {
+          return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
+                 Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
+        };
+
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
 
           // Another store to the same sfrend slot = conflict (reuse).
           if (SOpc == SI->StoreOpc && sameAddress(*MII, *Scan)) {
+            Conflict = true;
+            break;
+          }
+
+          // Orphan BSS load from the same slot to a different register
+          // pair than the one we're spilling.  See #82.
+          if (isAnyBssLoad(SOpc) &&
+              !isMatchingLoad(SI->StoreOpc, SOpc) &&
+              sameAddress(*MII, *Scan)) {
             Conflict = true;
             break;
           }
