@@ -65,6 +65,27 @@ Z80TargetLowering::Z80TargetLowering(const Z80TargetMachine &TM,
   // to a branch sequence. Prefer branches over selects since they avoid
   // computing both sides of the conditional.
   PredictableSelectIsExpensive = true;
+
+  // Issue #87/#73: at -Oz, the default MaxStoresPerMemcpyOptSize=4 unrolls
+  // an 8-byte __builtin_memcpy into 4× 16-bit immediate stores (~28-43 B
+  // of inline LD HL,(addr); LD (addr),HL pairs) instead of dispatching
+  // to the LDIR runtime stub (~12 B per call site).  On Z80 the inline
+  // form is bigger than LDIR for N ≥ 3 bytes:
+  //   inline cost: 6 B per i8 store, 6 B per i16 store (no fold across)
+  //   LDIR cost:   12 B fixed (LD HL,src; LD DE,dst; LD BC,n; LDIR; ret)
+  // Break-even at N=2 (12 B vs 12 B), LDIR wins for N≥3.  Cap at 1 store
+  // (= up to 16 bits = 2 bytes inline) under -Oz so anything larger falls
+  // back to LDIR.  Same for -O2/-O3 -- the default of 8 stores would
+  // produce ~48 B of inline code for N=16 vs 14 B with LDIR.
+  MaxStoresPerMemcpy = 1;
+  MaxStoresPerMemcpyOptSize = 1;
+  // memmove similarly -- LDDR (or LDIR with overlap check) wins early.
+  MaxStoresPerMemmove = 1;
+  MaxStoresPerMemmoveOptSize = 1;
+  // memset: inline is similarly bloated; LDIR-based memset (1 byte stored
+  // + LDIR fill) wins quickly.
+  MaxStoresPerMemset = 1;
+  MaxStoresPerMemsetOptSize = 1;
 }
 
 MVT Z80TargetLowering::getRegisterType(MVT VT) const {

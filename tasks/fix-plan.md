@@ -347,7 +347,7 @@ DJNZ + LDIR-seed land, these are largely subsumed.
 **#12, #16, #40, #43, #74.**  IX vs static-stack vs push/pop spills.
 Sizing question — wants a per-function cost model.
 
-## Implementation status (2026-05-01)
+## Implementation status (2026-05-02)
 
 Clusters tackled:
 
@@ -368,17 +368,38 @@ Clusters tackled:
   #86 sparse-switch-on-truncated-i16 (compiler retains i16 ops
   through the case chain; bigger win but harder fix needing
   legalizer/combiner work).
+- ✅ **Cluster 2 (DJNZ + LDIR family)** — partially closed:
+  - #78 (LDIR aftermath: DE post-state reuse) — landed in
+    `Z80LateOptimization.cpp` post-LDIR triple peephole, three
+    downstream shapes (StoreBack, DropEx, Other) plus ±1 fixup
+    (INC/DEC) and order-independent matcher.  Lit
+    `ldir-aftermath.ll`.  cpnos-rom READ-SEQ inner loop: -6 B/iter
+    absorbed into payload alignment padding.
+  - #88 (seed-LDIR pattern fill) — new IR pass `Z80LoopIdiomFill`
+    rewrites K-byte (K∈{1,2,3,4}) constant-trip-count fill loops
+    as `seed K bytes; memcpy(base+K, base, K*(N-1))`.  Both new-PM
+    and legacy entry points.  Lit `loop-idiom-fill.ll` covers
+    K=1/2/3 (jump-table/IVT shape) plus volatile negative.
+    cpnos's `setup_ivt` is `volatile` and correctly skipped.
+  - #64 (memmove inline) — `Z80LegalizerInfo` G_MEMMOVE
+    `.libcall()` → `.custom()` with direction analysis (same
+    pointer; G_PTR_ADD chains; common base).  Picks LDIR when
+    dst≤src, LDDR when dst≥src, libcall otherwise.  Lit
+    `memmove-inline.ll`.
+  - Still open: #50 unrolled LDI for speed, plus the new #91
+    follow-up for LDDR codegen quality with constant Size.
 
 Not-yet-tackled:
 
-- Cluster 2 (DJNZ + LDIR family): #88 seed-LDIR, #78 LDIR
-  aftermath, #50 unrolled LDI, #64 LDDR-for-memmove
-- Cluster 3 (memcpy thresholds): #73, #87 small-memcpy unroll
-- Cluster 6: subsumed by 2+4
+- Cluster 3 (memcpy thresholds): #73, #87 — partially handled by
+  InstCombine fold guard (475a65378517) but #50 still open
+- Cluster 6: subsumed by 2+4 (most issues now closed)
 - Cluster 7: large; do last
+- Correctness: #28, #36, #82 still open
 
-Cumulative cpnos-rom impact: payload 1750 → 1746 B; init 647 →
-643 B.  Z80 lit suite: 63/63 PASS at every commit.
+Cumulative cpnos-rom impact: payload 1750 → 1738 B (-12 B); init
+647 → 633 B (-14 B).  Z80 lit suite: 68/68 PASS at every commit
+(plus 1 XFAIL for #82).
 
 ## Implementation roadmap
 
@@ -498,6 +519,14 @@ contains:
 5. **Fix** — the actual patch.
 6. **Size delta** — measured against rcbios + cpnos-rom builds (the
    two known-good Z80 codebases in this workspace).
+
+## Backlog (parked / later)
+
+- **#91 LDDR setup quality.**  Tracked upstream as ravn/llvm-z80#91
+  (constant-fold Size-1 and the two PtrAdds when Size is a G_CONSTANT
+  inside the new G_MEMMOVE custom legalizer).  Polish only -- semantics
+  are correct, this is just `~25 B → ~12 B` for memmove(dst, src, K)
+  where the direction analysis fires.
 
 ## Infrastructure follow-ups (low priority, but cheap)
 

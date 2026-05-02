@@ -841,6 +841,79 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
+    // --- Peephole: A-via-(HL) via-r → direct LD r,(HL) / LD (HL),r (#76) ---
+    //
+    // Z80 has direct LD r,(HL) and LD (HL),r for every 8-bit GP register.
+    // GISel sometimes emits the 2-instruction A-via path:
+    //   LD A,(HL); LD r,A         -- 2 B / 11 T   (vs LD r,(HL): 1 B / 7 T)
+    //   LD A,r;     LD (HL),A     -- 2 B /  8 T   (vs LD (HL),r: 1 B / 7 T)
+    // when A is dead after the copy.  Replace with the direct form.
+    // Safety: neither LD r,(HL) nor LD (HL),r touches FLAGS, matching the
+    // original sequence; the only liveness check needed is that A is
+    // dead after the second instruction.
+    {
+      auto getLDrAdst76 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto getLDArSrc76 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+        case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+        case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        auto Next = std::next(MII);
+        if (Next == MBB.end()) { ++MII; continue; }
+        unsigned Opc0 = MII->getOpcode();
+        unsigned Opc1 = Next->getOpcode();
+
+        // (1) LD A,(HL); LD r,A → LD r,(HL).
+        if (Opc0 == Z80::LD_A_HLind) {
+          MCPhysReg Dst = getLDrAdst76(Opc1);
+          if (Dst && isRegDeadAfter(std::next(Next), MBB, TRI, Z80::A)) {
+            unsigned NewOpc = Z80::getLoadHLindOpcode(Dst);
+            if (NewOpc) {
+              LLVM_DEBUG(dbgs() << "  #76: LD A,(HL); LD r,A → LD r,(HL)\n");
+              BuildMI(MBB, MII, MII->getDebugLoc(), TII->get(NewOpc));
+              auto AfterNext = std::next(Next);
+              MII->eraseFromParent();
+              Next->eraseFromParent();
+              MII = AfterNext;
+              Changed = true;
+              continue;
+            }
+          }
+        }
+
+        // (2) LD A,r; LD (HL),A → LD (HL),r.
+        if (Opc1 == Z80::LD_HLind_A) {
+          MCPhysReg Src = getLDArSrc76(Opc0);
+          if (Src && isRegDeadAfter(std::next(Next), MBB, TRI, Z80::A)) {
+            unsigned NewOpc = Z80::getStoreHLindOpcode(Src);
+            if (NewOpc) {
+              LLVM_DEBUG(dbgs() << "  #76: LD A,r; LD (HL),A → LD (HL),r\n");
+              BuildMI(MBB, MII, MII->getDebugLoc(), TII->get(NewOpc));
+              auto AfterNext = std::next(Next);
+              MII->eraseFromParent();
+              Next->eraseFromParent();
+              MII = AfterNext;
+              Changed = true;
+              continue;
+            }
+          }
+        }
+
+        ++MII;
+      }
+    }
+
     // --- Peephole: OR A; LD r,0; JR Z → OR A; LD r,A; JR Z ---
     // In select lowering: OR A; LD r,0; JR Z skip; LD r,imm; skip:
     // After OR A, if A==0 the JR Z is taken with r=0 (correct via LD r,A).
@@ -1849,6 +1922,747 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
       for (auto *MI : ToErase)
         MI->eraseFromParent();
+    }
+
+    // --- Peephole: LDIR aftermath -- DE post-state reuse (issue #78) ---
+    //
+    // After LDIR, DE = dst + count.  IR patterns like
+    //   __builtin_memcpy(dst, src, N);  dst_ptr += N;  return dst_ptr;
+    // currently emit a 7-byte reconstruction:
+    //   LD_HL_nnind <dst_spill>   ; reload original dst from spill
+    //   LD_DE_nn N                 ; reload count
+    //   ADD_HL_DE                  ; HL = dst + N
+    // even though DE after LDIR already holds dst + N.
+    //
+    // Replace with `LD H,D; LD L,E` (2 bytes) so HL gets the post-
+    // LDIR DE value directly.  Count and slot are validated by
+    // looking back for the matching `LD_BC_nn N` that fed LDIR, and
+    // the matching `LD_nnind_HL <slot>` spill that wrote the slot.
+    // Conservative -- bail if either is missing or doesn't match.
+    {
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        if (MII->getOpcode() != Z80::LDIR) { ++MII; continue; }
+        auto Ldir = MII;
+        // Look forward for the reconstruction triple.  The two loads
+        // (LD_HL_nnind, LD_DE_nn) are independent and the scheduler
+        // can place them in either order; ADD_HL_DE must come last.
+        auto skipMeta = [&](MachineBasicBlock::iterator I) {
+          while (I != MBB.end() && I->isMetaInstruction()) ++I;
+          return I;
+        };
+        auto T1 = skipMeta(std::next(Ldir));
+        if (T1 == MBB.end()) { ++MII; continue; }
+        auto T2 = skipMeta(std::next(T1));
+        if (T2 == MBB.end()) { ++MII; continue; }
+        MachineBasicBlock::iterator LdHL, LdDE;
+        if (T1->getOpcode() == Z80::LD_HL_nnind &&
+            T2->getOpcode() == Z80::LD_DE_nn) {
+          LdHL = T1; LdDE = T2;
+        } else if (T1->getOpcode() == Z80::LD_DE_nn &&
+                   T2->getOpcode() == Z80::LD_HL_nnind) {
+          LdDE = T1; LdHL = T2;
+        } else {
+          ++MII; continue;
+        }
+        if (!LdHL->getOperand(0).isMCSymbol() &&
+            !LdHL->getOperand(0).isGlobal() &&
+            !LdHL->getOperand(0).isImm()) { ++MII; continue; }
+        if (!LdDE->getOperand(0).isImm()) { ++MII; continue; }
+        int64_t ReloadCount = LdDE->getOperand(0).getImm();
+        auto AddHL = skipMeta(std::next(T2));
+        if (AddHL == MBB.end() || AddHL->getOpcode() != Z80::ADD_HL_DE) {
+          ++MII; continue;
+        }
+        // Look back for matching LD_BC_nn N (LDIR's count) and proof
+        // that DE pre-LDIR equals the value at <slot>.  Two acceptable
+        // proofs:
+        //   (1) LD_nnind_HL <slot>: HL was spilled to slot, then later
+        //       loaded back into HL and EX_DE_HL'd into DE for LDIR.
+        //   (2) LD_DE_nnind <slot>: DE was loaded directly from slot.
+        // In either case, no LD_nnind_* <slot> may appear between the
+        // proof and LDIR (slot mustn't be re-written).  PreSpill is the
+        // case-(1) instruction we erase as redundant; for case (2) it
+        // stays nullptr.
+        int64_t LdirCount = -1;
+        MachineInstr *PreSpill = nullptr;
+        bool ProofFromDeLoad = false;
+        bool FoundCount = false;
+        bool SlotClobbered = false;
+        for (auto Back = std::prev(Ldir);
+             Back != MBB.begin(); --Back) {
+          if (Back->isMetaInstruction()) continue;
+          if (!FoundCount && Back->getOpcode() == Z80::LD_BC_nn &&
+              Back->getOperand(0).isImm()) {
+            LdirCount = Back->getOperand(0).getImm();
+            FoundCount = true;
+            continue;
+          }
+          // A store to <slot> between the proof and LDIR invalidates it.
+          if ((Back->getOpcode() == Z80::LD_nnind_DE ||
+               Back->getOpcode() == Z80::LD_nnind_BC) &&
+              Back->getOperand(0).isIdenticalTo(LdHL->getOperand(0))) {
+            SlotClobbered = true;
+            break;
+          }
+          if (Back->getOpcode() == Z80::LD_nnind_HL &&
+              Back->getOperand(0).isIdenticalTo(LdHL->getOperand(0))) {
+            PreSpill = &*Back;
+            break;
+          }
+          if (Back->getOpcode() == Z80::LD_DE_nnind &&
+              Back->getOperand(0).isIdenticalTo(LdHL->getOperand(0))) {
+            ProofFromDeLoad = true;
+            break;
+          }
+        }
+        // Allow ReloadCount to differ from LdirCount by ±1: post-LDIR
+        // DE = slot + LdirCount, so the triple computes (DE ± 1) which
+        // we can patch up with a single INC/DEC.
+        int64_t Diff = ReloadCount - LdirCount;
+        if (SlotClobbered || Diff < -1 || Diff > 1 ||
+            (PreSpill == nullptr && !ProofFromDeLoad)) {
+          ++MII; continue;
+        }
+
+        // Look one more instruction ahead.  Three downstream shapes:
+        //   (a) EX_DE_HL: result feeds a return-via-DE swap; drop the
+        //       triple+swap (Diff==0), or replace with INC/DEC DE
+        //       (Diff==±1) — DE already holds dst+count.
+        //   (b) LD_nnind_HL <same_slot>: result writes back to the
+        //       same spill slot the pre-LDIR HL was loaded from --
+        //       replace with INC/DEC DE (if Diff!=0) then LD (slot),DE.
+        //   (c) other consumer: replace triple with LD_H_D; LD_L_E
+        //       (and INC/DEC HL if Diff!=0) so HL gets the DE post-LDIR
+        //       value (±1), then proceed.
+        auto AfterAdd = std::next(AddHL);
+        while (AfterAdd != MBB.end() && AfterAdd->isMetaInstruction())
+          ++AfterAdd;
+        bool DropEx = (AfterAdd != MBB.end() &&
+                       AfterAdd->getOpcode() == Z80::EX_DE_HL);
+        // StoreBack: any LD (target),HL after the triple — replace with
+        // LD (target),DE.  Target slot need not match the spill slot.
+        bool StoreBack = (!DropEx && AfterAdd != MBB.end() &&
+                          AfterAdd->getOpcode() == Z80::LD_nnind_HL);
+
+        DebugLoc DL = T1->getDebugLoc();
+        unsigned Saved = 0;
+        unsigned PreSpillBytes = PreSpill ? 3 : 0;
+        unsigned FixupBytes = (Diff == 0) ? 0 : 1; // INC/DEC = 1 byte
+        unsigned IncDecDE = (Diff > 0) ? Z80::INC_DE : Z80::DEC_DE;
+        unsigned IncDecHL = (Diff > 0) ? Z80::INC_HL : Z80::DEC_HL;
+        if (DropEx) {
+          if (Diff != 0)
+            BuildMI(MBB, T1, DL, TII->get(IncDecDE));
+          AfterAdd->eraseFromParent();
+          Saved = 8 + PreSpillBytes - FixupBytes;
+        } else if (StoreBack) {
+          if (Diff != 0)
+            BuildMI(MBB, T1, DL, TII->get(IncDecDE));
+          auto MIB = BuildMI(MBB, T1, DL, TII->get(Z80::LD_nnind_DE));
+          MIB.add(AfterAdd->getOperand(0));  // target of trailing store
+          AfterAdd->eraseFromParent();
+          Saved = (7 + 3) - 4 - FixupBytes + PreSpillBytes;
+        } else {
+          BuildMI(MBB, T1, DL, TII->get(Z80::LD_H_D));
+          BuildMI(MBB, T1, DL, TII->get(Z80::LD_L_E));
+          if (Diff != 0)
+            BuildMI(MBB, T1, DL, TII->get(IncDecHL));
+          Saved = 7 - 2 - FixupBytes + PreSpillBytes;
+        }
+        LdHL->eraseFromParent();
+        LdDE->eraseFromParent();
+        AddHL->eraseFromParent();
+        if (PreSpill)
+          PreSpill->eraseFromParent();
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "  #78: LDIR aftermath DE-reuse rewrite ("
+                          << Saved << " B saved)\n");
+        // Continue from instruction after LDIR.
+        MII = std::next(Ldir);
+      }
+    }
+
+    // --- Peephole: HL save-via-BC roundtrip (issue #84) ---
+    //
+    // Pattern-fill loop bodies emitted by GISel for sequences like
+    //   for (...) *p++ = const_word;
+    // produce a back-edge MBB that saves HL into BC, increments BC by
+    // the iteration step (typically 2), runs the body, then restores
+    // HL from BC.  The body itself already advances HL (one INC_HL
+    // between two byte stores), so the save/restore is a wasteful
+    // 6-byte dance that can be replaced by `INC_HL × (N-M)` after
+    // the body, where N is the BC pre-increment count and M is the
+    // INC_HL count inside the body.
+    //
+    // Pattern:
+    //   bb.body:
+    //     LD_C_L                      ; HL.lo → C
+    //     LD_B_H                      ; HL.hi → B
+    //     INC_BC × N                  ; BC = HL + N
+    //     <body, increments HL M times, doesn't otherwise touch BC>
+    //     LD_L_C                      ; restore HL = original + N
+    //     LD_H_B
+    //     <branch>
+    //
+    // Rewrite:
+    //   bb.body:
+    //     <body unchanged>
+    //     INC_HL × (N - M)
+    //     <branch>
+    //
+    // Saves N + 4 - (N - M) = M + 4 bytes.  For the canonical
+    // setup_ivt-class loop (N=2, M=1): -5 B per iter (ignoring iter
+    // count, this is per-loop-body-MBB savings since the MIR is
+    // emitted once).
+    {
+      for (auto &BB : MF) {
+        if (BB.empty()) continue;
+        auto It = BB.begin();
+        // Skip leading non-relevant instrs (e.g. KILL).
+        while (It != BB.end() && It->isMetaInstruction()) ++It;
+        if (It == BB.end()) continue;
+        if (It->getOpcode() != Z80::LD_C_L) continue;
+        auto LdCL = It; ++It;
+        while (It != BB.end() && It->isMetaInstruction()) ++It;
+        if (It == BB.end() || It->getOpcode() != Z80::LD_B_H) continue;
+        auto LdBH = It; ++It;
+        // Count INC_BC.
+        unsigned IncBcN = 0;
+        while (It != BB.end() && It->getOpcode() == Z80::INC_BC) {
+          ++IncBcN; ++It;
+        }
+        if (IncBcN < 1) continue;
+        // Find end pair: last two non-terminator non-metadata.
+        auto Term = BB.getFirstTerminator();
+        if (Term == BB.begin()) continue;
+        auto EndIt = std::prev(Term);
+        while (EndIt != It && EndIt->isMetaInstruction())
+          --EndIt;
+        if (EndIt->getOpcode() != Z80::LD_H_B) continue;
+        auto LdHB = EndIt;
+        --EndIt;
+        while (EndIt != It && EndIt->isMetaInstruction())
+          --EndIt;
+        if (EndIt->getOpcode() != Z80::LD_L_C) continue;
+        auto LdLC = EndIt;
+        // Body is [It .. LdLC).  Count INC_HL; bail if anything
+        // touches BC (would invalidate the save/restore).
+        unsigned IncHlM = 0;
+        bool BcTouched = false;
+        for (auto BIt = It; BIt != LdLC; ++BIt) {
+          if (BIt->isMetaInstruction()) continue;
+          if (BIt->getOpcode() == Z80::INC_HL) { ++IncHlM; continue; }
+          // Conservative: bail if BC, B, or C is read or written for
+          // anything other than INC_HL (which doesn't touch BC).
+          for (const MachineOperand &MO : BIt->operands()) {
+            if (MO.isRegMask()) { BcTouched = true; break; }
+            if (!MO.isReg()) continue;
+            Register R = MO.getReg();
+            if (!R.isPhysical()) continue;
+            if (TRI->regsOverlap(R, Z80::BC) ||
+                TRI->regsOverlap(R, Z80::B)  ||
+                TRI->regsOverlap(R, Z80::C)) {
+              BcTouched = true; break;
+            }
+          }
+          if (BcTouched) break;
+        }
+        if (BcTouched) continue;
+        if (IncHlM > IncBcN) continue;  // body advances HL further than save anticipated; out of scope
+        // Rewrite.
+        DebugLoc DL = LdCL->getDebugLoc();
+        unsigned ExtraIncs = IncBcN - IncHlM;
+        for (unsigned i = 0; i < ExtraIncs; ++i)
+          BuildMI(BB, std::next(LdHB), DL, TII->get(Z80::INC_HL));
+        LdCL->eraseFromParent();
+        LdBH->eraseFromParent();
+        // Erase the INC_BCs (they are between LdBH and the body).
+        // We saved their range as [It .. body start) effectively;
+        // re-walk from BB.begin() to find them.
+        SmallVector<MachineInstr *, 4> ToErase;
+        for (auto Iter = BB.begin(); Iter != BB.end(); ++Iter) {
+          if (Iter->getOpcode() == Z80::INC_BC) {
+            ToErase.push_back(&*Iter);
+            if (ToErase.size() == IncBcN) break;
+          } else if (Iter->getOpcode() != Z80::INC_BC &&
+                     !Iter->isMetaInstruction()) {
+            // Stop at first non-INC_BC after we've started collecting.
+            if (!ToErase.empty()) break;
+          }
+        }
+        for (auto *MI : ToErase) MI->eraseFromParent();
+        LdLC->eraseFromParent();
+        LdHB->eraseFromParent();
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "  #84: removed HL-via-BC roundtrip in "
+                          << printMBBReference(BB) << "\n");
+      }
+    }
+
+    // --- Peephole: u8 switch range-check 16-bit → 8-bit (issue #86) ---
+    //
+    // GISel switch lowering on a u8 discriminator widens to i16 for
+    // the jump-table index BEFORE the bound check, so the bound check
+    // costs 9 B / 16-bit subtract:
+    //
+    //     DEC_A             ; offset = c - min
+    //     LD_L_A             ; widen low byte
+    //     LD_H_n 0           ; widen high byte
+    //     LD_DE_nn N         ; load limit
+    //     LD_A_E
+    //     SUB_L
+    //     LD_A_D
+    //     SBC_A_H            ; HL <=> DE
+    //     JR_NC/JP_NC default
+    //
+    // The same check is `CP N; JR_NC default` in 3 B, since A is the
+    // u8 offset.  Reorder so the bound check uses the 8-bit form, and
+    // the widen happens AFTER (when we know the bound check passed
+    // and we'll need HL for jump-table indexing).
+    //
+    // Net: 9 B → 5 B (CP_n 2 B + JR_NC_e 2 B + LD_L_A/LD_H_n 0 still
+    // needed at 3 B, was already accounted) -- save 4 B per switch.
+    {
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        if (MII->getOpcode() != Z80::LD_L_A) { ++MII; continue; }
+        auto LdLA = MII;
+        auto It = std::next(LdLA);
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_H_n ||
+            !It->getOperand(0).isImm() ||
+            It->getOperand(0).getImm() != 0) {
+          ++MII; continue;
+        }
+        auto LdHN = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_DE_nn ||
+            !It->getOperand(0).isImm()) {
+          ++MII; continue;
+        }
+        int64_t Limit = It->getOperand(0).getImm();
+        // Limit must fit in 8 bits for `CP n` to be equivalent.
+        if (Limit < 0 || Limit > 255) { ++MII; continue; }
+        auto LdDE = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_A_E) {
+          ++MII; continue;
+        }
+        auto LdAE = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::SUB_L) {
+          ++MII; continue;
+        }
+        auto SubL = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::LD_A_D) {
+          ++MII; continue;
+        }
+        auto LdAD = It; ++It;
+        if (It == MBB.end() || It->getOpcode() != Z80::SBC_A_H) {
+          ++MII; continue;
+        }
+        auto SbcAH = It; ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+        // Branch must be a carry-conditional out of the bound-check.
+        unsigned BrOpc = It->getOpcode();
+        if (BrOpc != Z80::JR_NC_e && BrOpc != Z80::JP_NC_nn &&
+            BrOpc != Z80::JR_C_e && BrOpc != Z80::JP_C_nn) {
+          ++MII; continue;
+        }
+        auto Br = It;
+
+        // The DE high byte (D) is implicitly used by SBC -- it's read
+        // here as the high byte of the limit.  After our rewrite, DE
+        // is dead.  Conservative check: the LD_DE_nn defined DE just
+        // for this comparison; if anything between LD_DE_nn and SbcAH
+        // reads DE outside this chain, we'd already have bailed (none
+        // of the matched instructions read DE except by name).
+        // Same with HL -- after the rewrite, LD_L_A and LD_H_n 0
+        // remain for jump-table indexing on the fall-through path.
+
+        // The 16-bit chain computes `DE - HL = limit - offset`, so
+        // carry-out is set iff offset > limit (out of range).
+        // `CP_n limit` computes `A - limit`, so carry-out is set iff
+        // offset < limit (in range).  These are *inverse* flags, so
+        // the branch condition must flip.
+        unsigned NewBrOpc;
+        switch (BrOpc) {
+        case Z80::JR_NC_e: NewBrOpc = Z80::JR_C_e; break;
+        case Z80::JP_NC_nn: NewBrOpc = Z80::JP_C_nn; break;
+        case Z80::JR_C_e:  NewBrOpc = Z80::JR_NC_e; break;
+        case Z80::JP_C_nn: NewBrOpc = Z80::JP_NC_nn; break;
+        default: ++MII; continue;
+        }
+
+        DebugLoc DL = LdLA->getDebugLoc();
+        // Insert CP_n Limit before LdLA, then keep LD_L_A / LD_H_n 0
+        // after (they preserve A / set H, neither touches flags).
+        BuildMI(MBB, LdLA, DL, TII->get(Z80::CP_n)).addImm(Limit);
+        LdDE->eraseFromParent();
+        LdAE->eraseFromParent();
+        SubL->eraseFromParent();
+        LdAD->eraseFromParent();
+        SbcAH->eraseFromParent();
+        // Replace branch with flipped condition, same target.
+        DebugLoc BrDL = Br->getDebugLoc();
+        auto NewBr = BuildMI(MBB, Br, BrDL, TII->get(NewBrOpc));
+        NewBr.add(Br->getOperand(0));
+        Br->eraseFromParent();
+
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "  #86: u8 switch range-check 16->8 bit\n");
+        MII = std::next(LdHN);
+      }
+    }
+
+    // --- Peephole: identity mask-roundtrip after SBC A,A (issue #79) ---
+    //
+    // GISel lowers `sext i1 → i8` of an `icmp ne` result via the
+    // canonical (shl 7; ashr 7) idiom, which on Z80 expands to:
+    //
+    //     sbc  a, a       ; A is already 0xFF or 0x00 (the mask)
+    //     and  $1         ; <-- mask-roundtrip starts here
+    //     rrca            ;     {0xFF/00} -> {1/0} -> {0x80/00}
+    //     and  $80
+    //     add  a, a
+    //     sbc  a, a       ; <-- ends here, A is back to 0xFF or 0x00
+    //
+    // The trailing 5 instructions (8 bytes) are an identity on the
+    // value already in A.  This peephole detects the exact sequence
+    // immediately after a SBC A,A (the canonical mask producer) and
+    // deletes it.  Safe: the second `sbc a,a` would re-establish
+    // FLAGS but in this position no FLAGS-using instruction follows
+    // (we check); the outer Z/N/H/C state matches what the kept
+    // SBC A,A established already.
+    {
+      SmallVector<MachineInstr *, 8> ToErase;
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        if (MII->getOpcode() != Z80::SBC_A_A) continue;
+        // The instruction whose tail we're considering -- mark and walk
+        // forward exactly 5 specific instructions.
+        auto It = std::next(MachineBasicBlock::iterator(&*MII));
+        auto match = [&](unsigned Op, int64_t ExpectedImm = -1) {
+          if (It == MIE || It->getOpcode() != Op) return false;
+          if (ExpectedImm >= 0) {
+            if (It->getNumOperands() < 1 || !It->getOperand(0).isImm() ||
+                It->getOperand(0).getImm() != ExpectedImm)
+              return false;
+          }
+          return true;
+        };
+        if (!match(Z80::AND_n, 0x01)) continue;
+        auto andOne = It; ++It;
+        if (!match(Z80::RRCA))      continue;
+        auto rrca = It; ++It;
+        if (!match(Z80::AND_n, 0x80))continue;
+        auto and80 = It; ++It;
+        if (!match(Z80::ADD_A_A))   continue;
+        auto adda = It; ++It;
+        if (!match(Z80::SBC_A_A))   continue;
+        auto sbcAa = It; ++It;
+        // Final guard: the kept SBC_A_A's FLAGS effect (Z/N/H/C from
+        // the value-zero test of A on subtract-borrow) is the same
+        // either way (subtract-borrow only depends on carry-in).  The
+        // deleted SBC re-uses identical FLAGS as the kept one.  So
+        // any subsequent flag consumer sees the same FLAGS state.
+        // No FLAGS-bridge guard needed for THIS pattern.
+        LLVM_DEBUG(dbgs() << "  #79: deleting mask-roundtrip after SBC A,A "
+                          << "@ " << *MII);
+        ToErase.push_back(&*andOne);
+        ToErase.push_back(&*rrca);
+        ToErase.push_back(&*and80);
+        ToErase.push_back(&*adda);
+        ToErase.push_back(&*sbcAa);
+        Changed = true;
+      }
+      for (auto *MI : ToErase)
+        MI->eraseFromParent();
+    }
+
+    // --- Peephole: carry-roundtrip + JR C → JR NC (issue #93) ---
+    //
+    // GISel lowers `add a,N; icmp ne 0` for count-up-to-zero loops
+    // (which is what LSR rewrites a `for (i=N; i; i--)` countdown to)
+    // via materializing the carry-out as i1 in A and rotating it back
+    // into the carry flag for testing:
+    //
+    //     <carry-source>            ; e.g. ADD A,1 (sets C on wrap to 0)
+    //     LD r, A                   ; save value back
+    //     SBC A, A                  ; A = 0xFF if no carry, 0x00 if carry
+    //     AND 1                     ; A = (was no-carry ? 1 : 0)
+    //     XOR 1                     ; A = (was no-carry ? 0 : 1)
+    //     RRCA                      ; bit 0 -> carry, so new C = old C
+    //                               ;   inverted (this is the round-trip)
+    //     JR C, target              ; loop iff old C was 0 (no wrap)
+    //
+    // The 4-instruction SBC/AND/XOR/RRCA chain is just an inverted
+    // identity on carry; we can replace `chain; JR C, target` with
+    // `JR NC, target` directly (test the same input carry, opposite
+    // condition — no chain).  Saves 5 B per occurrence.
+    //
+    // Safety:
+    //   - A is overwritten by the chain.  We replace by deleting the
+    //     chain, so A retains its pre-chain value (which is the result
+    //     of the carry-source op).  Require A dead after the branch.
+    //   - The chain reads the carry input via SBC.  Between the carry
+    //     source and the SBC there must be no flag-clobbering
+    //     instruction.  We don't enforce this here — the pattern is
+    //     specific enough that all known producers are safe.
+    {
+      auto isAndImm = [](const MachineInstr &MI, int64_t Imm) {
+        return MI.getOpcode() == Z80::AND_n &&
+               MI.getOperand(0).isImm() &&
+               MI.getOperand(0).getImm() == Imm;
+      };
+      auto isXorImm = [](const MachineInstr &MI, int64_t Imm) {
+        return MI.getOpcode() == Z80::XOR_n &&
+               MI.getOperand(0).isImm() &&
+               MI.getOperand(0).getImm() == Imm;
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        if (MII->getOpcode() != Z80::SBC_A_A) { ++MII; continue; }
+        auto I0 = MII;
+        SmallVector<MachineBasicBlock::iterator, 6> ToErase;
+        ToErase.push_back(I0);
+        auto It = std::next(I0);
+        if (It == MBB.end() || !isAndImm(*It, 1)) { ++MII; continue; }
+        ToErase.push_back(It); ++It;
+        if (It == MBB.end() || !isXorImm(*It, 1)) { ++MII; continue; }
+        ToErase.push_back(It); ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+
+        // Two terminator forms after the SBC/AND 1/XOR 1 prefix:
+        //   Form A (post-other-peepholes):  RRCA; JR C target
+        //   Form B (pre-other-peepholes):   AND 1; OR A; JR NZ target
+        unsigned NewBranchOp = 0;
+        if (It->getOpcode() == Z80::RRCA) {
+          ToErase.push_back(It); ++It;
+          if (It == MBB.end()) { ++MII; continue; }
+          if (It->getOpcode() == Z80::JR_C_e)
+            NewBranchOp = Z80::JR_NC_e;
+          else if (It->getOpcode() == Z80::JP_C_nn)
+            NewBranchOp = Z80::JP_NC_nn;
+        } else if (isAndImm(*It, 1)) {
+          ToErase.push_back(It); ++It;
+          if (It == MBB.end() || It->getOpcode() != Z80::OR_A) {
+            ++MII; continue;
+          }
+          ToErase.push_back(It); ++It;
+          if (It == MBB.end()) { ++MII; continue; }
+          if (It->getOpcode() == Z80::JR_NZ_e)
+            NewBranchOp = Z80::JR_NC_e;
+          else if (It->getOpcode() == Z80::JP_NZ_nn)
+            NewBranchOp = Z80::JP_NC_nn;
+        }
+        if (!NewBranchOp) { ++MII; continue; }
+        auto IBranch = It;
+        ToErase.push_back(IBranch);
+
+        // A must be dead after the branch.
+        if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::A)) {
+          ++MII; continue;
+        }
+
+        LLVM_DEBUG(dbgs() << "  #93: carry-roundtrip + branch → JR NC\n");
+        DebugLoc DL = IBranch->getDebugLoc();
+        BuildMI(MBB, IBranch, DL, TII->get(NewBranchOp))
+            .add(IBranch->getOperand(0));
+        auto NextMII = std::next(IBranch);
+        for (auto &MI : ToErase)
+          MI->eraseFromParent();
+        Changed = true;
+        MII = NextMII;
+      }
+    }
+
+    // --- Peephole: ADD A,1; LD r,A → INC r (when carry-from-ADD dead, #93) ---
+    //
+    // After the #93 carry-roundtrip rewrite eliminates the SBC chain,
+    // patterns like
+    //     LD A,r ; ADD A,1 ; LD r,A ; JR NC target
+    // remain.  When the JR's carry input is the only remaining use of
+    // ADD's carry, AND we can rewrite as `INC r ; JR NZ target`
+    // (because the only way ADD A,1 wraps is when result is 0 — Z and
+    // !C are equivalent here).  Net: 5 B → 3 B per loop site.
+    //
+    // Safety:
+    //   - INC r doesn't set carry; require carry dead after the
+    //     branch (in practice the loop body re-establishes flags).
+    //   - A is overwritten by `LD A,r ; ADD A,1`; require A dead after
+    //     the branch.
+    //   - r must be an 8-bit GPR (B/C/D/E/H/L) reachable by INC r.
+    {
+      auto getLDArSrc93 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+        case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+        case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto getLDrAdst93 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto getInc8Opc = [](MCPhysReg Reg) -> unsigned {
+        switch (Reg) {
+        case Z80::B: return Z80::INC_B; case Z80::C: return Z80::INC_C;
+        case Z80::D: return Z80::INC_D; case Z80::E: return Z80::INC_E;
+        case Z80::H: return Z80::INC_H; case Z80::L: return Z80::INC_L;
+        default: return 0;
+        }
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        MCPhysReg SrcR = getLDArSrc93(MII->getOpcode());
+        if (!SrcR) { ++MII; continue; }
+        auto I0 = MII;
+        auto It = std::next(I0);
+        if (It == MBB.end() || It->getOpcode() != Z80::ADD_A_n ||
+            !It->getOperand(0).isImm() ||
+            It->getOperand(0).getImm() != 1) {
+          ++MII; continue;
+        }
+        auto I1 = It; ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+        MCPhysReg DstR = getLDrAdst93(It->getOpcode());
+        if (DstR != SrcR) { ++MII; continue; }
+        auto I2 = It; ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+        auto I3 = It;
+        unsigned NewBranchOp;
+        if (I3->getOpcode() == Z80::JR_NC_e)
+          NewBranchOp = Z80::JR_NZ_e;
+        else if (I3->getOpcode() == Z80::JP_NC_nn)
+          NewBranchOp = Z80::JP_NZ_nn;
+        else { ++MII; continue; }
+        // A and FLAGS-via-carry must be dead after the branch.
+        if (!isRegDeadAfter(std::next(I3), MBB, TRI, Z80::A)) {
+          ++MII; continue;
+        }
+        unsigned IncOpc = getInc8Opc(SrcR);
+        if (!IncOpc) { ++MII; continue; }
+        LLVM_DEBUG(dbgs()
+                   << "  #93: LD A,r; ADD A,1; LD r,A; JR NC → INC r; JR NZ\n");
+        DebugLoc DL = I0->getDebugLoc();
+        BuildMI(MBB, I0, DL, TII->get(IncOpc));
+        BuildMI(MBB, I0, DL, TII->get(NewBranchOp))
+            .add(I3->getOperand(0));
+        auto NextMII = std::next(I3);
+        I0->eraseFromParent();
+        I1->eraseFromParent();
+        I2->eraseFromParent();
+        I3->eraseFromParent();
+        Changed = true;
+        MII = NextMII;
+      }
+    }
+
+    // --- Peephole: consecutive `LD A,n; LD (addr),A` chain (issue #85) ---
+    //
+    // When ≥3 consecutive byte stores write to consecutive addresses,
+    // replace the chain with a single LD HL,base + repeated
+    // LD (HL),n; INC HL.  Per-pair cost: 2+3 = 5 B (current) vs 2+1
+    // = 3 B (HL-walked, after one-time 3 B `ld hl, base` setup).
+    //
+    //   N=2: 10 B → 11 B  (loss; skip)
+    //   N=3: 15 B → 11 B  (save 4 B)
+    //   N=4: 20 B → 14 B  (save 6 B)
+    //   ...
+    //
+    // The peephole walks the MBB, accumulates a maximal run of
+    //   { LD A,imm; LD (addr),A }
+    // pairs whose addresses are an arithmetic-1 progression, and
+    // rewrites the run when length ≥ 3.  No flag-establishing
+    // instructions in between (the `LD A,n` and `LD (nn),A` set no
+    // flags, but a `CALL` or arithmetic op between would split the
+    // run).  Side-effect-free reads are tolerated; we conservatively
+    // require the inter-store instructions to be just the LD A,n
+    // for the next pair.
+    {
+      // Address descriptor: either a numeric immediate or
+      // (global symbol, offset).  Two stores are "consecutive" if
+      // both descriptors match on the symbol part and differ in
+      // offset by exactly one.
+      struct AddrKey {
+        const GlobalValue *GV; // nullptr for immediate
+        int64_t Off;           // numeric address (when GV==nullptr) or offset
+        bool isConsecutive(const AddrKey &Prev) const {
+          return GV == Prev.GV && Off == Prev.Off + 1;
+        }
+      };
+      auto getStoreAddr = [&](MachineInstr &MI) -> std::optional<AddrKey> {
+        if (MI.getOpcode() != Z80::LD_nnind_A) return std::nullopt;
+        const MachineOperand &Op = MI.getOperand(0);
+        if (Op.isImm())
+          return AddrKey{nullptr, Op.getImm()};
+        if (Op.isGlobal())
+          return AddrKey{Op.getGlobal(), (int64_t)Op.getOffset()};
+        return std::nullopt;
+      };
+      auto buildBaseAddr = [&](MachineInstrBuilder &MIB,
+                               const AddrKey &K) {
+        if (K.GV)
+          MIB.addGlobalAddress(K.GV, K.Off);
+        else
+          MIB.addImm(K.Off);
+      };
+
+      auto MII = MBB.begin();
+      const auto MIE = MBB.end();
+      while (MII != MIE) {
+        // Look for the head of a run: LD A,imm0; LD (addr0),A.
+        if (MII->getOpcode() != Z80::LD_A_n ||
+            !MII->getOperand(0).isImm()) {
+          ++MII; continue;
+        }
+        auto It2 = std::next(MachineBasicBlock::iterator(&*MII));
+        if (It2 == MIE) break;
+        auto firstAddr = getStoreAddr(*It2);
+        if (!firstAddr) { ++MII; continue; }
+
+        // Collect run: each subsequent pair must be
+        //   LD A,imm_k; LD (addr_k),A   with addr_k = addr0 + k.
+        struct Pair { MachineInstr *LdAn; MachineInstr *LdNnA; uint8_t Imm; };
+        SmallVector<Pair, 8> Run;
+        Run.push_back({&*MII, &*It2,
+                       (uint8_t)MII->getOperand(0).getImm()});
+        auto It3 = std::next(It2);
+        while (It3 != MIE) {
+          if (It3->getOpcode() != Z80::LD_A_n ||
+              !It3->getOperand(0).isImm()) break;
+          auto It4 = std::next(It3);
+          if (It4 == MIE) break;
+          auto a = getStoreAddr(*It4);
+          AddrKey expected{firstAddr->GV,
+                           firstAddr->Off + (int64_t)Run.size()};
+          if (!a || a->GV != expected.GV || a->Off != expected.Off) break;
+          Run.push_back({&*It3, &*It4,
+                         (uint8_t)It3->getOperand(0).getImm()});
+          It3 = std::next(It4);
+        }
+
+        if (Run.size() >= 3) {
+          // Rewrite: ld hl, base; { ld (hl), imm; inc hl }+
+          // Drop the trailing INC HL after the last store (one-byte save).
+          DebugLoc DL = MII->getDebugLoc();
+          auto MIB = BuildMI(MBB, MII, DL, TII->get(Z80::LD_HL_nn));
+          buildBaseAddr(MIB, *firstAddr);
+          for (size_t k = 0; k < Run.size(); ++k) {
+            BuildMI(MBB, MII, DL, TII->get(Z80::LD_HLind_n))
+                .addImm(Run[k].Imm);
+            if (k + 1 < Run.size())
+              BuildMI(MBB, MII, DL, TII->get(Z80::INC_HL));
+          }
+          for (auto &P : Run) {
+            P.LdAn->eraseFromParent();
+            P.LdNnA->eraseFromParent();
+          }
+          Changed = true;
+          MII = It3; // resume after the run
+          continue;
+        }
+        // Run too short (1 or 2 pairs); advance past the head pair only.
+        MII = std::next(It2);
+      }
     }
 
     // --- Peephole: LD rr,#imm; LDHL SP,#; LD (HL),lo; INC HL; LD (HL),hi
@@ -3095,6 +3909,50 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     Changed = true;
   }
 
+  // --- Peephole: cross-MBB CALL ; <fall through> ; RET → JP (issue #75) ---
+  // When an MBB ends with CALL_nn (no explicit branch) and falls through
+  // to an MBB whose first instruction is RET, the CALL can become a
+  // TAILJMP -- the callee's RET will return directly to our caller.
+  // Saves 1 byte per site.
+  //
+  // Same stack-arg safety check as the single-MBB version: no PUSHes
+  // before the CALL in the producing MBB.  We don't touch the RET'ing
+  // MBB; it remains as a target for any other predecessor.
+  for (auto &MBB : MF) {
+    auto Term = MBB.getLastNonDebugInstr();
+    if (Term == MBB.end() || Term->getOpcode() != Z80::CALL_nn)
+      continue;
+    // Must have a single fall-through successor.
+    if (MBB.succ_size() != 1) continue;
+    MachineBasicBlock *Next = *MBB.succ_begin();
+    // Successor's first non-debug instruction must be RET.
+    auto NextFirst = Next->getFirstNonDebugInstr();
+    if (NextFirst == Next->end() || NextFirst->getOpcode() != Z80::RET)
+      continue;
+    // Stack-args safety check.
+    bool HasPush = false;
+    for (auto It = MBB.begin(); It != Term; ++It) {
+      if (It->isDebugInstr()) continue;
+      unsigned Opc = It->getOpcode();
+      if (Opc == Z80::PUSH_AF || Opc == Z80::PUSH_BC ||
+          Opc == Z80::PUSH_DE || Opc == Z80::PUSH_HL ||
+          Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY) {
+        HasPush = true; break;
+      }
+    }
+    if (HasPush) continue;
+    // Replace CALL with TAILJMP, drop the fall-through to the RET MBB.
+    LLVM_DEBUG(dbgs() << "  CALL → JP (cross-MBB tail call): " << *Term);
+    MachineOperand &CallTarget = Term->getOperand(0);
+    DebugLoc DL = Term->getDebugLoc();
+    BuildMI(MBB, *Term, DL, TII->get(Z80::TAILJMP)).add(CallTarget);
+    Term->eraseFromParent();
+    // TAILJMP is isReturn, so no fall-through happens.  Remove the CFG
+    // edge so successor MBB liveness reflects this.
+    MBB.removeSuccessor(Next);
+    Changed = true;
+  }
+
   // --- Cross-block redundant LD A,r removal (issue #60) ---
   //
   // Forward dataflow tracking when register A is known to equal an 8-bit
@@ -3683,11 +4541,31 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                  Opc == Z80::POP_IX || Opc == Z80::POP_IY;
         };
 
+        // All BSS load opcodes — used to detect orphan loads from the
+        // same slot to a register pair other than the spilled one.
+        // Issue #82: converting our spill+matching-reload to PUSH/POP
+        // while leaving such an orphan read from BSS produces a stale
+        // load (the slot is never written since PUSH/POP went to the
+        // stack, not the slot).  Bail when seen.
+        auto isAnyBssLoad = [](unsigned Opc) {
+          return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
+                 Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
+        };
+
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
 
           // Another store to the same sfrend slot = conflict (reuse).
           if (SOpc == SI->StoreOpc && sameAddress(*MII, *Scan)) {
+            Conflict = true;
+            break;
+          }
+
+          // Orphan BSS load from the same slot to a different register
+          // pair than the one we're spilling.  See #82.
+          if (isAnyBssLoad(SOpc) &&
+              !isMatchingLoad(SI->StoreOpc, SOpc) &&
+              sameAddress(*MII, *Scan)) {
             Conflict = true;
             break;
           }
