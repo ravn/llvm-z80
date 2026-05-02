@@ -54,16 +54,23 @@
 
 using namespace llvm;
 
-// Off by default: rotating head-test loops at -Oz exposes the BC ping-pong
-// coalescing failure tracked as ravn/llvm-z80#97 (= reopened #84 in single-
-// BB self-loop form), and that costs more bytes than the rotation saves
-// (cpnos-rom payload regressed +4 B in measurement on 2026-05-02).  Once
-// #97 is fixed the default should flip to true.  Until then the pass
-// exists for experimentation and as the structural prerequisite for #77a.
+// Off by default.  The original gate was ravn/llvm-z80#97 (BC ping-pong
+// in rotated single-BB self-loops); that's now fixed by the post-RA
+// peephole in Z80LateOptimization.cpp covering Cases 1 (param→BC),
+// 2 (constant in both HL and BC), 3 (constant in BC only), with both
+// orderings (LD L,C first or last in body).  But measurement on
+// 2026-05-02 still shows rcbios BIOS +33 B and cpnos-rom payload +4 B
+// when rotation runs by default — rotated loops with a CALL inside
+// force regalloc to BSS-spill the loop counter / pointer across the
+// CALL, which more than offsets the head-test `or a` savings #77a is
+// after.  Tracked as ravn/llvm-z80#100; full breadcrumb in
+// `llvm-z80/tasks/followup-77a-rotation-around-call.md`.  Until #100
+// closes the default stays off; the pass is opt-in via
+// `-mllvm -z80-loop-rotate=true`.
 static cl::opt<bool>
     EnableZ80LoopRotate("z80-loop-rotate", cl::init(false), cl::Hidden,
                         cl::desc("Enable Z80 target-specific loop rotation "
-                                 "(off by default; gates on #97)"));
+                                 "(off by default; gates on #100)"));
 
 namespace {
 

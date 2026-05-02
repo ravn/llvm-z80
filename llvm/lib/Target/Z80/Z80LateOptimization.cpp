@@ -2199,6 +2199,347 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole: BC ping-pong in single-BB self-loops (issue #97) ---
+    //
+    // Sibling of #84.  Hand-written or post-Z80LoopRotate single-BB
+    // self-loops with a PHI'd pointer put the pointer in BC across the
+    // back-edge and HL during the store body, with `LD L,C; LD H,B`
+    // reloading at every iteration and `INC BC × N` advancing for the
+    // back-edge.  The preheader sets up the BC copy with `LD C,L; LD
+    // B,H`.  Two orderings appear:
+    //
+    //   Case A (rotation NOT applied at IR level):
+    //     loop:  LD L,C; LD H,B; <stores via (HL), INC HL × M>;
+    //            INC BC × N; <trailer>; <branch>
+    //
+    //   Case B (rotation applied at IR level — back-edge advance now
+    //           emitted FIRST within the body):
+    //     loop:  <leading>; INC BC × N; <stores via (HL), INC HL × M>;
+    //            <trailer>; LD L,C; LD H,B; <branch>
+    //
+    // Both forms use 4 + 4 + N bytes more than the no-ping-pong shape.
+    //
+    // Rewrite (when guards pass):
+    //   - Erase pred's LD C,L; LD B,H.
+    //   - Erase loop's LD L,C; LD H,B.
+    //   - Replace loop's INC BC × N with INC HL × (N - M).
+    //
+    // Saves 4 (pred pair) + 4 (loop pair) + N - (N - M) = 8 + M bytes
+    // per occurrence.  Closes ravn/llvm-z80#97.
+    {
+      auto TouchesReg = [&](const MachineInstr &MI, MCPhysReg Pair,
+                            MCPhysReg Hi, MCPhysReg Lo) {
+        if (MI.isMetaInstruction()) return false;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isRegMask()) return true;
+          if (!MO.isReg() || !MO.getReg().isPhysical()) continue;
+          Register R = MO.getReg();
+          if (TRI->regsOverlap(R, Pair) ||
+              TRI->regsOverlap(R, Hi) ||
+              TRI->regsOverlap(R, Lo))
+            return true;
+        }
+        return false;
+      };
+
+      for (auto &LoopBB : MF) {
+        // Single-BB self-loop with exactly two predecessors: itself + pred.
+        if (LoopBB.pred_size() != 2) continue;
+        bool IsSelfLoop = false;
+        MachineBasicBlock *Pred = nullptr;
+        for (MachineBasicBlock *P : LoopBB.predecessors()) {
+          if (P == &LoopBB) IsSelfLoop = true;
+          else Pred = P;
+        }
+        if (!IsSelfLoop || !Pred) continue;
+        if (Pred->succ_size() != 1) continue;
+
+        // Pred matcher.  Three accepted shapes:
+        //   Case 1 (pointer from HL param): `LD C,L; LD B,H` adjacent.
+        //     We'll drop both (BC = HL anyway, so HL still carries it).
+        //   Case 2 (constant pointer initialized in both): `LD HL,nn N`
+        //     and `LD BC,nn N` with matching immediate / global / MC
+        //     symbol, no intervening modifications.  We'll drop the
+        //     LD_BC_nn (HL keeps the value).
+        //   Case 3 (constant pointer initialized in BC only): `LD BC,nn
+        //     N` in pred with no LD_HL_nn at all and HL not live-in to
+        //     LoopBB.  We'll rewrite the LD_BC_nn to LD_HL_nn (HL takes
+        //     over as the carrier).
+        auto PredTerm = Pred->getFirstTerminator();
+        MachineInstr *LdCL = nullptr, *LdBH = nullptr;
+        MachineInstr *LdBCnn = nullptr, *LdHLnn = nullptr;
+        for (auto It = Pred->begin(); It != PredTerm; ++It) {
+          if (It->getOpcode() == Z80::LD_C_L && !LdCL) {
+            auto Next = std::next(It);
+            while (Next != PredTerm && Next->isMetaInstruction()) ++Next;
+            if (Next != PredTerm && Next->getOpcode() == Z80::LD_B_H) {
+              LdCL = &*It;
+              LdBH = &*Next;
+            }
+          }
+          if (It->getOpcode() == Z80::LD_BC_nn) LdBCnn = &*It;
+          if (It->getOpcode() == Z80::LD_HL_nn) LdHLnn = &*It;
+        }
+        bool MatchedCase1 = LdCL && LdBH;
+        bool MatchedCase2 = false;
+        bool MatchedCase3 = false;
+        if (!MatchedCase1 && LdBCnn && LdHLnn &&
+            LdBCnn->getNumOperands() >= 1 &&
+            LdHLnn->getNumOperands() >= 1) {
+          const MachineOperand &BCOp = LdBCnn->getOperand(0);
+          const MachineOperand &HLOp = LdHLnn->getOperand(0);
+          // Accept matching immediates, identical global addresses (with
+          // same offset), or identical MC symbols.
+          if (BCOp.isImm() && HLOp.isImm() &&
+              BCOp.getImm() == HLOp.getImm()) {
+            MatchedCase2 = true;
+          } else if (BCOp.isGlobal() && HLOp.isGlobal() &&
+                     BCOp.getGlobal() == HLOp.getGlobal() &&
+                     BCOp.getOffset() == HLOp.getOffset()) {
+            MatchedCase2 = true;
+          } else if (BCOp.isMCSymbol() && HLOp.isMCSymbol() &&
+                     BCOp.getMCSymbol() == HLOp.getMCSymbol() &&
+                     BCOp.getOffset() == HLOp.getOffset()) {
+            MatchedCase2 = true;
+          } else if (BCOp.isBlockAddress() && HLOp.isBlockAddress() &&
+                     BCOp.getBlockAddress() == HLOp.getBlockAddress() &&
+                     BCOp.getOffset() == HLOp.getOffset()) {
+            MatchedCase2 = true;
+          }
+        }
+        if (!MatchedCase1 && !MatchedCase2 && LdBCnn && !LdHLnn) {
+          // Case 3: only LD_BC_nn in pred.  We'll rewrite to LD_HL_nn.
+          // Safety: HL must not be live-in to LoopBB before our rewrite
+          // (the loop's LD_L_C; LD_H_B is what currently sets it).
+          if (!LoopBB.isLiveIn(Z80::HL) &&
+              !LoopBB.isLiveIn(Z80::H) &&
+              !LoopBB.isLiveIn(Z80::L))
+            MatchedCase3 = true;
+        }
+        if (!MatchedCase1 && !MatchedCase2 && !MatchedCase3) continue;
+
+        bool Bail = false;
+        if (MatchedCase1) {
+          // After LD_B_H, no BC touch until terminator.
+          for (auto It = std::next(LdBH->getIterator()); It != PredTerm; ++It) {
+            if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C)) {
+              Bail = true; break;
+            }
+          }
+        } else if (MatchedCase2) {
+          // Between LD_BC_nn and terminator, no BC touch.
+          for (auto It = std::next(LdBCnn->getIterator()); It != PredTerm;
+               ++It) {
+            if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C)) {
+              Bail = true; break;
+            }
+          }
+          if (!Bail) {
+            // And between LD_HL_nn and terminator, no HL touch.
+            for (auto It = std::next(LdHLnn->getIterator()); It != PredTerm;
+                 ++It) {
+              if (TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
+                Bail = true; break;
+              }
+            }
+          }
+        } else { // MatchedCase3
+          // Between LD_BC_nn and terminator, no BC touch.
+          for (auto It = std::next(LdBCnn->getIterator()); It != PredTerm;
+               ++It) {
+            if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C)) {
+              Bail = true; break;
+            }
+          }
+          // No HL touch anywhere in pred (we're about to write HL there).
+          if (!Bail) {
+            for (auto It = Pred->begin(); It != PredTerm; ++It) {
+              if (TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
+                Bail = true; break;
+              }
+            }
+          }
+        }
+        if (Bail) continue;
+
+        // In LoopBB: find the unique LD_L_C; LD_H_B pair.
+        auto LoopTerm = LoopBB.getFirstTerminator();
+        if (LoopTerm == LoopBB.begin()) continue;
+        MachineInstr *LdLC = nullptr, *LdHB = nullptr;
+        for (auto It = LoopBB.begin(); It != LoopTerm; ++It) {
+          if (It->getOpcode() != Z80::LD_L_C) continue;
+          auto Next = std::next(It);
+          while (Next != LoopTerm && Next->isMetaInstruction()) ++Next;
+          if (Next == LoopTerm || Next->getOpcode() != Z80::LD_H_B) continue;
+          if (LdLC) { Bail = true; break; }  // multiple pairs
+          LdLC = &*It;
+          LdHB = &*Next;
+        }
+        if (Bail || !LdLC || !LdHB) continue;
+
+        // In LoopBB: find the unique INC_BC chain.
+        MachineInstr *IncBcStart = nullptr;
+        unsigned IncBcN = 0;
+        bool ChainEnded = false;
+        for (auto It = LoopBB.begin(); It != LoopTerm; ++It) {
+          if (It->isMetaInstruction()) continue;
+          if (It->getOpcode() == Z80::INC_BC) {
+            if (ChainEnded) { Bail = true; break; }  // second chain
+            if (!IncBcStart) IncBcStart = &*It;
+            ++IncBcN;
+          } else if (IncBcStart) {
+            ChainEnded = true;
+          }
+        }
+        if (Bail || !IncBcStart || IncBcN == 0) continue;
+
+        // Determine ordering: which anchor comes first?  PingPongFirst is
+        // the start of the earlier anchor; PingPongLast is the
+        // (one-past-end) iterator of the later anchor.
+        MachineBasicBlock::iterator FirstStart, FirstEnd, LastStart, LastEnd;
+        bool LdLCFirst = false;
+        // Find positions; iterate once to compare.
+        auto LdLCIt = LdLC->getIterator();
+        auto IncBcIt = IncBcStart->getIterator();
+        for (auto It = LoopBB.begin(); It != LoopTerm; ++It) {
+          if (&*It == LdLC) { LdLCFirst = true; break; }
+          if (&*It == IncBcStart) { LdLCFirst = false; break; }
+        }
+        if (LdLCFirst) {
+          FirstStart = LdLCIt;
+          FirstEnd   = std::next(LdHB->getIterator());
+          LastStart  = IncBcIt;
+          LastEnd    = std::next(IncBcIt, IncBcN);
+        } else {
+          FirstStart = IncBcIt;
+          FirstEnd   = std::next(IncBcIt, IncBcN);
+          LastStart  = LdLCIt;
+          LastEnd    = std::next(LdHB->getIterator());
+        }
+
+        // Region 1 — leading: [LoopBB.begin(), FirstStart).
+        // Must not touch HL or BC.
+        for (auto It = LoopBB.begin(); It != FirstStart; ++It) {
+          if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C) ||
+              TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
+            Bail = true; break;
+          }
+        }
+        if (Bail) continue;
+
+        // Region 2 — body: [FirstEnd, LastStart).
+        // Allowed: any read of HL (LD (HL),r / LD r,(HL) / LD (HL),n),
+        // INC_HL (counted as M).  Not allowed: any def of HL other
+        // than INC_HL, any touch of BC.
+        unsigned IncHlM = 0;
+        for (auto It = FirstEnd; It != LastStart; ++It) {
+          if (It->isMetaInstruction()) continue;
+          unsigned Op = It->getOpcode();
+          if (Op == Z80::INC_HL) { ++IncHlM; continue; }
+          // Other defs of HL/H/L → bail.  Touches of BC → bail.
+          for (const MachineOperand &MO : It->operands()) {
+            if (MO.isRegMask()) { Bail = true; break; }
+            if (!MO.isReg() || !MO.getReg().isPhysical()) continue;
+            Register R = MO.getReg();
+            if (TRI->regsOverlap(R, Z80::BC) ||
+                TRI->regsOverlap(R, Z80::B)  ||
+                TRI->regsOverlap(R, Z80::C)) {
+              Bail = true; break;
+            }
+            if (MO.isDef() &&
+                (TRI->regsOverlap(R, Z80::HL) ||
+                 TRI->regsOverlap(R, Z80::H)  ||
+                 TRI->regsOverlap(R, Z80::L))) {
+              Bail = true; break;
+            }
+          }
+          if (Bail) break;
+        }
+        if (Bail) continue;
+        if (IncHlM > IncBcN) continue;
+
+        // Region 3 — trailer: [LastEnd, LoopTerm).  No HL/BC touches.
+        for (auto It = LastEnd; It != LoopTerm; ++It) {
+          if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C) ||
+              TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
+            Bail = true; break;
+          }
+        }
+        if (Bail) continue;
+        // Terminators must not touch HL/BC (e.g. JP (HL) would).
+        for (auto It = LoopTerm; It != LoopBB.end(); ++It) {
+          if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C) ||
+              TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
+            Bail = true; break;
+          }
+        }
+        if (Bail) continue;
+
+        // BC must be dead at every non-loop successor of LoopBB.
+        for (MachineBasicBlock *Succ : LoopBB.successors()) {
+          if (Succ == &LoopBB) continue;
+          for (const auto &LI : Succ->liveins()) {
+            if (TRI->regsOverlap(LI.PhysReg, Z80::BC) ||
+                TRI->regsOverlap(LI.PhysReg, Z80::B)  ||
+                TRI->regsOverlap(LI.PhysReg, Z80::C)) {
+              Bail = true; break;
+            }
+          }
+          if (Bail) break;
+        }
+        if (Bail) continue;
+
+        // All guards passed.  Rewrite.
+        DebugLoc DL = LdLC->getDebugLoc();
+        unsigned ExtraIncs = IncBcN - IncHlM;
+
+        // Insert INC_HL × ExtraIncs at LastStart (so they replace the
+        // late anchor — INC_BC chain in case A, LD_L_C/LD_H_B in case B).
+        for (unsigned i = 0; i < ExtraIncs; ++i)
+          BuildMI(LoopBB, LastStart, DL, TII->get(Z80::INC_HL))
+              .addReg(Z80::HL, RegState::Define)
+              .addReg(Z80::HL);
+
+        // Erase late anchor [LastStart, LastEnd).
+        for (auto It = LastStart; It != LastEnd; ) {
+          auto Cur = It++;
+          Cur->eraseFromParent();
+        }
+        // Erase early anchor [FirstStart, FirstEnd).
+        for (auto It = FirstStart; It != FirstEnd; ) {
+          auto Cur = It++;
+          Cur->eraseFromParent();
+        }
+        // Erase / rewrite pred's BC setup.
+        if (MatchedCase1) {
+          LdCL->eraseFromParent();
+          LdBH->eraseFromParent();
+        } else if (MatchedCase2) {
+          LdBCnn->eraseFromParent();
+        } else { // MatchedCase3
+          // Replace LD_BC_nn N with LD_HL_nn N, copying the operand.
+          // LD_*_nn's operand 0 is the immediate / global / MC-symbol;
+          // there is no explicit def-reg operand (def is implicit).
+          DebugLoc PredDL = LdBCnn->getDebugLoc();
+          BuildMI(*Pred, LdBCnn, PredDL, TII->get(Z80::LD_HL_nn))
+              .add(LdBCnn->getOperand(0));
+          LdBCnn->eraseFromParent();
+        }
+
+        // Update liveness on LoopBB: drop $bc, ensure $hl.
+        if (LoopBB.isLiveIn(Z80::BC)) LoopBB.removeLiveIn(Z80::BC);
+        if (LoopBB.isLiveIn(Z80::B))  LoopBB.removeLiveIn(Z80::B);
+        if (LoopBB.isLiveIn(Z80::C))  LoopBB.removeLiveIn(Z80::C);
+        if (!LoopBB.isLiveIn(Z80::HL)) LoopBB.addLiveIn(Z80::HL);
+
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "  #97: removed BC ping-pong in self-loop "
+                          << printMBBReference(LoopBB)
+                          << " (case " << (LdLCFirst ? "A" : "B")
+                          << ", M=" << IncHlM << " N=" << IncBcN << ")\n");
+      }
+    }
+
     // --- Peephole: u8 switch range-check 16-bit → 8-bit (issue #86) ---
     //
     // GISel switch lowering on a u8 discriminator widens to i16 for

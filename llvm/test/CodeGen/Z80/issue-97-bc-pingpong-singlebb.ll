@@ -1,32 +1,25 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr -z80-asm-format=sdasz80 < %s | FileCheck %s
 ;
-; XFAIL: *
-;
 ; Issue ravn/llvm-z80#97: in a single-BB self-loop with a PHI'd pointer
 ; used by a store AND incremented for the back-edge, the regalloc
-; allocates the SAME logical pointer to TWO physical register pairs (HL
+; allocated the SAME logical pointer to TWO physical register pairs (HL
 ; for the stores, BC for the back-edge value), with cross-pair copies at
-; every iteration.  Costs ~6 B per iteration that takes this shape.
+; every iteration.  Sibling of #84 (head-test multi-BB form).
 ;
-; Sibling of #84 (which closed the head-test multi-BB form).  Gates
-; ravn/llvm-z80#77a — the Z80LoopRotate pass landed but stays off-by-
-; default until this issue closes, because rotation produces single-BB
-; self-loops that hit this bug.
+; FIXED via post-RA peephole `BC ping-pong in single-BB self-loops` in
+; `Z80LateOptimization.cpp` (option 2 from the original investigation):
+; detect `LD C,L; LD B,H` in pred + `LD L,C; LD H,B` at loop top + INC BC
+; chain at back-edge with HL only touched as memory base + INC HL inside
+; the body, then drop the dance and replace `INC BC × N` with
+; `INC HL × (N - M)` where M is the inside-body INC HL count.
 ;
-; Root cause (per investigation comment on #97 dated 2026-05-02): GISel
-; store sequences emit `LD_HLind_*` with implicit-def $hl, which
-; clobbers $hl across the stores.  This forces regalloc to keep any
-; PHI'd-pointer vreg that's live across the stores in a NON-HL pair
-; (BC or DE), which then needs copies to and from HL for every store.
+; Closing #97 unblocks ravn/llvm-z80#77a (Z80LoopRotate stays off-by-
+; default until the rotated single-BB shape ceases to regress).
 ;
-; Three candidate fixes (option 2 is the pragmatic next step):
-;   1. Rework store emission so post-store HL is an explicit output.
-;   2. Post-RA peephole that rewrites the rotated BC ping-pong shape,
-;      sibling of the #84 peephole in Z80LateOptimization.cpp.
-;   3. Coalescer hint for PHI'd pointers in single-BB self-loops.
-;
-; Each test below produces the BC ping-pong today.  Once any of the
-; fixes lands, the XFAIL flips to PASS.
+; The harder i16-counter sub-case (counter and pointer compete for HL,
+; so the peephole can't simply drop the ping-pong) is pinned in the
+; sibling test `issue-97a-bc-pingpong-i16-counter.ll` and tracked as
+; ravn/llvm-z80#99.
 
 ; --- Canonical shape: do-while-decrement countdown with i16 store.
 ; Matches cpnos-rom's setup_ivt pattern after rotation.
@@ -70,28 +63,6 @@ loop:
   %p.next = getelementptr inbounds nuw i8, ptr %p.cur, i16 1
   %i.next = sub i8 %i, 1
   %done = icmp eq i8 %i.next, 0
-  br i1 %done, label %exit, label %loop
-exit:
-  ret void
-}
-
-; --- Variation: i16 counter (pointer + counter both 16-bit).
-; Tests that the bug isn't gated on the counter being 8-bit.
-;
-; CHECK-LABEL: countdown_i16_counter:
-; CHECK-NOT: ld{{[ \t]+}}c,l
-; CHECK-NOT: ld{{[ \t]+}}l,c
-; CHECK-NOT: inc{{[ \t]+}}bc
-define void @countdown_i16_counter(ptr %p) {
-entry:
-  br label %loop
-loop:
-  %i = phi i16 [ 256, %entry ], [ %i.next, %loop ]
-  %p.cur = phi ptr [ %p, %entry ], [ %p.next, %loop ]
-  store volatile i16 0, ptr %p.cur, align 1
-  %p.next = getelementptr inbounds nuw i8, ptr %p.cur, i16 2
-  %i.next = sub i16 %i, 1
-  %done = icmp eq i16 %i.next, 0
   br i1 %done, label %exit, label %loop
 exit:
   ret void
