@@ -40,6 +40,7 @@
 #include "Z80FixupImplicitDefs.h"
 #include "Z80IndexIV.h"
 #include "Z80LoopIdiomFill.h"
+#include "Z80LoopRotate.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -64,6 +65,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80FixupImplicitDefsPass(PR);
   initializeZ80LateOptimizationPass(PR);
   initializeZ80LoopIdiomFillLegacyPassPass(PR);
+  initializeZ80LoopRotateLegacyPassPass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
@@ -156,6 +158,10 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
           PM.addPass(Z80LoopIdiomFill());
           return true;
         }
+        if (Name == "z80-loop-rotate") {
+          PM.addPass(Z80LoopRotate());
+          return true;
+        }
         return false;
       });
 
@@ -169,8 +175,12 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
   // so the legacy-PM wrapper can share the body).
   PB.registerVectorizerStartEPCallback(
       [](FunctionPassManager &PM, OptimizationLevel Level) {
-        if (Level != OptimizationLevel::O0)
+        if (Level != OptimizationLevel::O0) {
           PM.addPass(Z80LoopIdiomFill());
+          // Re-rotate head-test loops that LLVM's LoopRotate skipped at
+          // -Oz due to the minsize gate (issue #77a).
+          PM.addPass(Z80LoopRotate());
+        }
       });
 }
 
@@ -238,6 +248,9 @@ void Z80PassConfig::addIRPasses() {
     // Pattern-fill rewrite (issue #88).  Runs from llc's IR pipeline
     // here; clang's pipeline picks it up via PassBuilder hook.
     addPass(createZ80LoopIdiomFillLegacyPass());
+    // Re-rotate head-test loops that LLVM's LoopRotate skipped at -Oz
+    // due to the minsize gate (issue #77a).
+    addPass(createZ80LoopRotateLegacyPass());
   }
 }
 
