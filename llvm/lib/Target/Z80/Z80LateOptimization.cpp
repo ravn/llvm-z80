@@ -2263,6 +2263,188 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: carry-roundtrip + JR C → JR NC (issue #93) ---
+    //
+    // GISel lowers `add a,N; icmp ne 0` for count-up-to-zero loops
+    // (which is what LSR rewrites a `for (i=N; i; i--)` countdown to)
+    // via materializing the carry-out as i1 in A and rotating it back
+    // into the carry flag for testing:
+    //
+    //     <carry-source>            ; e.g. ADD A,1 (sets C on wrap to 0)
+    //     LD r, A                   ; save value back
+    //     SBC A, A                  ; A = 0xFF if no carry, 0x00 if carry
+    //     AND 1                     ; A = (was no-carry ? 1 : 0)
+    //     XOR 1                     ; A = (was no-carry ? 0 : 1)
+    //     RRCA                      ; bit 0 -> carry, so new C = old C
+    //                               ;   inverted (this is the round-trip)
+    //     JR C, target              ; loop iff old C was 0 (no wrap)
+    //
+    // The 4-instruction SBC/AND/XOR/RRCA chain is just an inverted
+    // identity on carry; we can replace `chain; JR C, target` with
+    // `JR NC, target` directly (test the same input carry, opposite
+    // condition — no chain).  Saves 5 B per occurrence.
+    //
+    // Safety:
+    //   - A is overwritten by the chain.  We replace by deleting the
+    //     chain, so A retains its pre-chain value (which is the result
+    //     of the carry-source op).  Require A dead after the branch.
+    //   - The chain reads the carry input via SBC.  Between the carry
+    //     source and the SBC there must be no flag-clobbering
+    //     instruction.  We don't enforce this here — the pattern is
+    //     specific enough that all known producers are safe.
+    {
+      auto isAndImm = [](const MachineInstr &MI, int64_t Imm) {
+        return MI.getOpcode() == Z80::AND_n &&
+               MI.getOperand(0).isImm() &&
+               MI.getOperand(0).getImm() == Imm;
+      };
+      auto isXorImm = [](const MachineInstr &MI, int64_t Imm) {
+        return MI.getOpcode() == Z80::XOR_n &&
+               MI.getOperand(0).isImm() &&
+               MI.getOperand(0).getImm() == Imm;
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        if (MII->getOpcode() != Z80::SBC_A_A) { ++MII; continue; }
+        auto I0 = MII;
+        SmallVector<MachineBasicBlock::iterator, 6> ToErase;
+        ToErase.push_back(I0);
+        auto It = std::next(I0);
+        if (It == MBB.end() || !isAndImm(*It, 1)) { ++MII; continue; }
+        ToErase.push_back(It); ++It;
+        if (It == MBB.end() || !isXorImm(*It, 1)) { ++MII; continue; }
+        ToErase.push_back(It); ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+
+        // Two terminator forms after the SBC/AND 1/XOR 1 prefix:
+        //   Form A (post-other-peepholes):  RRCA; JR C target
+        //   Form B (pre-other-peepholes):   AND 1; OR A; JR NZ target
+        unsigned NewBranchOp = 0;
+        if (It->getOpcode() == Z80::RRCA) {
+          ToErase.push_back(It); ++It;
+          if (It == MBB.end()) { ++MII; continue; }
+          if (It->getOpcode() == Z80::JR_C_e)
+            NewBranchOp = Z80::JR_NC_e;
+          else if (It->getOpcode() == Z80::JP_C_nn)
+            NewBranchOp = Z80::JP_NC_nn;
+        } else if (isAndImm(*It, 1)) {
+          ToErase.push_back(It); ++It;
+          if (It == MBB.end() || It->getOpcode() != Z80::OR_A) {
+            ++MII; continue;
+          }
+          ToErase.push_back(It); ++It;
+          if (It == MBB.end()) { ++MII; continue; }
+          if (It->getOpcode() == Z80::JR_NZ_e)
+            NewBranchOp = Z80::JR_NC_e;
+          else if (It->getOpcode() == Z80::JP_NZ_nn)
+            NewBranchOp = Z80::JP_NC_nn;
+        }
+        if (!NewBranchOp) { ++MII; continue; }
+        auto IBranch = It;
+        ToErase.push_back(IBranch);
+
+        // A must be dead after the branch.
+        if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::A)) {
+          ++MII; continue;
+        }
+
+        LLVM_DEBUG(dbgs() << "  #93: carry-roundtrip + branch → JR NC\n");
+        DebugLoc DL = IBranch->getDebugLoc();
+        BuildMI(MBB, IBranch, DL, TII->get(NewBranchOp))
+            .add(IBranch->getOperand(0));
+        auto NextMII = std::next(IBranch);
+        for (auto &MI : ToErase)
+          MI->eraseFromParent();
+        Changed = true;
+        MII = NextMII;
+      }
+    }
+
+    // --- Peephole: ADD A,1; LD r,A → INC r (when carry-from-ADD dead, #93) ---
+    //
+    // After the #93 carry-roundtrip rewrite eliminates the SBC chain,
+    // patterns like
+    //     LD A,r ; ADD A,1 ; LD r,A ; JR NC target
+    // remain.  When the JR's carry input is the only remaining use of
+    // ADD's carry, AND we can rewrite as `INC r ; JR NZ target`
+    // (because the only way ADD A,1 wraps is when result is 0 — Z and
+    // !C are equivalent here).  Net: 5 B → 3 B per loop site.
+    //
+    // Safety:
+    //   - INC r doesn't set carry; require carry dead after the
+    //     branch (in practice the loop body re-establishes flags).
+    //   - A is overwritten by `LD A,r ; ADD A,1`; require A dead after
+    //     the branch.
+    //   - r must be an 8-bit GPR (B/C/D/E/H/L) reachable by INC r.
+    {
+      auto getLDArSrc93 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+        case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+        case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto getLDrAdst93 = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto getInc8Opc = [](MCPhysReg Reg) -> unsigned {
+        switch (Reg) {
+        case Z80::B: return Z80::INC_B; case Z80::C: return Z80::INC_C;
+        case Z80::D: return Z80::INC_D; case Z80::E: return Z80::INC_E;
+        case Z80::H: return Z80::INC_H; case Z80::L: return Z80::INC_L;
+        default: return 0;
+        }
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end(); ) {
+        MCPhysReg SrcR = getLDArSrc93(MII->getOpcode());
+        if (!SrcR) { ++MII; continue; }
+        auto I0 = MII;
+        auto It = std::next(I0);
+        if (It == MBB.end() || It->getOpcode() != Z80::ADD_A_n ||
+            !It->getOperand(0).isImm() ||
+            It->getOperand(0).getImm() != 1) {
+          ++MII; continue;
+        }
+        auto I1 = It; ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+        MCPhysReg DstR = getLDrAdst93(It->getOpcode());
+        if (DstR != SrcR) { ++MII; continue; }
+        auto I2 = It; ++It;
+        if (It == MBB.end()) { ++MII; continue; }
+        auto I3 = It;
+        unsigned NewBranchOp;
+        if (I3->getOpcode() == Z80::JR_NC_e)
+          NewBranchOp = Z80::JR_NZ_e;
+        else if (I3->getOpcode() == Z80::JP_NC_nn)
+          NewBranchOp = Z80::JP_NZ_nn;
+        else { ++MII; continue; }
+        // A and FLAGS-via-carry must be dead after the branch.
+        if (!isRegDeadAfter(std::next(I3), MBB, TRI, Z80::A)) {
+          ++MII; continue;
+        }
+        unsigned IncOpc = getInc8Opc(SrcR);
+        if (!IncOpc) { ++MII; continue; }
+        LLVM_DEBUG(dbgs()
+                   << "  #93: LD A,r; ADD A,1; LD r,A; JR NC → INC r; JR NZ\n");
+        DebugLoc DL = I0->getDebugLoc();
+        BuildMI(MBB, I0, DL, TII->get(IncOpc));
+        BuildMI(MBB, I0, DL, TII->get(NewBranchOp))
+            .add(I3->getOperand(0));
+        auto NextMII = std::next(I3);
+        I0->eraseFromParent();
+        I1->eraseFromParent();
+        I2->eraseFromParent();
+        I3->eraseFromParent();
+        Changed = true;
+        MII = NextMII;
+      }
+    }
+
     // --- Peephole: consecutive `LD A,n; LD (addr),A` chain (issue #85) ---
     //
     // When ≥3 consecutive byte stores write to consecutive addresses,

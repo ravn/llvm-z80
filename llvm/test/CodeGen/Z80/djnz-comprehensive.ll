@@ -233,18 +233,18 @@ exit:
 
 
 ;==============================================================================
-; KNOWN BUG: constant-trip-count countdown uses count-up + carry test
-; instead of dec + jr nz.  See ravn/llvm-z80#93.
+; CONSTANT TRIP COUNT: ravn/llvm-z80#93 fix (path b -- post-RA peephole)
 ;
-;   Expected:  ld b,#50; .loop: ...; djnz .loop
-;   Actual:    ld d,#206; .loop: ...; ld a,d; add a,#1; ld d,a;
-;              sbc a,a; and #1; xor #1; rrca; jr c,.loop
+; Was: 11-byte carry-roundtrip in the loop body
+;        ld a,d; add a,#1; ld d,a; sbc a,a; and #1; xor #1; rrca; jr c
+; Now: 3-byte INC + jr nz
+;        inc d; jr nz
 ;
-; The IR is identical to the runtime-trip-count form above (which
-; works), but constant materialisation triggers a different path.
+; Counter is still in D, not B, so DJNZ doesn't fire here -- that
+; needs path (a) (#95) or a count-up -> count-down rewrite + B hint.
 ;==============================================================================
 
-define void @const_trip_no_djnz_today() {
+define void @const_trip_inc_jrnz() {
 entry:
   br label %loop
 loop:
@@ -257,7 +257,10 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _const_trip_no_djnz_today:
+; CHECK-LABEL: _const_trip_inc_jrnz:
 ; CHECK-NOT:   {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       jr  c,
+; CHECK-NOT:   sbc a,a
+; CHECK-NOT:   rrca
+; CHECK:       inc d
+; CHECK-NEXT:  jr  nz,
 ; CHECK:       ret
