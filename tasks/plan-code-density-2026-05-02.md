@@ -36,35 +36,33 @@ data symbols `_conv_tables`, boot blocks):
 IX/IY refs in top BIOS functions: **0** (one stray FD prefix in
 `_isr_crt`).  IX-frame and IY-prefix overhead are not active gaps.
 
-## 2.  Diagnostic: the load-after-store-same-addr signal
+## 2.  Diagnostic: REVISED 2026-05-02 (see `phase-a-findings.md`)
 
-Within `_isr_crt` the four-line shape
+**Original diagnostic was wrong.**  The four-line shape
 
 ```
 ld   hl,(nn)
-inc/dec hl                 ; or other rr-preserving op
+inc/dec hl
 ld   (nn),hl
-ld   hl,(nn)               ; <-- redundant: rr unchanged since the store
-ld   a,l
-or   h
+ld   hl,(nn)               ; <-- I called this "redundant"
 ```
 
-appears at four BSS slots ($fffc, $ffdf, $ffe1, $ffe3).  Strict 4-line
-match across all of BIOS finds three definite hits = 12 B; widening
-the scan finds the same shape in `_specc`, `_rwoper`, and the disk
-selectors.  Estimated aggregate savings from removing the redundant
-reload across BIOS: ~50-80 B.
+cited from `_isr_crt` is **mandated by C `volatile` semantics**.  The
+addresses `$fffc`, `$ffdf`, `$ffe1`, `$ffe3` are all members of
+`WorkArea` declared `volatile word` (bios.h:268-278) because ISRs
+modify them.  The post-store reload is required, not redundant.
 
-This shape is **diagnostic**, not just an opportunity.  It tells us:
+A scanner over the entire BIOS disasm found **0** instances of the
+same shape at non-volatile addresses.  This means the existing
+pipeline already eliminates non-volatile dead loads correctly; there
+is no aggregate saving available here.
 
-- A dead load is surviving from MIR all the way into assembly, despite
-  being a textbook MachineDCE / load-store-forwarding target.
-- Either MachineCSE/DCE doesn't run on the Z80 backend, runs too early
-  (before the loads are formed), or sees these as may-alias due to
-  conservative TargetTransformInfo.
-- The right fix is *not* "add a peephole that detects the four lines."
-  The right fix is "find the pass that should have caught this, and
-  fix it."
+Phase B (MachineDCE / load-store-forwarding) is therefore **removed
+from this plan** — there is no target.  The remaining BSS-access
+bytes in big BIOS functions split between mandatory volatile access
+and *independent* non-volatile accesses (not store-reload pairs).
+Shrinking those requires holding more values in registers across the
+function — the regalloc cost-model question, addressed in Phase C.
 
 ## 3.  Strategy
 
@@ -147,35 +145,13 @@ Goal: be able to see where pessimism originates in the pipeline.
 on commit; we have an MIR diff that pinpoints the load-after-store
 miss to a specific pass.
 
-### Phase B — MachineDCE / load-store forwarding (highest leverage)
+### Phase B — REMOVED (was: MachineDCE / load-store forwarding)
 
-Goal: kill the load-after-store-same-addr family at MIR level so
-peepholes never see it.
+Removed 2026-05-02 after Phase A.2 discovered the diagnostic was
+volatile-mandated.  See `phase-a-findings.md` for the full writeup.
 
-Predicted leverage: 50-80 B aggregate across BIOS, plus an unknown
-amount in cpnos-rom + autoload-PROM, plus future-proofing every
-similar shape.
-
-1. From Phase A.2 we know which pass is missing the elimination.
-   Likely candidates:
-   - `MachineCSE` (if BSS-slot loads aren't recognised as memory
-     operands the alias-tracker can prove non-aliasing for).
-   - `MachineSinking` (if the load is correctly identified but
-     not re-evaluated after the store).
-   - `RegisterCoalescer` (if the value is stuck in two different
-     virtual registers because of a copy that should have been
-     eliminated).
-   - Custom `Z80MIRDeadStoreLoadForward` pass (last resort, but
-     still lives at MIR level, not in late-opt).
-
-2. Fix at the identified pass.  Add a lit test under
-   `llvm/test/CodeGen/Z80/` that locks the optimization in.
-
-3. Re-run baseline tracker (Phase A.1) and confirm BIOS shrinks.
-
-**Exit criterion:** each of the four `_isr_crt` redundant reloads
-disappears.  Baseline tracker reports negative bytes on at least
-4 functions.
+Phase A.2 (MIR-stage dump harness) is also no longer load-bearing
+since there is no MIR-level miss to diagnose.
 
 ### Phase C — regalloc cluster fix
 
@@ -291,25 +267,19 @@ passes to clean up?"
   want to confirm the headline number; the goal is to shrink clang,
   not to track SDCC.
 
-## 8.  First concrete action
+## 8.  First concrete action (revised)
 
-Phase A.2 (MIR-stage dump harness) is the smallest, most diagnostic
-step and unblocks Phase B.  Suggested commands:
+Phase B is removed.  The next executable step is **Phase C
+investigation**: read #94, #95, #98, #89, #99, #100 in one sitting
+and write a single root-cause writeup tying their common cause
+together.  That writeup becomes the Phase C design doc.
 
-```sh
-cd /Users/ravn/z80/llvm-z80
-build-macos/bin/clang --target=z80 -mllvm -print-after-all \
-    -c /Users/ravn/z80/rc700-gensmedet/rcbios-in-c/bios.c \
-    -o /tmp/bios.o 2> /tmp/mir-trace.txt
-grep -n 'IR Dump After' /tmp/mir-trace.txt | head -40
-```
-
-Identify the first MIR pass after which `MOV $loc, %vreg ; MOV %vreg2,
-$loc` survives unfolded for a static-stack BSS slot.  That pass is
-Phase B's target.
+In parallel: Phase A.1 (per-function size baseline tracker) is small,
+high-value, and unblocks regression-detection during Phase C/D work.
 
 ---
 
 This plan supersedes the loose "next direction options" discussion at
-the start of the post-session-35 conversation.  It will be refined as
-Phase A produces ground truth.
+the start of the post-session-35 conversation.  Revised once on
+2026-05-02 after Phase A.2 invalidated the dead-load diagnostic.
+Will be refined again as Phase C produces ground truth.
