@@ -64,14 +64,14 @@ public:
 
   // Z80 has extremely few registers. Tell the loop optimizer so it avoids
   // creating extra induction variables that cause spills.
-  unsigned getNumberOfRegisters(unsigned ClassID) const {
+  unsigned getNumberOfRegisters(unsigned ClassID) const override {
     // ClassID 0 = scalar. Z80 has 3 allocatable 16-bit pairs (BC, DE, HL)
     // and 7 allocatable 8-bit regs (A, B, C, D, E, H, L), but pairs and
     // sub-registers overlap, so the effective count is very low.
     return 3;
   }
 
-  TypeSize getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const {
+  TypeSize getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const override {
     return TypeSize::getFixed(8);
   }
 

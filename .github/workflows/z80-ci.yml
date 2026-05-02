@@ -1,0 +1,81 @@
+name: Z80 backend CI
+
+# Runs on ravn/llvm-z80 fork only; not intended for upstream llvm/llvm-project.
+# Workspace-mode CI per tasks/roadmap-to-maturity.md §12.1 (Phase 1).
+# Once stable, propose for promotion to llvm-z80/llvm-z80 (engagement mode).
+
+on:
+  push:
+    branches: [main, "session-*", "z80-*"]
+    paths:
+      - 'llvm/lib/Target/Z80/**'
+      - 'llvm/test/CodeGen/Z80/**'
+      - 'llvm/test/MC/Z80/**'
+      - 'clang/lib/Driver/ToolChains/SDCC.cpp'
+      - 'clang/cmake/caches/Z80.cmake'
+      - '.github/workflows/z80-ci.yml'
+  pull_request:
+    paths:
+      - 'llvm/lib/Target/Z80/**'
+      - 'llvm/test/CodeGen/Z80/**'
+      - 'llvm/test/MC/Z80/**'
+      - 'clang/lib/Driver/ToolChains/SDCC.cpp'
+      - 'clang/cmake/caches/Z80.cmake'
+      - '.github/workflows/z80-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: z80-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-lit:
+    name: Build clang/llc + Z80 lit suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang lld python3
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: z80-ci-${{ runner.os }}
+          max-size: "2G"
+
+      - name: Configure
+        run: |
+          cmake -C clang/cmake/caches/Z80.cmake -G Ninja -S llvm -B build \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLLVM_OPTIMIZED_TABLEGEN=ON
+
+      - name: Build clang + llc
+        run: ninja -C build clang llc
+
+      - name: Run Z80 lit suite
+        run: build/bin/llvm-lit -v llvm/test/CodeGen/Z80/
+
+      - name: Run MC/Z80 lit suite (if present)
+        run: |
+          if [ -d llvm/test/MC/Z80 ]; then
+            build/bin/llvm-lit -v llvm/test/MC/Z80/
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Build dir size:"
+          du -sh build || true
+          echo "ccache stats:"
+          ccache -s || true
