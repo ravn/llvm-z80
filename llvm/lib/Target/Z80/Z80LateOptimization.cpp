@@ -1870,28 +1870,36 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       for (auto MII = MBB.begin(); MII != MBB.end(); ) {
         if (MII->getOpcode() != Z80::LDIR) { ++MII; continue; }
         auto Ldir = MII;
-        // Look forward for the reconstruction triple.
-        auto It = std::next(Ldir);
-        while (It != MBB.end() && It->isMetaInstruction()) ++It;
-        if (It == MBB.end() || It->getOpcode() != Z80::LD_HL_nnind) {
+        // Look forward for the reconstruction triple.  The two loads
+        // (LD_HL_nnind, LD_DE_nn) are independent and the scheduler
+        // can place them in either order; ADD_HL_DE must come last.
+        auto skipMeta = [&](MachineBasicBlock::iterator I) {
+          while (I != MBB.end() && I->isMetaInstruction()) ++I;
+          return I;
+        };
+        auto T1 = skipMeta(std::next(Ldir));
+        if (T1 == MBB.end()) { ++MII; continue; }
+        auto T2 = skipMeta(std::next(T1));
+        if (T2 == MBB.end()) { ++MII; continue; }
+        MachineBasicBlock::iterator LdHL, LdDE;
+        if (T1->getOpcode() == Z80::LD_HL_nnind &&
+            T2->getOpcode() == Z80::LD_DE_nn) {
+          LdHL = T1; LdDE = T2;
+        } else if (T1->getOpcode() == Z80::LD_DE_nn &&
+                   T2->getOpcode() == Z80::LD_HL_nnind) {
+          LdDE = T1; LdHL = T2;
+        } else {
           ++MII; continue;
         }
-        auto LdHL = It;
         if (!LdHL->getOperand(0).isMCSymbol() &&
             !LdHL->getOperand(0).isGlobal() &&
             !LdHL->getOperand(0).isImm()) { ++MII; continue; }
-        ++It;
-        while (It != MBB.end() && It->isMetaInstruction()) ++It;
-        if (It == MBB.end() || It->getOpcode() != Z80::LD_DE_nn ||
-            !It->getOperand(0).isImm()) { ++MII; continue; }
-        auto LdDE = It;
+        if (!LdDE->getOperand(0).isImm()) { ++MII; continue; }
         int64_t ReloadCount = LdDE->getOperand(0).getImm();
-        ++It;
-        while (It != MBB.end() && It->isMetaInstruction()) ++It;
-        if (It == MBB.end() || It->getOpcode() != Z80::ADD_HL_DE) {
+        auto AddHL = skipMeta(std::next(T2));
+        if (AddHL == MBB.end() || AddHL->getOpcode() != Z80::ADD_HL_DE) {
           ++MII; continue;
         }
-        auto AddHL = It;
         // Look back for matching LD_BC_nn N (LDIR's count) and proof
         // that DE pre-LDIR equals the value at <slot>.  Two acceptable
         // proofs:
@@ -1963,7 +1971,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         bool StoreBack = (!DropEx && AfterAdd != MBB.end() &&
                           AfterAdd->getOpcode() == Z80::LD_nnind_HL);
 
-        DebugLoc DL = LdHL->getDebugLoc();
+        DebugLoc DL = T1->getDebugLoc();
         unsigned Saved = 0;
         unsigned PreSpillBytes = PreSpill ? 3 : 0;
         unsigned FixupBytes = (Diff == 0) ? 0 : 1; // INC/DEC = 1 byte
@@ -1971,21 +1979,21 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         unsigned IncDecHL = (Diff > 0) ? Z80::INC_HL : Z80::DEC_HL;
         if (DropEx) {
           if (Diff != 0)
-            BuildMI(MBB, LdHL, DL, TII->get(IncDecDE));
+            BuildMI(MBB, T1, DL, TII->get(IncDecDE));
           AfterAdd->eraseFromParent();
           Saved = 8 + PreSpillBytes - FixupBytes;
         } else if (StoreBack) {
           if (Diff != 0)
-            BuildMI(MBB, LdHL, DL, TII->get(IncDecDE));
-          auto MIB = BuildMI(MBB, LdHL, DL, TII->get(Z80::LD_nnind_DE));
+            BuildMI(MBB, T1, DL, TII->get(IncDecDE));
+          auto MIB = BuildMI(MBB, T1, DL, TII->get(Z80::LD_nnind_DE));
           MIB.add(AfterAdd->getOperand(0));  // target of trailing store
           AfterAdd->eraseFromParent();
           Saved = (7 + 3) - 4 - FixupBytes + PreSpillBytes;
         } else {
-          BuildMI(MBB, LdHL, DL, TII->get(Z80::LD_H_D));
-          BuildMI(MBB, LdHL, DL, TII->get(Z80::LD_L_E));
+          BuildMI(MBB, T1, DL, TII->get(Z80::LD_H_D));
+          BuildMI(MBB, T1, DL, TII->get(Z80::LD_L_E));
           if (Diff != 0)
-            BuildMI(MBB, LdHL, DL, TII->get(IncDecHL));
+            BuildMI(MBB, T1, DL, TII->get(IncDecHL));
           Saved = 7 - 2 - FixupBytes + PreSpillBytes;
         }
         LdHL->eraseFromParent();

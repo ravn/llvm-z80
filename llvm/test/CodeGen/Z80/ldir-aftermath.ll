@@ -12,7 +12,8 @@
 
 @dma = external dso_local global ptr
 
-; --- StoreBack: memcpy(dma, src, 128); dma += 128; (cpnos READ-SEQ) -
+; --- StoreBack, Diff=0: memcpy(dma, src, 128); dma += 128; -----------
+; (cpnos READ-SEQ pattern.)  Triple+store collapses to LD (target),DE.
 define void @read_seq_iter(ptr %src) {
   %p = load ptr, ptr @dma, align 1
   call void @llvm.memcpy.p0.p0.i16(ptr %p, ptr %src, i16 128, i1 false)
@@ -26,5 +27,38 @@ define void @read_seq_iter(ptr %src) {
 ; CHECK-NOT:  add hl,de
 ; CHECK:      ret
 
+; --- StoreBack, Diff=+1: GEP one byte past end of memcpy ------------
+; LDIR count is 128, GEP offset is 129.  Post-LDIR DE = dst+128, so
+; INC DE before the store gives dst+129.
+define void @plus_one(ptr %src) {
+  %p = load ptr, ptr @dma, align 1
+  call void @llvm.memcpy.p0.p0.i16(ptr %p, ptr %src, i16 128, i1 false)
+  %p2 = getelementptr inbounds nuw i8, ptr %p, i16 129
+  store ptr %p2, ptr @dma, align 1
+  ret void
+}
+; CHECK-LABEL: _plus_one:
+; CHECK:      ldir
+; CHECK-NEXT: inc de
+; CHECK-NEXT: ld  ({{.*}}),de
+; CHECK-NOT:  add hl,de
+; CHECK:      ret
+
+; --- StoreBack, Diff=-1: GEP one byte short of memcpy end -----------
+; LDIR count is 128, GEP offset is 127.  Post-LDIR DE = dst+128, so
+; DEC DE before the store gives dst+127.
+define void @minus_one(ptr %src) {
+  %p = load ptr, ptr @dma, align 1
+  call void @llvm.memcpy.p0.p0.i16(ptr %p, ptr %src, i16 128, i1 false)
+  %p2 = getelementptr inbounds nuw i8, ptr %p, i16 127
+  store ptr %p2, ptr @dma, align 1
+  ret void
+}
+; CHECK-LABEL: _minus_one:
+; CHECK:      ldir
+; CHECK-NEXT: dec de
+; CHECK-NEXT: ld  ({{.*}}),de
+; CHECK-NOT:  add hl,de
+; CHECK:      ret
 
 declare void @llvm.memcpy.p0.p0.i16(ptr, ptr, i16, i1 immarg)
