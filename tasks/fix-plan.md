@@ -1,5 +1,14 @@
 # llvm-z80 codegen-fix plan
 
+> **Status (2026-05-02, session 37):** This is the **per-cluster
+> engineering doc**.  The **master plan** is
+> [`roadmap-to-maturity.md`](roadmap-to-maturity.md) (approved
+> 2026-05-02), which sequences the work into 9 phases and frames the
+> collaboration target as `llvm-z80/llvm-z80` (workspace mode now,
+> engagement mode gated on a substantial body of work).  Use the
+> roadmap to decide *what to work on*; use this doc for *how to fix
+> it* (idiom corpus, cluster engineering notes).
+
 Working document for systematically improving the Z80 backend.  Goal:
 land upstream-ready patches with reproducers + lit tests + measured
 size/speed deltas.  46 open issues (as of 2026-05-01) categorized,

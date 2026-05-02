@@ -109,3 +109,42 @@ ease of future maintenance.
 Root cause for both: IR-level countdown→count-up IV rewrite at -Oz
 (#95) prevents DJNZ for either form.  Until #95 fixed, the hand-
 written countdown idiom is the path to smallest code at these sites.
+
+### 2026-05-02 (Phase 1 verification, session 37)
+
+Roadmap §12.1 verification pass.  Agent audit (read-only) walked the
+"likely candidates" list above and cross-checked each against the
+current backend.  Results:
+
+| Issue | Fix in backend | Source workaround | Verdict        |
+| ----- | -------------- | ----------------- | -------------- |
+| #82   | present (Z80LateOptimization.cpp orphan/cross-reg guards) | none found | clean |
+| #76   | present (LD A,(HL); LD r,A → LD r,(HL); ld-r-via-hl.ll) | none found | clean |
+| #88   | present (Z80LoopIdiomFill IR pass) | none found | clean |
+| #74   | present (BSS spill→PUSH/POP, cross-CALL + cross-pair) | none found | clean |
+| #86   | present (u8 switch range-check 16→8) | none found | clean |
+| #64   | present (memmove inline policy) | none found | clean |
+| #45   | present (constant-address LD (nn),A / LD (nn),HL) | none found | clean |
+| #46   | present (ptrtoint(GV+const) → LD rr) | none found | clean |
+| #71   | present (SRL A → RRCA on AND mask) | none found | clean |
+| #62   | present (dead-HL-copy peephole) | none found | clean |
+| #58   | present (link-time JP→JR) | n/a — link-time | clean |
+| #60   | present (cross-block known-A) | none found | clean |
+| #95   | **not yet fixed** | both cpnos-rom workarounds (init.c:119, :144) still required | keep |
+
+Findings:
+1. Zero source-drift: every line referenced in the audit log above
+   still exists at the cited locations.
+2. Zero unaccounted workarounds: no `register`/inline-asm/structural
+   contortion was found in BIOS, PROM, or cpnos-rom that maps to a
+   closed issue except those already logged.  (Caveat: this pass
+   relied on the agent's targeted spot-checks, not an exhaustive
+   grep across all rcbios / cpnos-rom / autoload-in-c sources.  A
+   deeper sweep is a candidate for a follow-up audit.)
+3. The two cpnos-rom countdown loops remain the only outstanding
+   source-side workaround.  They unlock when #95 lands (roadmap
+   Phase 5).
+
+No source edits made this session.  Phase 1 source-cleanup audit
+deliverable: complete (with caveat above).  Re-run after Phase 5
+(#95) merge, and ideally with a deeper source-side grep.
