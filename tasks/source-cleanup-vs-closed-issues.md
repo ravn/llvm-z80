@@ -93,3 +93,19 @@ PR (or set of commits) lands the cleanups.
 Estimated yield: a few B more on rcbios (each cleanup tends to
 shave 2-8 B), but the bigger payoff is source readability and
 ease of future maintenance.
+
+## Audit log
+
+### 2026-05-02 (post session-33 merge)
+
+- **cpnos-rom/init.c:119-125** (IVT setup loop, pointer-walk + uint8_t
+  countdown): A/B'd against `for (uint8_t i = 0; i < N; i++) ivt[i]=…`
+  and `for (int i = …)` at -Oz with current backend.  Current form
+  wins by 7 B (no BSS spill); idiomatic up-counter forms incur a 2-B
+  BSS slot + push hl/pop hl in the inner loop.  **Keep.**
+- **cpnos-rom/init.c:144-150** (port_init dispatch, same shape):
+  same A/B, current form wins by ~6 B.  **Keep.**
+
+Root cause for both: IR-level countdown→count-up IV rewrite at -Oz
+(#95) prevents DJNZ for either form.  Until #95 fixed, the hand-
+written countdown idiom is the path to smallest code at these sites.
