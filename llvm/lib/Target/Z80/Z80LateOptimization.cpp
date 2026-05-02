@@ -4457,32 +4457,45 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   // Safety: with static-stack there is no SP-relative addressing, so PUSH/POP
   // cannot break address calculations.  Only fire for __sfrend/__sframe symbols.
   if (STI.staticStack()) {
-    // Helper: get PUSH/POP opcodes for a BSS store/load pair.
-    struct SpillInfo {
+    // Helper: BSS store/load opcode tables, indexed by register-pair.
+    // Issue #74: cross-register-pair spills (e.g. store HL, reload as DE)
+    // also convert to PUSH+POP -- PUSH (storeReg); POP (loadReg) costs 2B
+    // vs 6-8B for the BSS pair, and the value bytes are the same.
+    struct StoreInfo {
       unsigned StoreOpc;   // LD_nnind_A, LD_nnind_HL, etc.
-      unsigned LoadOpc;    // LD_A_nnind, LD_HL_nnind, etc.
       unsigned PushOpc;    // PUSH_AF, PUSH_HL, etc.
-      unsigned PopOpc;     // POP_AF, POP_HL, etc.
-      unsigned StoreBytes; // size of store instruction
-      unsigned LoadBytes;  // size of load instruction
+      unsigned Bytes;      // 3 or 4
+      bool Is8Bit;         // A vs 16-bit pair
     };
-    static const SpillInfo SpillPairs[] = {
-        {Z80::LD_nnind_A,  Z80::LD_A_nnind,  Z80::PUSH_AF, Z80::POP_AF, 3, 3},
-        {Z80::LD_nnind_HL, Z80::LD_HL_nnind, Z80::PUSH_HL, Z80::POP_HL, 3, 3},
-        {Z80::LD_nnind_DE, Z80::LD_DE_nnind, Z80::PUSH_DE, Z80::POP_DE, 4, 4},
-        {Z80::LD_nnind_BC, Z80::LD_BC_nnind, Z80::PUSH_BC, Z80::POP_BC, 4, 4},
+    struct LoadInfo {
+      unsigned LoadOpc;    // LD_A_nnind, LD_HL_nnind, etc.
+      unsigned PopOpc;     // POP_AF, POP_HL, etc.
+      unsigned PushOpc;    // for re-PUSH after non-last POP (uses load reg)
+      unsigned Bytes;      // 3 or 4
+      bool Is8Bit;
+    };
+    static const StoreInfo Stores[] = {
+        {Z80::LD_nnind_A,  Z80::PUSH_AF, 3, true},
+        {Z80::LD_nnind_HL, Z80::PUSH_HL, 3, false},
+        {Z80::LD_nnind_DE, Z80::PUSH_DE, 4, false},
+        {Z80::LD_nnind_BC, Z80::PUSH_BC, 4, false},
+    };
+    static const LoadInfo Loads_[] = {
+        {Z80::LD_A_nnind,  Z80::POP_AF, Z80::PUSH_AF, 3, true},
+        {Z80::LD_HL_nnind, Z80::POP_HL, Z80::PUSH_HL, 3, false},
+        {Z80::LD_DE_nnind, Z80::POP_DE, Z80::PUSH_DE, 4, false},
+        {Z80::LD_BC_nnind, Z80::POP_BC, Z80::PUSH_BC, 4, false},
     };
 
-    auto getSpillInfo = [&](unsigned Opc) -> const SpillInfo * {
-      for (const auto &SI : SpillPairs)
-        if (SI.StoreOpc == Opc) return &SI;
+    auto getStoreInfo = [&](unsigned Opc) -> const StoreInfo * {
+      for (const auto &S : Stores)
+        if (S.StoreOpc == Opc) return &S;
       return nullptr;
     };
-
-    auto isMatchingLoad = [&](unsigned StoreOpc, unsigned Opc) -> bool {
-      for (const auto &SI : SpillPairs)
-        if (SI.StoreOpc == StoreOpc && SI.LoadOpc == Opc) return true;
-      return false;
+    auto getLoadInfo = [&](unsigned Opc) -> const LoadInfo * {
+      for (const auto &L : Loads_)
+        if (L.LoadOpc == Opc) return &L;
+      return nullptr;
     };
 
     auto isSfrendSymbol = [](const MachineOperand &MO) -> bool {
@@ -4507,22 +4520,33 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return true;
     };
 
+    // Collect all candidate conversions on pristine code first, then apply.
+    // Single-pass apply-as-we-go would let an earlier conversion's inserted
+    // POP appear unbalanced from a later store's narrow scan window.
+    struct LoadEntry {
+      MachineBasicBlock::iterator It;
+      const LoadInfo *Info;
+    };
+    struct Candidate {
+      MachineBasicBlock::iterator StoreIt;
+      const StoreInfo *SI;
+      SmallVector<LoadEntry, 4> Loads;
+    };
+
     for (MachineBasicBlock &MBB : MF) {
-      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
-        const SpillInfo *SI = getSpillInfo(MII->getOpcode());
+      SmallVector<Candidate, 8> Candidates;
+      auto MIE = MBB.end();
+      for (auto MII = MBB.begin(); MII != MIE; ++MII) {
+        const StoreInfo *SI = getStoreInfo(MII->getOpcode());
         if (!SI) continue;
         if (!isSfrendSymbol(MII->getOperand(0))) continue;
 
-        // Found a BSS spill store.  Scan forward for CALLs and matching loads.
-        // Count how many loads reference this same address after the store.
-        // Also track whether any other store to the same address intervenes
-        // (which would mean the slot is reused for a different value).
-        bool HasCall = false;
+        // Found a BSS spill store.  Scan forward for matching same-address
+        // loads to ANY register pair of the same width (8 or 16 bit).  Any
+        // mixed-width same-address load (e.g. 8-bit load from a 16-bit
+        // store's slot) is treated as an orphan and we bail (issue #82).
         bool Conflict = false;
-        int LoadCount = 0;
-        int PushPopBytes = 1; // initial PUSH
-        int BssBytes = SI->StoreBytes;
-        SmallVector<MachineBasicBlock::iterator, 4> Loads;
+        SmallVector<LoadEntry, 4> LoadList;
         // Track PUSH/POP balance for ALL register pairs (not just ours).
         // PUSH/POP is LIFO: if another register is pushed between our
         // PUSH and POP, our POP would get the wrong value.  We must
@@ -4541,31 +4565,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                  Opc == Z80::POP_IX || Opc == Z80::POP_IY;
         };
 
-        // All BSS load opcodes — used to detect orphan loads from the
-        // same slot to a register pair other than the spilled one.
-        // Issue #82: converting our spill+matching-reload to PUSH/POP
-        // while leaving such an orphan read from BSS produces a stale
-        // load (the slot is never written since PUSH/POP went to the
-        // stack, not the slot).  Bail when seen.
-        auto isAnyBssLoad = [](unsigned Opc) {
-          return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
-                 Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
-        };
-
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
 
           // Another store to the same sfrend slot = conflict (reuse).
-          if (SOpc == SI->StoreOpc && sameAddress(*MII, *Scan)) {
-            Conflict = true;
-            break;
-          }
-
-          // Orphan BSS load from the same slot to a different register
-          // pair than the one we're spilling.  See #82.
-          if (isAnyBssLoad(SOpc) &&
-              !isMatchingLoad(SI->StoreOpc, SOpc) &&
-              sameAddress(*MII, *Scan)) {
+          if (getStoreInfo(SOpc) && sameAddress(*MII, *Scan)) {
             Conflict = true;
             break;
           }
@@ -4579,34 +4583,32 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             if (StackDepth < 0) { Conflict = true; break; }
           }
 
-          if (SOpc == Z80::CALL_nn)
-            HasCall = true;
-
-          // Matching load from the same address.
-          if (isMatchingLoad(SI->StoreOpc, SOpc) && sameAddress(*MII, *Scan)) {
-            // Stack must be balanced at each reload point.  Issue #74:
-            // the prior `if (!HasCall) continue` skipped pure register-
-            // pressure spills (no CALL between store/load) which is exactly
-            // the case PUSH/POP wins on too -- the StackDepth check is
-            // already the right safety guard.
-            if (StackDepth != 0) { Conflict = true; break; }
-            (void)HasCall;
-            Loads.push_back(Scan);
-            LoadCount++;
-            PushPopBytes += 1; // POP
-            BssBytes += SI->LoadBytes;
-            // If there are more loads after this one, we need PUSH after POP.
-            // We'll account for that below.
+          // BSS load from the same address.
+          if (const LoadInfo *LI = getLoadInfo(SOpc)) {
+            if (sameAddress(*MII, *Scan)) {
+              // Mixed-width load (e.g. 8-bit load from a 16-bit slot, or
+              // vice versa) is an orphan -- value bytes wouldn't match.
+              // See issue #82 for the original same-pair-only orphan bug.
+              if (LI->Is8Bit != SI->Is8Bit) {
+                Conflict = true;
+                break;
+              }
+              // Stack must be balanced at each reload point.  Issue #74:
+              // we no longer require a CALL between store/load -- the
+              // StackDepth check is sufficient.
+              if (StackDepth != 0) { Conflict = true; break; }
+              LoadList.push_back({Scan, LI});
+            }
           }
 
           // Branch/jump out of block = stop scanning.
           if (Scan->isTerminator()) break;
         }
 
-        // Unbalanced PUSH/POP between store and load = unsafe.
+        // Unbalanced PUSH/POP between store and last load = unsafe.
         if (StackDepth != 0) Conflict = true;
 
-        if (Conflict || LoadCount == 0) continue;
+        if (Conflict || LoadList.empty()) continue;
 
         // Check that no other basic block references the same BSS address.
         // The PUSH/POP conversion is local to this block — if another block
@@ -4616,8 +4618,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           for (MachineBasicBlock &OtherMBB : MF) {
             if (&OtherMBB == &MBB) continue;
             for (MachineInstr &OtherMI : OtherMBB) {
-              if ((OtherMI.getOpcode() == SI->LoadOpc ||
-                   OtherMI.getOpcode() == SI->StoreOpc) &&
+              unsigned Opc2 = OtherMI.getOpcode();
+              if ((getStoreInfo(Opc2) || getLoadInfo(Opc2)) &&
                   sameAddress(*MII, OtherMI)) {
                 UsedElsewhere = true;
                 break;
@@ -4628,27 +4630,28 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (UsedElsewhere) continue;
         }
 
-        // Cost: PUSH (1B) + N*POP (N B) + (N-1)*re-PUSH ((N-1) B) = 2N B.
-        // Original: store (S B) + N*load (N*L B).
-        // Multi-load with re-PUSH: after each POP except the last, insert
-        // PUSH to keep the value on the stack for subsequent POPs.
-        // The LIFO safety check above prevents interference with other
-        // conversions in the same MBB.
-        PushPopBytes = 2 * LoadCount; // PUSH + N*POP + (N-1)*re-PUSH
-        BssBytes = SI->StoreBytes + LoadCount * SI->LoadBytes;
+        // Cost computation:
+        //   PUSH/POP code: 1B (initial PUSH) + N B (POPs)
+        //                   + (N-1) B (re-PUSHes between consecutive loads)
+        //                = 2N B.
+        //   BSS code: SI->Bytes (store) + sum(LoadBytes) (loads).
+        // Re-PUSH uses the LOAD's PUSH opcode (the value is now in that reg).
+        unsigned PushPopBytes = 1 + LoadList.size();
+        if (LoadList.size() > 1) PushPopBytes += LoadList.size() - 1;
+        unsigned BssBytes = SI->Bytes;
+        for (auto &LE : LoadList) BssBytes += LE.Info->Bytes;
 
         if (PushPopBytes >= BssBytes) continue; // not worth it
 
         // For PUSH AF / POP AF: POP AF restores flags, which may conflict
-        // with flags set by the CALL or intervening instructions.
-        // Only safe when FLAGS is dead after each POP AF.
-        // Check BEFORE replacing the store to avoid leaving a dangling PUSH.
-        if (SI->PopOpc == Z80::POP_AF) {
+        // with flags set by intervening instructions.  Only safe when
+        // FLAGS is dead after each POP AF.  This applies only when the
+        // STORE was 8-bit (we PUSH AF) AND any LOAD is 8-bit (we POP AF).
+        // For 16-bit cases, no FLAGS interaction.
+        if (SI->Is8Bit) {
           bool FlagsSafe = true;
-          for (auto &LoadIt : Loads) {
-            auto After = std::next(LoadIt);
-            // After erasing the load, the POP AF will be at this position.
-            // Check if flags are dead after the load instruction.
+          for (auto &LE : LoadList) {
+            auto After = std::next(LE.It);
             if (!isRegDeadAfter(After, MBB, TRI, Z80::FLAGS)) {
               FlagsSafe = false;
               break;
@@ -4658,32 +4661,32 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             continue;
         }
 
-        LLVM_DEBUG(dbgs() << "  BSS spill→PUSH/POP: " << *MII
-                          << "  " << LoadCount << " loads, saves "
+        LLVM_DEBUG(dbgs() << "  BSS spill→PUSH/POP candidate: " << *MII
+                          << "  " << LoadList.size() << " loads, saves "
                           << (BssBytes - PushPopBytes) << "B\n");
 
-        // Replace store with PUSH.
-        DebugLoc DL = MII->getDebugLoc();
-        BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
-        MII = MBB.erase(MII);
+        Candidates.push_back({MII, SI, std::move(LoadList)});
+      }
 
-        // Replace each load with POP.  For all but the last, insert a
-        // re-PUSH immediately after the POP to keep the value on the stack
-        // for subsequent loads.
-        for (int i = 0; i < LoadCount; ++i) {
-          auto &LoadMI = *Loads[i];
-          DebugLoc LoadDL = LoadMI.getDebugLoc();
-          BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PopOpc));
-          if (i < LoadCount - 1) {
-            // Re-PUSH after POP: saves the value back for the next POP.
-            BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PushOpc));
+      // Apply candidates in reverse order so earlier conversions' inserted
+      // PUSH/POP land OUTSIDE later conversions' brackets, preserving LIFO.
+      // (For non-overlapping candidates the order doesn't matter.)
+      for (auto It = Candidates.rbegin(); It != Candidates.rend(); ++It) {
+        auto &C = *It;
+        DebugLoc DL = C.StoreIt->getDebugLoc();
+        BuildMI(MBB, *C.StoreIt, DL, TII->get(C.SI->PushOpc));
+        MBB.erase(C.StoreIt);
+
+        for (size_t i = 0; i < C.Loads.size(); ++i) {
+          auto &LE = C.Loads[i];
+          DebugLoc LoadDL = LE.It->getDebugLoc();
+          BuildMI(MBB, *LE.It, LoadDL, TII->get(LE.Info->PopOpc));
+          if (i + 1 < C.Loads.size()) {
+            BuildMI(MBB, *LE.It, LoadDL, TII->get(LE.Info->PushOpc));
           }
-          MBB.erase(Loads[i]);
+          MBB.erase(LE.It);
         }
-
         Changed = true;
-        // Restart scan from current position (MII was updated by erase).
-        --MII;
       }
     }
   }
