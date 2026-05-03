@@ -3352,6 +3352,182 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // --- Peephole #116: i16 EQ/NE byte-XOR → AND A; SBC HL,rr ---
+    //
+    // Variable-RHS i16 EQ/NE compare-and-branch is emitted by ISel as a
+    // 6-byte byte-level XOR sequence:
+    //
+    //   LD A,X        ; X = sub_{hi,lo} of QPair (the "loaded" pair)
+    //   XOR R1        ; R1 = sub_{hi,lo} of PPair (the "XOR'd" pair)
+    //   LD T,A        ; T = some GR8 scratch
+    //   LD A,Y        ; Y = the other half of QPair
+    //   XOR R2        ; R2 = the other half of PPair
+    //   OR T          ; combine; Z=1 iff QPair == PPair
+    //   JR Z|NZ / JP Z|NZ
+    //
+    // When one of the pairs is already HL, AND A; SBC HL,otherpair (3 B,
+    // 19 T) does the same compare in half the bytes and saves 5 T-states.
+    //
+    // Prior attempt at this transform via an ISel-time gate
+    // (commit 33ceae174673) regressed rcbios bios.cim by +27 B because
+    // SUB_HL_rr's HL-Def evicts long-lived values out of HL.  The
+    // post-RA approach below only fires when the pattern's actual
+    // physical-register placement *already* parks the value in HL,
+    // sidestepping the regalloc-eviction problem.
+    if (STI.hasZ80() && !STI.hasSM83()) {
+      auto isXorR = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::XOR_B: return Z80::B; case Z80::XOR_C: return Z80::C;
+        case Z80::XOR_D: return Z80::D; case Z80::XOR_E: return Z80::E;
+        case Z80::XOR_H: return Z80::H; case Z80::XOR_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto isOrR = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::OR_B: return Z80::B; case Z80::OR_C: return Z80::C;
+        case Z80::OR_D: return Z80::D; case Z80::OR_E: return Z80::E;
+        case Z80::OR_H: return Z80::H; case Z80::OR_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto isLdAr = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_A_B: return Z80::B; case Z80::LD_A_C: return Z80::C;
+        case Z80::LD_A_D: return Z80::D; case Z80::LD_A_E: return Z80::E;
+        case Z80::LD_A_H: return Z80::H; case Z80::LD_A_L: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto isLdrA = [](unsigned Opc) -> MCPhysReg {
+        switch (Opc) {
+        case Z80::LD_B_A: return Z80::B; case Z80::LD_C_A: return Z80::C;
+        case Z80::LD_D_A: return Z80::D; case Z80::LD_E_A: return Z80::E;
+        case Z80::LD_H_A: return Z80::H; case Z80::LD_L_A: return Z80::L;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto pairOf = [](MCPhysReg R) -> MCPhysReg {
+        switch (R) {
+        case Z80::B: case Z80::C: return Z80::BC;
+        case Z80::D: case Z80::E: return Z80::DE;
+        case Z80::H: case Z80::L: return Z80::HL;
+        default: return MCPhysReg(0);
+        }
+      };
+      auto isHiByte = [](MCPhysReg R) -> bool {
+        return R == Z80::B || R == Z80::D || R == Z80::H;
+      };
+      auto sbcHLOpc = [](MCPhysReg Pair) -> unsigned {
+        switch (Pair) {
+        case Z80::BC: return Z80::SBC_HL_BC;
+        case Z80::DE: return Z80::SBC_HL_DE;
+        default: return 0;
+        }
+      };
+
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        // I1: LD A,X
+        MCPhysReg X = isLdAr(MII->getOpcode());
+        if (!X) { ++MII; continue; }
+        auto I1 = MII;
+        auto I2 = std::next(I1);
+        if (I2 == MIE) { ++MII; continue; }
+        // I2: XOR R1
+        MCPhysReg R1 = isXorR(I2->getOpcode());
+        if (!R1) { ++MII; continue; }
+        auto I3 = std::next(I2);
+        if (I3 == MIE) { ++MII; continue; }
+        // I3: LD T,A
+        MCPhysReg T = isLdrA(I3->getOpcode());
+        if (!T) { ++MII; continue; }
+        auto I4 = std::next(I3);
+        if (I4 == MIE) { ++MII; continue; }
+        // I4: LD A,Y
+        MCPhysReg Y = isLdAr(I4->getOpcode());
+        if (!Y) { ++MII; continue; }
+        auto I5 = std::next(I4);
+        if (I5 == MIE) { ++MII; continue; }
+        // I5: XOR R2
+        MCPhysReg R2 = isXorR(I5->getOpcode());
+        if (!R2) { ++MII; continue; }
+        auto I6 = std::next(I5);
+        if (I6 == MIE) { ++MII; continue; }
+        // I6: OR T'
+        MCPhysReg ORr = isOrR(I6->getOpcode());
+        if (!ORr || ORr != T) { ++MII; continue; }
+
+        // Validate the byte-XOR shape: the loaded pair (X,Y) must form a
+        // single GR16; same for the XOR'd pair (R1,R2); the (hi,lo)
+        // polarity of (X,R1) must match (i.e., both are hi or both lo);
+        // and (Y,R2) must be the opposite polarity.
+        MCPhysReg QPair = pairOf(X);
+        MCPhysReg PPair = pairOf(R1);
+        if (!QPair || !PPair) { ++MII; continue; }
+        if (pairOf(Y) != QPair) { ++MII; continue; }
+        if (pairOf(R2) != PPair) { ++MII; continue; }
+        if (isHiByte(X) != isHiByte(R1)) { ++MII; continue; }
+        if (isHiByte(Y) != isHiByte(R2)) { ++MII; continue; }
+        if (isHiByte(X) == isHiByte(Y)) { ++MII; continue; }
+
+        // T must not alias either pair, otherwise LD T,A overwrites
+        // an operand we still need at I5/I6.
+        if (TRI->regsOverlap(T, QPair) || TRI->regsOverlap(T, PPair)) {
+          ++MII; continue;
+        }
+
+        // Identify which pair is HL (clean case) and which becomes
+        // the SBC operand.  SBC operand must be BC or DE.
+        MCPhysReg SbcRR;
+        if (QPair == Z80::HL && (PPair == Z80::BC || PPair == Z80::DE)) {
+          SbcRR = PPair;
+        } else if (PPair == Z80::HL && (QPair == Z80::BC || QPair == Z80::DE)) {
+          SbcRR = QPair;
+        } else {
+          // Neither side is HL — would need to move one to HL first,
+          // costing 2 B and risking the regalloc-eviction problem
+          // that bit the ISel-time attempt.  Skip for now.
+          ++MII; continue;
+        }
+
+        // I7 must consume only the Z flag (JR Z/NZ or JP Z/NZ).  SBC
+        // sets Z correctly for equality but produces different
+        // values for C/N/P/V/S/H than the original byte-XOR sequence.
+        auto I7 = std::next(I6);
+        if (I7 == MIE) { ++MII; continue; }
+        unsigned BrOpc = I7->getOpcode();
+        if (BrOpc != Z80::JR_Z_e && BrOpc != Z80::JR_NZ_e &&
+            BrOpc != Z80::JP_Z_nn && BrOpc != Z80::JP_NZ_nn) {
+          ++MII; continue;
+        }
+
+        // After the branch, A / T / HL / FLAGS must all be dead so
+        // the replacement (which preserves A and T but writes HL+FLAGS)
+        // is observably equivalent.
+        auto AfterBr = std::next(I7);
+        if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::A)) { ++MII; continue; }
+        if (!isRegDeadAfter(AfterBr, MBB, TRI, T)) { ++MII; continue; }
+        if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::HL)) { ++MII; continue; }
+
+        LLVM_DEBUG(dbgs() << "  i16 EQ/NE byte-XOR -> SBC HL,"
+                          << TRI->getName(SbcRR) << "\n");
+
+        // Replace I1..I6 with: AND A; SBC HL,rr.
+        BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(Z80::AND_A));
+        BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(sbcHLOpc(SbcRR)));
+
+        // Erase I1..I6 (advance MII past the deleted range first).
+        MII = std::next(I6);
+        I1->eraseFromParent();
+        I2->eraseFromParent();
+        I3->eraseFromParent();
+        I4->eraseFromParent();
+        I5->eraseFromParent();
+        I6->eraseFromParent();
+        Changed = true;
+      }
+    }
+
     // --- Peephole: LD A,(HL); INC/DEC HL → LD A,(HL+)/(HL-) (SM83 only) ---
     // SM83 has post-increment/decrement LD instructions that combine a load
     // or store with an HL adjustment in a single byte.
