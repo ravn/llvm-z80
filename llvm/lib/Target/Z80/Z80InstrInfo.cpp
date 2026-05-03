@@ -1265,13 +1265,16 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   case Z80::XOR_CMP_EQ16:
   case Z80::XOR_CMP_NE16: {
     // XOR-based 16-bit equality comparison.
-    // Compares two GR16 registers using byte-level XOR, produces 0/1 in A.
+    // Compares two GR16NoIR registers using byte-level XOR, produces 0/1 in A.
     // Does NOT clobber the source register pairs (unlike SBC HL,DE).
-    // Only clobbers A and B (and C when IX/IY extraction needed).
+    // Only clobbers A and B.
     //
     // Sequence: LD A,lhs_hi; XOR rhs_hi; LD B,A; LD A,lhs_lo; XOR rhs_lo; OR B
     // Then normalize: EQ → SUB 1; SBC A,A; AND 1
     //                 NE → ADD 0xFF; SBC A,A; AND 1
+    //
+    // The pseudo's operand class is GR16NoIR (#113), so the sub-register
+    // halves are guaranteed to be in {A,B,C,D,E,H,L} — no IXH/IXL/IYH/IYL.
     Register LHSReg = MI.getOperand(0).getReg();
     Register RHSReg = MI.getOperand(1).getReg();
     Register LHS_hi = TRI->getSubReg(LHSReg, Z80::sub_hi);
@@ -1279,39 +1282,14 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register RHS_hi = TRI->getSubReg(RHSReg, Z80::sub_hi);
     Register RHS_lo = TRI->getSubReg(RHSReg, Z80::sub_lo);
 
-    // If either operand is IX/IY without +undocumented, XOR IXH/IXL are
-    // undocumented.  Extract IX/IY bytes via PUSH/POP into BC first.
-    // B is already in Defs; we temporarily also clobber C.
-    bool LHSIsIR = Z80::IR16RegClass.contains(LHSReg);
-    bool RHSIsIR = Z80::IR16RegClass.contains(RHSReg);
-    if ((LHSIsIR || RHSIsIR) && !STI->hasUndocumented()) { // issue #33
-      // Extract the IX/IY operand into BC via PUSH/POP.
-      Register IRReg = LHSIsIR ? LHSReg : RHSReg;
-      Register OtherReg = LHSIsIR ? RHSReg : LHSReg;
-      Register Other_hi = TRI->getSubReg(OtherReg, Z80::sub_hi);
-      Register Other_lo = TRI->getSubReg(OtherReg, Z80::sub_lo);
-      // PUSH IX; POP BC → B=IXH, C=IXL
-      BuildMI(MBB, MI, DL, get(Z80::getPushOpcode(IRReg)));
-      BuildMI(MBB, MI, DL, get(Z80::POP_BC));
-      // XOR high: LD A,other_hi; XOR B; LD B,A
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, Other_hi)));
-      BuildMI(MBB, MI, DL, get(Z80::XOR_B));
-      BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
-      // XOR low: LD A,other_lo; XOR C; OR B
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, Other_lo)));
-      BuildMI(MBB, MI, DL, get(Z80::XOR_C));
-      BuildMI(MBB, MI, DL, get(Z80::OR_B));
-    } else {
-      // Standard path: direct XOR with sub-register opcodes.
-      // XOR high bytes, save to B
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_hi)));
-      BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_hi)));
-      BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
-      // XOR low bytes, OR with saved high result
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_lo)));
-      BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_lo)));
-      BuildMI(MBB, MI, DL, get(Z80::OR_B));
-    }
+    // XOR high bytes, save to B
+    BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_hi)));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_hi)));
+    BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
+    // XOR low bytes, OR with saved high result
+    BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_lo)));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_lo)));
+    BuildMI(MBB, MI, DL, get(Z80::OR_B));
 
     // Normalize to 0/1
     if (MI.getOpcode() == Z80::XOR_CMP_EQ16) {
@@ -1346,6 +1324,9 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // 16-bit XOR-based equality comparison — sets Z flag directly.
     // Sequence: LD A,lhs_hi; XOR rhs_hi; LD B,A; LD A,lhs_lo; XOR rhs_lo; OR B
     // After OR B: Z=1 if equal, Z=0 if not equal.
+    //
+    // Operand class is GR16NoIR (#113); halves are always documented 8-bit
+    // registers, so the standard sub-register path is the only path.
     Register LHSReg = MI.getOperand(0).getReg();
     Register RHSReg = MI.getOperand(1).getReg();
     Register LHS_hi = TRI->getSubReg(LHSReg, Z80::sub_hi);
@@ -1353,31 +1334,12 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     Register RHS_hi = TRI->getSubReg(RHSReg, Z80::sub_hi);
     Register RHS_lo = TRI->getSubReg(RHSReg, Z80::sub_lo);
 
-    // IX/IY without +undocumented: extract via PUSH/POP into BC first.
-    bool LHSIsIR = Z80::IR16RegClass.contains(LHSReg);
-    bool RHSIsIR = Z80::IR16RegClass.contains(RHSReg);
-    if ((LHSIsIR || RHSIsIR) && !STI->hasUndocumented() &&
-        MI.getOpcode() != Z80::SM83_CMP_Z16) {
-      Register IRReg = LHSIsIR ? LHSReg : RHSReg;
-      Register OtherReg = LHSIsIR ? RHSReg : LHSReg;
-      Register Other_hi = TRI->getSubReg(OtherReg, Z80::sub_hi);
-      Register Other_lo = TRI->getSubReg(OtherReg, Z80::sub_lo);
-      BuildMI(MBB, MI, DL, get(Z80::getPushOpcode(IRReg)));
-      BuildMI(MBB, MI, DL, get(Z80::POP_BC));
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, Other_hi)));
-      BuildMI(MBB, MI, DL, get(Z80::XOR_B));
-      BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, Other_lo)));
-      BuildMI(MBB, MI, DL, get(Z80::XOR_C));
-      BuildMI(MBB, MI, DL, get(Z80::OR_B));
-    } else {
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_hi)));
-      BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_hi)));
-      BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
-      BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_lo)));
-      BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_lo)));
-      BuildMI(MBB, MI, DL, get(Z80::OR_B));
-    }
+    BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_hi)));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_hi)));
+    BuildMI(MBB, MI, DL, get(Z80::LD_B_A));
+    BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(Z80::A, LHS_lo)));
+    BuildMI(MBB, MI, DL, get(getXOROpcode(RHS_lo)));
+    BuildMI(MBB, MI, DL, get(Z80::OR_B));
 
     MI.eraseFromParent();
     return true;
