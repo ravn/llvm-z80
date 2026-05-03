@@ -9,6 +9,24 @@
 `phase-c-regalloc-investigation.md`, `peephole-vs-root-cause.md`,
 `source-cleanup-vs-closed-issues.md`.
 
+## Phase status (verified 2026-05-03)
+
+**Update 2026-05-03 (post-triage + post-correctness sweep):** the
+session-36 framing of "Phase 1 is next" is stale.  Current state:
+
+| Phase | Status |
+|---|---|
+| Phase 1 — Foundation | **DONE.**  CI workflow `.github/workflows/z80-ci.yml`, size baseline `tasks/size-baseline.py`, late-opt audit (session 37), source-cleanup audit (session 34) all landed. |
+| Phase 2 — Correctness | **4 of 5 closed.**  #28, #36, #63, #81 closed 2026-05-02/03.  #38 remains. |
+| Phase 3 — Cluster A regalloc | **Next active workstream.**  See section 12.3. |
+| Phase 4 — Cluster B spill mechanism | Mostly stale; only #100 live.  See section 12.4 update + `tasks/triage-2026-05-03-cluster-b.md`. |
+| Phase 5+ | Not yet active. |
+
+Engagement-mode (section 10.2) gate is two threads away: close #38
+plus close one cluster (Phase 3 candidate).
+
+Current tactical plan: `tasks/plan-2026-05-03-structural.md`.
+
 ## 0.  TL;DR
 
 **Goal:** Bring `llvm-z80/llvm-z80` (the active fork-of-record at
@@ -684,18 +702,42 @@ unchanged (no regression).
 
 ### 12.4  Phase 4 — Cluster B (spill mechanism) — overlaps Phase 3
 
-Order:
-  1. **#100 fix** — rotation-around-CALL spill.  Extend BSS-spill
-     →PUSH/POP peephole for cross-back-edge.  Closes the gate on
-     #77 default-on.
-  2. **#20 fix** — multi-value spill across CALL.  Extension of #74's
-     closed peephole.
-  3. **#96 investigation** — regalloc-level layer-3 PUSH/POP
-     spilling.  May land later as Cluster B.5.
-  4. **#16 evaluation** — likely subsumed by #20 + #100.
+**Updated 2026-05-03 post-triage** (see `tasks/triage-2026-05-03-cluster-b.md`):
+the original ordering below included two owner-downgraded issues
+and one investigation-only issue, and miscategorised #16 (which
+section 5.2 places in Cluster A).  Replaced with the post-triage
+membership:
 
-Exit: rotation-around-CALL fixed; #77 default-on flipped if #95
-also progresses; rcbios/cpnos-rom sizes drop.
+  1. **#100 fix** — rotation-around-CALL spill.  Extend BSS-spill
+     ->PUSH/POP peephole for cross-back-edge.  Closes the gate on
+     #77 default-on.  **The only live, implementation-ready Cluster
+     B item.**
+  2. **#12 evaluation** (the actual Cluster B item per section 5.2;
+     was missing from this list).  hasFP=false re-evaluation
+     blocked on Cluster A + B progress.  Likely subsumed by remat
+     + cost-model changes from Cluster A; may close as wontfix.
+  3. **#96 investigation** — regalloc-level layer-3 PUSH/POP
+     spilling.  Filed as exploration only ("no deadline; lower
+     priority than #77 and the active regalloc cluster").  May
+     land later as Cluster B.5 if (a) Cluster A doesn't subsume
+     and (b) cross-BB LIFO bracketing investigation produces a
+     workable design.
+
+Retired from this phase (still open, but reclassified):
+
+  - **#20** — owner-downgraded April 2026 ("deprioritize in favor
+    of #43 or wait for regalloc upstream"); 200+ LOC dataflow for
+    ~12 B with stack-corruption risk class (cf. closed #41).
+    Track as parked; revisit only if #43 (custom CC) lands and
+    changes the spill landscape.
+  - **#16** — moved to Cluster A per section 5.2 (the original
+    placement; the prior version of this section listed it here
+    in error).  Owner-downgraded March 2026 from ~40 B to ~6-8 B;
+    "no peephole fix is practical".  Subsumed by Cluster A
+    regalloc work.
+
+Exit: #100 fixed; rotation-around-CALL no longer regresses sizes;
+#77a default-on can flip if Cluster D (#95) also progresses.
 
 ### 12.5  Phase 5 — Cluster D (loop/IV form) (2-4 weeks)
 

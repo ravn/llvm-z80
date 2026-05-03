@@ -58,6 +58,65 @@ Two attempts, one revert, one merge.
 
 ## Carry-forward
 
+**Update 2026-05-03 (post-triage):** the original "Phase 4 Cluster B
+(BSS-spill family) — #100, #20, #96, #16" recommendation below is
+retired.  See `tasks/triage-2026-05-03-cluster-b.md` for the full
+analysis.  Summary:
+
+  - **#20** owner-downgraded April 2026 ("deprioritize in favor of
+    #43 or wait for regalloc upstream").
+  - **#16** owner-downgraded March 2026 from ~40 B to ~6-8 B; "no
+    peephole fix is practical".  Belongs to Cluster A per
+    `roadmap-to-maturity.md` section 5.2, not Cluster B.
+  - **#96** is filed as investigation only ("no deadline; lower
+    priority than #77 and the active regalloc cluster").
+  - **#100** is the only live, implementation-ready Cluster B item.
+
+Better next entries, ranked by risk-adjusted ROI:
+
+  1. **#109** — ~50 LOC `LivePhysRegs` walk, finishes session 41
+     audit thread (ADD HL,rr commutativity check).
+  2. **#89** — Cluster A regalloc; loop-invariant 16-bit constant
+     reloaded into DE every iteration despite IR-level hoist.
+     Concrete cpnos-rom repro: `setup_ivt` 25 B -> ~17 B.
+  3. **#100** — only live Cluster B; option 1 (cross-back-edge
+     peephole) is the targeted fix; option 4 (skip rotation when
+     CALL in body) defers cheaply.
+  4. **#113** — class restriction for undocumented IXH/IXL gating;
+     gates IY un-reserve (#38) along with #115.
+
+Roadmap-aligned alternative: start Phase 1 Foundation (CI + size
+baseline tracker) per `roadmap-to-maturity.md` Section 12.1.
+
+---
+
+**Re-rank 2026-05-03 (structural lens applied):** the user's
+principle "underlying datastructures should reflect z80 properties,
+not fix bad modelling with peephole optimizations" reorders the
+list above.  See `tasks/triage-2026-05-03-cluster-b.md` "Lens:
+structural fixes over peephole accumulation".  Updated ranking:
+
+  1. **#113** — TableGen class restriction (most structural;
+     declarative; gates IY un-reserve).
+  2. **#98 + #94** — regalloc hint cluster per roadmap section
+     12.3.  One cost-model change closes 4-5 issues (#89, #99,
+     #27, plus already-closed #92).  Most leveraged.
+  3. **#89 alone** — if standalone session preferred over the
+     #98 investigation.  Regalloc cost-model fix; structural.
+  4. **#100 option 2 or 3** — regalloc layer (rematerialize
+     across CALL, or pre-rotation hint).  **Avoid option 1**
+     (peephole extension) — it accumulates post-RA fixups for a
+     modelling gap.
+  5. **Phase 1 Foundation** — infra; makes structural work
+     measurable.
+
+Demoted: #109, #108 (peephole audits — safety hardening, not
+modelling progress); #100 option 1 (peephole extension).
+
+---
+
+**Original (retired) recommendation:**
+
 Recommended next-session entry point: **Phase 4 Cluster B (BSS-spill
 family)** — issues #100, #20, #96, #16.  Per the CLAUDE.md table,
 BSS load/store traffic accounts for 30-48% of bytes in the largest
