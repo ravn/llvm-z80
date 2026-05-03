@@ -63,6 +63,14 @@ relevant rather than serving as a prerequisite gate.
     block was already deleted in commit `2c9395f645a2` (session
     37).  #119 was filed in error during yesterday's plan re-
     verification.  Late-opt audit doc updated to mark #36 done.
+  - **#118** — audit complete (`tasks/audit-
+    emitFusedCompareAndBranch.md`, commit `1aed6169`).  Six
+    potential gaps for constant-RHS folds in the ISel-time
+    compare-and-branch helper examined; **all skip** under the
+    structural-first lens.  Function is at a good local optimum
+    at ~550 LOC.  Filed sibling **#122** as low-ROI tracking
+    issue for the only real-but-zero-fire-site gap (i16 ULT/UGE
+    small-const + HighByteZero variable).
 
 ### Session N (next): pick one structural entry
 
@@ -133,8 +141,9 @@ with sessions N+1 / N+2.
   cost-model changes might subsume.
 - **#117** (closed-#116 neither-HL extension).  Parked — no
   motivating site today.
-- **#118** (audit emitFusedCompareAndBranch).  Read-only audit;
-  fits in any session as drive-by.
+- ~~**#118** (audit emitFusedCompareAndBranch).  Read-only audit;
+  fits in any session as drive-by.~~  **DONE** evening 2026-05-03,
+  commit `1aed6169`.  Surfaced #122 (low-ROI tracking).
 
 ## Explicit non-goals
 
@@ -148,17 +157,51 @@ with sessions N+1 / N+2.
   Workspace mode until both Phase 2 closed and one cluster done
   (per roadmap section 10.2).
 
-## Issue-state snapshot 2026-05-03 evening (third pass)
+## Issue-state snapshot 2026-05-03 end-of-evening (fourth pass)
 
   - 27 ravn/llvm-z80 issues open at start-of-day.
-  - Filed today: #117, #118, #119, #120, #121.
-  - Closed today: #116 (end of session 41), **#113** + **#121**
-    (evening, real work), **#119** (evening, dup of #102).
+  - Filed evening: #117, #118, #119, #120, #121, **#122**.
+  - Closed evening: #116 (end of session 41 morning), **#113** +
+    **#121** (real structural work), **#119** (dup of #102),
+    **#118** (audit complete, no code change).
   - **27 currently open.**
   - Z80 lit suite: **90/90** (89 PASS + 1 XFAIL #99) — added
     `issue-113-gr16noir-cmp.ll`.
-  - rcbios bios.cim: **5929 B** (byte-exact).
-  - cpnos.bin: **1777 B** (byte-exact).
+  - rcbios bios.cim: **5929 B** (byte-exact across all evening
+    commits).
+  - cpnos.bin: **1777 B** (byte-exact across all evening commits).
+  - Working tree clean.
+
+## Commit chain (evening 2026-05-03)
+
+  - `e4b3496a` — #113 GR16NoIR on XOR_CMP_*16 + SM83_CMP_Z16
+  - `c8d2dbed` — #121 drop dead IR16 fallback in XOR_CMP_*16 expansion
+  - `b1202704` — plan re-verify after #113/#121 close-out
+  - `1583e311` — peephole #13 + #17 lit tests (prior-session leftover)
+  - `0e26a8a0` — Cluster B retirement triage docs (prior-session leftover)
+  - `37d48a9f` — late-opt audit #36 marked done; #119 dup-close note;
+                  next-session re-rank
+  - `1aed6169` — #118 audit complete
+
+## Lessons logged this session
+
+  1. **Phantom-issue avoidance.**  #119 was filed yesterday from
+     the audit document's text references without checking that
+     the block had been deleted in the same session as the audit
+     was written.  Closed as duplicate; trivial cost but
+     preventable: read current source state before filing follow-
+     up issues.
+  2. **Audit docs decay.**  Line refs in audit documents become
+     stale within the same session that wrote them.  Update or
+     mark items DONE in the audit doc when fixes land.  The late-
+     opt audit's #36 had been pending in the doc for 1.5 days
+     after its fix shipped.
+  3. **The structural-first lens prevents busywork.**  Six gaps
+     in the #118 audit looked individually tempting but all
+     deferred under the principle.  Function-level audit confirmed
+     the helper is mature; further gains require structural moves
+     (combiners / regalloc / IR transforms), not more ISel
+     branches.
 
 ## Cross-references
 
