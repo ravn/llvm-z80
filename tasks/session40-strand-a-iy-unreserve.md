@@ -206,8 +206,31 @@ registers are documented 8-bit registers".  Body:
 
   - **Diagnosis confirmed**: not a regalloc/coalescer issue,
     but a backend completeness issue.
-  - **Implementation deferred**: too large for this session's
-    scope (option 3 audit + fix).
-  - **Issue to file**: as above.
+  - **Issue filed**: ravn/llvm-z80#112.
+  - **Partial fix landed**: commit `28613369fa08` applies the
+    GR16NoIR exclusion class to LSHR16/ASHR16 operands.
+  - **Audit complete**: of the 42 sub-register extraction sites
+    in `Z80InstrInfo.cpp`, only LSHR16/ASHR16 produce bare
+    opcode-0 MIs.  Other sites either:
+      - have explicit IR16 branches that route through
+        PUSH HL; LD ...; POP IX/IY (ZEXT_GR8_GR16 line 802,
+        SEXT_GR8_GR16 line 858, XOR_CMP_Z16 line 1357,
+        SEXT16 line 1862);
+      - use opcode lookup tables (`getLD8RegOpcode`,
+        `getSUB`/`getXOR`/`getOR`/`getCP`/`getSBC`/`getADC`)
+        that DO have IXH/IXL/IYH/IYL entries — emit *valid
+        but undocumented* instructions instead of opcode 0
+        (CMP16_ULT/CMP16_SBC_FLAGS/XOR_CMP_NE16/SM83_CMP_ZERO16,
+        SM83_SADDO_HL_rr/SM83_SSUBO_HL_rr fall here);
+      - have explicit `if (!Op) return false;` guards that
+        fail-soft (ZEXT_GR8_GR16 fall-through path).
+    See ravn/llvm-z80#112 closure rationale.
+  - **Remaining problem class** (separate issue): pseudo
+    expansions that emit IXH/IXL/IYH/IYL undocumented ops
+    without checking `STI->hasUndocumented()`.  This is a
+    policy violation, not an encoder crash, and is filed
+    separately as a sibling of #112.
   - **Source restored**: `Reserved.set(Z80::IY)` reinstated;
-    debug prints removed; lit baseline 83 PASS + 1 XFAIL.
+    debug prints removed; lit baseline 84 PASS + 1 XFAIL
+    (was 83+1 — +1 from new `issue-112-gr16noir-lshr.ll`
+    regression-guard test).
