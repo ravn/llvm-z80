@@ -103,6 +103,117 @@ The cost-model gap is real, but fixing it requires intervention at
 the *pass* level, not the TableGen level.  The flag is a single
 boolean and cannot encode the context-sensitive answer Z80 needs.
 
+## Refinement (after MIR dump): the bug is in RegisterCoalescer, not MachineLICM
+
+A second pass with `-print-before=register-coalescer
+-print-after=register-coalescer` clarifies the picture:
+
+  - **Before RegisterCoalescer** in `licm_volatile`:
+    `%7:gr16 = LD_r16_nn @target_fn` is at slot index **16B** (entry
+    block).  MachineLICM has already done the hoist.
+  - **After RegisterCoalescer**:
+    `$de = LD_r16_nn @target_fn` is at slot index **320B** (loop
+    body).  The coalescer rematerialized the def *back into* the
+    loop.
+
+Mechanism: `RegisterCoalescer::reMaterializeDef`
+(`llvm/lib/CodeGen/RegisterCoalescer.cpp:1316`) gates on
+`TII->isAsCheapAsAMove(*DefMI)` to decide whether to fold a def
+into its copy's user.  When that fold pushes the def into a hotter
+block (loop body), the result is the in-loop reload that #89
+describes.
+
+**Critically:** `RegisterCoalescer` *already has*
+`MachineLoopInfo` (`llvm/lib/CodeGen/RegisterCoalescer.cpp:135`)
+but does not consult it in the remat decision.  The infrastructure
+exists; it just isn't being used at the cheap-as-move gate.
+
+This narrows the fix surface considerably:
+
+  - MachineLICM is fine.  Don't touch.
+  - Greedy regalloc remat (line 1284 of MachineLICM, plus the
+    spill-vs-remat path in `LiveRangeEdit`) is fine.  Don't touch.
+  - Only `RegisterCoalescer::reMaterializeDef` line 1316 needs the
+    loop-awareness fix.
+
+## Refined options for #89
+
+Replace the four options above with:
+
+### (a-refined) Loop-aware override of `isAsCheapAsAMove(MI)`
+
+`Z80InstrInfo::isAsCheapAsAMove(const MachineInstr &MI)` virtual
+override returns FALSE when:
+
+  - `MI` is `LD_r16_nn` (or `LD_r8_n`), AND
+  - `MI`'s parent MBB has loop depth lower than... what?  TII
+    doesn't have `MachineLoopInfo`.
+
+Blocker: `TargetInstrInfo` is largely stateless.  Cannot directly
+read `MachineLoopInfo` from inside the hook.  Requires either:
+
+  1. Adding a new TII API the coalescer can call with MLI passed
+     in: `bool shouldRematAcrossLoopDepth(const MachineInstr &Def,
+     const MachineInstr &Use, const MachineLoopInfo &MLI) const`.
+     Upstream LLVM change; small but cross-cutting.
+  2. Pre-coalescer Z80 analysis pass that marks specific defs as
+     "do not remat" via a custom `MachineInstr` flag, and TII reads
+     the flag.  Self-contained but adds a Z80 pass.
+  3. Modify `RegisterCoalescer.cpp` locally to pass MLI to the
+     `TII->isAsCheapAsAMove` decision via a new optional API.
+     Smallest cross-cut; cleanest.
+
+Estimated: 2-3 sessions for option (a-refined), depending on which
+sub-path.  Sub-path 3 is the most surgical.
+
+### (b) Z80-specific MIR pass (still viable, parallel option)
+
+A pass between MachineLICM and RegisterCoalescer that re-hoists
+`LD rr,nn` defs into preheaders if loop pressure allows.
+
+  - Pro: doesn't require modifying upstream LLVM.
+  - Con: undoing what coalescer is *about to do* is fragile; the
+    coalescer would just re-pull it down.  Probably needs to also
+    block coalescer-time remat — which lands us back in (a).
+
+### (c) Merge into the broader regalloc cost-model design
+
+Now LESS attractive than it was before this refinement.  The
+diagnosis isolates the fix to a single line in RegisterCoalescer;
+folding it into a multi-issue cluster (#89 + #27 + #94 + #98)
+loses that focus.
+
+### (d) Loop rotation / DJNZ chain — depends on #100, separate thread.
+
+## Updated recommendation
+
+**Option (a-refined sub-path 3):** modify
+`RegisterCoalescer::reMaterializeDef` to bail out of the remat
+fold when the use's MBB has a loop depth strictly greater than the
+def's MBB.  Universal change (not Z80-specific) and almost
+certainly correct: rematerializing INTO a hotter block is a
+performance regression on any architecture, the LLVM coalescer
+just doesn't currently check.
+
+**Why this is upstream-shaped:** the change is a one-liner in
+RegisterCoalescer that adds a loop-depth comparison.  It's general
+(not Z80-specific), it's a clear bug fix in a heuristic that's
+clearly missing context the pass already has, and it would land
+in `llvm-z80/llvm-z80` as a backend-touching but
+generic-CodeGen-area patch — exactly the shape of contribution
+that fits early engagement-mode work.
+
+**Risk:** other targets may rely on the current "always remat
+if cheap" behavior to flatten control flow.  Mitigation: gate the
+new check behind a default-on `cl::opt` for one release cycle so
+it can be disabled if a regression surfaces upstream.
+
+Estimated: 1 session of implementation + lit tests + size
+measurement on rcbios/cpnos-rom.  If the size delta on real
+workloads is positive, this is an immediate close on #89.  If it
+regresses something (it shouldn't, but might surface a different
+heuristic interaction), revert and pivot to option (b).
+
 ## Next-step options for #89
 
 Listed in increasing scope:
