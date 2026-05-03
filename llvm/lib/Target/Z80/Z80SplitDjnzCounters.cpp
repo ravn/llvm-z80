@@ -76,6 +76,30 @@ char Z80SplitDjnzCounters::ID = 0;
 INITIALIZE_PASS(Z80SplitDjnzCounters, DEBUG_TYPE,
                 "Z80 Split DJNZ-loop counter live ranges", false, false)
 
+// Find the i16 counter vreg in a self-back-edge loop MBB.  The pattern
+// is `%new = DEC16 %old (tied)` where the result feeds a 16-bit zero-
+// test (LD A,lo / OR hi or KILL+sub-reg) that the same MBB's JR_NZ
+// terminator branches on.  Returns the COUNTER (the %old / tied source)
+// or Register() if no match.
+static Register findCounter16VReg(MachineBasicBlock &MBB,
+                                  const MachineRegisterInfo &MRI) {
+  for (auto It = MBB.begin(), E = MBB.end(); It != E; ++It) {
+    if (It->getOpcode() != Z80::DEC16)
+      continue;
+    if (It->getNumOperands() < 2)
+      continue;
+    if (!It->getOperand(0).isReg() || !It->getOperand(1).isReg())
+      continue;
+    Register Src = It->getOperand(1).getReg();
+    if (!Src.isVirtual())
+      continue;
+    if (!Z80::GR16RegClass.hasSubClassEq(MRI.getRegClass(Src)))
+      continue;
+    return Src;
+  }
+  return Register();
+}
+
 // A DJNZ-eligible self-loop MBB ends with `JR_NZ_e <self>` or
 // `JP_NZ_nn <self>`.  The body contains a `COPY $a, %v; DEC_A;
 // COPY %v, $a` triplet (with optional intermediate ops); %v is the
@@ -172,6 +196,41 @@ static bool hasUseOutsideMBB(Register Reg, MachineBasicBlock &MBB,
   return false;
 }
 
+// Common splitter: insert `%new = COPY %old` at the loop preheader and
+// rename every in-MBB reference to %new.  TargetRC is the single-
+// register class to constrain %new to (BReg for i8, BCReg for i16).
+static bool splitCounterAt(MachineBasicBlock &MBB, Register Counter,
+                           const TargetRegisterClass &TargetRC,
+                           MachineRegisterInfo &MRI,
+                           const TargetInstrInfo &TII) {
+  if (!hasAnyRefOutsideMBB(Counter, MBB, MRI))
+    return false;
+  if (hasUseOutsideMBB(Counter, MBB, MRI))
+    return false;
+
+  MachineBasicBlock *Preheader = findUniquePreheader(MBB);
+  if (!Preheader)
+    return false;
+
+  Register NewCounter = MRI.createVirtualRegister(&TargetRC);
+
+  auto InsertBefore = Preheader->getFirstTerminator();
+  DebugLoc DL = (InsertBefore != Preheader->end())
+                    ? InsertBefore->getDebugLoc()
+                    : DebugLoc();
+  BuildMI(*Preheader, InsertBefore, DL, TII.get(TargetOpcode::COPY),
+          NewCounter)
+      .addReg(Counter);
+
+  for (MachineInstr &MI : MBB) {
+    for (MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.getReg() == Counter)
+        MO.setReg(NewCounter);
+    }
+  }
+  return true;
+}
+
 bool Z80SplitDjnzCounters::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   // DJNZ is Z80-only.
@@ -186,53 +245,24 @@ bool Z80SplitDjnzCounters::runOnMachineFunction(MachineFunction &MF) {
     if (!isSelfBackEdgeNZLoop(MBB))
       continue;
 
-    Register Counter = findCounterVReg(MBB, MRI);
-    if (!Counter.isValid())
-      continue;
-
-    // Only split when the counter has a def outside (the PHI entry-edge
-    // def we want to break the live range across) and NO use outside
-    // (otherwise renaming in-loop uses would leave the outside reader
-    // looking at the never-decremented entry value).
-    if (!hasAnyRefOutsideMBB(Counter, MBB, MRI))
-      continue;
-    if (hasUseOutsideMBB(Counter, MBB, MRI))
-      continue;
-
-    MachineBasicBlock *Preheader = findUniquePreheader(MBB);
-    if (!Preheader)
-      continue;
-
-    // Create a fresh vreg in the BReg single-register class.  This
-    // forces greedy to allocate B (or split / spill) regardless of
-    // its copy-elimination heuristic.  See investigation doc.
-    Register NewCounter = MRI.createVirtualRegister(&Z80::BRegRegClass);
-
-    auto InsertBefore = Preheader->getFirstTerminator();
-    DebugLoc DL = (InsertBefore != Preheader->end())
-                      ? InsertBefore->getDebugLoc()
-                      : DebugLoc();
-    BuildMI(*Preheader, InsertBefore, DL, TII.get(TargetOpcode::COPY),
-            NewCounter)
-        .addReg(Counter);
-
-    LLVM_DEBUG(dbgs() << "Z80SplitDjnzCounters: inserting COPY of "
-                      << printReg(Counter, MRI.getTargetRegisterInfo())
-                      << " into BReg vreg "
-                      << printReg(NewCounter, MRI.getTargetRegisterInfo())
-                      << " at end of "
-                      << printMBBReference(*Preheader) << "\n");
-
-    // Renumber every operand inside MBB that references Counter to
-    // reference NewCounter instead.  This includes the back-edge
-    // def `Counter = COPY $a` which becomes `NewCounter = COPY $a`.
-    for (MachineInstr &MI : MBB) {
-      for (MachineOperand &MO : MI.operands()) {
-        if (MO.isReg() && MO.getReg() == Counter)
-          MO.setReg(NewCounter);
+    // i8 counter (DJNZ-eligible): find via the
+    // `$a = COPY %v; DEC_A; %v = COPY $a` triplet, constrain to BReg.
+    if (Register Counter = findCounterVReg(MBB, MRI)) {
+      if (splitCounterAt(MBB, Counter, Z80::BRegRegClass, MRI, TII)) {
+        Changed = true;
+        continue;
       }
     }
-    Changed = true;
+
+    // i16 counter (rotated-loop pointer + counter, sibling of #97):
+    // find via DEC16 self-back-edge counter, constrain to BCReg.
+    // Sister of the i8 path (#94) for #99.
+    if (Register Counter16 = findCounter16VReg(MBB, MRI)) {
+      if (splitCounterAt(MBB, Counter16, Z80::BCRegRegClass, MRI, TII)) {
+        Changed = true;
+        continue;
+      }
+    }
   }
 
   return Changed;

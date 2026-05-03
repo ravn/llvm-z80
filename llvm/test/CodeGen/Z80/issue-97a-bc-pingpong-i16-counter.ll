@@ -7,21 +7,25 @@
 ; The peephole drops the BC ping-pong and keeps the pointer in HL, but
 ; here the counter is also i16 and competes with the pointer for HL.
 ;
-; Today's MIR (before late-opt) for this shape spills the counter to
-; BSS via `LD_nnind_HL` / `LD_HL_nnind` across the LD_L_C; LD_H_B reload
-; (which the BSS->PUSH/POP peephole later rewrites to PUSH HL ; POP HL).
-; The post-RA peephole guards bail because HL is defined inside the
-; loop body window — the spill/reload counts as a non-pointer HL touch.
+; Session 39 status (Phase 3): Z80SplitDjnzCounters and the BCReg
+; single-register class were added (i8 path closed #94, i16 path
+; partial for #99).  The i16 path identifies the DEC16 self-back-edge
+; counter and constrains it to BCReg, so greedy now puts the counter
+; in BC.
 ;
-; Closing this would need either:
-;   - a regalloc-level swap so the counter goes in BC and the pointer
-;     stays in HL throughout (closes by allocation, not peephole), OR
-;   - a more invasive peephole that rewrites the counter from HL to BC
-;     by substituting all DEC_HL / LD_A_L / OR_H references.
+; Remaining gap: the function-arg pointer arrives in $hl (sdcccall)
+; and the coalescer copies it to BC at entry.  With the counter ALSO
+; constrained to BC, regalloc spills the counter to BSS each
+; iteration instead of evicting the pointer's BC allocation.  Net
+; asm is different (BSS-spill via __sfrend slot instead of PUSH HL /
+; POP HL ping-pong) but still doesn't satisfy the CHECK-NOT below.
 ;
-; Practically the i16-counter rotated-loop shape doesn't appear in
-; cpnos-rom or rcbios today (counters are i8 / DJNZ-eligible), so this
-; sub-case is pinned but parked until a real-code instance shows up.
+; Closing this fully needs the sister HLReg constraint for the
+; pointer vreg — pointer constrained to HL forces it to stay where
+; sdcccall delivered it, freeing BC unambiguously for the counter.
+; Filed as Phase 3 follow-up; the i16 case is rare enough in
+; real-world Z80 code (counters are i8 / DJNZ-eligible) that the
+; full HLReg coordination is not yet justified.
 
 ; --- i16 counter, i16 store: pointer + counter both want HL.
 ;

@@ -197,6 +197,12 @@ def ShadowGR16 : Z80Reg16Class<(add DEp, HLp, BCp)>;
 // BC and DE only (for register scavenging temp in address computation)
 def GR16_BCDE : Z80Reg16Class<(add DE, BC)>;
 
+// Single-register class containing only BC.  Used by Z80SplitDjnzCounters
+// for the i16 self-loop counter case (#99): the counter vreg constrained
+// to BCReg forces greedy past its copy-elimination heuristic and frees
+// HL for the loop's pointer.  Sister of BReg (8-bit version, #94).
+def BCReg : Z80Reg16Class<(add BC)>;
+
 // 16-bit registers for PUSH/POP: DE, HL, BC, AF
 def GR16_AF : Z80Reg16Class<(add DE, HL, BC, AF)>;
 
