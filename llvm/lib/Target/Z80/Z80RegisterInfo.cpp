@@ -139,11 +139,14 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(Z80::FLAGS);
 
   // IX and IY: always reserved on Z80.
-  // IX/IY allocation was attempted but produces incorrect code in large
-  // functions under the greedy register allocator (#38). The feature is
-  // incomplete — IY is not callee-saved, and the allocator's spill/split
-  // decisions for IY under high register pressure are unreliable.
-  // Tracked for future work in #38.
+  // IY allocation was attempted but produces incorrect code in large
+  // functions under the greedy register allocator (#38).  One plausible
+  // alternate root cause — silent miscompile of large-offset IY
+  // SPILL/RELOAD — was fixed as #28 in session 39, but a re-test (un-
+  // reserve IY, run the full clang -Os suite) still produced 11 new
+  // runtime FAILs that did not exist with IY reserved.  So #38 is a
+  // deeper regalloc / register-class issue and stays parked for the
+  // Phase 3 regalloc cluster.
   Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
