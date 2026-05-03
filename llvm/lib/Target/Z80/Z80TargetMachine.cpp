@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Z80TargetMachine.h"
+#include "Z80SplitDjnzCounters.h"
 
 #include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
@@ -69,6 +70,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
+  initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PostRACompareMergePass(PR);
 }
 
@@ -303,6 +305,16 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // Run the coalescer twice to coalesce RMW patterns revealed by the first
     // coalesce.
     insertPass(&llvm::TwoAddressInstructionPassID, &llvm::RegisterCoalescerID);
+
+    // Z80SplitDjnzCounters must run BEFORE the LiveIntervals re-run
+    // (inserted just below) so the per-loop counter COPYs the pass
+    // creates are present when LiveIntervals computes its data for
+    // greedy.  insertPass appends "after MachineScheduler" in
+    // insertion order, so this call must precede the LiveIntervals
+    // insertPass.  See tasks/regalloc-sequential-djnz-investigation.md
+    // (#94 / #98).
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80SplitDjnzCountersPass());
 
     // Re-run Live Intervals after coalescing to renumber the contained values.
     // This can allow constant rematerialization after aggressive coalescing.

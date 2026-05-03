@@ -166,14 +166,15 @@ exit:
   ret void
 }
 ; CHECK-LABEL: _two_sequential_loops:
-; KNOWN ISSUE (#94): only ONE of the two sequential loops uses DJNZ
-; today.  Both counters get hinted to B, the greedy regalloc picks
-; B for loop2 and forces loop1's counter to D (`dec d; jr nz`).
-; Since the loops are sequential, B is free between them and both
-; should DJNZ.  Pin the current behaviour; flip the CHECK-NOT to a
-; second `djnz` once a regalloc-lifetime-aware fix lands.
+; FIXED (#94): both sequential loops now use DJNZ.  Z80SplitDjnzCounters
+; (post-coalesce, pre-greedy) inserts a fresh COPY of each loop counter
+; into a BReg single-register class vreg at the loop preheader; the
+; class constraint forces greedy past its copy-elimination heuristic
+; and B is reused sequentially across the non-overlapping per-loop
+; counter ranges.  The `LD B, D` between the loops is the second-loop
+; preheader COPY (1 byte; paid back by the DJNZ savings on loop2).
 ; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK-NOT:   {{[ \t]}}djnz{{[ \t]}}
+; CHECK:       {{[ \t]}}djnz{{[ \t]}}
 ; CHECK:       ret
 
 

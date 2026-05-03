@@ -171,6 +171,13 @@ class Z80Reg16Class<dag RegList>: Z80RegClass<[i16], 8, RegList>;
 // available for loop-counter hints that enable DJNZ.
 def GR8 : Z80Reg8Class<(add D, E, H, L, C, B, A)>;
 
+// Single-register class containing only B.  Used by Z80SplitDjnzCounters
+// to constrain the per-loop DJNZ counter vreg to B by class — bypassing
+// greedy's copy-elimination heuristic which otherwise routes the counter
+// to the same physreg as its preheader-COPY source instead of B.  See
+// tasks/regalloc-sequential-djnz-investigation.md (#98 / #94).
+def BReg : Z80Reg8Class<(add B)>;
+
 // Shadow-only register class (for constraints that need shadow specifically)
 def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;
 
