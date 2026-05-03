@@ -203,6 +203,16 @@ def GR16_BCDE : Z80Reg16Class<(add DE, BC)>;
 // HL for the loop's pointer.  Sister of BReg (8-bit version, #94).
 def BCReg : Z80Reg16Class<(add BC)>;
 
+// GR16 minus IX/IY (#112).  Used by pseudo expansions whose lowering
+// path operates on the 8-bit halves via SRL/SRA/RR/etc., which only
+// have documented forms for {A,B,C,D,E,H,L} — no IXH/IXL/IYH/IYL
+// equivalents are defined in the .td (and several would be undocumented
+// even if added).  Constraining the affected pseudo operands here makes
+// "regalloc never picks IX/IY for these tied operands" a TableGen-level
+// guarantee, so when IX/IY become un-reserved the existing expansions
+// remain correct.
+def GR16NoIR : Z80Reg16Class<(add DE, HL, BC)>;
+
 // 16-bit registers for PUSH/POP: DE, HL, BC, AF
 def GR16_AF : Z80Reg16Class<(add DE, HL, BC, AF)>;
 

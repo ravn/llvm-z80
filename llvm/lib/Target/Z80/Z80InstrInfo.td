@@ -1535,13 +1535,16 @@ def XOR_CMP_Z16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
 
 // 16-bit shift right pseudo-instructions.
 // Expanded in expandPostRAPseudo to SRL/SRA hi + RR lo.
-def LSHR16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
+// GR16NoIR (#112): operand cannot be IX/IY because the expansion calls
+// `getSRLOpcode(IYH)` / `getRROpcode(IYL)` which return 0 for the index
+// halves, producing bare opcode-0 MIs that the encoder rejects.
+def LSHR16 : Z80Pseudo<(outs GR16NoIR:$dst), (ins GR16NoIR:$src)> {
   let Constraints = "$dst = $src";
   let Defs = [FLAGS];
   let mayLoad = false;
   let mayStore = false;
 }
-def ASHR16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
+def ASHR16 : Z80Pseudo<(outs GR16NoIR:$dst), (ins GR16NoIR:$src)> {
   let Constraints = "$dst = $src";
   let Defs = [FLAGS];
   let mayLoad = false;
