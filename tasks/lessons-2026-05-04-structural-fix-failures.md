@@ -253,16 +253,38 @@ cd /Users/ravn/z80/llvm-z80 && python3 tasks/size-baseline.py check
 that could change values, not just costs):**
 
 ```bash
-# Run the C test-runner suite -- exercises real value semantics
-# via `expect: 0xFF` style assertions:
+# PRIMARY value oracle: run the C test-runner suite at the
+# project's ship opt level.  Exercises real value semantics via
+# `expect: 0xFF` style assertions:
 cd /Users/ravn/z80/llvm-z80/z80-utils/test-runner
-cargo run -- clang                 # default Os suite
-# cargo run -- clang -opt O1       # add other opt levels if relevant
-# cargo run -- clang <pattern>     # filter to specific tests
+BUILD_DIR=../../build-macos \
+  PATH="/Users/ravn/z80/z88dk/src/ticks:$PATH" \
+  cargo run -- clang -opt Oz
 
-# Boot rcbios in MAME (catches anything the C suite missed in the
-# BIOS path; per feedback_screenshot_to_verify):
-cd /Users/ravn/z80/rc700-gensmedet/rcbios-in-c && make mame
+# Optional: also run -Os (broader IR coverage, includes one
+# pre-existing FAIL on test_27_array_2d that's unrelated to
+# current work):
+BUILD_DIR=../../build-macos \
+  PATH="/Users/ravn/z80/z88dk/src/ticks:$PATH" \
+  cargo run -- clang -opt Os
+
+# SECONDARY value oracle (BIOS path coverage): MAME boot.
+# Currently NOT a single-make-target value oracle in this project --
+# `make mame-test` reaches only the cpnos banner because cpnos
+# waits for a z80pack mpm-net2 server (per project_cpnos_mame_prereqs
+# memory rule), and the rcbios-CP/M floppy boot path is no longer
+# the primary mode (per project_cpnos_only_prom).  When MAME boot
+# verification is needed:
+#   1. Refresh the MAME PROMs from current build: copy
+#      cpnos-rom/clang/cpnos.bin -> mame/roms/rc702/roa375.ic66.
+#      (Today there is no make target for this; check the dates
+#      of both files first.)
+#   2. Spin up z80pack mpm-net2 and verify cpnos network-boots to
+#      the prompt.  See rc700-gensmedet/cpnos-rom/README and the
+#      project_cpnos_mame_prereqs memory.
+# For most BIOS-touching changes the test-runner suite is sufficient;
+# escalate to the MAME path when a specific BIOS code path needs
+# end-to-end coverage.
 ```
 
 **Why this distinction matters:**
