@@ -931,6 +931,50 @@ def SMOD16 : Z80Pseudo<(outs), (ins)> {
   let Uses = [HL, DE];
   let Defs = [A, B, C, DE, HL, FLAGS];
 }
+// LDIR_GUARDED / LDDR_GUARDED / MEMSET_LDIR_GUARDED — runtime BC==0
+// guard around block-move / block-fill instructions (issue #105).
+//
+// Z80 LDIR / LDDR test BC AFTER decrement: with BC=0 they run 65536
+// iterations and trash 64 KB.  When the legalizer can't statically
+// prove BC > 0 (variable-size memcpy / memmove / memset), it must
+// emit a guarded form that skips the block instruction at run-time.
+// Expansion at post-RA in Z80ExpandPseudo splits the MBB and emits:
+//
+//   head:        LD A,B; OR C; JR Z, tail
+//   body:        LDIR    (or LDDR; or LD (HL),A + DE setup + LDIR for memset)
+//   tail:        ...
+//
+// LDIR_GUARDED: HL=src, DE=dst, BC=count.  Skips LDIR when count==0.
+// LDDR_GUARDED: HL=src+count-1, DE=dst+count-1, BC=count.  Skips LDDR
+//               when count==0.
+// MEMSET_LDIR_GUARDED: HL=dst, E=val, BC=size.  Skips entire fill
+//   (leading store + LDIR) when size==0.  Body for size>=1:
+//     LD (HL),E ; first byte
+//     DEC BC    ; BC=size-1
+//     LD A,B; OR C; JR Z, tail   ; size==1 case: LDIR with BC=0 forbidden
+//     LD D,H; LD E,L; INC DE     ; DE = HL + 1
+//     LDIR
+//   Note: E carries val; we deliberately do not put val in A so the
+//   BC test (LD A,B; OR C) does not clobber it.
+def LDIR_GUARDED : Z80Pseudo<(outs), (ins)> {
+  let Uses = [HL, DE, BC];
+  let Defs = [A, HL, DE, BC, FLAGS];
+  let mayLoad = true;
+  let mayStore = true;
+}
+def LDDR_GUARDED : Z80Pseudo<(outs), (ins)> {
+  let Uses = [HL, DE, BC];
+  let Defs = [A, HL, DE, BC, FLAGS];
+  let mayLoad = true;
+  let mayStore = true;
+}
+def MEMSET_LDIR_GUARDED : Z80Pseudo<(outs), (ins)> {
+  let Uses = [HL, E, BC];
+  let Defs = [A, HL, DE, BC, FLAGS];
+  let mayLoad = true;
+  let mayStore = true;
+}
+
 // 8-bit unsigned saturating add pseudo.
 // ADD A,src; JR NC,.done; LD A,#0xFF; .done:
 def UADDSAT8 : Z80Pseudo<(outs), (ins GR8:$src)> {
