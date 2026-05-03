@@ -12,20 +12,29 @@ acting on individual patterns in Phase 8.
 
 37 distinct peephole patterns across 5272 LOC.  Per roadmap §3.3:
 
-- **Keep** (Z80-ISA-specific, no IR/MIR home): **18 patterns** (~1200 LOC)
+- **Keep** (Z80-ISA-specific, no IR/MIR home): **19 patterns** (~1270 LOC).
   DJNZ fusion, EX DE,HL / EXX, ISA-specific immediates (RRCA, SBC A,A),
-  branch form selection (JR vs JP), tail-call CALL+RET → JP.
+  branch form selection (JR vs JP), tail-call CALL+RET → JP, plus #26
+  reclassified Keep 2026-05-04 (post-ISel invariant; see §"Reclassification").
 - **Migrate** (repairing higher-pass deficiencies): **16 patterns**
-  (~2300 LOC).  Targets: GISel combiner (pre-RA), MIR-CSE / MIR-DCE,
-  regalloc cost model and hints, TableGen ISel patterns.
-- **Delete** (obsolete or subsumed): **3 patterns** (~150 LOC).
-  Disabled EXX conversion (architecturally unsound) plus two
-  patterns whose triggers should disappear once GISel combiner
-  patches for #79 and #93 land.
+  (~2300 LOC) **— treat as "candidate for migration pending the
+  discriminator check"; not yet re-audited**.  Targets: GISel combiner
+  (pre-RA), MIR-CSE / MIR-DCE, regalloc cost model and hints, TableGen
+  ISel patterns.  See "Migrate/Delete entries NOT yet re-audited"
+  paragraph in §"Reclassification".
+- **Likely Keep** (under reclassification, defer until profiled):
+  **2 patterns** (#27 + #28, ~165 LOC).  Same family as #26 by analysis;
+  empirical confirmation pending.
+- **Delete (DONE)**: **1 pattern** (#36, ~150 LOC, the disabled EXX
+  conversion — already deleted in `2c9395f645a2`).
 
-**Ceiling estimate** (all migrations + deletions land): ~2450 LOC
-removed (≈46%), leaving a hardened ~2800 LOC ISA-specific post-RA
-layer.  Phase 8 will revise this number as items move.
+**Ceiling estimate revised** (all *true* migrations + #36 deletion
+land): unknown until the Migrate column is re-audited under the
+discriminator.  The original ~2450 LOC ceiling assumed all 16
+Migrate entries are category (a); session 42 evidence suggests
+several may be category (b) (post-ISel invariant) and not
+migratable without large surgery.  Phase 8 will revise after the
+discriminator pass.
 
 ## Peephole table
 
@@ -56,9 +65,9 @@ layer.  Phase 8 will revise this number as items move.
 | 23 | HL save-via-BC roundtrip (#84)                                 | 2085–2200  | Migrate  | Regalloc cost model                            |
 | 24 | BC ping-pong in single-BB self-loops (#97)                     | 2202–2541  | Migrate  | Regalloc loop-live cost                        |
 | 25 | u8 switch range-check 16-bit → 8-bit (#86)                     | 2543–2652  | Migrate  | GISel ISel / IR switch lowering                |
-| 26 | identity mask-roundtrip after SBC A,A (#79)                    | 2654–2716  | **Delete**   | GISel combiner (in-flight)                |
-| 27 | carry-roundtrip + JR C → JR NC (#93)                           | 2718–2812  | **Delete**   | GISel combiner (count-up-to-zero idiom)   |
-| 28 | ADD A,1; LD r,A → INC r when carry dead (#93 sequel)           | 2814–2898  | **Delete**   | (depends on #27 landing)                  |
+| 26 | identity mask-roundtrip after SBC A,A (#79)                    | 2654–2716  | **Keep** (was Delete; reclassified 2026-05-04 — see §"Reclassification" below) | post-ISel invariant only |
+| 27 | carry-roundtrip + JR C → JR NC (#93)                           | 2718–2812  | **Likely Keep** (audit reclassification candidate; defer until profiled) | likely post-ISel invariant |
+| 28 | ADD A,1; LD r,A → INC r when carry dead (#93 sequel)           | 2814–2898  | **Likely Keep** (audit reclassification candidate; defer until profiled) | downstream of #27          |
 | 29 | 16-bit copy loop via HL+ (SM83)                                | 2900–3007  | Keep     | —                                              |
 | 30 | LD rr,#imm + LDHL SP folding (SM83)                            | 3009–3088  | Keep     | —                                              |
 | 31 | consecutive LDHL SP,#N → INC/DEC HL (SM83)                     | 3090–3167  | Keep     | —                                              |
@@ -85,11 +94,20 @@ broken out for migration ordering.)
 
 ### Recommended Phase 8 sequence
 
-1. **GISel combiner fixes** (highest leverage; unlock deletions)
-   - Combiner patch for #79 mask-roundtrip → unblocks delete of #26.
-   - Combiner patch for #93 carry-roundtrip → unblocks delete of
-     #27, and #28 (which is downstream of #27 firing).
-   - Net: 3 deletions, ~120 LOC.
+1. ~~**GISel combiner fixes** (highest leverage; unlock deletions)~~
+   ~~Combiner patch for #79 mask-roundtrip → unblocks delete of #26.~~
+   ~~Combiner patch for #93 carry-roundtrip → unblocks delete of #27, #28.~~
+   ~~Net: 3 deletions, ~120 LOC.~~
+
+   **Withdrawn 2026-05-04**: session 42 empirically ruled out the
+   #79 combiner approach (Z80 BooleanContents = ZeroOrOne; the
+   shift idiom is a meaningful widen at IR layer, not an
+   identity).  #26 is now classified Keep.  #27/#28 likely Keep
+   pending the same reclassification check.  Three migration
+   paths remain open (post-ISel combiner, split G_ICMP, change
+   BooleanContents) but each is multi-session.  See
+   `tasks/lessons-2026-05-04-structural-fix-failures.md` and
+   `tasks/issue-120-combiner-scoping-2026-05-03.md`.
 
 2. **Regalloc cost-model tuning** (medium leverage; 4 migrations)
    - Counter-allocation hint extension (#92, #94, #99 cluster) for
@@ -121,8 +139,81 @@ broken out for migration ordering.)
    2026-05-03 and dup-closed).
 
 ### Deletion blockers
-- #26–28 blocked on GISel combiner work (in-flight per agent's read).
+- ~~#26–28 blocked on GISel combiner work (in-flight per agent's read).~~
+  Withdrawn 2026-05-04: #26 reclassified Keep; #27/#28 likely Keep.
+  See §"Reclassification".
 - #2, #12, #20 require trusted MIR-DCE / MIR-CSE (verify before delete).
+  Also: re-audit each under the (a)/(b) discriminator before delete.
+
+## Reclassification (2026-05-04, post-session-42 #120 attempt)
+
+The original Keep/Migrate/Delete classification was made without
+distinguishing two structurally different reasons a peephole exists:
+
+  - **(a)** **Migratable**: re-derives information available
+    earlier in the pipeline, or catches cases that should never
+    have been emitted by a cleaner upstream pass.  Migration is
+    a structural improvement.
+  - **(b)** **Post-ISel-invariant**: exploits a target-specific
+    physical-register invariant created by the chosen lowering
+    (e.g., "after SBC A,A on Z80, A holds a full mask").  Cannot
+    be migrated to GISel/IR without one of: a target-specific
+    intermediate analysis pass, a contractual change in the IR-
+    level type system (e.g., BooleanContents), or a split of
+    instruction-selection into "produce X" pseudo forms.  These
+    are large surgeries.  In the meantime the peephole IS the
+    right home.
+
+Session 42's attempt to migrate **#26** to a GISel combiner
+(`tasks/issue-120-combiner-scoping-2026-05-03.md` "Session 42
+attempted implementation") empirically demonstrated #26 is in
+category (b): Z80's `BooleanContents = ZeroOrOne` means the
+`(shl 7; ashr 7)` shift idiom that the combiner would elide is a
+meaningful widen at the IR layer, not an identity.  The peephole
+works only because it operates post-ISel where the SBC-A-A full-
+mask invariant is observable.
+
+**Reclassified:**
+
+  - **#26** Delete → **Keep**.  Empirically shown in session 42
+    that GISel combiner can't soundly elide the asm pattern; the
+    invariant the peephole exploits doesn't exist at the IR layer.
+  - **#27 / #28** Delete → **Likely Keep**.  Same family as #26
+    (the `(shl 7; ashr 7)` idiom appears in #93's count-up-to-zero
+    lowering too).  Not yet empirically tested but the soundness
+    argument is identical.  Treat as Likely Keep until a profile-
+    fire-sites pass confirms.  See lessons doc process rule 4.
+
+**Migration paths for category (b) peepholes** remain open but
+multi-session each:
+
+  1. Target-specific post-ISel combiner (Z80-MIR pass between
+     ISel and Z80LateOptimization that can see physical-register
+     state).  Same effect as keeping the peephole, just at a
+     different file location.  Not a structural improvement.
+  2. Split G_ICMP lowering into a "produce full mask" pseudo whose
+     i8 result is contractually full-mask.  Then a GISel combiner
+     can soundly elide the widen.  Larger surgery.
+  3. Change Z80's `BooleanContents` to `ZeroOrNegativeOneBoolean`
+     target-wide.  Affects every boolean-result lowering path.
+     High risk of broad regressions.
+
+**Process rule for future audit-Migrate / audit-Delete entries:**
+before declaring an entry migratable, profile its fire sites and
+categorise by IR shape; only category (a) is migratable.  See
+`tasks/lessons-2026-05-04-structural-fix-failures.md` for the
+full process recipe (pre-write MIR dump, layer-context check,
+size+value oracles, profile fire sites first).
+
+**Migrate/Delete entries NOT yet re-audited under the discriminator:**
+all 16 Migrate entries plus #27/#28 (already flagged Likely Keep
+above).  Treat the Migrate column as "candidate for migration
+pending the discriminator check", not "ready for migration".  The
+discriminator check is cheap (10 minutes per entry: read the
+peephole comment, identify the upstream IR shape that triggers it,
+ask whether the peephole's rewrite depends on a post-ISel physical-
+register invariant).  Worth doing as a batch pass before any
+further migration attempt.
 
 ## Notable findings
 
