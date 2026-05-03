@@ -1146,6 +1146,16 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(TmpReg);
         } else {
           // Variable RHS: XOR with register sub-bytes.
+          //
+          // Note (ravn/llvm-z80#116, 2026-05-03): an attempt to gate this
+          // on hasMinSize() and emit AND A; SBC HL,rr (via SUB_HL_rr,
+          // 3B) instead of the 6B byte-XOR was a net regression on
+          // rcbios bios.cim (+27 B).  Forcing LHS into HL via the
+          // pseudo's HL-Def evicts long-lived values from HL across
+          // the loop, causing extra BSS spills that more than wipe
+          // out the per-fire savings.  The proper implementation is
+          // a post-RA peephole that inspects actual register
+          // placement and HL liveness; left for a future change.
           if (!RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
             return false;
           Register RhsHi = MRI.createVirtualRegister(&Z80::GR8RegClass);
