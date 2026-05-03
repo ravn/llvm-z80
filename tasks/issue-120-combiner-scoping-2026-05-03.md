@@ -239,6 +239,59 @@ Start with **#79 sub-task**.  Concrete plan:
 The same template applies to #93, with the more complex match
 condition.
 
+## Session 42 partial implementation: #79 combiner LANDED, peephole #26 NOT YET RETIRED
+
+Steps 1-3 of the next-session plan above were completed in the
+same session.  Combiner rule `z80_sext_from_icmp` added to
+`Z80Combine.td`; `matchSextFromIcmp` / `applySextFromIcmp`
+implemented in `Z80PostLegalizerCombiner.cpp`.  Build clean; lit
+90/90; sizes unchanged with both combiner + peephole active.
+
+Step 5 (verification by side-branch deletion) revealed that the
+combiner does NOT yet subsume peephole #26:
+
+  - With peephole #26 disabled: BIOS 5929 → 5943 (+14 B);
+    cpnos-rom 1777 → 1781 (+4 B) [actually cpnos.bin "non-padding"
+    metric was unchanged at 1777, but per-function `payload.elf`
+    showed +27 B].  8 regression sites, 2 improvement sites.
+  - Regression sites match those that #89 Path 2 also flagged:
+    `_erase_to_eol`, `_erase_to_eos`, `_delete_line`,
+    `_bg_clear_from`, `_bios_conin`, `_bios_reads_body`,
+    `_impl_const`, `_bios_write_c`.  Magnitudes (+4/+5/+7/+8) match
+    the 8-byte tail this peephole catches, suggesting these sites
+    produce the SBC-roundtrip asm via IR shapes other than
+    `G_SEXT (G_ICMP)`.
+
+Conclusion: the combiner correctly handles the canonical lit case
+(`mask-from-flag.ll`) but the production codebase has additional
+IR shapes (likely `G_ASHR (G_SHL 7)` standalone, or i1 results
+flowing through copies/phis) that produce the same asm pattern.
+Peephole #26 catches the asm pattern regardless of IR shape;
+combiner is strictly weaker.
+
+**Action taken (session 42):** combiner LANDS as foundation work;
+peephole #26 STAYS as catch-all backstop.  Source comment on
+peephole #26 updated to reference this finding.  Code is
+structurally cleaner (one IR shape now closes structurally), but
+the peephole-deletion goal of #120 is not yet met.
+
+**Future-session work for full #79 retirement:**
+
+  - Compile a regressed function (e.g. `_erase_to_eol`) with
+    `-print-after=z80-postlegalizer-combiner` and identify the
+    actual IR shape feeding the SBC-roundtrip.
+  - Extend the combiner match to cover that shape too.  Likely
+    candidates: `G_ASHR (G_SHL %x, 7), 7` standalone (canonical
+    sext-i1-to-i8 idiom not coming through G_SEXT); `G_SEXT
+    (G_PHI)` where the phi merges G_ICMP results; copy-through
+    cases.
+  - Re-run the side-branch verification.  Repeat until disabling
+    peephole #26 leaves rcbios + cpnos-rom unchanged.
+  - Then land peephole #26 deletion as the second commit.
+
+Estimated additional work: 1-2 sessions to fully retire peephole
+#26.
+
 ## See also
 
   - `tasks/late-opt-audit-2026-05-02.md` patterns #26-#28.

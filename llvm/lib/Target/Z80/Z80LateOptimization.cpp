@@ -2686,6 +2686,18 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // FLAGS but in this position no FLAGS-using instruction follows
     // (we check); the outer Z/N/H/C state matches what the kept
     // SBC A,A established already.
+    //
+    // Note (session 42, ravn/llvm-z80#120): a partial structural fix
+    // exists at the GISel combiner layer (`z80_sext_from_icmp` in
+    // Z80Combine.td) which catches the canonical `G_SEXT (G_ICMP)`
+    // IR shape and prevents the redundant tail from being emitted in
+    // the first place.  However the asm pattern arises from
+    // additional IR shapes (e.g. `G_ASHR (G_SHL 7)` standalone, or
+    // i1 results passed through copies/phis) that the combiner does
+    // not yet match.  Disabling this peephole regresses BIOS by
+    // +14 B and cpnos-rom by +7 B on those residual sites.  Until
+    // the combiner is extended to subsume the broader pattern, the
+    // peephole stays as the catch-all backstop.
     {
       SmallVector<MachineInstr *, 8> ToErase;
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
