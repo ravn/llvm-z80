@@ -125,11 +125,32 @@ analysis pass.  See the cross-reference update in
 `tasks/late-opt-audit-2026-05-02.md` for the reclassification of
 #26.
 
+## HARD RULE (user, 2026-05-04)
+
+**Stop committing the first version of a structural fix the
+moment lit + size are clean.**
+
+For combiner / ISel / lowering / regalloc changes that could
+affect emitted instructions, lit + matching baseline byte counts
+are a *size oracle*, not a *value oracle*.  Run the value oracle
+(`cargo run -- clang` from `z80-utils/test-runner/`, plus `make
+mame` for BIOS-touching changes) BEFORE the commit.
+
+A combiner+peephole composition that produces byte-identical
+baseline output is a **red flag** for "the peephole is covering
+for a broken combiner", not a green light.  Verify the combiner
+independently (disable the peephole and re-run the value oracle)
+before treating the size match as correctness evidence.
+
+This rule is also recorded as a memory under
+`feedback_no_commit_first_version.md` (the user's auto-memory).
+
 ## Process changes
 
-The following four practices would have caught all three session-
-42 failures earlier or prevented them entirely.  Apply them on
-every regalloc-area or combiner-area change going forward.
+The four practices below would have caught all three session-42
+failures earlier or prevented them entirely.  Apply them on every
+regalloc-area or combiner-area change going forward.  Process
+rule 3 is the one elevated to HARD RULE above.
 
 ### 1. Pre-write MIR dump on a real-workload function
 
