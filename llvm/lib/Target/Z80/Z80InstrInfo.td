@@ -1481,7 +1481,11 @@ def SEXT_GR8_GR16 : Z80Pseudo<(outs GR16:$dst), (ins GR8:$src)> {
 // Both operands can be any GR16 (no GR16_BCDE restriction).
 
 // CMP16_FLAGS: sets carry flag for unsigned comparison. Used for fused branch.
-def CMP16_FLAGS : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
+// GR16NoIR (#113): expansion uses `getLD8RegOpcode(A, lhs_half)` and
+// `getSUBOpcode(rhs_half)` which would emit undocumented IXH/IXL/IYH/IYL
+// ops if IX/IY were allocated.  No PUSH/POP fallback exists for these,
+// so the only safe path is to forbid IX/IY operands by class.
+def CMP16_FLAGS : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
   let Defs = [A, FLAGS];
   let mayLoad = false;
   let mayStore = false;
@@ -1489,7 +1493,8 @@ def CMP16_FLAGS : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
 
 // CMP16_ULT: materializes unsigned less-than as 0/1 in A.
 // Appends SBC A,A; AND 1 after the SUB/SBC chain.
-def CMP16_ULT : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
+// GR16NoIR — same rationale as CMP16_FLAGS (#113).
+def CMP16_ULT : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
   let Defs = [A, FLAGS];
   let mayLoad = false;
   let mayStore = false;
@@ -1499,7 +1504,8 @@ def CMP16_ULT : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
 // LD A,lhs_lo; SBC A,rhs_lo; LD A,lhs_hi; SBC A,rhs_hi
 // Uses carry-in from previous CMP16_FLAGS or CMP16_SBC_FLAGS.
 // Uses = [FLAGS] ensures regalloc won't insert flag-clobbering ops in between.
-def CMP16_SBC_FLAGS : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
+// GR16NoIR — same rationale as CMP16_FLAGS (#113).
+def CMP16_SBC_FLAGS : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
   let Defs = [A, FLAGS];
   let Uses = [FLAGS];
   let mayLoad = false;
@@ -1535,13 +1541,16 @@ def XOR_CMP_Z16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
 
 // 16-bit shift right pseudo-instructions.
 // Expanded in expandPostRAPseudo to SRL/SRA hi + RR lo.
-def LSHR16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
+// GR16NoIR (#112): operand cannot be IX/IY because the expansion calls
+// `getSRLOpcode(IYH)` / `getRROpcode(IYL)` which return 0 for the index
+// halves, producing bare opcode-0 MIs that the encoder rejects.
+def LSHR16 : Z80Pseudo<(outs GR16NoIR:$dst), (ins GR16NoIR:$src)> {
   let Constraints = "$dst = $src";
   let Defs = [FLAGS];
   let mayLoad = false;
   let mayStore = false;
 }
-def ASHR16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
+def ASHR16 : Z80Pseudo<(outs GR16NoIR:$dst), (ins GR16NoIR:$src)> {
   let Constraints = "$dst = $src";
   let Defs = [FLAGS];
   let mayLoad = false;

@@ -139,14 +139,15 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(Z80::FLAGS);
 
   // IX and IY: always reserved on Z80.
-  // IY allocation was attempted but produces incorrect code in large
-  // functions under the greedy register allocator (#38).  One plausible
-  // alternate root cause — silent miscompile of large-offset IY
-  // SPILL/RELOAD — was fixed as #28 in session 39, but a re-test (un-
-  // reserve IY, run the full clang -Os suite) still produced 11 new
-  // runtime FAILs that did not exist with IY reserved.  So #38 is a
-  // deeper regalloc / register-class issue and stays parked for the
-  // Phase 3 regalloc cluster.
+  // Session 40 re-investigated #38: un-reserving IY produces ~387
+  // test*opt FATAL `Unsupported instruction : <MCInst 0>` in the clang
+  // test runner.  Root cause is *not* regalloc — pseudo expansion sites
+  // call sub-register-keyed opcode lookups (`getSRLOpcode`, etc.) that
+  // return 0 for IXH/IXL/IYH/IYL, then pass that 0 directly to
+  // `BuildMI(..., TII.get(0))`, producing bare opcode-0 (PHI) MIs that
+  // the encoder rejects.  See ravn/llvm-z80#112 for the audit and fix
+  // design (single-register-class GR16NoIR exclusion on the affected
+  // tied operands).  IY/IX stay reserved until #112 lands.
   Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
