@@ -127,6 +127,15 @@ work, NOT a standalone next entry):
      (~230 LOC).
    - Why available: independent of other threads; can run
      alongside any of 1-2.
+   - **Status (session 42):** scoping doc landed
+     (`tasks/issue-120-combiner-scoping-2026-05-03.md`).  Next-
+     session entry point is the #79 mask-roundtrip sub-task — a
+     single combiner rule (`G_SEXT (G_ICMP)` → `G_ANYEXT`) added
+     to `Z80PostLegalizerCombiner`.  Doc walks through the IR/MIR
+     analysis, the surface area, the verification protocol, and
+     the same shape for #93 as the second sub-task.  Estimated
+     1 session for #79, 1-2 for #93, 1 for the combined deletion +
+     verification.  Total 3-4 sessions for #120.
 
 **Do NOT attempt #38 directly before #89/#27 land.**  Session 39
 already proved that path is a dead end (un-reserving IY produces
