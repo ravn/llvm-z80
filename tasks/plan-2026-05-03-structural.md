@@ -59,16 +59,22 @@ as "fundamentally addressed".  Strict reading: close #89 and #27
     reclassified Phase 2 → Phase 3.  See roadmap §12.2 update
     and CLAUDE.md session 42 entry.  Commits `de311bfbda4a` (llvm-z80)
     + `df9ed69` (root).
-  - **#89 investigation** — Path 1 ruled out empirically.
-    Removing `isAsCheapAsAMove` from `LD_r16_nn` hoists the
-    loop-invariant constant (good) but regresses BIOS by +15 B
-    and cpnos-rom by +20 B because the same flag controls
-    regalloc remat (where remat-at-use-site is the right call
-    in 9 of 11 measured sites).  TableGen flag is too coarse;
-    fix needs pass-level intervention.  Reverted; no commit
-    landed.  Findings in `tasks/issue-89-investigation-2026-05-03.md`.
-    Conclusion: fold #89 requirements into the broader #89/#27
-    regalloc cost-model design — not a standalone fix.
+  - **#89 investigation** — TWO paths ruled out empirically.
+    Path 1 (drop `isAsCheapAsAMove` from `LD_r16_nn` pseudo):
+    BIOS +15 B, cpnos-rom +20 B.  Path 2 (loop-depth check in
+    `RegisterCoalescer::reMaterializeDef`): BIOS +3 B, cpnos-rom
+    +4 B (5x smaller blast radius but still net negative).  Both
+    paths fix the synthetic but regress real workloads because
+    the decisive factor at the coalescer-time remat gate is
+    register pressure on Z80's 3-pair file, not the structural
+    properties either path tried to address.  Diagnosis: MachineLICM
+    is fine; RegisterCoalescer pulls hoisted defs back into loops
+    via reMaterializeDef; the missing context is pressure, not
+    loop depth.  Both reverted; no compiler-source commits landed.
+    Findings in `tasks/issue-89-investigation-2026-05-03.md`.
+    Conclusion: future #89 work should pursue option (b) [Z80
+    pre-RA pressure-aware pass] or option (c) [merge into broader
+    regalloc cost-model surface].  Recommendation remains (c).
 
 ### Done in evening session 2026-05-03
 

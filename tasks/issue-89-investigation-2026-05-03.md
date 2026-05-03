@@ -214,6 +214,96 @@ workloads is positive, this is an immediate close on #89.  If it
 regresses something (it shouldn't, but might surface a different
 heuristic interaction), revert and pivot to option (b).
 
+## Path 2 result (option a-refined sub-path 3): also rules out
+
+Implemented and tested in session 42.  Two variants of the
+loop-depth check, both compared against the post-revert baseline
+(BIOS 5929 B, cpnos-rom 1777 B):
+
+### Variant 1: `if (UseDepth > DefDepth) return false;`
+
+Reproducer: `licm_volatile`/`licm_local` correctly emit
+`ld de,_target_fn` in entry block, NOT in the loop body.  Primary
+#89 symptom is fixed.
+
+Real workloads:
+
+| Artifact          | Before | After  | Delta |
+| ----------------- | -----: | -----: | ----: |
+| BIOS (`bios.cim`) |  5929  |  5932  | +3 B  |
+| cpnos-rom payload |  1777  |  1781  | +4 B  |
+| Net               |        |        | +7 B  |
+
+7 regressions, 2 improvements.  Improvements (`_chktrk -4`,
+`_bios_reader_body -1`) are #89-style hoist wins.  Regressions
+(`_erase_to_eol +8`, `_erase_to_eos +8`, `_delete_line +4`,
+`_init_hardware +4`, `_bg_clear_from +5`, `_bios_write_c +1`,
+`_fdc_read +3`) are register-pressure side effects: blocking
+the in-loop remat forces the def to live across the loop, which
+increases pressure inside the loop, which forces a *worse* spill
+(typically 16-bit pointer onto BSS).
+
+### Variant 2: `if (DefDepth == 0 && UseDepth > 0) return false;`
+
+Tighter heuristic — only block when def is truly outside any
+loop and use is inside a loop.  Result: **byte-identical to
+Variant 1**.  All regression sites already match the depth-0-to-N
+shape.  Tightening the heuristic does not narrow the blast radius
+because the regression sites ARE the intended target — but
+blocking remat at those sites is a net loss because of the
+pressure increase.
+
+### Conclusion
+
+Loop-depth alone is not sufficient context.  The correct gate
+needs **register-pressure awareness** at the coalescer-time remat
+decision: "is keeping this def alive across the loop cheaper than
+rematting it inside?"  That requires either:
+
+  - Lifting the decision to the regalloc layer, where pressure is
+    naturally available — i.e., option (c).
+  - Building a pre-coalescer pressure-estimate analysis and
+    annotating MIs accordingly — option (b).
+
+Path 2 (option a-refined sub-path 3) reverted in session 42.
+No commit landed for the change itself, only for the investigation
+doc updates.
+
+## Final session 42 conclusion on #89
+
+Two empirical results in this session, both ruling out the simple
+fixes:
+
+  - **Path 1** (drop `isAsCheapAsAMove` from `LD_r16_nn`):
+    BIOS +15 B, cpnos-rom +20 B.  Couples LICM hoist and
+    coalescer remat; both regress.
+  - **Path 2** (loop-depth check in
+    `RegisterCoalescer::reMaterializeDef`): BIOS +3 B, cpnos-rom
+    +4 B.  Better blast radius (1/5 of Path 1) but still net
+    negative because the loop-depth comparison ignores register
+    pressure, which is the actual decisive factor on Z80.
+
+The diagnosis is now solid:
+
+  - MachineLICM is fine; it hoists `LD_r16_nn` to entry blocks.
+  - RegisterCoalescer pulls some of those defs back into loops via
+    `reMaterializeDef`.
+  - On a register-rich target, this would still be cheap (the
+    cheap-as-move flag is roughly correct).
+  - On Z80's 3-pair register file, the in-loop remat decision
+    must consider whether the keep-alive alternative is cheaper.
+    That's a register-pressure question, not a loop-depth one.
+
+**Next-session entry on #89:** option (b) [Z80-specific pre-RA
+pass with pressure estimate] or option (c) [merge into broader
+regalloc cost-model surface, expected to subsume #89].  Option
+(c) is simpler and remains the recommendation.
+
+The investigation has now decisively shown that the coalescer-
+side fix is not viable as a standalone change.  Future sessions
+on #89 should not retry Paths 1 or 2 — both are documented dead
+ends with measured byte costs.
+
 ## Next-step options for #89
 
 Listed in increasing scope:
