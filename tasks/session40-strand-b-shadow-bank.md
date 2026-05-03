@@ -166,3 +166,74 @@ To activate this strand:
   3. Otherwise: park.  The EXX bracket adds 2 bytes per fired
      loop; if the loop body savings don't dominate, this is
      a no-op or regression.
+
+## Survey results (this session, brief)
+
+`tasks/find_loops.py` (in /tmp/, not committed) walks an
+objdump'd disassembly and emits "tight back-edge loops" —
+forward instructions ending in `djnz`/`jr`/`jp <local>` where
+target < source and (source-target) < 200 bytes.
+
+cpnos-rom (1777 non-padding bytes total): only 5 tight loops,
+all small (≤18 B body).  None hot.  Shadow-bank niche is not
+present here.
+
+rcbios (5933 B, BIOS): ~25 tight no-CALL loops.  The
+non-trivial ones (>15 B body):
+
+| Function          | Body | Insns | Notes                              |
+| ----------------- | ---: | ----: | ---------------------------------- |
+| `_specc`          |  37B |    21 | display char dispatch loop         |
+| `_cursor_left`    |  34B |    15 | cursor backstep loop               |
+| `_scroll`         |  34B |    17 | scroll-region copy loop            |
+| `_bios_conin`     |  30B |    16 | console input wait loop            |
+| `_bios_hw_init`   |  24B |    15 | hw-init poll loop                  |
+
+Spot-checked `_specc` 0xde19-0xde3c:
+
+```
+de19: ld   hl,$f078
+de1c: ld   ($f3a6),bc        ; <-- BC spill ENTERING loop body
+de20: add  hl,bc
+de21: ld   c,$80
+de23: ld   a,c               ; <-- inner-most byte loop bottom
+...
+de32: jr   $de23             ; inner back-edge
+de34: ld   bc,($f3a6)        ; <-- BC reload at outer back-edge
+de38: inc  bc
+de39: ld   a,c
+de3a: cp   $fa
+de3c: jr   nz,$de19          ; outer back-edge
+```
+
+The 4-byte `LD ($f3a6),BC` + 4-byte `LD BC,($f3a6)` are pure
+register-pressure overhead — BC's value isn't consumed inside
+the inner loop; it's parked while DE/HL/A do byte-tweaking
+work.  This is the textbook shadow-bank candidate: if we EXX'd
+at the preheader and again at outer-loop exit, we'd save the
+8 B/iteration BC spill (over many outer iterations) at the
+cost of two EXX bytes total.  Net win once outer iterations
+> 1, which is the common case (`_specc` displays a glyph row
+multiple bytes wide).
+
+Similar patterns expected in `_scroll`, `_cursor_left`.  Need
+to verify each before prototyping; it's possible some have
+a CALL on a slow-path branch within the apparent loop.
+
+## Implementation gate
+
+Survey suggests 3-4 BIOS candidates with measurable wins.
+Prototype is justified.  Estimated work:
+
+  1. New target MIR pass `Z80ShadowBankBracket` (~150 LOC),
+     run after RA, walks MachineLoopInfo, identifies single-
+     MBB no-CALL loops with sufficient pressure, verifies
+     liveness preconditions at preheader / exit, inserts EXX
+     brackets.
+  2. Gate by `+shadow-regs` feature flag (already exists).
+  3. Lit test fixture demonstrating the bracket on a small
+     synthetic loop.
+  4. rcbios-byte-exact-or-smaller acceptance criterion.
+
+Out of scope for session 40.  Filing as a Phase-5 issue when
+the shadow-bank Phase opens (per roadmap).
