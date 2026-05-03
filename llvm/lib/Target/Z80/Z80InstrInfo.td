@@ -1517,12 +1517,16 @@ def CMP16_SBC_FLAGS : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
 // Expanded in expandPostRAPseudo after register allocation, when physical
 // registers are known and sub-register extraction is safe.
 // Uses A, B as scratch. Does NOT clobber HL/DE (unlike SBC HL,DE).
-def XOR_CMP_EQ16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
+// GR16NoIR (#113): expansion calls `getLD8RegOpcode(A, lhs_hi)` and
+// `getXOROpcode(rhs_hi)` which would emit undocumented IXH/IXL/IYH/IYL
+// XOR ops if IX/IY were allocated.  Force regalloc to land operands in
+// BC/DE/HL so the standard expansion path is the only path.
+def XOR_CMP_EQ16 : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
   let Defs = [A, B, FLAGS];
   let mayLoad = false;
   let mayStore = false;
 }
-def XOR_CMP_NE16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
+def XOR_CMP_NE16 : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
   let Defs = [A, B, FLAGS];
   let mayLoad = false;
   let mayStore = false;
@@ -1533,7 +1537,8 @@ def XOR_CMP_NE16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
 // Same as SM83_CMP_Z16 but available on Z80.
 // Used in fused compare-and-branch to avoid 0/1 normalize overhead.
 // 6 bytes: LD A,hi; XOR hi'; LD B,A; LD A,lo; XOR lo'; OR B
-def XOR_CMP_Z16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
+// GR16NoIR — same rationale as XOR_CMP_EQ16 (#113).
+def XOR_CMP_Z16 : Z80Pseudo<(outs), (ins GR16NoIR:$lhs, GR16NoIR:$rhs)> {
   let Defs = [A, B, FLAGS];
   let mayLoad = false;
   let mayStore = false;
