@@ -1073,8 +1073,8 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
 
     // CRITICAL: LDIR with BC=0 runs 65536 iterations, trashing 64 KB of
     // memory.  When Size is a known constant 0, drop the op entirely
-    // (#63).  For variable Size that may be 0 the caller is responsible
-    // for the guard; only -O0 + small constant inits exercise the bug.
+    // (#63).  Variable-size case where Size may be 0 at run-time still
+    // emits the unguarded LDIR (#105 — needs runtime guard or pseudo).
     if (auto SizeC = getIConstantVRegSExtVal(Size, MRI)) {
       if (*SizeC == 0) {
         MI.eraseFromParent();
@@ -1115,8 +1115,9 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return true;
     }
 
-    // CRITICAL: LDIR/LDDR with BC=0 runs 65536 iterations.  When Size
-    // is a known constant 0, drop the op entirely (#63).
+    // CRITICAL: LDIR/LDDR with BC=0 runs 65536 iterations.  size==0 →
+    // erase (#63).  Variable-size case where Size may be 0 at run-time
+    // still emits the unguarded LDIR/LDDR (#105 — needs runtime guard).
     if (auto SizeC = getIConstantVRegSExtVal(Size, MRI)) {
       if (*SizeC == 0) {
         MI.eraseFromParent();
@@ -1266,10 +1267,11 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
 
     // CRITICAL: when the LDIR-fill pattern below is fed BC=0 (which is
     // size-1 for size==1), LDIR runs 65536 iterations and trashes 64 KB
-    // of memory.  When Size is a known constant, special-case the
-    // degenerate sizes (#63):
+    // of memory.  Constant-Size handling (#63):
     //   size==0 → no-op, drop the MI;
     //   size==1 → emit only the leading single-byte store, skip LDIR.
+    // Variable-size case where Size may be 0 at run-time still emits
+    // the unguarded LDIR (#105 — needs runtime guard).
     auto SizeC = getIConstantVRegSExtVal(Size, MRI);
     if (SizeC && *SizeC == 0) {
       MI.eraseFromParent();
