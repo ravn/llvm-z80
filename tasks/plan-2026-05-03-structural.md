@@ -53,6 +53,23 @@ as "fundamentally addressed".  Strict reading: close #89 and #27
 
 ## Near-term sessions (1-3 ahead)
 
+### Done in session 42 (2026-05-03)
+
+  - **Phase 2 admin pass** — Phase 2 declared DONE; #38
+    reclassified Phase 2 → Phase 3.  See roadmap §12.2 update
+    and CLAUDE.md session 42 entry.  Commits `de311bfbda4a` (llvm-z80)
+    + `df9ed69` (root).
+  - **#89 investigation** — Path 1 ruled out empirically.
+    Removing `isAsCheapAsAMove` from `LD_r16_nn` hoists the
+    loop-invariant constant (good) but regresses BIOS by +15 B
+    and cpnos-rom by +20 B because the same flag controls
+    regalloc remat (where remat-at-use-site is the right call
+    in 9 of 11 measured sites).  TableGen flag is too coarse;
+    fix needs pass-level intervention.  Reverted; no commit
+    landed.  Findings in `tasks/issue-89-investigation-2026-05-03.md`.
+    Conclusion: fold #89 requirements into the broader #89/#27
+    regalloc cost-model design — not a standalone fix.
+
 ### Done in evening session 2026-05-03
 
   - **#113** — GR16NoIR on `XOR_CMP_*16` + `SM83_CMP_Z16`
@@ -80,7 +97,8 @@ as "fundamentally addressed".  Strict reading: close #89 and #27
 reclassification — #38 is now Phase 3, gated on #89/#27 cost-model
 work, NOT a standalone next entry):
 
-1. **#89 — loop-invariant DE reload** (multi-session)
+1. **#89 — loop-invariant DE reload** (multi-session;
+   investigation-first)
    - Layer: regalloc cost model (counter-vs-pointer-vs-pattern
      allocation interaction).
    - Closes: one Cluster A issue + concrete cpnos-rom
@@ -88,6 +106,12 @@ work, NOT a standalone next entry):
    - Why first: largest leverage on remaining Cluster A work; the
      cost-model insight is expected to subsume #38's residual
      greedy-regalloc bug.
+   - **Status (session 42):** TableGen-level Path 1 ruled out
+     (regression on real workloads).  Next session's deliverable
+     is a *design doc* picking among the four options listed in
+     `tasks/issue-89-investigation-2026-05-03.md` (a/b/c/d), not
+     a fix attempt.  Most likely path is option (c): merge #89
+     into the #94/#98/#27 cost-model surface.
 2. **#27 — per-pair 16-bit register copy cost** (multi-session)
    - Layer: `getRegAllocationHints` / `getRegClassWeight`.
    - Sibling of #89; touches the same allocator surface.
