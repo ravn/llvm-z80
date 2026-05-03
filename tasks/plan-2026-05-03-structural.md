@@ -59,37 +59,42 @@ relevant rather than serving as a prerequisite gate.
   - **#121** (filed and closed same session) — drop unreachable
     IR16 PUSH/POP fallback in the four `XOR_CMP_*16` expansion
     cases (~38 LOC).  Commit `c8d2dbedff90`.
+  - **#119** — closed as duplicate of #102; the disabled EXX
+    block was already deleted in commit `2c9395f645a2` (session
+    37).  #119 was filed in error during yesterday's plan re-
+    verification.  Late-opt audit doc updated to mark #36 done.
 
 ### Session N (next): pick one structural entry
 
 **Recommended order under structural lens:**
 
-1. **#119 — disabled EXX block deletion** (~150 LOC, zero risk)
-   - Layer: pure source cleanup
-   - Closes: audit-Delete item; `#if 0` block in
-     `Z80LateOptimization.cpp`.
-   - Why first: same shape as #121 just done — declarative
-     cleanup, byte-neutral, single session.  Useful warm-up
-     before tackling #38 / #89.
-2. **#38 (Phase 2 closing item).**  IY un-reservation; gated by
+1. **#38 (Phase 2 closing item).**  IY un-reservation; gated by
    #112 (closed) + #113 (closed) + #115 (regalloc heuristics).
    With both policy-violation gates now closed, the remaining
    work is purely regalloc heuristics — picking IY for
    LDIR/LDDR/HL-tied operands needs to back off.
-   - Why second: closes Phase 2 entirely.  After #38 lands,
-     engagement-mode gate is met.
-3. **#89 — loop-invariant DE reload** (multi-session)
+   - Why first: closes Phase 2 entirely.  After #38 lands,
+     engagement-mode gate is met (or close to it, depending on
+     how strictly Cluster A's 3-of-5 close counts).
+2. **#89 — loop-invariant DE reload** (multi-session)
    - Layer: regalloc cost model (counter-vs-pointer-vs-pattern
      allocation interaction).
    - Closes: one Cluster A issue + concrete cpnos-rom
      `setup_ivt` 25→17 B win.
-   - Why third: largest leverage on remaining Cluster A work.
-4. **#120 — combiner work for closed #79 / #93** (parallel thread)
+   - Why second: largest leverage on remaining Cluster A work.
+3. **#120 — combiner work for closed #79 / #93** (parallel thread)
    - Layer: GISel combiner.
    - Enables deletion of audit-Delete peepholes #26, #27, #28
      (~230 LOC).
    - Why available: independent of other threads; can run
-     alongside any of 1-3.
+     alongside any of 1-2.
+
+**Lesson logged**: when filing follow-up issues, **read the
+current source state first**.  #119 was filed from the audit's
+text references (lines 4036-4192) without checking that the block
+had already been deleted in the same session as the audit was
+written.  Cost: trivial (closed as dup), but small audit-the-
+state-before-filing waste.
 
 ### Sessions N+1 / N+2: Cluster A finishing + Phase 2 close
 
@@ -143,13 +148,13 @@ with sessions N+1 / N+2.
   Workspace mode until both Phase 2 closed and one cluster done
   (per roadmap section 10.2).
 
-## Issue-state snapshot 2026-05-03 evening (second pass)
+## Issue-state snapshot 2026-05-03 evening (third pass)
 
   - 27 ravn/llvm-z80 issues open at start-of-day.
   - Filed today: #117, #118, #119, #120, #121.
-  - Closed today: #116 (end of session 41), **#113** (evening),
-    **#121** (evening).
-  - **28 currently open.**
+  - Closed today: #116 (end of session 41), **#113** + **#121**
+    (evening, real work), **#119** (evening, dup of #102).
+  - **27 currently open.**
   - Z80 lit suite: **90/90** (89 PASS + 1 XFAIL #99) — added
     `issue-113-gr16noir-cmp.ll`.
   - rcbios bios.cim: **5929 B** (byte-exact).

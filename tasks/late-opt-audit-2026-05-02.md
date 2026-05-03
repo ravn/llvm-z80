@@ -66,7 +66,7 @@ layer.  Phase 8 will revise this number as items move.
 | 33 | LD A,(HL); INC/DEC HL → LD A,(HL+/-) (SM83)                    | 3319–3513  | Keep     | —                                              |
 | 34 | SM83 SP-relative store-to-load forwarding                      | 3515–3920  | Keep     | —                                              |
 | 35 | IX-indexed static-stack store-to-load forwarding               | 3922–4034  | Keep     | —                                              |
-| 36 | EXX shadow-register conversion (DISABLED)                      | 4036–4192  | **Delete**   | (none — unsalvageable)                    |
+| 36 | EXX shadow-register conversion (DISABLED)                      | (deleted)  | ~~Delete~~ DONE | deleted in `2c9395f645a2` (closes #102; #119 dup-closed) |
 | 37 | CALL nn; RET → JP nn (tail call)                               | 4194–4251  | Keep     | —                                              |
 | 38 | cross-MBB CALL; ⟨fall⟩; RET → JP (#75)                         | 4253–4295  | Keep     | —                                              |
 | 39 | Cross-block redundant LD A,r removal (#60, dataflow)           | 4297–4486  | Migrate  | MIR-CSE / regalloc liveness                    |
@@ -116,7 +116,9 @@ broken out for migration ordering.)
    - Net: ~300 LOC.
 
 6. **Janitorial**: delete disabled EXX block (#36, ~150 LOC).
-   Zero risk.  Could be done in any session.
+   Zero risk.  Could be done in any session.  **Done same session
+   in commit `2c9395f645a2`** (closed #102; #119 filed in error
+   2026-05-03 and dup-closed).
 
 ### Deletion blockers
 - #26–28 blocked on GISel combiner work (in-flight per agent's read).
@@ -140,7 +142,10 @@ broken out for migration ordering.)
 
 4. **Disabled EXX code (#36)**: 150 LOC under `#if 0`.  Should be
    `git rm`'d; current behavior is a no-op but the code drags on
-   diffs and code reading.  Truly free win.
+   diffs and code reading.  Truly free win.  **DONE** in
+   `2c9395f645a2` (same session as the audit was written; closed
+   #102).  #119 filed 2026-05-03 evening as if pending — closed
+   as duplicate.
 
 5. **Counter-intuitive Keeps**: #41 (PUSH IX; POP HL; ADD HL,rr;
    PUSH HL; POP IX → ADD IX,rr) looks like a peephole-level workaround
