@@ -18,8 +18,8 @@ state has advanced further than the morning re-verification claimed:
 | Phase | Status |
 |---|---|
 | **Phase 1 — Foundation** | **DONE.**  CI workflow `.github/workflows/z80-ci.yml` in place; size baseline tracker `tasks/size-baseline.py` (183 LOC) + JSON in place; late-opt audit (session 37) + source-cleanup audit (session 34) both landed. |
-| **Phase 2 — Correctness sweep** | **4 of 5 closed.**  #28, #36, #63, #81 closed 2026-05-02/03.  Only **#38** (large-fn IY codegen / IY un-reserve) remains.  #112 + **#113** (IY un-reserve plumbing) closed; together they remove the policy-violation half of #38. |
-| **Phase 3 — Cluster A regalloc** | **3 of 5 closed already.**  #94 closed via `Z80SplitDjnzCounters` + `BReg` class (session 39); #98 investigation closed same session (write-up in `tasks/regalloc-sequential-djnz-investigation.md`); **#99 also closed** (BC ping-pong i16-counter sub-case via session 35 peephole + #111 follow-up).  Open: **#89** (loop-invariant DE reload) and **#27** (per-pair 16-bit copy cost).  Both are multi-session investigations. |
+| **Phase 2 — Correctness sweep** | **DONE** (5 of 5).  #28, #36, #63, #81 closed 2026-05-02/03.  **#38 reclassified to Phase 3** in session 42 (2026-05-03 admin pass): session 39's re-test (with #28 + #105 already fixed) produced 11 runtime FAILs + 52 compile FATALs after un-reserving IY, confirming the residual is greedy-regalloc cost-model, not a Phase 2 codegen-correctness item.  #112 + #113 (IY un-reserve plumbing) had already removed the policy-violation half. |
+| **Phase 3 — Cluster A regalloc** | **3 of 5 closed already** (excluding the newly-inherited #38).  #94 closed via `Z80SplitDjnzCounters` + `BReg` class (session 39); #98 investigation closed same session (write-up in `tasks/regalloc-sequential-djnz-investigation.md`); **#99 also closed** (BC ping-pong i16-counter sub-case via session 35 peephole + #111 follow-up).  Open: **#89** (loop-invariant DE reload), **#27** (per-pair 16-bit copy cost), and **#38** (carried over from Phase 2; expected to close as a side effect of the cost-model work behind #89/#27, see roadmap §12.3 step 6). |
 | **Phase 4 — Cluster B spill mechanism** | Retired per triage (only #100 live; #20/#16/#96 owner-downgraded).  See `tasks/triage-2026-05-03-cluster-b.md`. |
 | **Phase 5+** | Not yet active. |
 
@@ -33,21 +33,23 @@ This evening's re-verification corrects that.
 Per roadmap section 10.2, engagement-mode (PRs to llvm-z80/llvm-z80)
 opens when:
 
-  1. All correctness bugs closed locally.  **Status:** 4/5 done; #38
-     remains.
+  1. All correctness bugs closed locally.  **Status:** done — Phase
+     2 closed in session 42; #38 reclassified to Phase 3 since its
+     residual is regalloc cost-model, not codegen-correctness.
   2. One coherent cluster of pessimization fixes closed locally.
-     **Status:** Cluster A is **3 of 5 closed**.  If 60% closure
-     counts as "cluster fundamentally addressed", we are effectively
-     done; otherwise #89 + #27 remain.
+     **Status:** Cluster A is **3 of 5 closed** on its original
+     membership (#94, #98, #99).  Now also owns #89, #27, #38.  If
+     50% closure counts as "cluster fundamentally addressed", we
+     are effectively done; otherwise the cost-model work on #89/#27
+     (which is expected to subsume #38) is the gate.
   3. Test infrastructure ready.  **Status:** done (Phase 1).
   4. Coordinated narrative for upstream.  **Status:** drafted in
      roadmap section 14.
 
-Engagement-mode is now **one or two threads away**, depending on
-how strictly "cluster closed" is interpreted.  The pragmatic read:
-**close #38, then engage** — Cluster A's remaining two items can
-be raised on the upstream tracker if they're genuinely upstream-
-relevant rather than serving as a prerequisite gate.
+Engagement-mode is now **one cluster away** (close one Phase 3
+cluster).  Loose reading: already met if 3-of-5 Cluster A counts
+as "fundamentally addressed".  Strict reading: close #89 and #27
+(which carry #38 along).
 
 ## Near-term sessions (1-3 ahead)
 
@@ -74,28 +76,33 @@ relevant rather than serving as a prerequisite gate.
 
 ### Session N (next): pick one structural entry
 
-**Recommended order under structural lens:**
+**Recommended order under structural lens** (post-session-42
+reclassification — #38 is now Phase 3, gated on #89/#27 cost-model
+work, NOT a standalone next entry):
 
-1. **#38 (Phase 2 closing item).**  IY un-reservation; gated by
-   #112 (closed) + #113 (closed) + #115 (regalloc heuristics).
-   With both policy-violation gates now closed, the remaining
-   work is purely regalloc heuristics — picking IY for
-   LDIR/LDDR/HL-tied operands needs to back off.
-   - Why first: closes Phase 2 entirely.  After #38 lands,
-     engagement-mode gate is met (or close to it, depending on
-     how strictly Cluster A's 3-of-5 close counts).
-2. **#89 — loop-invariant DE reload** (multi-session)
+1. **#89 — loop-invariant DE reload** (multi-session)
    - Layer: regalloc cost model (counter-vs-pointer-vs-pattern
      allocation interaction).
    - Closes: one Cluster A issue + concrete cpnos-rom
      `setup_ivt` 25→17 B win.
-   - Why second: largest leverage on remaining Cluster A work.
+   - Why first: largest leverage on remaining Cluster A work; the
+     cost-model insight is expected to subsume #38's residual
+     greedy-regalloc bug.
+2. **#27 — per-pair 16-bit register copy cost** (multi-session)
+   - Layer: `getRegAllocationHints` / `getRegClassWeight`.
+   - Sibling of #89; touches the same allocator surface.
 3. **#120 — combiner work for closed #79 / #93** (parallel thread)
    - Layer: GISel combiner.
    - Enables deletion of audit-Delete peepholes #26, #27, #28
      (~230 LOC).
    - Why available: independent of other threads; can run
      alongside any of 1-2.
+
+**Do NOT attempt #38 directly before #89/#27 land.**  Session 39
+already proved that path is a dead end (un-reserving IY produces
+11 runtime FAILs + 52 compile FATALs even with #28/#105 fixed).
+The cost-model work on #89/#27 is the upstream fix; #38's re-test
+is a downstream verification step.
 
 **Lesson logged**: when filing follow-up issues, **read the
 current source state first**.  #119 was filed from the audit's
@@ -104,21 +111,19 @@ had already been deleted in the same session as the audit was
 written.  Cost: trivial (closed as dup), but small audit-the-
 state-before-filing waste.
 
-### Sessions N+1 / N+2: Cluster A finishing + Phase 2 close
+### Sessions N+1 / N+2: Cluster A finishing
 
-  - **#27 — per-pair 16-bit register copy cost.**  Sibling of
-    #89 in Cluster A.  Multi-session — touches
-    `getRegAllocationHints` and possibly `getRegClassWeight`.
-    May subsume parts of #89.
-  - **#115 — regalloc heuristics for IY-allocatable** if not
-    already covered by #38's investigation.
+  - Whichever of **#89** / **#27** wasn't picked in session N.
+  - **#115 — regalloc heuristics for IY-allocatable** — likely
+    folded into #38's re-test step rather than handled standalone.
 
-### Sessions N+3 onward: Phase 2 closing (#38) + combiner deletions
+### Sessions N+3 onward: #38 re-test + combiner deletions
 
-- **#38 (Phase 2 last item).**  IY un-reservation; gated by #112
-  (closed) + #113 (TableGen restriction, see Session N option 1) +
-  #115 (regalloc heuristics).  Largest single-issue effort in the
-  immature-backend cluster.
+- **#38 (carried from Phase 2; re-classified Phase 3 in session 42).**
+  Re-test step only — un-reserve IY and re-run the edge_prom suite
+  after #89/#27 cost-model fixes have landed.  Expected outcome:
+  closes as a side effect of the cost-model work, or narrows to a
+  residual that's now bisectable against a known-good cost model.
 - **#120 — combiner work for closed #79 / #93.**  Write GISel
   combiners that match the IR shapes the post-RA peepholes
   currently rewrite.  When landed, delete audit peepholes **#26,
@@ -219,12 +224,19 @@ with sessions N+1 / N+2.
 
 ## Summary, one paragraph
 
-Phase 1 Foundation is done.  Phase 2 has one issue left (#38).
-Phase 3 Cluster A is **3 of 5 closed** (#94, #98, #99 already
-landed in earlier sessions); **#89** and **#27** remain as multi-
-session investigations.  #113 + #121 (evening 2026-05-03) closed
-the IY un-reservation policy-violation half of #38; the remaining
-gate is regalloc heuristics (#115).  Stop adding post-RA peepholes;
-migrate or delete the existing ones as their structural fix lands.
-Engagement-mode gate is one or two threads away — close #38,
-optionally finish #89/#27, then begin upstream interaction.
+Phase 1 Foundation is done.  **Phase 2 Correctness is done** as
+of session 42 (2026-05-03 admin pass): four issues fixed (#28,
+#36, #63, #81); **#38 reclassified to Phase 3** because session 39
+proved its residual is greedy-regalloc cost-model under -Os
+pressure, not a Phase 2 codegen-correctness item.  Phase 3
+Cluster A is **3 of 5 closed** on its original membership (#94,
+#98, #99 already landed in earlier sessions); now also owns #38.
+**#89** and **#27** remain as multi-session investigations and
+are expected to subsume #38 as a side effect of the cost-model
+fix.  #113 + #121 (evening 2026-05-03) had already closed the IY
+un-reservation policy-violation half of #38; what remains is the
+regalloc heuristics piece (#115), which is the same surface area
+as #89/#27.  Stop adding post-RA peepholes; migrate or delete the
+existing ones as their structural fix lands.  Engagement-mode
+gate is one cluster away — finish #89/#27 (which carry #38), then
+begin upstream interaction.

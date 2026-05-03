@@ -17,13 +17,13 @@ session-36 framing of "Phase 1 is next" is stale.  Current state:
 | Phase | Status |
 |---|---|
 | Phase 1 — Foundation | **DONE.**  CI workflow `.github/workflows/z80-ci.yml`, size baseline `tasks/size-baseline.py`, late-opt audit (session 37), source-cleanup audit (session 34) all landed. |
-| Phase 2 — Correctness | **4 of 5 closed.**  #28, #36, #63, #81 closed 2026-05-02/03.  #38 remains. |
-| Phase 3 — Cluster A regalloc | **Next active workstream.**  See section 12.3. |
+| Phase 2 — Correctness | **DONE** (5 of 5).  #28, #36, #63, #81 closed 2026-05-02/03.  **#38 reclassified to Phase 3** on 2026-05-03 (session 42 admin pass): session 39 re-test with #28 + #105 already fixed produced 11 runtime FAILs + 52 compile FATALs after un-reserving IY, confirming the residual bug is a greedy-regalloc cost-model issue under -Os pressure on Z80's 3-pair register file — i.e. Cluster A territory.  Issue text comment 4 already records this finding.  See section 12.2 update. |
+| Phase 3 — Cluster A regalloc | **Next active workstream.**  Now also owns #38.  See section 12.3. |
 | Phase 4 — Cluster B spill mechanism | Mostly stale; only #100 live.  See section 12.4 update + `tasks/triage-2026-05-03-cluster-b.md`. |
 | Phase 5+ | Not yet active. |
 
-Engagement-mode (section 10.2) gate is two threads away: close #38
-plus close one cluster (Phase 3 candidate).
+Engagement-mode (section 10.2) gate is one thread away: close one
+Phase 3 cluster (which subsumes #38 by construction).
 
 Current tactical plan: `tasks/plan-2026-05-03-structural.md`.
 
@@ -663,23 +663,25 @@ weeks.
 
 Exit: CI green; size baseline locked; audit docs landed.
 
-### 12.2  Phase 2 — Correctness sweep (2-4 weeks)
+### 12.2  Phase 2 — Correctness sweep — DONE 2026-05-03
 
-Issues: #28, #36, #38, #63, #81.
+Original issue set: #28, #36, #38, #63, #81.
 
-Order:
-  1. **#81 first** (S, MC parser).  Quick win; useful as
-     warm-up for the @zlfn collaboration cadence.
-  2. **#36 second** (M, va_arg).  Focused ABI bug; narrow scope.
-  3. **#28 + #63 third** (L investigation).  Likely shared root
-     cause in FastRegAlloc / spill-slot at -O0.  One investigation,
-     one fix-set.
-  4. **#38 last** (L, layout-sensitive IY bug).  Highest risk; the
-     longest individual fix; allows IY/IX to be re-enabled as
-     allocatable per CLAUDE.md.
+Closed: #81 (S, MC parser), #36 (M, va_arg), #28 + #63 (L,
+FastRegAlloc / spill-slot at -O0).
 
-Exit: zero correctness issues open; lit tests + MAME smoke green
-on all four opt levels.
+**Reclassified out of Phase 2:** #38 (L, layout-sensitive IY bug).
+Session 39 re-test (with #28 and #105 already fixed) produced 11
+runtime FAILs + 52 compile FATALs after un-reserving IY.  The
+residual bug is a greedy-regalloc cost-model issue on Z80's 3-pair
+register file under -Os IR pressure — same family as #94/#98/#89.
+Now tracked under Phase 3 / Cluster A (section 12.3 step 6); the
+expectation is that the cost-model changes from #94/#98 will close
+#38 as a side effect, and only then is a re-test of un-reserving
+IY worthwhile.
+
+Exit (achieved): four correctness issues closed; #38 carried
+forward into Phase 3 with explicit dependency on #94/#98.
 
 ### 12.3  Phase 3 — Cluster A (regalloc) (3-5 weeks)
 
@@ -696,9 +698,16 @@ Order:
      or peephole rewrite.
   5. **#27 evaluation** — per-pair 16-bit cost.  May be subsumed
      by 1-4 above.
+  6. **#38 re-test** (carried over from Phase 2) — once #94/#98
+     land, un-reserve IY and re-run the edge_prom suite.  Expected
+     outcome: #38 closes as a side effect of cost-model fixes, or
+     narrows to a residual that's now bisectable against a known-
+     good cost model.  Do NOT attempt before #94/#98 — session 39
+     proved that's a dead end.
 
-Exit: 4-5 issues closed; rcbios + cpnos-rom sizes improved or
-unchanged (no regression).
+Exit: 4-5 Cluster A issues closed plus #38 either closed-as-side-
+effect or re-pruned to its remaining residual; rcbios + cpnos-rom
+sizes improved or unchanged (no regression).
 
 ### 12.4  Phase 4 — Cluster B (spill mechanism) — overlaps Phase 3
 
