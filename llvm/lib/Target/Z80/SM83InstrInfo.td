@@ -115,7 +115,10 @@ def SM83_CMP_Z16 : Z80Pseudo<(outs), (ins GR16:$lhs, GR16:$rhs)> {
 
 // Lightweight 16-bit zero test: LD A,lo; OR hi — sets Z if reg==0.
 // Only clobbers A (not B), reducing register pressure in loops.
-def SM83_CMP_ZERO16 : Z80Pseudo<(outs), (ins GR16:$src)> {
+// GR16NoIR (#113): expansion uses `getLD8RegOpcode(A, src_lo)` and
+// `getOROpcode(src_hi)`, which would emit undocumented IXH/IXL/IYH/IYL
+// ops if IX/IY were allocated.  No PUSH/POP fallback exists.
+def SM83_CMP_ZERO16 : Z80Pseudo<(outs), (ins GR16NoIR:$src)> {
   let Defs = [A, FLAGS];
   let mayLoad = false;
   let mayStore = false;
