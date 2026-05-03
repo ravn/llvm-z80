@@ -1073,13 +1073,15 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
 
     // CRITICAL: LDIR with BC=0 runs 65536 iterations, trashing 64 KB of
     // memory.  When Size is a known constant 0, drop the op entirely
-    // (#63).  For variable Size that may be 0 the caller is responsible
-    // for the guard; only -O0 + small constant inits exercise the bug.
-    if (auto SizeC = getIConstantVRegSExtVal(Size, MRI)) {
-      if (*SizeC == 0) {
-        MI.eraseFromParent();
-        return true;
-      }
+    // (#63).  When Size is a non-zero constant, emit the unguarded
+    // LDIR — that's smaller and the BC test is a known win.  When
+    // Size is variable (may be 0 at run-time), emit LDIR_GUARDED so
+    // post-RA expansion adds a `LD A,B; OR C; JR Z, skip` runtime
+    // guard around the LDIR (#105).
+    auto SizeC = getIConstantVRegSExtVal(Size, MRI);
+    if (SizeC && *SizeC == 0) {
+      MI.eraseFromParent();
+      return true;
     }
 
     MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
@@ -1089,7 +1091,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
     MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
     MIRBuilder.buildCopy(Register(Z80::BC), Size);
-    MIRBuilder.buildInstr(Z80::LDIR);
+    MIRBuilder.buildInstr(SizeC ? Z80::LDIR : Z80::LDIR_GUARDED);
 
     MI.eraseFromParent();
     return true;
@@ -1115,13 +1117,14 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return true;
     }
 
-    // CRITICAL: LDIR/LDDR with BC=0 runs 65536 iterations.  When Size
-    // is a known constant 0, drop the op entirely (#63).
-    if (auto SizeC = getIConstantVRegSExtVal(Size, MRI)) {
-      if (*SizeC == 0) {
-        MI.eraseFromParent();
-        return true;
-      }
+    // CRITICAL: LDIR/LDDR with BC=0 runs 65536 iterations.  size==0 →
+    // erase (#63).  Non-zero constant Size → unguarded LDIR/LDDR.
+    // Variable-size case → guarded form so a run-time BC==0 skips
+    // the block-move (#105).
+    auto SizeC = getIConstantVRegSExtVal(Size, MRI);
+    if (SizeC && *SizeC == 0) {
+      MI.eraseFromParent();
+      return true;
     }
 
     // Determine the dst-src direction.
@@ -1186,7 +1189,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
       MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
       MIRBuilder.buildCopy(Register(Z80::BC), Size);
-      MIRBuilder.buildInstr(Z80::LDIR);
+      MIRBuilder.buildInstr(SizeC ? Z80::LDIR : Z80::LDIR_GUARDED);
     } else { // LDDR
       // LDDR copies backward: HL = src + size - 1, DE = dst + size - 1,
       // BC = size, then decrement HL/DE/BC each iteration (#91).
@@ -1236,7 +1239,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       MIRBuilder.buildCopy(Register(Z80::HL), SrcEnd);
       MIRBuilder.buildCopy(Register(Z80::DE), DstEnd);
       MIRBuilder.buildCopy(Register(Z80::BC), Size);
-      MIRBuilder.buildInstr(Z80::LDDR);
+      MIRBuilder.buildInstr(SizeC ? Z80::LDDR : Z80::LDDR_GUARDED);
     }
     MI.eraseFromParent();
     return true;
@@ -1266,26 +1269,39 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
 
     // CRITICAL: when the LDIR-fill pattern below is fed BC=0 (which is
     // size-1 for size==1), LDIR runs 65536 iterations and trashes 64 KB
-    // of memory.  When Size is a known constant, special-case the
-    // degenerate sizes (#63):
+    // of memory.  Constant-Size handling (#63):
     //   size==0 → no-op, drop the MI;
     //   size==1 → emit only the leading single-byte store, skip LDIR.
+    // Variable-size case → MEMSET_LDIR_GUARDED (#105): post-RA
+    // expansion adds runtime size==0 and size==1 guards around the
+    // entire fill (leading store + LDIR).
     auto SizeC = getIConstantVRegSExtVal(Size, MRI);
     if (SizeC && *SizeC == 0) {
       MI.eraseFromParent();
       return true;
     }
 
-    // Inline memset using LDIR fill: LD (HL),val; DE=HL+1; BC=n-1; LDIR.
-    // This copies the fill byte forward through the buffer.
     MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
 
-    // Store val at first byte: HL=dst, then LD (HL),val
+    if (!SizeC) {
+      // Variable size: emit the guarded pseudo.  Inputs: HL=dst,
+      // E=val, BC=size.  val is held in E (not A) so the BC test
+      // inside the expansion (`LD A,B; OR C`) doesn't clobber it.
+      MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::E), ValReg);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::MEMSET_LDIR_GUARDED);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Constant size >= 1: inline LD (HL),val + (if size > 1) LDIR.
+    // Store val at first byte: HL=dst, then LD (HL),val.
     MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
     MIRBuilder.buildCopy(Register(Z80::A), ValReg);
     MIRBuilder.buildInstr(Z80::LD_HLind_A);
 
-    if (SizeC && *SizeC == 1) {
+    if (*SizeC == 1) {
       MI.eraseFromParent();
       return true;
     }

@@ -221,7 +221,7 @@
     "_memcpy": 0,
     "_memset": 0,
     "_puts_p": 12,
-    "_relocate_bios": 47,
+    "_relocate_bios": 55,
     "_rowdn": 23,
     "_rowup": 23,
     "_rwoper": 263,

@@ -139,11 +139,14 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(Z80::FLAGS);
 
   // IX and IY: always reserved on Z80.
-  // IX/IY allocation was attempted but produces incorrect code in large
-  // functions under the greedy register allocator (#38). The feature is
-  // incomplete — IY is not callee-saved, and the allocator's spill/split
-  // decisions for IY under high register pressure are unreliable.
-  // Tracked for future work in #38.
+  // IY allocation was attempted but produces incorrect code in large
+  // functions under the greedy register allocator (#38).  One plausible
+  // alternate root cause — silent miscompile of large-offset IY
+  // SPILL/RELOAD — was fixed as #28 in session 39, but a re-test (un-
+  // reserve IY, run the full clang -Os suite) still produced 11 new
+  // runtime FAILs that did not exist with IY reserved.  So #38 is a
+  // deeper regalloc / register-class issue and stays parked for the
+  // Phase 3 regalloc cluster.
   Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
@@ -535,8 +538,8 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
 
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
-  } else {
-    // SrcReg is BC or DE. Use the other as temp.
+  } else if (SrcReg == Z80::BC || SrcReg == Z80::DE) {
+    // BC or DE source. Use the other as temp.
     Register TempReg = (SrcReg == Z80::BC) ? Z80::DE : Z80::BC;
     Register SrcLo = (SrcReg == Z80::BC) ? Z80::C : Z80::E;
     Register SrcHi = (SrcReg == Z80::BC) ? Z80::B : Z80::D;
@@ -554,6 +557,51 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(SrcLo)));
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(SrcHi)));
+
+    if (NeedSaveTemp)
+      BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
+    if (NeedSaveHL)
+      BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
+  } else {
+    // IX or IY source (#28).  Z80 has no LD (HL),IX/IY or per-half
+    // store, so we must transfer through a GR16 temp pair (BC or DE):
+    // first PUSH IX/IY (so the value sits on the stack across the
+    // address computation, which itself uses TempReg as scratch),
+    // then POP into temp once HL holds the destination address.
+    assert((SrcReg == Z80::IX || SrcReg == Z80::IY) &&
+           "expandSpillGR16LargeOffset: unexpected SrcReg");
+    unsigned PushSrc = (SrcReg == Z80::IX) ? Z80::PUSH_IX : Z80::PUSH_IY;
+
+    Register TempReg;
+    if (!isRegLiveAt(Z80::DE, MBB, NextIt, TRI))
+      TempReg = Z80::DE;
+    else if (!isRegLiveAt(Z80::BC, MBB, NextIt, TRI))
+      TempReg = Z80::BC;
+    else
+      TempReg = Z80::DE;
+    Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
+    Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
+
+    bool NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+    bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, TRI);
+
+    if (NeedSaveHL)
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+    if (NeedSaveTemp)
+      BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
+
+    // PUSH IX/IY parks the value on the stack across the
+    // emitLargeOffsetAddr call (which clobbers TempReg with the
+    // offset).  emitLargeOffsetAddr balances its own internal
+    // PUSH IX; POP HL pair, so the IX/IY value is still on top of
+    // the stack when we POP it into the temp pair.
+    BuildMI(MBB, MI, DL, TII.get(PushSrc));
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
+
+    BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempLo)));
+    BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
+    BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempHi)));
 
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
@@ -605,8 +653,8 @@ static void expandReloadGR16LargeOffset(MachineBasicBlock &MBB,
 
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
-  } else {
-    // DstReg is BC or DE. Use DstReg itself as temp (old value is dead).
+  } else if (DstReg == Z80::BC || DstReg == Z80::DE) {
+    // BC or DE destination. Use DstReg itself as temp (old value is dead).
     bool NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
 
     if (NeedSaveHL)
@@ -620,6 +668,47 @@ static void expandReloadGR16LargeOffset(MachineBasicBlock &MBB,
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
     BuildMI(MBB, MI, DL, TII.get(getLoadHLindOpcode(DstHi)));
 
+    if (NeedSaveHL)
+      BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
+  } else {
+    // IX or IY destination (#28).  Z80 has no LD IX/IY,(HL) or per-half
+    // load, so we must transfer through a GR16 temp pair (BC or DE),
+    // then PUSH temp; POP IX/IY.  HL is also clobbered by the address
+    // computation.  Save HL and the temp pair if either is live across
+    // this RELOAD.
+    assert((DstReg == Z80::IX || DstReg == Z80::IY) &&
+           "expandReloadGR16LargeOffset: unexpected DstReg");
+    unsigned PopOp = (DstReg == Z80::IX) ? Z80::POP_IX : Z80::POP_IY;
+
+    Register TempReg;
+    if (!isRegLiveAt(Z80::DE, MBB, NextIt, TRI))
+      TempReg = Z80::DE;
+    else if (!isRegLiveAt(Z80::BC, MBB, NextIt, TRI))
+      TempReg = Z80::BC;
+    else
+      TempReg = Z80::DE;
+    bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, TRI);
+    bool NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+
+    if (NeedSaveHL)
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+    if (NeedSaveTemp)
+      BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
+
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+
+    Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
+    Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
+    BuildMI(MBB, MI, DL, TII.get(getLoadHLindOpcode(TempLo)));
+    BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
+    BuildMI(MBB, MI, DL, TII.get(getLoadHLindOpcode(TempHi)));
+
+    // Transfer temp -> IX/IY via PUSH/POP.
+    BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
+    BuildMI(MBB, MI, DL, TII.get(PopOp));
+
+    if (NeedSaveTemp)
+      BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
     if (NeedSaveHL)
       BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
   }

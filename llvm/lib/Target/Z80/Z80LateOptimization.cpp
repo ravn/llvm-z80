@@ -24,6 +24,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -1509,14 +1510,29 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
         if (!ADead) { ++MII; continue; }
 
-        // Check HL is not used between I0 and I2 (it isn't — the 3
-        // instructions only use A and direct addressing). We also need
-        // HL to be dead after I2. Conservative: check that HL is not
-        // read by I3 (or I3 is a flag-only branch and I4 doesn't read HL).
-        // Actually, we SET HL to addr which is a useful value, but the
-        // caller doesn't expect it. For safety, just check I3 doesn't
-        // read HL.
-        // Skip this check for now — the pattern is specific enough.
+        // The transformation emits `LD HL, addr; INC/DEC (HL)`, which
+        // clobbers H and L (the LD HL,nn) and also implicitly reads
+        // them (INC (HL) reads HL).  We must not fire if either H or L
+        // is currently live across the original 3-instruction sequence
+        // — otherwise we destroy a value the surrounding code relies on
+        // (#104: c1 was held in H across an inlined check_true body
+        //  that did `LD HL,_side_effect_counter; INC (HL)`, so the
+        //  caller's c1 was lost).  The original sequence only uses A,
+        //  so H and L are otherwise free.  Compute liveness post-I2 by
+        //  walking back from MBB live-outs and skip the rewrite if H,
+        //  L, or HL is still live there.
+        {
+          LivePhysRegs LiveRegs(*TRI);
+          LiveRegs.addLiveOuts(MBB);
+          for (auto Iter = MBB.rbegin();
+               Iter != MBB.rend() && &*Iter != &*I2; ++Iter)
+            LiveRegs.stepBackward(*Iter);
+          if (LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L) ||
+              LiveRegs.contains(Z80::HL)) {
+            ++MII;
+            continue;
+          }
+        }
 
         DebugLoc DL = I0->getDebugLoc();
         unsigned IncDecOpc = IsInc ? Z80::INC_HLind : Z80::DEC_HLind;
@@ -2982,6 +2998,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
 
         if (Run.size() >= 3) {
+          // Liveness guard (#107, same anti-pattern as #104): the
+          // rewrite emits `LD HL, base` and walks HL via `INC HL` for
+          // every store after the first.  This clobbers H, L, and HL.
+          // The original chain only uses A, so H/L are otherwise free.
+          // Walk back from MBB live-outs to the chain head and bail if
+          // H, L, or HL is live there — otherwise we'd destroy a value
+          // the surrounding code relies on (e.g. the i16 ptr argument
+          // arriving in HL via sdcccall).
+          {
+            LivePhysRegs LiveRegs(*TRI);
+            LiveRegs.addLiveOuts(MBB);
+            for (auto Iter = MBB.rbegin();
+                 Iter != MBB.rend() && &*Iter != &*MII; ++Iter)
+              LiveRegs.stepBackward(*Iter);
+            if (LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L) ||
+                LiveRegs.contains(Z80::HL)) {
+              MII = std::next(It2);
+              continue;
+            }
+          }
           // Rewrite: ld hl, base; { ld (hl), imm; inc hl }+
           // Drop the trailing INC HL after the last store (one-byte save).
           DebugLoc DL = MII->getDebugLoc();
