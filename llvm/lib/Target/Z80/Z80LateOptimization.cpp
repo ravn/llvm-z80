@@ -2998,6 +2998,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
 
         if (Run.size() >= 3) {
+          // Liveness guard (#107, same anti-pattern as #104): the
+          // rewrite emits `LD HL, base` and walks HL via `INC HL` for
+          // every store after the first.  This clobbers H, L, and HL.
+          // The original chain only uses A, so H/L are otherwise free.
+          // Walk back from MBB live-outs to the chain head and bail if
+          // H, L, or HL is live there — otherwise we'd destroy a value
+          // the surrounding code relies on (e.g. the i16 ptr argument
+          // arriving in HL via sdcccall).
+          {
+            LivePhysRegs LiveRegs(*TRI);
+            LiveRegs.addLiveOuts(MBB);
+            for (auto Iter = MBB.rbegin();
+                 Iter != MBB.rend() && &*Iter != &*MII; ++Iter)
+              LiveRegs.stepBackward(*Iter);
+            if (LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L) ||
+                LiveRegs.contains(Z80::HL)) {
+              MII = std::next(It2);
+              continue;
+            }
+          }
           // Rewrite: ld hl, base; { ld (hl), imm; inc hl }+
           // Drop the trailing INC HL after the last store (one-byte save).
           DebugLoc DL = MII->getDebugLoc();
