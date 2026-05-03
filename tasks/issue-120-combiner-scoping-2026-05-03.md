@@ -239,58 +239,117 @@ Start with **#79 sub-task**.  Concrete plan:
 The same template applies to #93, with the more complex match
 condition.
 
-## Session 42 partial implementation: #79 combiner LANDED, peephole #26 NOT YET RETIRED
+## Session 42 attempted implementation: BOTH rules ruled out as unsound
 
-Steps 1-3 of the next-session plan above were completed in the
-same session.  Combiner rule `z80_sext_from_icmp` added to
-`Z80Combine.td`; `matchSextFromIcmp` / `applySextFromIcmp`
-implemented in `Z80PostLegalizerCombiner.cpp`.  Build clean; lit
-90/90; sizes unchanged with both combiner + peephole active.
+### What was tried
 
-Step 5 (verification by side-branch deletion) revealed that the
-combiner does NOT yet subsume peephole #26:
+Two GISel PostLegalizerCombiner rules:
 
-  - With peephole #26 disabled: BIOS 5929 → 5943 (+14 B);
-    cpnos-rom 1777 → 1781 (+4 B) [actually cpnos.bin "non-padding"
-    metric was unchanged at 1777, but per-function `payload.elf`
-    showed +27 B].  8 regression sites, 2 improvement sites.
-  - Regression sites match those that #89 Path 2 also flagged:
-    `_erase_to_eol`, `_erase_to_eos`, `_delete_line`,
-    `_bg_clear_from`, `_bios_conin`, `_bios_reads_body`,
-    `_impl_const`, `_bios_write_c`.  Magnitudes (+4/+5/+7/+8) match
-    the 8-byte tail this peephole catches, suggesting these sites
-    produce the SBC-roundtrip asm via IR shapes other than
-    `G_SEXT (G_ICMP)`.
+  1. `z80_sext_from_icmp`: G_SEXT %dst, %src where %src is from
+     G_ICMP → G_ANYEXT.  Idea: let downstream cast_of_cast /
+     identity_combines absorb the no-op widen.
+  2. `z80_ashr_shl_from_icmp`: G_ASHR (G_SHL %x, 7), 7 where %x
+     is from G_ICMP → COPY %x.  Idea: catch the post-legalization
+     form of `sext i1 → i8` after the legalizer has expanded
+     G_SEXT into the canonical shift idiom.
 
-Conclusion: the combiner correctly handles the canonical lit case
-(`mask-from-flag.ll`) but the production codebase has additional
-IR shapes (likely `G_ASHR (G_SHL 7)` standalone, or i1 results
-flowing through copies/phis) that produce the same asm pattern.
-Peephole #26 catches the asm pattern regardless of IR shape;
-combiner is strictly weaker.
+### Why both are unsound
 
-**Action taken (session 42):** combiner LANDS as foundation work;
-peephole #26 STAYS as catch-all backstop.  Source comment on
-peephole #26 updated to reference this finding.  Code is
-structurally cleaner (one IR shape now closes structurally), but
-the peephole-deletion goal of #120 is not yet met.
+Z80's `BooleanContents` is `ZeroOrOneBooleanContent`
+(Z80ISelLowering.cpp:49), NOT `ZeroOrNegativeOneBooleanContent`.
+The G_ICMP s8 result is therefore `0x01` / `0x00` (low bit only,
+high bits zero) by IR contract — even though the Z80 instruction
+selector lowers G_ICMP via the SUB/ADD/SBC sequence that
+*physically* leaves a full mask in A.
 
-**Future-session work for full #79 retirement:**
+The (shl 7; ashr 7) shift idiom is therefore NOT an identity at
+the IR layer:
 
-  - Compile a regressed function (e.g. `_erase_to_eol`) with
-    `-print-after=z80-postlegalizer-combiner` and identify the
-    actual IR shape feeding the SBC-roundtrip.
-  - Extend the combiner match to cover that shape too.  Likely
-    candidates: `G_ASHR (G_SHL %x, 7), 7` standalone (canonical
-    sext-i1-to-i8 idiom not coming through G_SEXT); `G_SEXT
-    (G_PHI)` where the phi merges G_ICMP results; copy-through
-    cases.
-  - Re-run the side-branch verification.  Repeat until disabling
-    peephole #26 leaves rcbios + cpnos-rom unchanged.
-  - Then land peephole #26 deletion as the second commit.
+  - Input (i1 in low bit): 0x01 or 0x00.
+  - SHL by 7: 0x80 or 0x00.
+  - ASHR by 7: 0xFF (sign extend from bit 7) or 0x00.
 
-Estimated additional work: 1-2 sessions to fully retire peephole
-#26.
+It is a meaningful *widen* from 1-bit-encoded i1 to full-mask
+i8.  Eliding it produces 0x01 / 0x00 instead of 0xFF / 0x00 —
+which silently breaks any consumer that expects the full mask
+(e.g. `kbstat = (kbtail != kbhead) ? 0xFF : 0x00;` in
+rcbios/bios.c:936, where `kbstat` would be stored as 0x01 instead
+of 0xFF).
+
+### Why peephole #26 IS sound
+
+Peephole #26 runs POST-Instruction-Selection, so it sees the
+physical asm sequence chosen by the Z80 backend for G_ICMP:
+`SUB; ADD a,$ff; SBC a,a` — which leaves A = 0xFF / 0x00 (full
+mask) regardless of the IR-level `BooleanContents` convention.
+At THIS layer, the trailing `and $1; rrca; and $80; add a,a;
+sbc a,a` is genuinely an identity on the value already in A —
+it conceptually truncates the i8 mask back to an i1 and re-
+extends it to a full mask, both ending where they started.
+
+The peephole exploits a *target-specific lowering invariant* that
+isn't expressible at the GISel layer.
+
+### Lessons logged
+
+  - **A combiner cannot rely on lowering invariants.**  GISel
+    runs before instruction selection.  Any "the asm sequence will
+    leave a full mask" assumption is unsound at this layer.
+  - **`mask-from-flag.ll` is a weak test.**  It uses `CHECK-NOT`
+    on specific instructions; it does NOT verify the ABI value
+    matches the C source semantics.  The unsound combiner passed
+    the test but produced wrong code at non-test sites.  When the
+    true rcbios/cpnos-rom builds are available, prefer them as
+    the verification harness for any combiner change.
+  - **The `and $1` after `sbc a,a` in pre-peephole asm is the
+    `ZeroOrOneBoolean` truncation — meaningful, not redundant.**
+    Future readers should not assume it's part of the redundant
+    tail; it's the IR-mandated narrowing of the mask back to a
+    1-bit-encoded i1 before the (shl;ashr) widen-to-full-mask.
+
+### Reverted in session 42
+
+Both combiner rules removed from `Z80Combine.td` and the
+matching match/apply functions removed from
+`Z80PostLegalizerCombiner.cpp`.  Peephole #26 source comment
+updated to record the negative result.  Sizes back to baseline
+(BIOS 5929, cpnos-rom 1777); lit 90/90.
+
+### Revised paths to retire peephole #26
+
+The peephole-migration framing in this doc was wrong: the
+peephole exploits a target-specific invariant that the GISel
+combiner can't access.  Three options remain:
+
+  - **(A) Target-specific post-ISel combiner.**  After ISel has
+    chosen the SUB/ADD/SBC mask sequence for G_ICMP, a Z80-
+    specific MIR-level pass (running BEFORE Z80LateOptimization)
+    can recognize the post-ISel pattern and rewrite it.  This is
+    structurally just "Z80LateOptimization #26 moved earlier in
+    the pipeline" — same logic, different location.  Not a
+    structural improvement.
+  - **(B) Split G_ICMP lowering into a "produce full mask" form.**
+    Extend the Z80 instruction selector to lower G_ICMP into a
+    pseudo whose i8 result is contractually full-mask.  Then a
+    GISel combiner can soundly elide the (shl;ashr) widen because
+    the producer explicitly guarantees the high bits.  This is
+    larger surgery.
+  - **(C) Change Z80's BooleanContents.**  If we set
+    `setBooleanContents(ZeroOrNegativeOneBooleanContent)`, then
+    the G_ICMP result IS the full mask by IR contract, and the
+    legalizer would not emit the (shl;ashr) widen at all.  But
+    this affects ALL boolean-result lowering paths target-wide;
+    it is not a localized change.  Risk of broad regressions.
+
+None of (A)/(B)/(C) is a single-session task.  Recommendation:
+park #120 entirely until the broader regalloc cluster work
+(#89/#27/#94/#98) is complete, then revisit options (B) and (C)
+with a fuller picture of how they interact with cluster-level
+changes.
+
+Peephole #26 stays.  The session-42 attempt to retire it produced
+empirical evidence of WHY it is structurally needed — that is the
+deliverable.
 
 ## See also
 

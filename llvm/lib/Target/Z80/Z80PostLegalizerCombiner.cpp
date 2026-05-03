@@ -73,32 +73,6 @@ void applyCrossSizeCopy(MachineInstr &MI, unsigned &NewOpc) {
   MI.setDesc(TII.get(NewOpc));
 }
 
-// Match G_SEXT whose source is defined by G_ICMP.  The Z80 lowering of
-// G_ICMP already materialises a full-width i8 mask (0xFF / 0x00) in A
-// via the canonical `add a,$ff; sbc a,a` sequence.  When this i1 is
-// then sign-extended to i8, the canonical (shl 7; ashr 7) idiom for
-// sext-i1-to-i8 expands to a redundant 5-instruction tail on Z80
-// (and $1; rrca; and $80; add a,a; sbc a,a) that is an identity on the
-// value already in A.  Rewriting G_SEXT to G_ANYEXT here lets the
-// downstream cast_of_cast / identity_combines absorb the widen as a
-// no-op.  See ravn/llvm-z80#79 + #120.
-bool matchSextFromIcmp(MachineInstr &MI, MachineRegisterInfo &MRI) {
-  if (MI.getOpcode() != TargetOpcode::G_SEXT)
-    return false;
-  Register SrcReg = MI.getOperand(1).getReg();
-  if (!SrcReg.isVirtual())
-    return false;
-  MachineInstr *DefMI = MRI.getVRegDef(SrcReg);
-  if (!DefMI || DefMI->getOpcode() != TargetOpcode::G_ICMP)
-    return false;
-  return true;
-}
-
-void applySextFromIcmp(MachineInstr &MI) {
-  const TargetInstrInfo &TII = *MI.getMF()->getSubtarget().getInstrInfo();
-  MI.setDesc(TII.get(TargetOpcode::G_ANYEXT));
-}
-
 class Z80PostLegalizerCombinerImpl : public Combiner {
 protected:
   const CombinerHelper Helper;

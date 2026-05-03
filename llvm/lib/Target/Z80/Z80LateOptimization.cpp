@@ -2687,18 +2687,24 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // (we check); the outer Z/N/H/C state matches what the kept
     // SBC A,A established already.
     //
-    // Note (session 42, ravn/llvm-z80#120): a partial structural fix
-    // exists at the GISel combiner layer (`z80_sext_from_icmp` in
-    // Z80Combine.td) which catches the canonical `G_SEXT (G_ICMP)`
-    // IR shape and prevents the redundant tail from being emitted in
-    // the first place.  However the asm pattern arises from
-    // additional IR shapes (e.g. `G_ASHR (G_SHL 7)` standalone, or
-    // i1 results passed through copies/phis) that the combiner does
-    // not yet match.  Disabling this peephole regresses BIOS by
-    // +14 B and cpnos-rom by +7 B on those residual sites.  Until
-    // the combiner is extended to subsume the broader pattern, the
-    // peephole stays as the catch-all backstop.
+    // Note (session 42, ravn/llvm-z80#120): an attempt to migrate this
+    // to a GISel combiner ruled out the obvious approaches.  The
+    // peephole is structurally correct because it operates POST-ISel
+    // where it can rely on the target-specific invariant "after SBC
+    // A,A on Z80, the value in A is a full mask" -- the truncate-and-
+    // re-sign-extend tail is then a no-op on the physical register.
+    // A GISel combiner runs PRE-ISel where this invariant doesn't
+    // exist: Z80's BooleanContents is ZeroOrOne, so the i1 result of
+    // G_ICMP only has its low bit defined and the (shl 7; ashr 7)
+    // idiom is a meaningful widen, not an identity.  Eliding it at
+    // the GISel layer produces wrong code for any consumer that needs
+    // the full mask.  Migration would require either a target-specific
+    // post-ISel combiner or splitting G_ICMP lowering into a "produce
+    // mask" form whose i8 result is contractually full-mask.  Both
+    // are larger surgery than the peephole.  See
+    // tasks/issue-120-combiner-scoping-2026-05-03.md.
     {
+
       SmallVector<MachineInstr *, 8> ToErase;
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         if (MII->getOpcode() != Z80::SBC_A_A) continue;
