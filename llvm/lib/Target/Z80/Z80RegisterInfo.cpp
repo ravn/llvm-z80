@@ -1748,6 +1748,55 @@ bool Z80RegisterInfo::getRegAllocationHints(
       }
     }
     done_16bit_hints:;
+
+    // i16 self-loop-counter hint (#99): when an i16 vreg is the
+    // back-edge counter of a self-back-edge JR_NZ loop (def-by-DEC16
+    // or matching INC16 paired with a 16-bit zero-test branching to
+    // the same MBB), hint BC.  Without the hint the default GR16
+    // order picks DE (often taken by the loop body's value reg) then
+    // HL — and HL is the natural home for a pointer in the same
+    // loop, forcing the counter and pointer to ping-pong.  Hinting
+    // BC frees HL for the pointer and avoids the per-iteration
+    // SPILL/RELOAD of HL across the store.
+    if (is_contained(Order, Z80::BC)) {
+      bool IsCounter = false;
+      for (const MachineInstr &Def : MRI.def_instructions(VirtReg)) {
+        if (Def.getOpcode() != Z80::DEC16 &&
+            Def.getOpcode() != Z80::INC16)
+          continue;
+        const MachineBasicBlock *DefMBB = Def.getParent();
+        // Check the parent MBB has a self-back-edge JR_NZ / JP_NZ.
+        for (const MachineInstr &Term : DefMBB->terminators()) {
+          unsigned Opc = Term.getOpcode();
+          if (Opc != Z80::JR_NZ_e && Opc != Z80::JP_NZ_nn)
+            continue;
+          if (Term.getNumOperands() == 0 || !Term.getOperand(0).isMBB())
+            continue;
+          if (Term.getOperand(0).getMBB() == DefMBB) {
+            IsCounter = true;
+            break;
+          }
+        }
+        if (IsCounter)
+          break;
+      }
+      // Only emit BC for DEC16 (true countdown counter).  INC16-only
+      // vregs are usually pointers being advanced; HL is better there.
+      // The hint alone is a soft preference and greedy's copy-elim
+      // heuristic typically routes the counter to HL anyway; the real
+      // i16-counter fix lives in Z80SplitDjnzCounters which constrains
+      // the per-loop counter vreg to the BCReg single-register class.
+      // The hint here is a backstop for the basic regalloc.
+      if (IsCounter) {
+        for (const MachineInstr &Def : MRI.def_instructions(VirtReg)) {
+          if (Def.getOpcode() == Z80::DEC16) {
+            if (!is_contained(Hints, Z80::BC))
+              Hints.insert(Hints.begin(), Z80::BC);
+            break;
+          }
+        }
+      }
+    }
   }
 
   // Only hint B for 8-bit registers on Z80 (DJNZ is Z80-only).

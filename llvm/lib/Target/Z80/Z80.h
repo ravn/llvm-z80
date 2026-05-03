@@ -31,6 +31,7 @@ void initializeZ80LoopRotateLegacyPassPass(PassRegistry &);
 void initializeZ80LowerSelectPass(PassRegistry &);
 void initializeZ80PostRAScavengingPass(PassRegistry &);
 void initializeZ80ShiftRotateChainPass(PassRegistry &);
+void initializeZ80SplitDjnzCountersPass(PassRegistry &);
 
 // The behind-by-one property of the std::reverse_iterator adaptor applied by
 // reverse() does not properly handle instruction erasures. This range construct
