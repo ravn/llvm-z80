@@ -42,10 +42,18 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build tools
+      - name: Verify build tools (preinstalled on ubuntu-24.04 runner)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang lld python3
+          # The ubuntu-24.04 GitHub Actions runner image already provides
+          # cmake, ninja, clang, and python3.  lld is NOT required as a
+          # host tool: the Z80.cmake cache builds lld as part of LLVM
+          # (LLVM_ENABLE_PROJECTS="clang;lld"), and the LLVM host link
+          # uses the system linker.  This step is a sanity check; no
+          # apt-get install is needed.
+          cmake --version | head -1
+          ninja --version
+          clang --version | head -1
+          python3 --version
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -60,8 +68,16 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DLLVM_OPTIMIZED_TABLEGEN=ON
 
-      - name: Build clang + llc
-        run: ninja -C build clang llc
+      - name: Build clang + llc + lit dependencies
+        run: |
+          # Lit tests need FileCheck (output matching), llvm-objdump
+          # (some Z80 tests disassemble + match), llvm-nm, not + count
+          # (negative-test wrappers), and llvm-lit itself.  Building only
+          # clang+llc skips these and the lit step fails with
+          # "Did not find FileCheck in build/bin".
+          ninja -C build clang llc llvm-lit \
+                FileCheck count not \
+                llvm-objdump llvm-nm
 
       - name: Run Z80 lit suite
         run: build/bin/llvm-lit -v llvm/test/CodeGen/Z80/
