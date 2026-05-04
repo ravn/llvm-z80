@@ -268,23 +268,59 @@ BUILD_DIR=../../build-macos \
   PATH="/Users/ravn/z80/z88dk/src/ticks:$PATH" \
   cargo run -- clang -opt Os
 
-# SECONDARY value oracle (BIOS path coverage): MAME boot.
-# Currently NOT a single-make-target value oracle in this project --
-# `make mame-test` reaches only the cpnos banner because cpnos
-# waits for a z80pack mpm-net2 server (per project_cpnos_mame_prereqs
-# memory rule), and the rcbios-CP/M floppy boot path is no longer
-# the primary mode (per project_cpnos_only_prom).  When MAME boot
-# verification is needed:
-#   1. Refresh the MAME PROMs from current build: copy
-#      cpnos-rom/clang/cpnos.bin -> mame/roms/rc702/roa375.ic66.
-#      (Today there is no make target for this; check the dates
-#      of both files first.)
-#   2. Spin up z80pack mpm-net2 and verify cpnos network-boots to
-#      the prompt.  See rc700-gensmedet/cpnos-rom/README and the
-#      project_cpnos_mame_prereqs memory.
-# For most BIOS-touching changes the test-runner suite is sufficient;
-# escalate to the MAME path when a specific BIOS code path needs
-# end-to-end coverage.
+# SECONDARY value oracle (BIOS-path end-to-end): MAME boot in
+# rcbios STANDALONE mode (NOT cpnos mode).  Single-step.
+#
+# RC702 has two boot modes the project supports:
+#
+#   (A) rcbios standalone: autoload PROM in PROM 0 reads boot
+#       sector from floppy, loads rcbios + CCP + BDOS, jumps to
+#       CCP -> A> prompt.  No host-side server needed.  Boots
+#       end-to-end on its own.  THIS is the right mode for
+#       BIOS-touching value-oracle work.
+#
+#   (B) cpnos network boot: cpnos PROM in PROM 0 + PROM 1 boots
+#       diskless via SIO-A network frames; requires a host-side
+#       z80pack mpm-net2 server to respond.  NOT a single-step
+#       value oracle.  Use this mode only when the change touches
+#       the cpnos network code path.
+#
+# Mode-switching make targets:
+#
+#   To enter mode (A): `cd rc700-gensmedet/autoload-in-c && make prom`
+#       (writes the autoload PROM into mame/roms/rc702/roa375.ic66)
+#
+#   To enter mode (B): `cd rc700-gensmedet/cpnos-rom && make mame-roms-cpnos`
+#       (writes both prom0.bin and prom1.bin into the matching
+#        mame/roms/rc702/{roa375.ic66,prom1.ic65} files; both files
+#        MUST be refreshed in lockstep -- see GOTCHA below)
+#
+# Verifying rcbios standalone mode end-to-end (BIOS-area value oracle):
+#
+#   cd rc700-gensmedet/autoload-in-c && make prom    # mode swap
+#   cd rc700-gensmedet/rcbios-in-c && make mame-test
+#   # check /tmp/screen.txt for A> prompt and the rcbios disk-test
+#   # checksum signature DISK=<hex> ERR=0
+#
+# GOTCHA on cpnos mode: PROM refresh is TWO files, not one.
+# The MAME rc702 driver loads PROM 0 from `roa375.ic66` (mapped
+# at $0000) AND PROM 1 from `prom1.ic65` (mapped at $2000).  The
+# cpnos build produces matching `prom0.bin` + `prom1.bin` plus a
+# concatenated `cpnos.bin`.  Copying ONLY `cpnos.bin` to
+# `roa375.ic66` (the obvious move) refreshes PROM 0 but leaves
+# PROM 1 stale -- payload_b in PROM 1 carries the patcher's
+# checksum-correction word, which is computed against today's
+# body sum and won't cancel yesterday's stored body.  Symptom:
+# black screen with "BAD CHECKSUM" in row 0 of CRT memory; PC
+# stuck in a busy-loop in the cpnos relocator (~0x0075).  Fix:
+# always use `make mame-roms-cpnos` which refreshes both files
+# atomically with size sanity checks.
+#
+# For most BIOS-touching changes the test-runner suite is sufficient
+# and the MAME step is not needed.  When MAME-boot verification IS
+# needed, default to rcbios standalone mode (mode A) -- it's
+# end-to-end on its own.  Escalate to cpnos+mpm only when the
+# change is plausibly cpnos-path-affecting.
 ```
 
 **Why this distinction matters:**
