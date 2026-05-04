@@ -125,3 +125,10 @@ down.
   code path breaks autoload-in-c.  Most likely path: instrument
   rcbios's BSS-spill fire-sites with `LLVM_DEBUG` and trace what
   autoload-in-c is doing differently.
+- ravn/llvm-z80#123 — investigate which optimizer decisions are
+  influenced by `-g`.  Adding `-g` to autoload-in-c CFLAGS to enable
+  source-annotated listings shifted the PROM 1826 → 1861 B (+35 B).
+  Likely cause: a Z80LateOptimization peephole walks instructions
+  without skipping `DBG_VALUE`, or a GISel combiner preserves debug
+  locations by suppressing some rewrites.  Low priority but a probe
+  into backend correctness under `-g`.
