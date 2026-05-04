@@ -4999,10 +4999,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           // BSS load from the same address.
           if (const LoadInfo *LI = getLoadInfo(SOpc)) {
             if (sameAddress(*MII, *Scan)) {
-              // Mixed-width load (e.g. 8-bit load from a 16-bit slot, or
-              // vice versa) is an orphan -- value bytes wouldn't match.
-              // See issue #82 for the original same-pair-only orphan bug.
-              if (LI->Is8Bit != SI->Is8Bit) {
+              // Conservative: require SAME register pair as the store.
+              // Cross-pair (#74) was bisect-identified as miscompiling
+              // autoload-in-c; pending root-cause investigation, restrict
+              // back to same-pair only.  Same-pair test: matching PUSH
+              // opcode (SI's PushOpc == LI's PushOpc means same register
+              // pair, since both come from parallel-indexed tables).
+              if (SI->PushOpc != LI->PushOpc) {
                 Conflict = true;
                 break;
               }
