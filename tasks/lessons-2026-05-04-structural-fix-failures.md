@@ -287,8 +287,14 @@ BUILD_DIR=../../build-macos \
 #
 # Mode-switching make targets:
 #
-#   To enter mode (A): `cd rc700-gensmedet/autoload-in-c && make prom`
-#       (writes the autoload PROM into mame/roms/rc702/roa375.ic66)
+#   To enter mode (A): `cd rc700-gensmedet/rcbios-in-c && make mame-roms-rcbios`
+#       (writes the hand-assembled roa375/roa375.rom into
+#        mame/roms/rc702/roa375.ic66 -- this is the WORKING autoload
+#        PROM.  Note: the C reimplementation in autoload-in-c/ is
+#        currently broken -- it gets stuck in
+#        `_fdc_detect_sector_size_and_density` and never hands off
+#        to the BIOS.  See autoload-in-c/tasks/known-bugs.md.  Use
+#        the assembly version until the C bug is fixed.)
 #
 #   To enter mode (B): `cd rc700-gensmedet/cpnos-rom && make mame-roms-cpnos`
 #       (writes both prom0.bin and prom1.bin into the matching
@@ -297,10 +303,13 @@ BUILD_DIR=../../build-macos \
 #
 # Verifying rcbios standalone mode end-to-end (BIOS-area value oracle):
 #
-#   cd rc700-gensmedet/autoload-in-c && make prom    # mode swap
-#   cd rc700-gensmedet/rcbios-in-c && make mame-test
-#   # check /tmp/screen.txt for A> prompt and the rcbios disk-test
-#   # checksum signature DISK=<hex> ERR=0
+#   cd rc700-gensmedet/rcbios-in-c && make mame-roms-rcbios
+#   make mame-test
+#   # check /tmp/screen.txt for the BIOS banner ("RC700 56k CP/M 2.2
+#   # C-bios/clang <build-date>") and the rcbios disk-test checksum
+#   # signature DISK=<hex> ERR=0 in the make output.  Verified
+#   # working 2026-05-04 against the assembly roa375 PROM with
+#   # current rcbios.cim 5929 B.
 #
 # GOTCHA on cpnos mode: PROM refresh is TWO files, not one.
 # The MAME rc702 driver loads PROM 0 from `roa375.ic66` (mapped
