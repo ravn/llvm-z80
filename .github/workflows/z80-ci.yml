@@ -78,7 +78,7 @@ jobs:
           # the ninja args fails with "unknown target 'llvm-lit'".
           ninja -C build clang llc \
                 FileCheck count not \
-                llvm-objdump llvm-nm
+                llvm-objdump llvm-nm llvm-readobj
 
       - name: Run Z80 lit suite
         run: build/bin/llvm-lit -v llvm/test/CodeGen/Z80/
