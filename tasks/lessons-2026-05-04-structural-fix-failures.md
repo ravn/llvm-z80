@@ -249,6 +249,23 @@ cd /Users/ravn/z80/rc700-gensmedet/cpnos-rom \
 cd /Users/ravn/z80/llvm-z80 && python3 tasks/size-baseline.py check
 ```
 
+**HARD RULE addendum (session 42 evening, 2026-05-04): autoload-in-c
+MAME boot test is required for ANY llvm-z80 commit, not just combiner
+changes.**  Bisect of an autoload-in-c regression (BSS-spill #74
+cross-pair peephole, broken since 2026-05-02) showed that compiler
+changes can silently break autoload-in-c without affecting rcbios.
+autoload-in-c exercises IM2 IVT, DMA, FDC multi-density,
+`+static-stack` + `+shadow-regs` together with BSS-spill peephole
+fire-sites — a combination rcbios doesn't exercise.  Three weeks
+elapsed before the breakage was noticed because `make mame-test`
+(the rcbios value oracle) used the hand-assembled autoload PROM,
+not the C reimplementation.  Run BEFORE every llvm-z80 commit:
+
+```bash
+cd rc700-gensmedet/autoload-in-c && make mame
+# Asserts PASS, self-terminates ~5s wall, writes /tmp/boot_test_result.txt
+```
+
 **Value oracle (REQUIRED for combiner / ISel / lowering changes
 that could change values, not just costs):**
 
