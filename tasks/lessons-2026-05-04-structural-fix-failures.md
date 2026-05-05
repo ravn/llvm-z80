@@ -347,6 +347,32 @@ BUILD_DIR=../../build-macos \
 # needed, default to rcbios standalone mode (mode A) -- it's
 # end-to-end on its own.  Escalate to cpnos+mpm only when the
 # change is plausibly cpnos-path-affecting.
+#
+# DEEP value oracle (full-stack regression test):
+#
+#   cd rc700-gensmedet/cpnos-rom && make cpnos-polypascal-test
+#
+# Drives MP/M + CP/NOS slave + PolyPascal v3 (Hejlsberg's pre-Turbo
+# Pascal native Z80 compiler) through a primes-up-to-30000 program
+# in roughly 4 minutes.  Catches regressions across the full stack:
+# transport, NDOS, BDOS, console framing, keyboard injection,
+# file-load, and code execution -- everything between the slave's
+# CP/NOS payload and the user-visible E> prompt.  Required when a
+# compiler change passes the PRIMARY+SECONDARY oracles but plausibly
+# affects:
+#
+#   - cpnos network-path code (transport.c, NDOS, BDOS shims)
+#   - ISR shadow-bank handling (PolyPascal v3 holds persistent
+#     runtime state in the shadow bank -- see tasks/todo.md
+#     entry "ISRs: drop EXX/EX AF,AF', PUSH only what's used")
+#   - BIOS-call surfaces PolyPascal exercises (CONOUT framing,
+#     BDOS reads, keyboard ring buffer)
+#
+# Prerequisites the harness handles for you: it kills any stale
+# `mpm` screen session, asserts port :4002 is free, restarts MP/M,
+# rebuilds cpnos-rom with MIRROR_SIOB=1, syncs ROMs to the IRQ-fix
+# MAME tree, and asserts on PASS via /tmp/cpnos_polypascal_result.txt.
+# Don't re-implement any of that wrapper logic from outside.
 ```
 
 **Why this distinction matters:**
