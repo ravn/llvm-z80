@@ -1,52 +1,50 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-stack < %s | FileCheck %s
 ;
-; Static-stack codegen bug history (ravn/llvm-z80#82, fixed 2026-05-02,
-; refined 2026-05-02 as part of #74's cross-pair extension):
+; Static-stack codegen, post-#82 conservative state (#74 cross-pair
+; extension reverted in commit b843d94, 2026-05-04 -- see ravn/llvm-z80#74).
 ;
 ; A uint16_t loop counter held in a register pair (BC here) gets *also*
 ; assigned a static-stack slot, with the call-arg use site loading the
-; byte from the slot via a different register pair (HL).  The original
-; BSS-spill→PUSH/POP peephole converted only the spill+matching-pair
-; reload; an orphan `LD HL,(slot)` was left reading from a never-written
-; BSS slot (=0).
+; byte from the slot via a different register pair (HL).
 ;
-; The first fix (#82) bailed when an orphan reload to a different
-; register pair was seen — keeping the slot store/load in BSS.  That
-; was correct but conservative.  The cross-pair extension for #74
-; converts the orphan TOO: PUSH (storeReg); POP (loadReg) preserves
-; value bytes regardless of which 16-bit pair is used.
+; ravn/llvm-z80#82 (commit 87eaf1d, fixed 2026-05-02) ensured the
+; BSS-spill->PUSH/POP peephole bails when an orphan reload is into a
+; *different* register pair, keeping the slot store/load in BSS rather
+; than producing an unbalanced PUSH+POP that would corrupt SP-relative
+; data.
 ;
-; Now the loop body is:
+; ravn/llvm-z80#74 (commit 96dde0c, also 2026-05-02) extended the
+; peephole to convert the cross-pair case too: PUSH (storeReg);
+; POP (loadReg) preserves value bytes regardless of which 16-bit pair
+; is used.  That extension was reverted in b843d94 because it broke
+; autoload-in-c boot.  Mechanism unknown -- conservative fix that
+; reverted only the cross-pair widening (021d5e5) but kept the LIFO
+; collect-and-reverse-apply refactor was *also* insufficient.
 ;
-;   push bc     ; was: ld (slot),bc
-;   pop  hl     ; was: ld hl,(slot)   ← orphan, now the cross-pair POP
-;   push hl     ; re-PUSH so the next pop can grab it
-;   ld a,l
-;   call _take
-;   pop  bc     ; was: ld bc,(slot)
-;   inc bc
-;   jr ...
-;
-; This is correct (LIFO preserved, BSS slot unused) AND smaller: 4 B of
-; PUSH/POP vs 11 B of BSS store+two loads.
+; This test currently asserts the post-#82 conservative state: the BSS
+; slot IS used, the orphan cross-pair LD is the gate that prevents the
+; PUSH/POP conversion.  When #74 is re-implemented correctly (see
+; ravn/llvm-z80#74 for instructions), update the CHECKs back to
+; asserting the cross-pair PUSH/POP shape and remove this preamble.
 
 declare void @take(i8 zeroext)
 
 define void @f() {
 ; CHECK-LABEL: _f:
 ; CHECK:       ld{{[ \t]+}}bc,#0
-; The slot store should now be a PUSH BC, and both reloads should be
-; POPs (with a re-PUSH between them so the second POP sees the value).
-; CHECK:       push{{[ \t]+}}bc
-; CHECK-NEXT:  pop{{[ \t]+}}hl
-; CHECK-NEXT:  push{{[ \t]+}}hl
+; Conservative state: the BSS slot is used because the orphan reload is
+; into HL (different pair from the storing BC), so the BSS-spill->PUSH/POP
+; peephole bails.
+; CHECK:       ld{{[ \t]+}}({{[^,)]*}}__sfr{{[a-z_]*}}_f-2),bc
+; CHECK-NEXT:  ld{{[ \t]+}}hl,({{[^,)]*}}__sfr{{[a-z_]*}}_f-2)
 ; CHECK:       call{{[ \t]+}}_take
-; CHECK:       pop{{[ \t]+}}bc
+; CHECK:       ld{{[ \t]+}}bc,({{[^,)]*}}__sfr{{[a-z_]*}}_f-2)
 ; CHECK:       inc{{[ \t]+}}bc
-; The BSS slot must be unused after conversion.
-; CHECK-NOT:   ld{{[ \t]+}}({{[^,)]*}}__sfr{{[a-z_]*}}_f-2),bc
-; CHECK-NOT:   ld{{[ \t]+}}hl,({{[^,)]*}}__sfr{{[a-z_]*}}_f-2)
-; CHECK-NOT:   ld{{[ \t]+}}bc,({{[^,)]*}}__sfr{{[a-z_]*}}_f-2)
+; The PUSH/POP shape from the (currently reverted) #74 cross-pair
+; extension must NOT appear -- if it does, the regression #74 was
+; reverted to fix has come back.
+; CHECK-NOT:   push{{[ \t]+}}bc{{$}}
+; CHECK-NOT:   pop{{[ \t]+}}hl{{$}}
 entry:
   br label %loop
 
