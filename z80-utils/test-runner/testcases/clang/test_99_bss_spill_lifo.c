@@ -4,8 +4,7 @@
 /* O0 crashes Z80LateOptimization::runOnMachineFunction; passes O1..Oz.
  * The crash is independent of this test's intent (BSS-spill peephole
  * value-oracle coverage); skipping O0 keeps the test live where the
- * peephole actually fires.  TODO: file the O0 crash with this file as
- * the repro. */
+ * peephole actually fires.  Tracked as ravn/llvm-z80#125. */
 /*
  * BSS-spill peephole coverage #3: multiple spill/reload pairs in the
  * same basic block (LIFO collect-and-reverse-apply territory).
