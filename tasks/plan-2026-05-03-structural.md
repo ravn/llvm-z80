@@ -1,4 +1,4 @@
-# Structural plan, 2026-05-03
+# Structural plan, 2026-05-03 (refreshed 2026-05-05)
 
 **Supersedes** the "Phase 4 Cluster B (#100, #20, #96, #16)"
 recommendation from session 41 carry-forward and the session-36
@@ -75,6 +75,54 @@ as "fundamentally addressed".  Strict reading: close #89 and #27
     Conclusion: future #89 work should pursue option (b) [Z80
     pre-RA pressure-aware pass] or option (c) [merge into broader
     regalloc cost-model surface].  Recommendation remains (c).
+
+### Done in session 43 (2026-05-04 evening)
+
+  - **#74 cross-pair extension reverted** (commit `b843d94dedde`).
+    Bisect pinned `96dde0c` as the autoload-in-c boot regression.
+    Conservative fix `021d5e5` (cross-pair revert only, keep LIFO
+    refactor) was *insufficient* — autoload still hung.  Full
+    revert via splice of `da18ede`'s BSS-spill block in place of
+    the post-#74 version.  Cost: rcbios 5929 → 5961 B (+32 B).
+    Mechanism still unknown (multi-session work).
+  - **CI green path** — switched workflow to canonical
+    `check-llvm-codegen-z80` target instead of enumerated tools
+    (`70ebcd96`).
+  - **Build hygiene** — distinct artifact names per compiler
+    (`bios.clang.cim`, `prom.clang.bin`); source-annotated
+    listings tracked in git.
+
+### Done in session 44 (2026-05-05)
+
+  - **Rolling-walk validation** — 16-step surgical walk through
+    the 13 post-merge ravn-fork commits in `da18ede..HEAD`,
+    listings committed per-step in `rc700-gensmedet`
+    (`5dbedb6..b75b7ae`).  Result: **#74 (96dde0c) is the ONLY
+    boot-breaking regression** in this window.  Step 13 confirmed
+    a known-but-symptomless case — the #120 combiner-active state
+    boots fine because peephole #26 masks the asm-level miscompile.
+  - **Procedure documented** for future bisect/walk work — see
+    `tasks/issue-74-cross-pair-rca-2026-05-04.md` "Surgical-walk
+    procedure" section.
+  - **CI lit-test fix** (commit `99198c91`).  Updated
+    `static-stack-loop-counter-desync.ll` CHECK directives to
+    assert post-#82 conservative codegen instead of the reverted
+    #74 cross-pair shape.  Lit 90/90 + CI green.
+  - **ravn/llvm-z80#74 REOPENED** with implementation
+    instructions (4 investigation hypotheses, 2 restoration paths,
+    HARD-RULE verification protocol, refs to RCA + lessons + walk
+    listings).
+  - **ravn/llvm-z80#120 REOPENED** with three sound migration
+    paths (post-ISel combiner / split G_ICMP lowering / change
+    BooleanContents target-wide).
+  - **ravn/llvm-z80#123 filed** — investigate which optimizer
+    decisions are influenced by `-g`.  Adding `-g` to autoload-in-c
+    CFLAGS shifted PROM 1826 → 1861 B with no source change.
+  - **ravn/llvm-z80#124 filed** — workspace: cmake 4.2 + macOS
+    HAVE_PTHREAD_AFFINITY fatal during reconfigure; workaround
+    `-DLLVM_INCLUDE_BENCHMARKS=OFF` persisted in build-macos
+    CMakeCache; possible upstream fix is to add it to
+    `clang/cmake/caches/Z80.cmake`.
 
 ### Done in evening session 2026-05-03
 
@@ -215,6 +263,22 @@ with sessions N+1 / N+2.
     commits).
   - cpnos.bin: **1777 B** (byte-exact across all evening commits).
   - Working tree clean.
+
+## Issue-state snapshot 2026-05-05 (refresh)
+
+  - **Reopened**: #74 (autoload-in-c boot regression, mechanism
+    unknown) and #120 (silently-unsound combiner).
+  - **Filed**: #123 (`-g`-affected codegen), #124 (workspace
+    cmake/benchmark issue).
+  - rcbios bios.clang.cim: **5961 B** (+32 B over end-of-evening
+    2026-05-03 due to #74 revert).
+  - autoload-in-c prom.clang.bin: **1861 B** (with `-g` enabled
+    for source-annotated listings; +35 B vs no-`-g`, see #123).
+  - cpnos-rom: **1777 B** (unchanged).
+  - Z80 lit suite: **90/90** (89 PASS + 1 XFAIL #99); CI green.
+  - Compiler at `99198c91` on `ravn/llvm-z80:main`.
+  - rc700-gensmedet at `b75b7ae` (rolling-walk listings).
+  - autoload-in-c boots PASS at frame=225 / 4.5 s emulated.
 
 ## Commit chain (evening 2026-05-03)
 

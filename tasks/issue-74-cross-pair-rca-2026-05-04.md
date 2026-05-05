@@ -118,13 +118,38 @@ down.
 
 ## Carry-forward
 
-- File ravn/llvm-z80#74 follow-up: re-enable BSS-spill→PUSH/POP only
-  after the LIFO refactor's interaction with autoload-in-c is
-  understood and fixed.
+- ravn/llvm-z80#74 (REOPENED 2026-05-05 with implementation
+  instructions): re-enable BSS-spill→PUSH/POP only after the LIFO
+  refactor's interaction with autoload-in-c is understood and fixed.
+  Issue body now contains four investigation hypotheses, two
+  restoration paths (narrower implementation vs root-cause-first),
+  and the HARD-RULE verification protocol (lit + test-runner +
+  autoload-in-c boot + rcbios MAME boot + cpnos-rom byte-identity).
+
 - A/B investigation: pin down the exact mechanism by which #74's
   code path breaks autoload-in-c.  Most likely path: instrument
   rcbios's BSS-spill fire-sites with `LLVM_DEBUG` and trace what
   autoload-in-c is doing differently.
+
+- **Rolling-walk listings as an investigation resource (2026-05-05):**
+  rc700-gensmedet commits `5dbedb6..b75b7ae` capture per-step
+  source-annotated `bios.clang.lis` and `prom.clang.lis` for every
+  post-merge ravn-fork commit between `da18ede` and HEAD.  Each
+  step's listing was generated with #74 reverted on top, so diffing
+  adjacent steps shows what each commit changed in isolation.
+  Step 4 has BOTH a FAIL state (#74 active) AND a FIX state (#74
+  reverted) — diffing those two listings is the cleanest way to
+  see what the cross-pair extension actually rewrites in rcbios.
+  Useful starting point for narrowing which fire-site causes the
+  autoload-in-c hang.
+
+- ravn/llvm-z80#120 (REOPENED 2026-05-05): GISel combiner for
+  `(shl 7; ashr 7)` icmp idiom is silently unsound at the IR layer
+  because Z80's `BooleanContents = ZeroOrOne`.  Three migration
+  paths in the issue body (post-ISel combiner / split G_ICMP
+  lowering / change BooleanContents target-wide).  Park until
+  regalloc cluster work lands.
+
 - ravn/llvm-z80#123 — investigate which optimizer decisions are
   influenced by `-g`.  Adding `-g` to autoload-in-c CFLAGS to enable
   source-annotated listings shifted the PROM 1826 → 1861 B (+35 B).
@@ -132,3 +157,76 @@ down.
   without skipping `DBG_VALUE`, or a GISel combiner preserves debug
   locations by suppressing some rewrites.  Low priority but a probe
   into backend correctness under `-g`.
+
+- ravn/llvm-z80#124 (filed 2026-05-05) — workspace: cmake 4.2 +
+  macOS treats third-party/benchmark HAVE_PTHREAD_AFFINITY failure
+  as fatal during reconfigure; workaround is
+  `-DLLVM_INCLUDE_BENCHMARKS=OFF`, persisted in current build-macos
+  CMakeCache.  Possible upstream fix: add the flag to
+  `clang/cmake/caches/Z80.cmake`.
+
+## Surgical-walk procedure (recipe for future bisect/walk work)
+
+For walking older Z80 backend commits while keeping LLVM core at HEAD
+(necessary because the upstream-merge `f91102a4` brings in 3781 commits
+that would full-rebuild on every revert):
+
+1. **Configure cmake once with benchmarks disabled** (avoids #124):
+   ```
+   cmake -S llvm -B build-macos -DLLVM_INCLUDE_BENCHMARKS=OFF -G Ninja
+   ```
+
+2. **Per-step setup — orphan-file removal:**  Some .cpp files exist at
+   HEAD but not at the older step (e.g., `Z80SplitDjnzCounters.cpp`
+   added by 90687fc7, `Z80LoopRotate.cpp` added by c6e867dd).  Diff
+   the file lists and `rm` files that aren't in the target:
+   ```
+   git ls-tree --name-only HEAD -- llvm/lib/Target/Z80/ | grep -E '\.(cpp|h|td)$' | sort > /tmp/z80_head.txt
+   git ls-tree --name-only <SHA> -- llvm/lib/Target/Z80/ | grep -E '\.(cpp|h|td)$' | sort > /tmp/z80_step.txt
+   comm -23 /tmp/z80_head.txt /tmp/z80_step.txt | xargs rm -f
+   ```
+
+3. **Full Z80 backend snapshot (CMakeLists included):**
+   ```
+   git checkout <SHA> -- llvm/lib/Target/Z80/ llvm/test/CodeGen/Z80/
+   ```
+   This produces a self-consistent snapshot.  Older CMakeLists won't
+   reference the orphan files (already removed).
+
+4. **Apply #74 revert if step is in [96dde0c..b843d94] window:**
+   ```
+   git show 96dde0c -- llvm/lib/Target/Z80/Z80LateOptimization.cpp | git apply -R
+   ```
+   If the step is `021d5e5` (the conservative fix that partially
+   reverts 96dde0c), sequential reverse-apply is needed:
+   ```
+   git show 021d5e5 -- llvm/lib/Target/Z80/Z80LateOptimization.cpp | git apply -R
+   git show 96dde0c -- llvm/lib/Target/Z80/Z80LateOptimization.cpp | git apply -R
+   ```
+
+5. **Build incrementally:**
+   ```
+   ninja -C build-macos clang llc llvm-objcopy llvm-objdump llvm-nm
+   ```
+   Per-step rebuild ~5-10 min on M1 (broader than expected because
+   `git checkout` updates CMakeLists mtimes, triggering cmake regen
+   which invalidates PCH dep info — even when content is identical).
+
+6. **Value oracle:**
+   ```
+   cd rc700-gensmedet/rcbios-in-c   && make COMPILER=clang clean && make COMPILER=clang bios
+   cd rc700-gensmedet/autoload-in-c && rm -f clang/*.o clang/prom.clang.* clang/prom0.ic66 && make COMPILER=clang prom
+   cd rc700-gensmedet/autoload-in-c && make COMPILER=clang mame   # boot test
+   ```
+
+7. **Commit listings to rc700-gensmedet** with the SHA in the
+   message so future investigators can find the per-step asm:
+   ```
+   git -C rc700-gensmedet add autoload-in-c/clang/prom.clang.lis rcbios-in-c/clang/bios.clang.lis
+   git -C rc700-gensmedet commit -m "rolling-walk step N (<SHA>) ..."
+   ```
+
+8. **Restore HEAD when walk done:**
+   ```
+   git checkout HEAD -- llvm/lib/Target/Z80/ llvm/test/CodeGen/Z80/
+   ```
