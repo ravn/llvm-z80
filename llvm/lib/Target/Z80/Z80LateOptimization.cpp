@@ -5101,6 +5101,182 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: BSS spill cross-class transfer → PUSH/POP ---
+  // Handles the case where the value is stored to a BSS slot and later
+  // loaded into a DIFFERENT register pair (transfer via memory).
+  // Pattern:
+  //   LD (slot), rr_src       (3-4B)
+  //   ... CALL ...
+  //   LD rr_dst, (slot)        (3-4B)        ; rr_dst != rr_src
+  // Replaces with:
+  //   PUSH rr_src              (1-2B)
+  //   ... CALL ...
+  //   POP rr_dst               (1-2B)
+  //
+  // Same safety guards as the same-class peephole above:
+  //   - sfrend/sframe symbols only (rules out global accesses)
+  //   - Slot must not be re-stored or re-loaded between the pair
+  //   - Stack must be balanced at the load point
+  //   - Slot must not be used in any other basic block
+  //   - Single-load only (multi-load cross-class is too complex)
+  //
+  // Savings per pair (16-bit):
+  //   HL→DE/BC: 3+4 = 7B → 2B (save 5)
+  //   DE→HL/BC, BC→HL/DE: 4+3-or-4 = 7-8B → 2B (save 5-6)
+  //   HL→HL/DE→DE/BC→BC handled by the same-class peephole above.
+  if (STI.staticStack()) {
+    struct StoreClass { unsigned StoreOpc, PushOpc, Bytes; };
+    struct LoadClass  { unsigned LoadOpc,  PopOpc,  Bytes; };
+    static const StoreClass Stores[] = {
+      {Z80::LD_nnind_HL, Z80::PUSH_HL, 3},
+      {Z80::LD_nnind_DE, Z80::PUSH_DE, 4},
+      {Z80::LD_nnind_BC, Z80::PUSH_BC, 4},
+    };
+    static const LoadClass Loads[] = {
+      {Z80::LD_HL_nnind, Z80::POP_HL, 3},
+      {Z80::LD_DE_nnind, Z80::POP_DE, 4},
+      {Z80::LD_BC_nnind, Z80::POP_BC, 4},
+    };
+
+    auto getStoreInfo = [&](unsigned Opc) -> const StoreClass * {
+      for (const auto &S : Stores)
+        if (S.StoreOpc == Opc) return &S;
+      return nullptr;
+    };
+    auto getLoadInfo = [&](unsigned Opc) -> const LoadClass * {
+      for (const auto &L : Loads)
+        if (L.LoadOpc == Opc) return &L;
+      return nullptr;
+    };
+
+    auto isAnyBssLoad = [](unsigned Opc) {
+      return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
+             Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
+    };
+    auto isAnyBssStore = [](unsigned Opc) {
+      return Opc == Z80::LD_nnind_A  || Opc == Z80::LD_nnind_HL ||
+             Opc == Z80::LD_nnind_DE || Opc == Z80::LD_nnind_BC;
+    };
+    auto isAnyPush = [](unsigned Opc) {
+      return Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
+             Opc == Z80::PUSH_HL || Opc == Z80::PUSH_AF ||
+             Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY;
+    };
+    auto isAnyPop = [](unsigned Opc) {
+      return Opc == Z80::POP_BC || Opc == Z80::POP_DE ||
+             Opc == Z80::POP_HL || Opc == Z80::POP_AF ||
+             Opc == Z80::POP_IX || Opc == Z80::POP_IY;
+    };
+
+    auto isSfrendSymbol = [](const MachineOperand &MO) -> bool {
+      if (!MO.isMCSymbol()) return false;
+      StringRef Name = MO.getMCSymbol()->getName();
+      return Name.starts_with("__sfrend") || Name.starts_with("__sframe");
+    };
+
+    auto sameAddress = [](const MachineInstr &A, const MachineInstr &B) -> bool {
+      const MachineOperand &MOA = A.getOperand(0);
+      const MachineOperand &MOB = B.getOperand(0);
+      if (!MOA.isIdenticalTo(MOB)) return false;
+      if (MOA.isMCSymbol()) return MOA.getOffset() == MOB.getOffset();
+      return true;
+    };
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+        const StoreClass *SC = getStoreInfo(MII->getOpcode());
+        if (!SC) continue;
+        if (!isSfrendSymbol(MII->getOperand(0))) continue;
+
+        // Scan forward for exactly ONE load from the same slot, with
+        // no other accesses to the slot, and stack balanced.
+        int StackDepth = 0;
+        bool Conflict = false;
+        MachineBasicBlock::iterator MatchedLoad = MIE;
+        const LoadClass *LC = nullptr;
+
+        for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
+          unsigned SOpc = Scan->getOpcode();
+
+          // Another store to same slot = conflict.
+          if (isAnyBssStore(SOpc) && sameAddress(*MII, *Scan)) {
+            Conflict = true; break;
+          }
+
+          // Track PUSH/POP balance.
+          if (isAnyPush(SOpc)) ++StackDepth;
+          if (isAnyPop(SOpc)) {
+            --StackDepth;
+            if (StackDepth < 0) { Conflict = true; break; }
+          }
+
+          // Load from our slot?
+          if (isAnyBssLoad(SOpc) && sameAddress(*MII, *Scan)) {
+            // Already saw one load — bail (single-load only).
+            if (MatchedLoad != MIE) { Conflict = true; break; }
+            // Must be a 16-bit load (we only generate 16-bit pushes/pops).
+            const LoadClass *LCi = getLoadInfo(SOpc);
+            if (!LCi) { Conflict = true; break; }
+            // Stack must be balanced at the load point.
+            if (StackDepth != 0) { Conflict = true; break; }
+            // Skip same-class case (handled by the peephole above).
+            // Tracking by Push/Pop opcode pair: if PushOpc maps to PopOpc
+            // for the same register, it's same-class.
+            bool sameClass =
+                (SC->PushOpc == Z80::PUSH_HL && LCi->PopOpc == Z80::POP_HL) ||
+                (SC->PushOpc == Z80::PUSH_DE && LCi->PopOpc == Z80::POP_DE) ||
+                (SC->PushOpc == Z80::PUSH_BC && LCi->PopOpc == Z80::POP_BC);
+            if (sameClass) { Conflict = true; break; }
+            MatchedLoad = Scan;
+            LC = LCi;
+          }
+
+          if (Scan->isTerminator()) break;
+        }
+
+        if (Conflict || MatchedLoad == MIE || LC == nullptr) continue;
+
+        // Cost check: PUSH(1-2B) + POP(1-2B) must be < store + load bytes.
+        // PUSH/POP for HL/DE/BC are all 1B each; total 2B.
+        // Store + load is 3+3, 3+4, 4+3, or 4+4 = 6/7/8 B.
+        unsigned PushPopBytes = 2;  // BC/DE/HL all use 1B push and 1B pop
+        unsigned BssBytes = SC->Bytes + LC->Bytes;
+        if (PushPopBytes >= BssBytes) continue;
+
+        // Slot must not be used in any other BB.
+        bool UsedElsewhere = false;
+        for (MachineBasicBlock &OtherMBB : MF) {
+          if (&OtherMBB == &MBB) continue;
+          for (MachineInstr &OtherMI : OtherMBB) {
+            unsigned OOpc = OtherMI.getOpcode();
+            if ((isAnyBssLoad(OOpc) || isAnyBssStore(OOpc)) &&
+                sameAddress(*MII, OtherMI)) {
+              UsedElsewhere = true; break;
+            }
+          }
+          if (UsedElsewhere) break;
+        }
+        if (UsedElsewhere) continue;
+
+        LLVM_DEBUG(dbgs() << "  BSS spill cross-class→PUSH/POP: "
+                          << *MII << "  → "
+                          << LC->LoadOpc << " (saves "
+                          << (BssBytes - PushPopBytes) << "B)\n");
+
+        // Replace the store with PUSH.
+        DebugLoc DLs = MII->getDebugLoc();
+        BuildMI(MBB, *MII, DLs, TII->get(SC->PushOpc));
+        // Replace the load with POP.
+        DebugLoc DLl = MatchedLoad->getDebugLoc();
+        BuildMI(MBB, *MatchedLoad, DLl, TII->get(LC->PopOpc));
+        MBB.erase(MatchedLoad);
+        MII = MBB.erase(MII);
+        --MII;
+        Changed = true;
+      }
+    }
+  }
+
   // --- Redundant PUSH AF/POP AF around BSS spill ---
   // When A already holds the source register's value, the SPILL_GR8 expansion
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
