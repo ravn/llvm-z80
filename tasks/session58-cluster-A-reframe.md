@@ -129,13 +129,12 @@ original entry in this doc claimed.
      suggested implementation.  Add a comment to the issue
      pointing at the two peepholes and the empirical "zero in-MBB
      residual" finding.
-  2. **File a new issue** for the cross-MBB BSS-spill→PUSH/POP
-     extension.  Include the SP-balance correctness analysis above,
-     reference the SNIOS pattern as the concrete reproducer, and
-     mark it as a multi-session item gated on adding
-     `MachineDominatorTree` as a dependency of late-optimization
-     (or a dedicated pre-late-optimization pass that owns the
-     cross-MBB analysis).
+  2. **#132 filed** for the cross-MBB BSS-spill→PUSH/POP extension
+     with the SP-balance correctness analysis, SNIOS reproducer,
+     and multi-session estimate.  Gated on adding
+     `MachineDominatorTree`/`MachinePostDominatorTree` as
+     dependencies of late-optimization (or a dedicated pre-late
+     pass that owns the cross-MBB analysis).
   3. **Reposition #131 as the more leverage near-term win** —
      `z80_preserves_regs` attribute prevents the spill in the
      first place, sidestepping the cross-MBB correctness issue
