@@ -3596,6 +3596,13 @@ def Z80AllReg : DeclOrTypeAttr, TargetSpecificAttr<TargetZ80> {
   let Documentation = [Z80AllRegDocs];
 }
 
+def Z80PreservesRegs : InheritableAttr, TargetSpecificAttr<TargetZ80> {
+  let Spellings = [Clang<"z80_preserves_regs">];
+  let Args = [VariadicStringArgument<"Regs">];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [Z80PreservesRegsDocs];
+}
+
 def Target : InheritableAttr {
   let Spellings = [GCC<"target">];
   let Args = [StringArgument<"featuresStr">];

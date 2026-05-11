@@ -3697,6 +3697,10 @@ def err_swift_abi_parameter_wrong_type : Error<
 def err_attribute_argument_invalid : Error<
   "%0 attribute argument is invalid: %select{max must be 0 since min is 0|"
   "min must not be greater than max}1">;
+def err_z80_preserves_regs_unknown : Error<
+  "'z80_preserves_regs' does not recognise %0 as a Z80 register name; "
+  "expected one of a, b, c, d, e, h, l, af, bc, de, hl, ix, iy "
+  "(case-insensitive)">;
 def err_attribute_argument_is_zero : Error<
   "%0 attribute must be greater than 0">;
 def warn_attribute_argument_n_negative : Warning<

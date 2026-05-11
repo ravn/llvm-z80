@@ -2553,6 +2553,14 @@ void CodeGenModule::ConstructAttributeList(StringRef Name,
     if (TargetDecl->hasAttr<ConvergentAttr>())
       FuncAttrs.addAttribute(llvm::Attribute::Convergent);
 
+    // Z80: emit "z80-preserves-regs"="d,e,..." function attribute so the
+    // Z80 backend's call lowering can narrow the call-site RegMask.  See
+    // ravn/llvm-z80#131.
+    if (auto *PA = TargetDecl->getAttr<Z80PreservesRegsAttr>()) {
+      SmallVector<StringRef, 8> Regs(PA->regs_begin(), PA->regs_end());
+      FuncAttrs.addAttribute("z80-preserves-regs", llvm::join(Regs, ","));
+    }
+
     if (const FunctionDecl *Fn = dyn_cast<FunctionDecl>(TargetDecl)) {
       AddAttributesFromFunctionProtoType(
           getContext(), FuncAttrs, Fn->getType()->getAs<FunctionProtoType>());

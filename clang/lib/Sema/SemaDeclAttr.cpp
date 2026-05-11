@@ -5374,6 +5374,34 @@ static void handleGNUInlineAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   D->addAttr(::new (S.Context) GNUInlineAttr(S.Context, AL));
 }
 
+static bool isValidZ80PreserveRegName(StringRef N) {
+  // Case-insensitive match against the recognised set.
+  return llvm::StringSwitch<bool>(N.lower())
+      .Cases({"a", "b", "c", "d", "e", "h", "l"}, true)
+      .Cases({"af", "bc", "de", "hl", "ix", "iy"}, true)
+      .Default(false);
+}
+
+static void handleZ80PreservesRegsAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  // Variadic string arg list.  Validate each name; reject the whole
+  // attribute if any name is not a recognised Z80 register.
+  SmallVector<StringRef, 8> Regs;
+  Regs.reserve(AL.getNumArgs());
+  for (unsigned I = 0, E = AL.getNumArgs(); I != E; ++I) {
+    StringRef Reg;
+    SourceLocation ArgLoc;
+    if (!S.checkStringLiteralArgumentAttr(AL, I, Reg, &ArgLoc))
+      return;
+    if (!isValidZ80PreserveRegName(Reg)) {
+      S.Diag(ArgLoc, diag::err_z80_preserves_regs_unknown) << Reg;
+      return;
+    }
+    Regs.push_back(Reg);
+  }
+  D->addAttr(::new (S.Context) Z80PreservesRegsAttr(
+      S.Context, AL, Regs.data(), Regs.size()));
+}
+
 static void handleCallConvAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (hasDeclarator(D)) return;
 
@@ -8013,6 +8041,9 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
   case ParsedAttr::AT_SDCCCall:
   case ParsedAttr::AT_Z80AllReg:
     handleCallConvAttr(S, D, AL);
+    break;
+  case ParsedAttr::AT_Z80PreservesRegs:
+    handleZ80PreservesRegsAttr(S, D, AL);
     break;
   case ParsedAttr::AT_DeviceKernel:
     handleDeviceKernelAttr(S, D, AL);

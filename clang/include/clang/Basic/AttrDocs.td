@@ -6704,6 +6704,43 @@ for Z80 targets. All arguments are passed in registers (HL, DE, BC, IX, IY
 for i16; A for i8), with no stack arguments. Nothing is callee-saved.}];
 }
 
+def Z80PreservesRegsDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "clang::z80_preserves_regs";
+  let Content = [{
+The ``z80_preserves_regs`` attribute declares that a Z80 function preserves
+the listed registers across the call.  This is the clang/LLVM-IR analog of
+SDCC's ``__preserves_regs(...)``: callers can keep values alive in the
+listed registers across the call without spilling, on the programmer's
+assertion that the callee body genuinely does not modify them.
+
+Recognised register names (case-insensitive):
+
+  * 8-bit halves: ``a``, ``b``, ``c``, ``d``, ``e``, ``h``, ``l``
+  * 16-bit pairs: ``af``, ``bc``, ``de``, ``hl``, ``ix``, ``iy``
+
+Preserving a pair (e.g. ``de``) implies preserving its halves (``d`` and
+``e``).  If both halves of a pair are individually listed, the pair is
+also preserved (matching SDCC's ``__preserves_regs(d, e)`` UX).
+
+Example:
+
+.. code-block:: c
+
+  /* xport_send_byte preserves D, E, H, L, B, C — the caller can keep
+   * SNIOS state-machine variables (counters, accumulators, pointers)
+   * alive in those registers across the call. */
+  extern void xport_send_byte(uint8_t b)
+      __attribute__((z80_preserves_regs("d", "e", "h", "l", "b", "c")));
+
+The attribute is a *programmer assertion* about the callee body — clang
+does not currently verify that the callee actually preserves the listed
+registers.  Stating an attribute that the callee body violates yields
+undefined behavior.
+
+This is a Z80-specific attribute and is rejected on other targets.}];
+}
+
 def PreferredNameDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{
