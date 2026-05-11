@@ -1,15 +1,14 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
-; XFAIL: *
 ;
-; ravn/llvm-z80#135 — #131 caller-side HL/A preservation is silently
-; ignored due to ADJCALLSTACKUP's pessimistic TableGen `Defs = [SP, HL, A]`.
-; The #131 strip code in Z80CallLowering removes the matching implicit-defs
-; from CALL_nn but NOT from the following ADJCALLSTACKUP, so regalloc still
-; treats HL (and A) as clobbered across the call sequence.
+; ravn/llvm-z80#135 — #131 caller-side HL/A preservation needs to also
+; strip ADJCALLSTACKUP's pessimistic TableGen `Defs = [SP, HL, A]` for
+; declared-preserved regs that the pseudo's expansion path won't actually
+; clobber.  Without that, regalloc treats HL/A as clobbered across the
+; call sequence — silently nullifying HL/A preservation.
 ;
-; This file documents the bug as a failing fixture until #135 is fixed.
-; When the fix lands, drop the XFAIL directive above and the test should
-; PASS: f_hl will mirror f_de with the registers swapped.
+; This fixture pairs two near-identical functions, one with "d,e"
+; preserved and one with "h,l", and CHECKs that both emit equivalent
+; spill-free patterns.
 ;
 ; Witness: declare two near-identical functions, one with "d,e" preserved,
 ; one with "h,l".  Without the bug, both should drop the unrelated-pair

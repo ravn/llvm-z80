@@ -1100,6 +1100,56 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
     }
   }
 
+  // ravn/llvm-z80#135: also strip ADJCALLSTACKUP's pessimistic
+  // `Defs = [SP, HL, A]` for declared-preserved registers that the
+  // pseudo's expansion path won't actually clobber.  Without this,
+  // regalloc sees the implicit-def of $hl/$a on the post-CALL
+  // ADJCALLSTACKUP and treats them as clobbered across the call
+  // sequence — silently nullifying HL/A preservation declared via
+  // the z80_preserves_regs attribute.
+  //
+  // The actual clobber depends on the adj amount + SM83 mode
+  // (mirrors `adjCallStackUpClobbersReg` in Z80RegisterInfo.cpp):
+  //   AdjAmount == 0            → erased entirely; nothing clobbered
+  //   SM83 && AdjAmount ≤ 127   → ADD SP,e; only SP/flags modified
+  //   AdjAmount ≤ 16            → POP AF × N; A/flags modified, HL OK
+  //   AdjAmount >  16           → LD HL,n; ADD HL,SP; LD SP,HL; HL/flags
+  auto stripAdjCallStackUp = [&](MachineInstr *MI, int64_t AdjAmount) {
+    if (Mask == TRI->getCallPreservedMask(MF, CC))
+      return;  // No attribute; leave the TableGen pessimism alone.
+
+    const auto &STI = MF.getSubtarget<Z80Subtarget>();
+    bool ClobbersHL, ClobbersA;
+    if (AdjAmount == 0 || (STI.hasSM83() && AdjAmount <= 127)) {
+      ClobbersHL = false; ClobbersA = false;
+    } else if (AdjAmount <= 16) {
+      ClobbersHL = false; ClobbersA = true;
+    } else {
+      ClobbersHL = true;  ClobbersA = false;
+    }
+
+    for (unsigned I = MI->getNumOperands(); I > 0; --I) {
+      MachineOperand &MO = MI->getOperand(I - 1);
+      if (!MO.isReg() || !MO.isImplicit() || !MO.isDef())
+        continue;
+      MCRegister R = MO.getReg().asMCReg();
+      if (!R)
+        continue;
+      bool Preserved = (Mask[R / 32] >> (R % 32)) & 1u;
+      if (!Preserved)
+        continue;
+      bool WillClobber;
+      if (TRI->regsOverlap(R, Z80::HL))
+        WillClobber = ClobbersHL;
+      else if (TRI->regsOverlap(R, Z80::A))
+        WillClobber = ClobbersA;
+      else
+        continue;  // SP: real def of SP, leave alone.
+      if (!WillClobber)
+        MI->removeOperand(I - 1);
+    }
+  };
+
   // Compute callee-cleanup amount before emitting return value handling.
   // For callee-cleanup calls, ADJCALLSTACKUP must be emitted BEFORE sret loads
   // because the callee has already restored SP — PEI's SPAdj must reflect this
@@ -1133,9 +1183,11 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
   // value registers).
   bool EmittedAdjUp = false;
   if (CalleeCleanupBytes > 0) {
-    MIRBuilder.buildInstr(Z80::ADJCALLSTACKUP)
-        .addImm(StackArgBytes)
-        .addImm(CalleeCleanupBytes);
+    auto AdjUp = MIRBuilder.buildInstr(Z80::ADJCALLSTACKUP)
+                     .addImm(StackArgBytes)
+                     .addImm(CalleeCleanupBytes);
+    stripAdjCallStackUp(AdjUp.getInstr(),
+                        int64_t(StackArgBytes) - int64_t(CalleeCleanupBytes));
     EmittedAdjUp = true;
   }
 
@@ -1330,9 +1382,11 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
 
   // Emit ADJCALLSTACKUP if not already emitted above (callee-cleanup).
   if (!EmittedAdjUp) {
-    MIRBuilder.buildInstr(Z80::ADJCALLSTACKUP)
-        .addImm(StackArgBytes)
-        .addImm(CalleeCleanupBytes);
+    auto AdjUp = MIRBuilder.buildInstr(Z80::ADJCALLSTACKUP)
+                     .addImm(StackArgBytes)
+                     .addImm(CalleeCleanupBytes);
+    stripAdjCallStackUp(AdjUp.getInstr(),
+                        int64_t(StackArgBytes) - int64_t(CalleeCleanupBytes));
   }
 
   return true;
