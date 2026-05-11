@@ -13,7 +13,9 @@
 #ifndef LLVM_LIB_TARGET_Z80_Z80MACHINEFUNCTIONINFO_H
 #define LLVM_LIB_TARGET_Z80_Z80MACHINEFUNCTIONINFO_H
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/MC/MCRegister.h"
 
 namespace llvm {
 
@@ -21,6 +23,15 @@ class Z80Subtarget;
 
 struct Z80FunctionInfo : public MachineFunctionInfo {
   Z80FunctionInfo(const Function &F, const Z80Subtarget *STI) {}
+
+  /// Cached extended CSR save list for functions declared with the
+  /// "z80-preserves-regs" attribute (ravn/llvm-z80#131 callee-side).
+  /// Contains the default CSR regs followed by the declared-preserved
+  /// regs, with a trailing 0 sentinel.  Populated lazily on first call
+  /// to Z80RegisterInfo::getCalleeSavedRegs.  Empty when the function
+  /// has no such attribute — the default static SaveList is used.
+  mutable SmallVector<MCPhysReg, 12> ExtendedCSRSaveList;
+  mutable bool ExtendedCSRBuilt = false;
 
   int VarArgsStackIndex = -1;
   /// Bytes of stack parameters that callee must clean up (0 = caller cleanup).

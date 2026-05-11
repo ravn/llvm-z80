@@ -19,6 +19,8 @@
 #include "Z80MachineFunctionInfo.h"
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -26,6 +28,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/LiveRegMatrix.h"
+#include "llvm/IR/Function.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/VirtRegMap.h"
@@ -114,6 +117,108 @@ Z80RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
     return SM83_CSR_SaveList;
   if (MF->getFunction().getCallingConv() == CallingConv::Z80_AllReg)
     return Z80_AllReg_CSR_SaveList;
+
+  // ravn/llvm-z80#131 callee-side: when the function declares
+  // "z80-preserves-regs"="...", append the declared registers to the
+  // default CSR save list.  PEI / Z80FrameLowering will then emit
+  // push/pop for any declared register the body actually defines.
+  // The attribute is a programmer assertion *and* a directive — the
+  // caller-side code in Z80CallLowering reads it for RegMask narrowing;
+  // here we make it real for the callee body too.
+  const Function &F = MF->getFunction();
+  if (F.hasFnAttribute("z80-preserves-regs")) {
+    const Z80FunctionInfo *FI = MF->getInfo<Z80FunctionInfo>();
+    if (!FI->ExtendedCSRBuilt) {
+      // Start with the default CSR list (e.g. IX for sdcccall(1)).
+      for (const MCPhysReg *P = Z80_CSR_SaveList; *P; ++P)
+        FI->ExtendedCSRSaveList.push_back(*P);
+
+      // Parse the comma-separated reg names and append.  Same mapping as
+      // Z80CallLowering's parseReg helper.
+      StringRef AttrVal =
+          F.getFnAttribute("z80-preserves-regs").getValueAsString();
+      SmallVector<StringRef, 8> Names;
+      AttrVal.split(Names, ',', -1, /*KeepEmpty=*/false);
+      auto parseReg = [](StringRef N) -> MCPhysReg {
+        return StringSwitch<MCPhysReg>(N.trim().lower())
+            .Case("a", Z80::A)
+            .Case("b", Z80::B)
+            .Case("c", Z80::C)
+            .Case("d", Z80::D)
+            .Case("e", Z80::E)
+            .Case("h", Z80::H)
+            .Case("l", Z80::L)
+            .Case("af", Z80::AF)
+            .Case("bc", Z80::BC)
+            .Case("de", Z80::DE)
+            .Case("hl", Z80::HL)
+            .Case("ix", Z80::IX)
+            .Case("iy", Z80::IY)
+            .Default(MCPhysReg(0));
+      };
+      // PEI saves at the granularity of the listed regs.  Prefer the
+      // 16-bit pair if both halves are listed (single push/pop instead
+      // of two): collect pairs first, then add lone halves.
+      SmallVector<MCPhysReg, 8> Want;
+      bool WantPair[3] = {false, false, false}; // BC, DE, HL
+      bool WantHalf[7] = {false}; // A, B, C, D, E, H, L
+      auto halfIdx = [](MCPhysReg R) -> int {
+        switch (R) {
+        case Z80::A: return 0;
+        case Z80::B: return 1;
+        case Z80::C: return 2;
+        case Z80::D: return 3;
+        case Z80::E: return 4;
+        case Z80::H: return 5;
+        case Z80::L: return 6;
+        default: return -1;
+        }
+      };
+      for (StringRef N : Names) {
+        MCPhysReg R = parseReg(N);
+        if (!R) continue;
+        if (R == Z80::BC) WantPair[0] = true;
+        else if (R == Z80::DE) WantPair[1] = true;
+        else if (R == Z80::HL) WantPair[2] = true;
+        else if (int i = halfIdx(R); i >= 0) WantHalf[i] = true;
+        else Want.push_back(R); // AF, IX, IY — kept as-is
+      }
+      // Pair completion: if both halves of a pair are listed, prefer
+      // the pair (single PUSH BC vs PUSH AF + DEC SP + DEC SP).
+      if (WantHalf[1] && WantHalf[2]) { WantPair[0] = true; WantHalf[1] = WantHalf[2] = false; }
+      if (WantHalf[3] && WantHalf[4]) { WantPair[1] = true; WantHalf[3] = WantHalf[4] = false; }
+      if (WantHalf[5] && WantHalf[6]) { WantPair[2] = true; WantHalf[5] = WantHalf[6] = false; }
+      if (WantPair[0]) Want.push_back(Z80::BC);
+      if (WantPair[1]) Want.push_back(Z80::DE);
+      if (WantPair[2]) Want.push_back(Z80::HL);
+      // Lone halves: promote to their pair anyway since Z80 push/pop
+      // only operates on pairs.  This over-preserves the sister half
+      // but matches the hardware granularity.
+      if (WantHalf[0]) Want.push_back(Z80::AF);
+      if (WantHalf[1] || WantHalf[2]) Want.push_back(Z80::BC);
+      if (WantHalf[3] || WantHalf[4]) Want.push_back(Z80::DE);
+      if (WantHalf[5] || WantHalf[6]) Want.push_back(Z80::HL);
+
+      // Deduplicate while preserving order (sister-half promotion may
+      // double up with explicit pair).
+      llvm::SmallSet<MCPhysReg, 8> Seen;
+      for (MCPhysReg R : Want) {
+        if (Seen.insert(R).second) {
+          // Skip if already in the default CSR (e.g. IX already there).
+          bool InDefault = false;
+          for (const MCPhysReg *P = Z80_CSR_SaveList; *P; ++P)
+            if (*P == R) { InDefault = true; break; }
+          if (!InDefault)
+            FI->ExtendedCSRSaveList.push_back(R);
+        }
+      }
+
+      FI->ExtendedCSRSaveList.push_back(0); // null-terminate
+      FI->ExtendedCSRBuilt = true;
+    }
+    return FI->ExtendedCSRSaveList.data();
+  }
+
   return Z80_CSR_SaveList;
 }
 
