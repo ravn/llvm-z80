@@ -178,6 +178,59 @@ original entry in this doc claimed.
     estimated to unlock the remaining ~30-50 B of the issue
     body's original SNIOS estimate.
 
+## Session 58 follow-up — #133 layer 1 landed (-36 B on cpnos-rom)
+
+After filing #133, layer 1 (callee-side push/pop for declared-
+preserved regs) was implemented and shipped in the same session:
+
+  - **llvm-z80 commit `f1a4200a3b4f`**:
+    `Z80RegisterInfo::getCalleeSavedRegs` extension that builds a
+    per-function CSR save list when the function has the
+    `"z80-preserves-regs"` attribute.  PEI then emits prologue
+    `push` / epilogue `pop` for any declared-preserved register
+    the body modifies (via the existing
+    `Z80FrameLowering::spillCalleeSavedRegisters`, unchanged).
+    Pair completion: lone halves promote to their pair (matches
+    Z80's push/pop pair granularity).  Lazy cache in
+    `Z80FunctionInfo::ExtendedCSRSaveList`.
+
+  - **New lit fixture `preserves-regs-callee.ll`**: demonstrates
+    that a function declared `z80-preserves-regs="hl"` whose body
+    writes HL emits `push hl` in prologue + `pop hl` in epilogue.
+
+  - **rc700-gensmedet commit `51082c8`**: full integration on
+    `xport_send_byte` — declaration in `snios_c.c` expanded to
+    `("d","e","b","c")`, matching `PRESERVES_REGS_CLANG` on the
+    `transport_pio_send_byte` definition in `transport_pio.c`.
+
+  - **Resident payload size**: `1964 B -> 1928 B = -36 B` (cpnos
+    clang + pio-irq).  Matches the lower end of the original #131
+    estimate (30-50 B).
+
+  - **cpnos-polypascal-test 4-cell**: PASS at `d,e,b,c`.
+
+  - **#134 filed** during the integration bisect: the full
+    `d,e,h,l,b,c` (all-three-pairs DE+HL+BC) declared set produces
+    correct LLVM lit + test-runner output but FAILS
+    cpnos-polypascal-test at PPAS launch.  Subsets with any one
+    pair removed pass.  Tracked as a `getCalleeSavedRegs` + caller-
+    side regalloc interaction; cpnos-rom stays at the safe
+    `d,e,b,c` subset.
+
+## rc700-gensmedet#97 — partial closure
+
+  - **Part A** (rewrite body to preserve D): obviated by #133
+    layer 1.  No source rewrite needed; the attribute on the
+    definition makes the prologue/epilogue emit push/pop
+    automatically.  Working in production at commit `51082c8`.
+  - **Part B** (audit `xport_recv_byte`): still pending.  The
+    SNIOS state machines call `recv_byte_t` extensively; auditing
+    `transport_pio_recv_byte`'s body and adding the attribute
+    could unlock additional savings.  Multi-session.
+  - **Part C** (apply attribute to `transport.h` /
+    `cpnos_main.c`): still pending.  Marginal — those callers are
+    init-path only.
+
 ## Engagement-mode status after session 58
 
 The roadmap's gating cluster (Phase 3 Cluster A) is now
