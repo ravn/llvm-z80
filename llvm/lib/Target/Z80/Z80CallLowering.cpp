@@ -33,8 +33,11 @@
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/Function.h"
 #include "llvm/Target/TargetMachine.h"
+#include <cstring>
 #include <memory>
 
 using namespace llvm;
@@ -1001,7 +1004,101 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
   // implicit Defs are considered clobbered.
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
   const uint32_t *Mask = TRI->getCallPreservedMask(MF, CC);
+
+  // Honor the callee's "z80-preserves-regs" function attribute (ravn/llvm-z80
+  // #131).  This is the LLVM-IR analog of SDCC's __preserves_regs(...): the
+  // callee promises to preserve the listed regs, and the allocator can keep
+  // caller values alive in them across the call instead of spilling.
+  // Recognised names (case-insensitive, comma-separated):
+  //   a, b, c, d, e, h, l         — 8-bit halves
+  //   af, bc, de, hl, ix, iy      — 16-bit pairs
+  // Each name expands to the named physreg plus all sub-registers, so "de"
+  // preserves D and E too.  Sub-only (not super-) is intentional: "d" alone
+  // does not claim DE-as-a-pair is preserved (E could still be clobbered).
+  if (Info.CB) {
+    if (const Function *Callee = Info.CB->getCalledFunction()) {
+      if (Callee->hasFnAttribute("z80-preserves-regs")) {
+        StringRef AttrVal =
+            Callee->getFnAttribute("z80-preserves-regs").getValueAsString();
+        SmallVector<StringRef, 8> Names;
+        AttrVal.split(Names, ',', -1, /*KeepEmpty=*/false);
+
+        uint32_t *NewMask = MF.allocateRegMask();
+        unsigned MaskSize = MachineOperand::getRegMaskSize(TRI->getNumRegs());
+        std::memcpy(NewMask, Mask, MaskSize * sizeof(uint32_t));
+
+        auto parseReg = [](StringRef N) -> MCPhysReg {
+          return StringSwitch<MCPhysReg>(N.trim().lower())
+              .Case("a", Z80::A)
+              .Case("b", Z80::B)
+              .Case("c", Z80::C)
+              .Case("d", Z80::D)
+              .Case("e", Z80::E)
+              .Case("h", Z80::H)
+              .Case("l", Z80::L)
+              .Case("af", Z80::AF)
+              .Case("bc", Z80::BC)
+              .Case("de", Z80::DE)
+              .Case("hl", Z80::HL)
+              .Case("ix", Z80::IX)
+              .Case("iy", Z80::IY)
+              .Default(MCPhysReg(0));
+        };
+
+        for (StringRef Name : Names) {
+          MCPhysReg Reg = parseReg(Name);
+          if (!Reg)
+            continue;
+          // Set bits for the named reg and all its sub-registers.  Preserving
+          // a pair (e.g. DE) implies preserving its halves (D and E).
+          for (MCPhysReg R : TRI->subregs_inclusive(Reg))
+            NewMask[R / 32] |= (1u << (R % 32));
+        }
+
+        // Pair completion: if both halves of a register pair end up preserved
+        // (e.g. user wrote `preserves_regs("d","e")` to match SDCC's UX), the
+        // pair as a whole is also preserved — set its bit too, so that a
+        // GR16 value allocated to the pair survives the call.
+        static const struct { MCPhysReg Pair, Hi, Lo; } Pairs[] = {
+            {Z80::BC, Z80::B, Z80::C},
+            {Z80::DE, Z80::D, Z80::E},
+            {Z80::HL, Z80::H, Z80::L},
+        };
+        auto bitSet = [&](MCPhysReg R) -> bool {
+          return (NewMask[R / 32] >> (R % 32)) & 1u;
+        };
+        for (const auto &P : Pairs) {
+          if (bitSet(P.Hi) && bitSet(P.Lo))
+            NewMask[P.Pair / 32] |= (1u << (P.Pair % 32));
+        }
+
+        Mask = NewMask;
+      }
+    }
+  }
+
   CallMI.addRegMask(Mask);
+
+  // If the callee has "z80-preserves-regs", strip the matching implicit-defs
+  // from the CALL.  Per LLVM semantics, RegMask + explicit Defs are additive
+  // (a reg is clobbered if EITHER says so), and the CALL_nn opcode has a
+  // hardcoded `Defs = [A, BC, DE, HL, IY, FLAGS]` from TableGen.  Removing
+  // the implicit-def for a now-preserved reg lets the regalloc keep values
+  // alive across the call as the RegMask intends.
+  if (Mask != TRI->getCallPreservedMask(MF, CC)) {
+    MachineInstr *MI = CallMI.getInstr();
+    for (unsigned I = MI->getNumOperands(); I > 0; --I) {
+      MachineOperand &MO = MI->getOperand(I - 1);
+      if (!MO.isReg() || !MO.isImplicit() || !MO.isDef())
+        continue;
+      MCRegister R = MO.getReg().asMCReg();
+      if (!R)
+        continue;
+      // Preserved iff its bit is set in our modified mask.
+      if ((Mask[R / 32] >> (R % 32)) & 1u)
+        MI->removeOperand(I - 1);
+    }
+  }
 
   // Compute callee-cleanup amount before emitting return value handling.
   // For callee-cleanup calls, ADJCALLSTACKUP must be emitted BEFORE sret loads
