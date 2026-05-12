@@ -1238,11 +1238,87 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         JumpOpc = Z80::JP_NZ_nn;
       }
     } else {
-      // Unsigned ULT/UGE: CMP16_FLAGS sets carry flag.
-      if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
-          !RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
-        return false;
-      BuildMI(MBB, MI, DL, TII.get(Z80::CMP16_FLAGS)).addReg(LHS).addReg(RHS);
+      // Unsigned ULT/UGE: try high-byte-only fold when one operand is a
+      // byte-aligned constant; otherwise CMP16_FLAGS.
+      //
+      // Folds (ravn/llvm-z80#141):
+      //   icmp uge i16 var, K  with K = N*256 (1 ≤ N ≤ 255):
+      //     ↔ var_hi ≥ N
+      //     N=1:  OR A;   JP_NZ        (1+2 B → 4 B total incl branch)
+      //     N>1:  CP N;   JP_NC        (2+2 B → 5 B total)
+      //   icmp ult i16 var, K  with K = N*256 (1 ≤ N ≤ 255):
+      //     ↔ var_hi < N
+      //     N=1:  OR A;   JP_Z
+      //     N>1:  CP N;   JP_C
+      //   icmp uge i16 K, var  (post-ULE swap), K = N*256+0xFF (N < 0xFF):
+      //     ≡ var ≤ K  ↔  var_hi < N+1
+      //     N=0:  OR A;   JP_Z
+      //     N>0:  CP N+1; JP_C
+      //   icmp ult i16 K, var  (post-UGT swap), K = N*256+0xFF (N < 0xFF):
+      //     ≡ var > K  ↔  var_hi ≥ N+1
+      //     N=0:  OR A;   JP_NZ
+      //     N>0:  CP N+1; JP_NC
+      // Vs the 9-byte CMP16_FLAGS chain (ld bc,nn; sub/sbc; jr).
+      auto getConstU16 = [&](Register R) -> std::optional<uint64_t> {
+        MachineInstr *Def = MRI.getVRegDef(R);
+        if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+          return Def->getOperand(1).getCImm()->getZExtValue() & 0xFFFF;
+        return std::nullopt;
+      };
+
+      Register VarReg;
+      unsigned Thresh = 0;       // CP_n immediate; 0 means use OR_A
+      bool BranchOnGE = false;    // semantic direction for high-byte test
+      bool HiByteFold = false;
+
+      if (auto K = getConstU16(RHS)) {
+        // var op K — fold when K's low byte is zero and K ∈ [0x100, 0xFF00].
+        if ((*K & 0xFF) == 0 && *K >= 0x100 && *K <= 0xFF00) {
+          VarReg = LHS;
+          Thresh = (*K >> 8);  // 1 ≤ Thresh ≤ 255
+          BranchOnGE = (Pred == CmpInst::ICMP_UGE);
+          HiByteFold = true;
+        }
+      } else if (auto K = getConstU16(LHS)) {
+        // K op var (swapped form) — fold when K's low byte is 0xFF and
+        // K ∈ [0xFF, 0xFEFF].  K = 0xFFFF excluded (var_hi ≥ 0x100
+        // is vacuous; let CMP16_FLAGS path handle).
+        if ((*K & 0xFF) == 0xFF && *K < 0xFFFF) {
+          VarReg = RHS;
+          Thresh = (*K >> 8) + 1;  // 1 ≤ Thresh ≤ 0xFF
+          // For the swapped case the user wrote ULE/UGT.  After
+          // normalization in this function, UGE here means original
+          // ULE (var ≤ K, branch on var_hi < Thresh).  ULT here means
+          // original UGT (var > K, branch on var_hi ≥ Thresh).
+          BranchOnGE = (Pred == CmpInst::ICMP_ULT);
+          HiByteFold = true;
+        }
+      }
+
+      if (HiByteFold) {
+        if (!RBI.constrainGenericRegister(VarReg, Z80::GR16RegClass, MRI))
+          return false;
+        // Copy var's high byte sub-reg directly to A.
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(VarReg, RegState{}, Z80::sub_hi);
+        if (Thresh == 1) {
+          // var_hi ≥ 1 ↔ var_hi != 0;  var_hi < 1 ↔ var_hi == 0.
+          BuildMI(MBB, MI, DL, TII.get(Z80::OR_A));
+          JumpOpc = BranchOnGE ? Z80::JP_NZ_nn : Z80::JP_Z_nn;
+        } else {
+          // CP n: carry iff A < n.  JP_NC for ≥, JP_C for <.
+          BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(Thresh);
+          JumpOpc = BranchOnGE ? Z80::JP_NC_nn : Z80::JP_C_nn;
+        }
+      } else {
+        // Standard CMP16_FLAGS path.
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(Z80::CMP16_FLAGS))
+            .addReg(LHS)
+            .addReg(RHS);
+      }
     }
   } else {
     return false;
