@@ -5277,20 +5277,28 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
-  // --- Peephole: Cross-MBB BSS-spill → PUSH/POP (single-pred escape) ---
+  // --- Peephole: Cross-MBB BSS-spill → PUSH/POP ---
   // Extends the in-MBB BSS-spill peepholes above to the case where the
   // matching LOAD lives in a successor MBB.  See ravn/llvm-z80#132.
   //
   // Pattern (from cpnos-rom SNIOS retry loops):
   //   MBB_A:  STORE rr,(slot); ...; CALL; ...; cond-br MBB_C; fallthrough
   //   MBB_B:  LOAD  rr,(slot); ...; back-edge or fallthrough
-  //   MBB_C:  escape target with slot dead; MBB_A is sole predecessor
+  //   MBB_C:  escape target with slot dead
   //
-  // Conservative gate: every non-LOAD successor of MBB_A must have MBB_A
-  // as its sole predecessor and must not reference the slot.  The slot
-  // must not be referenced anywhere outside MBB_A's STORE and MBB_B's
-  // LOAD.  Compensating "inc sp; inc sp" (2 B, no register clobber)
-  // prepended to each escape MBB.
+  // For each non-LOAD ("escape") successor of MBB_A we choose one of:
+  //   - Prepend "inc sp; inc sp" in-place at MBB_C's head (cheapest)
+  //     when MBB_A is MBB_C's sole predecessor — running the compensation
+  //     only on this path.
+  //   - Otherwise edge-split: insert a fresh compensation MBB just before
+  //     MBB_C in layout, fall through into MBB_C, and rewrite MBB_A's
+  //     explicit terminator operand from MBB_C to the new MBB.  Safe only
+  //     when (a) MBB_A's terminator references MBB_C explicitly (no
+  //     fall-through escape from MBB_A), and (b) MBB_C's layout-predecessor
+  //     doesn't already fall through to MBB_C (would corrupt that path).
+  // Both strategies have a 2 B compensation cost per escape edge.  The
+  // slot must not be referenced anywhere outside MBB_A's STORE and
+  // MBB_B's LOAD.
   if (STI.staticStack()) {
     struct CrossSpillInfo {
       unsigned StoreOpc, LoadOpc, PushOpc, PopOpc;
@@ -5383,12 +5391,24 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           // Inspect successors.  Exactly one MBB_B must contain the
           // matching LOAD as its first slot-touching instruction with
           // balanced stack from entry to LOAD.  All other successors
-          // are "escape MBBs" and must:
-          //   - have MBB_A as their sole predecessor
-          //   - not reference the slot anywhere
+          // are "escape MBBs"; for each, we either:
+          //   - prepend "inc sp; inc sp" in-place when MBB_A is sole
+          //     predecessor of the escape (cheapest: 2 B compensation)
+          //   - or edge-split: insert a new compensation MBB just
+          //     before the escape so its fall-through carries SP to
+          //     the original escape target (also 2 B compensation,
+          //     but requires the escape's layout-predecessor not to
+          //     already fall-through to it; bail otherwise to keep
+          //     cost predictable)
+          // The escape MBB itself must not reference the slot.
+          enum EscapeKind { ESC_PrependInPlace, ESC_InsertBefore };
+          struct EscapeRec {
+            MachineBasicBlock *MBB_C;
+            EscapeKind Kind;
+          };
           MachineBasicBlock *MBB_B = nullptr;
           MachineBasicBlock::iterator LoadIt;
-          SmallVector<MachineBasicBlock *, 2> EscapeMBBs;
+          SmallVector<EscapeRec, 2> Escapes;
           bool BailSucc = false;
           for (MachineBasicBlock *Succ : MBB_A.successors()) {
             int SuccDepth = 0;
@@ -5408,13 +5428,44 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
               }
             }
             if (!SuccTouches) {
-              // Escape candidate.  Must have MBB_A as sole predecessor.
-              if (Succ->pred_size() != 1 ||
-                  *Succ->pred_begin() != &MBB_A) {
+              // Escape candidate.  Decide compensation strategy:
+              if (Succ->pred_size() == 1 &&
+                  *Succ->pred_begin() == &MBB_A) {
+                // Cheap path: prepend in-place.
+                Escapes.push_back({Succ, ESC_PrependInPlace});
+                continue;
+              }
+              // Edge-split.  Only safe when MBB_A's terminator has an
+              // explicit MBB operand referencing Succ (i.e. Succ is
+              // reached by an explicit branch, not fall-through from
+              // MBB_A) AND inserting a new MBB just before Succ in
+              // layout won't break some OTHER MBB's fall-through into
+              // Succ.
+              bool HasExplicitEdge = false;
+              for (auto Ti = MBB_A.getFirstTerminator();
+                   Ti != MBB_A.end(); ++Ti) {
+                for (const MachineOperand &MO : Ti->operands()) {
+                  if (MO.isMBB() && MO.getMBB() == Succ) {
+                    HasExplicitEdge = true;
+                    break;
+                  }
+                }
+                if (HasExplicitEdge)
+                  break;
+              }
+              if (!HasExplicitEdge) {
                 BailSucc = true;
                 break;
               }
-              EscapeMBBs.push_back(Succ);
+              MachineBasicBlock *Prev = Succ->getPrevNode();
+              if (Prev && Prev->canFallThrough() &&
+                  Prev->isLayoutSuccessor(Succ)) {
+                // Some other MBB falls-through to Succ; we can't
+                // insert before Succ without breaking that path.
+                BailSucc = true;
+                break;
+              }
+              Escapes.push_back({Succ, ESC_InsertBefore});
               continue;
             }
             // Slot touched in Succ.  Must be the matching LOAD opcode.
@@ -5434,6 +5485,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             MBB_B = Succ;
             LoadIt = FirstTouch;
           }
+          // DEBUG-#132
+          errs() << "[#132] MF=" << MF.getName()
+                 << " MBB_A=BB#" << MBB_A.getNumber()
+                 << " STORE=" << TII->getName(MII->getOpcode())
+                 << " BailSucc=" << BailSucc
+                 << " MBB_B=" << (MBB_B ? MBB_B->getNumber() : -1)
+                 << " Escapes=" << Escapes.size() << "\n";
           if (BailSucc || !MBB_B)
             continue;
 
@@ -5465,18 +5523,18 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
 
           // Cost gate.  PUSH/POP are 1 B each.  Compensation is 2 B
-          // (inc sp; inc sp) per escape edge.  Net save:
+          // (inc sp; inc sp) per escape edge, regardless of strategy.
           //   Save = (StoreBytes - 1) + (LoadBytes - 1) - 2 * Nesc
           unsigned PushPopSave =
               (CSI->StoreBytes - 1) + (CSI->LoadBytes - 1);
-          unsigned CompCost = 2u * EscapeMBBs.size();
+          unsigned CompCost = 2u * Escapes.size();
           if (PushPopSave <= CompCost)
             continue;
 
           LLVM_DEBUG({
             dbgs() << "  Cross-MBB BSS spill→PUSH/POP: " << *MII
                    << "  load in BB#" << MBB_B->getNumber() << ", "
-                   << EscapeMBBs.size() << " escape MBB(s), saves "
+                   << Escapes.size() << " escape MBB(s), saves "
                    << (PushPopSave - CompCost) << "B\n";
           });
 
@@ -5490,13 +5548,27 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           BuildMI(*MBB_B, *LoadIt, DLl, TII->get(CSI->PopOpc));
           MBB_B->erase(LoadIt);
 
-          // Prepend compensating "inc sp; inc sp" to each escape MBB.
-          // INC_SP is 1 B and has no register operands — safe even when
-          // A/FLAGS/HL etc. are live across the edge.
-          for (auto *MBB_C : EscapeMBBs) {
+          // Compensate each escape.
+          for (auto &E : Escapes) {
+            MachineBasicBlock *MBB_C = E.MBB_C;
             DebugLoc DLc;
-            BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
-            BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
+            if (E.Kind == ESC_PrependInPlace) {
+              // Prepend "inc sp; inc sp" in-place — MBB_A is MBB_C's
+              // sole predecessor so this only runs on this path.
+              BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
+              BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
+            } else {
+              // Edge-split: create a new MBB just before MBB_C in
+              // layout, fill with "inc sp; inc sp", fall through
+              // to MBB_C.  Rewrite MBB_A's terminator operand from
+              // MBB_C to NewMBB.
+              MachineBasicBlock *NewMBB = MF.CreateMachineBasicBlock();
+              MF.insert(MBB_C->getIterator(), NewMBB);
+              BuildMI(NewMBB, DLc, TII->get(Z80::INC_SP));
+              BuildMI(NewMBB, DLc, TII->get(Z80::INC_SP));
+              NewMBB->addSuccessor(MBB_C);
+              MBB_A.ReplaceUsesOfBlockWith(MBB_C, NewMBB);
+            }
           }
 
           Changed = true;
