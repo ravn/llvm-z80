@@ -82,6 +82,12 @@ private:
   bool isHighByteProvablyZero(Register Reg, MachineRegisterInfo &MRI,
                               SmallPtrSetImpl<MachineInstr *> &Visited);
 
+  /// Check if a virtual register (any width) provably holds zero.  Used in
+  /// the high-byte recursion to bottom out on the high-byte operand of a
+  /// G_MERGE_VALUES (ravn/llvm-z80#142).
+  bool isProvablyZero(Register Reg, MachineRegisterInfo &MRI,
+                      SmallPtrSetImpl<MachineInstr *> &Visited);
+
   /// Count foldable G_LOAD→G_ADD/SUB/PTR_ADD patterns in a BB.
   /// Used to decide if register pressure is high enough to justify folding.
   unsigned countFoldablePatternsInBB(MachineBasicBlock &MBB,
@@ -147,6 +153,35 @@ bool Z80InstructionSelector::isHighByteProvablyZero(
     return isHighByteProvablyZero(LHS, MRI, Visited) &&
            isHighByteProvablyZero(RHS, MRI, Visited);
   }
+  case TargetOpcode::G_AND: {
+    // (x & y) high byte is zero iff (x_hi & y_hi) == 0, which holds
+    // when EITHER operand has high byte zero (a zero in either input
+    // forces the bitwise AND result's high byte to zero).
+    Register LHS = Def->getOperand(1).getReg();
+    Register RHS = Def->getOperand(2).getReg();
+    return isHighByteProvablyZero(LHS, MRI, Visited) ||
+           isHighByteProvablyZero(RHS, MRI, Visited);
+  }
+  case TargetOpcode::G_OR:
+  case TargetOpcode::G_XOR: {
+    // (x | y) and (x ^ y) high byte is zero iff BOTH operands have
+    // high byte zero.
+    Register LHS = Def->getOperand(1).getReg();
+    Register RHS = Def->getOperand(2).getReg();
+    return isHighByteProvablyZero(LHS, MRI, Visited) &&
+           isHighByteProvablyZero(RHS, MRI, Visited);
+  }
+  case TargetOpcode::G_MERGE_VALUES: {
+    // s16 = MERGE(s8 lo, s8 hi).  High byte is zero iff the hi operand
+    // is provably zero.  This is the post-legalizer shape of an i16
+    // op that the legalizer split into two i8 ops (ravn/llvm-z80#142):
+    // e.g. `(r & 0x7F)` becomes UNMERGE+AND(lo,127)+AND(hi,0)+MERGE
+    // where the hi-AND produces a provable-zero i8.
+    if (Def->getNumOperands() < 3)
+      return false;
+    Register HiOp = Def->getOperand(2).getReg();
+    return isProvablyZero(HiOp, MRI, Visited);
+  }
   case Z80::INC16:
   case Z80::DEC16: {
     // INC16/DEC16 is selected from G_ADD/G_SUB +/-1.
@@ -155,6 +190,59 @@ bool Z80InstructionSelector::isHighByteProvablyZero(
     // isHighByteProvablyZero when ConstVal is in [0,255]).
     Register Src = Def->getOperand(1).getReg();
     return isHighByteProvablyZero(Src, MRI, Visited);
+  }
+  default:
+    return false;
+  }
+}
+
+bool Z80InstructionSelector::isProvablyZero(
+    Register Reg, MachineRegisterInfo &MRI,
+    SmallPtrSetImpl<MachineInstr *> &Visited) {
+  if (!Reg.isVirtual())
+    return false;
+  MachineInstr *Def = MRI.getVRegDef(Reg);
+  if (!Def)
+    return false;
+  if (!Visited.insert(Def).second)
+    return true;  // cycle: optimistic (consistent with isHighByteProvablyZero)
+
+  switch (Def->getOpcode()) {
+  case TargetOpcode::G_CONSTANT:
+    return Def->getOperand(1).getCImm()->isZero();
+  case TargetOpcode::G_AND: {
+    // x & y == 0 if either operand is provably zero.
+    Register LHS = Def->getOperand(1).getReg();
+    Register RHS = Def->getOperand(2).getReg();
+    return isProvablyZero(LHS, MRI, Visited) ||
+           isProvablyZero(RHS, MRI, Visited);
+  }
+  case TargetOpcode::G_OR:
+  case TargetOpcode::G_XOR: {
+    // x | y == 0  ↔  both zero;  x ^ y == 0  ↔  both equal (incl. both zero).
+    Register LHS = Def->getOperand(1).getReg();
+    Register RHS = Def->getOperand(2).getReg();
+    return isProvablyZero(LHS, MRI, Visited) &&
+           isProvablyZero(RHS, MRI, Visited);
+  }
+  case TargetOpcode::G_PHI: {
+    for (unsigned I = 1, E = Def->getNumOperands(); I < E; I += 2) {
+      Register InReg = Def->getOperand(I).getReg();
+      if (!isProvablyZero(InReg, MRI, Visited))
+        return false;
+    }
+    return true;
+  }
+  case TargetOpcode::G_UNMERGE_VALUES: {
+    // s8 = UNMERGE(s16 src).  operand[0] = lo, operand[1] = hi, operand[N]=src.
+    // Hi half is zero iff the source's high byte is zero.
+    // Lo half: would need "low byte provably zero" — not implemented; bail.
+    unsigned NumDefs = Def->getNumExplicitDefs();
+    if (NumDefs == 2 && Def->getOperand(1).getReg() == Reg) {
+      Register Src = Def->getOperand(NumDefs).getReg();
+      return isHighByteProvablyZero(Src, MRI, Visited);
+    }
+    return false;
   }
   default:
     return false;
@@ -1071,6 +1159,14 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         LLVM_DEBUG(dbgs() << "  Small-const EQ/NE: VarReg=" << VarReg
                           << " ConstVal=" << ConstVal
                           << " HighByteZero=" << HighByteZero << "\n");
+        // Force VarReg into HL so we can extract A from L.  When
+        // HighByteZero we still emit the HL COPY (which materialises
+        // VarReg's pair) — a pure sub_lo extraction here breaks
+        // cpnos-rom polypascal-test on the pio-irq transport via some
+        // regalloc-level interaction the lit cases don't expose
+        // (ravn/llvm-z80#150 to investigate).  The OR_H is still saved
+        // via the HighByteZero branch below, giving the bulk of the
+        // saving (cp n vs sub n + or h).  ravn/llvm-z80#142.
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
             .addReg(VarReg);
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
@@ -1084,7 +1180,7 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           else
             BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::A);
         } else {
-          // General case: test both bytes.
+          // General case: test both bytes via SUB + OR_H.
           if (ConstVal != 0)
             BuildMI(MBB, MI, DL, TII.get(Z80::SUB_n)).addImm(ConstVal);
           BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::H);
