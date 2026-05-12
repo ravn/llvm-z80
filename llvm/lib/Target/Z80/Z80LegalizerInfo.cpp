@@ -1324,10 +1324,11 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     return true;
   }
   case TargetOpcode::G_SEXT_INREG: {
-    // Width==8: keep as legal for instruction selector (SEXT_GR8_GR16 pseudo).
-    // Other widths (e.g., 1 for bool→signed): lower to SHL + ASHR.
+    // Keep Width==8 (SEXT_GR8_GR16 pseudo) and Width==1 (i1→i16 via
+    // RRCA + SBC A,A — ravn/llvm-z80#144) legal; the instruction
+    // selector lowers them directly.  Other widths: lower to SHL + ASHR.
     int64_t Width = MI.getOperand(2).getImm();
-    if (Width == 8)
+    if (Width == 8 || Width == 1)
       return true;
 
     Register DstReg = MI.getOperand(0).getReg();

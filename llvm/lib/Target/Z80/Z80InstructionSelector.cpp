@@ -2140,6 +2140,41 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       MI.eraseFromParent();
       return true;
     }
+    if (DstTy.getSizeInBits() == 16 && Width == 1) {
+      // i1 → i16 sign extension (ravn/llvm-z80#144):
+      //   COPY $a, src:sub_lo  ; A holds 0 or 1 in bit 0 (i1 input)
+      //   RRCA                  ; bit 0 → CF
+      //   SBC A, A              ; A = -CF = 0xFF or 0x00 (sign-ext byte)
+      //   REG_SEQUENCE Dst, A:sub_lo, A:sub_hi
+      // Post-RA expansion: ~5 bytes (ld a,src; rrca; sbc a,a; ld lo,a;
+      // ld hi,a) — vs the legalizer's SHL+ASHR by 15 chain at ~12 B.
+      const DebugLoc &DL = MI.getDebugLoc();
+      if (!RBI.constrainGenericRegister(SrcReg, Z80::GR16RegClass, MRI) ||
+          !RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI))
+        return false;
+      // Copy src's low byte to A.
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+          .addReg(SrcReg, RegState{}, Z80::sub_lo);
+      // RRCA: bit 0 → carry.
+      BuildMI(MBB, MI, DL, TII.get(Z80::RRCA));
+      // SBC A, A: A = -CF = 0xFF or 0x00.
+      BuildMI(MBB, MI, DL, TII.get(Z80::SBC_A_A));
+      // Build i16 destination from A in both halves.  Materialise
+      // via two GR8 vregs to avoid REG_SEQUENCE on a physreg input.
+      Register LoVReg = MRI.createVirtualRegister(&Z80::GR8RegClass);
+      Register HiVReg = MRI.createVirtualRegister(&Z80::GR8RegClass);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), LoVReg)
+          .addReg(Z80::A);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiVReg)
+          .addReg(Z80::A);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::REG_SEQUENCE), DstReg)
+          .addReg(LoVReg)
+          .addImm(Z80::sub_lo)
+          .addReg(HiVReg)
+          .addImm(Z80::sub_hi);
+      MI.eraseFromParent();
+      return true;
+    }
     // Fallback: not handled, let legalizer lower to SHL+ASHR
     return false;
   }
