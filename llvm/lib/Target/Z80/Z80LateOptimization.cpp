@@ -5277,6 +5277,236 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: Cross-MBB BSS-spill → PUSH/POP (single-pred escape) ---
+  // Extends the in-MBB BSS-spill peepholes above to the case where the
+  // matching LOAD lives in a successor MBB.  See ravn/llvm-z80#132.
+  //
+  // Pattern (from cpnos-rom SNIOS retry loops):
+  //   MBB_A:  STORE rr,(slot); ...; CALL; ...; cond-br MBB_C; fallthrough
+  //   MBB_B:  LOAD  rr,(slot); ...; back-edge or fallthrough
+  //   MBB_C:  escape target with slot dead; MBB_A is sole predecessor
+  //
+  // Conservative gate: every non-LOAD successor of MBB_A must have MBB_A
+  // as its sole predecessor and must not reference the slot.  The slot
+  // must not be referenced anywhere outside MBB_A's STORE and MBB_B's
+  // LOAD.  Compensating "inc sp; inc sp" (2 B, no register clobber)
+  // prepended to each escape MBB.
+  if (STI.staticStack()) {
+    struct CrossSpillInfo {
+      unsigned StoreOpc, LoadOpc, PushOpc, PopOpc;
+      unsigned StoreBytes, LoadBytes;
+    };
+    static const CrossSpillInfo Pairs[] = {
+        {Z80::LD_nnind_A,  Z80::LD_A_nnind,  Z80::PUSH_AF, Z80::POP_AF, 3, 3},
+        {Z80::LD_nnind_HL, Z80::LD_HL_nnind, Z80::PUSH_HL, Z80::POP_HL, 3, 3},
+        {Z80::LD_nnind_DE, Z80::LD_DE_nnind, Z80::PUSH_DE, Z80::POP_DE, 4, 4},
+        {Z80::LD_nnind_BC, Z80::LD_BC_nnind, Z80::PUSH_BC, Z80::POP_BC, 4, 4},
+    };
+    auto getCSI = [&](unsigned Opc) -> const CrossSpillInfo * {
+      for (const auto &P : Pairs)
+        if (P.StoreOpc == Opc)
+          return &P;
+      return nullptr;
+    };
+    auto isSfr = [](const MachineOperand &MO) {
+      if (!MO.isMCSymbol())
+        return false;
+      StringRef N = MO.getMCSymbol()->getName();
+      return N.starts_with("__sfrend") || N.starts_with("__sframe");
+    };
+    auto sameAddr = [](const MachineInstr &A, const MachineInstr &B) {
+      const MachineOperand &MA = A.getOperand(0);
+      const MachineOperand &MB = B.getOperand(0);
+      if (!MA.isIdenticalTo(MB))
+        return false;
+      if (MA.isMCSymbol())
+        return MA.getOffset() == MB.getOffset();
+      return true;
+    };
+    auto isAnyBssLoad = [](unsigned O) {
+      return O == Z80::LD_A_nnind || O == Z80::LD_HL_nnind ||
+             O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind;
+    };
+    auto isAnyBssStore = [](unsigned O) {
+      return O == Z80::LD_nnind_A || O == Z80::LD_nnind_HL ||
+             O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
+    };
+    auto isAnyPush = [](unsigned O) {
+      return O == Z80::PUSH_AF || O == Z80::PUSH_BC || O == Z80::PUSH_DE ||
+             O == Z80::PUSH_HL || O == Z80::PUSH_IX || O == Z80::PUSH_IY;
+    };
+    auto isAnyPop = [](unsigned O) {
+      return O == Z80::POP_AF || O == Z80::POP_BC || O == Z80::POP_DE ||
+             O == Z80::POP_HL || O == Z80::POP_IX || O == Z80::POP_IY;
+    };
+
+    for (MachineBasicBlock &MBB_A : MF) {
+      bool RestartOuter = true;
+      while (RestartOuter) {
+        RestartOuter = false;
+        for (auto MII = MBB_A.begin(), MIE = MBB_A.end(); MII != MIE; ++MII) {
+          const CrossSpillInfo *CSI = getCSI(MII->getOpcode());
+          if (!CSI)
+            continue;
+          if (!isSfr(MII->getOperand(0)))
+            continue;
+
+          // Scan forward in MBB_A.  Must NOT find any other access to the
+          // same slot (in-MBB matches are handled by the prior peepholes).
+          // Track PUSH/POP balance; require StackDepth == 0 at terminator.
+          int StackDepth = 0;
+          bool BailLocal = false;
+          for (auto S = std::next(MII); S != MIE; ++S) {
+            unsigned O = S->getOpcode();
+            if (isAnyPush(O))
+              ++StackDepth;
+            if (isAnyPop(O)) {
+              --StackDepth;
+              if (StackDepth < 0) {
+                BailLocal = true;
+                break;
+              }
+            }
+            if ((isAnyBssLoad(O) || isAnyBssStore(O)) &&
+                sameAddr(*MII, *S)) {
+              BailLocal = true;
+              break;
+            }
+            if (S->isTerminator())
+              break;
+          }
+          if (BailLocal)
+            continue;
+          if (StackDepth != 0)
+            continue;
+
+          // Inspect successors.  Exactly one MBB_B must contain the
+          // matching LOAD as its first slot-touching instruction with
+          // balanced stack from entry to LOAD.  All other successors
+          // are "escape MBBs" and must:
+          //   - have MBB_A as their sole predecessor
+          //   - not reference the slot anywhere
+          MachineBasicBlock *MBB_B = nullptr;
+          MachineBasicBlock::iterator LoadIt;
+          SmallVector<MachineBasicBlock *, 2> EscapeMBBs;
+          bool BailSucc = false;
+          for (MachineBasicBlock *Succ : MBB_A.successors()) {
+            int SuccDepth = 0;
+            bool SuccTouches = false;
+            MachineBasicBlock::iterator FirstTouch = Succ->end();
+            for (auto T = Succ->begin(); T != Succ->end(); ++T) {
+              unsigned O = T->getOpcode();
+              if (isAnyPush(O))
+                ++SuccDepth;
+              if (isAnyPop(O))
+                --SuccDepth;
+              if ((isAnyBssLoad(O) || isAnyBssStore(O)) &&
+                  sameAddr(*MII, *T)) {
+                SuccTouches = true;
+                FirstTouch = T;
+                break;
+              }
+            }
+            if (!SuccTouches) {
+              // Escape candidate.  Must have MBB_A as sole predecessor.
+              if (Succ->pred_size() != 1 ||
+                  *Succ->pred_begin() != &MBB_A) {
+                BailSucc = true;
+                break;
+              }
+              EscapeMBBs.push_back(Succ);
+              continue;
+            }
+            // Slot touched in Succ.  Must be the matching LOAD opcode.
+            if (FirstTouch->getOpcode() != CSI->LoadOpc) {
+              BailSucc = true;
+              break;
+            }
+            if (SuccDepth != 0) {
+              BailSucc = true;
+              break;
+            }
+            if (MBB_B != nullptr) {
+              // Two successors both contain a LOAD — bail.
+              BailSucc = true;
+              break;
+            }
+            MBB_B = Succ;
+            LoadIt = FirstTouch;
+          }
+          if (BailSucc || !MBB_B)
+            continue;
+
+          // No other MBB may reference the slot (covers transitive
+          // escape MBBs, unreachable blocks, etc.).
+          bool UsedElsewhere = false;
+          for (MachineBasicBlock &Other : MF) {
+            if (&Other == &MBB_A || &Other == MBB_B)
+              continue;
+            for (MachineInstr &OI : Other) {
+              unsigned O = OI.getOpcode();
+              if ((isAnyBssLoad(O) || isAnyBssStore(O)) &&
+                  sameAddr(*MII, OI)) {
+                UsedElsewhere = true;
+                break;
+              }
+            }
+            if (UsedElsewhere)
+              break;
+          }
+          if (UsedElsewhere)
+            continue;
+
+          // POP AF: FLAGS must be dead after the LOAD position.
+          if (CSI->PopOpc == Z80::POP_AF) {
+            auto After = std::next(LoadIt);
+            if (!isRegDeadAfter(After, *MBB_B, TRI, Z80::FLAGS))
+              continue;
+          }
+
+          // Cost gate.  PUSH/POP are 1 B each.  Compensation is 2 B
+          // (inc sp; inc sp) per escape edge.  Net save:
+          //   Save = (StoreBytes - 1) + (LoadBytes - 1) - 2 * Nesc
+          unsigned PushPopSave =
+              (CSI->StoreBytes - 1) + (CSI->LoadBytes - 1);
+          unsigned CompCost = 2u * EscapeMBBs.size();
+          if (PushPopSave <= CompCost)
+            continue;
+
+          LLVM_DEBUG({
+            dbgs() << "  Cross-MBB BSS spill→PUSH/POP: " << *MII
+                   << "  load in BB#" << MBB_B->getNumber() << ", "
+                   << EscapeMBBs.size() << " escape MBB(s), saves "
+                   << (PushPopSave - CompCost) << "B\n";
+          });
+
+          // Rewrite MBB_A: STORE → PUSH.
+          DebugLoc DLs = MII->getDebugLoc();
+          BuildMI(MBB_A, *MII, DLs, TII->get(CSI->PushOpc));
+          MBB_A.erase(MII);
+
+          // Rewrite MBB_B: LOAD → POP.
+          DebugLoc DLl = LoadIt->getDebugLoc();
+          BuildMI(*MBB_B, *LoadIt, DLl, TII->get(CSI->PopOpc));
+          MBB_B->erase(LoadIt);
+
+          // Prepend compensating "inc sp; inc sp" to each escape MBB.
+          // INC_SP is 1 B and has no register operands — safe even when
+          // A/FLAGS/HL etc. are live across the edge.
+          for (auto *MBB_C : EscapeMBBs) {
+            DebugLoc DLc;
+            BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
+            BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
+          }
+
+          Changed = true;
+          RestartOuter = true;
+          break;
+        }
+      }
+    }
+  }
+
   // --- Redundant PUSH AF/POP AF around BSS spill ---
   // When A already holds the source register's value, the SPILL_GR8 expansion
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
