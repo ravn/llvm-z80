@@ -1124,6 +1124,49 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
   } else if (LHSTy.getSizeInBits() <= 16) {
     const auto &STI = MBB.getParent()->getSubtarget<Z80Subtarget>();
     if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_NE) {
+      // Special case: icmp eq/ne i16 r, -1 (0xFFFF) — equivalent to
+      // (r + 1) {==,!=} 0, which lowers to INC rr + OR-of-bytes
+      // (5 B total vs the 8 B CPL-based XOR form).  ravn/llvm-z80#149.
+      //
+      // INC rr mutates the value; only safe when r has a single use
+      // (this icmp).  The COPY to a fresh vreg before INC would be
+      // coalesced by regalloc with the source, so mutating Tmp ends
+      // up mutating the source physical register.  Multi-use values
+      // (e.g., `r = recv_byte_t(); if (r != -1) check_protocol(r);`)
+      // need r preserved across the test — bail on those.
+      auto getMinusOneI16 = [&](Register Reg) -> bool {
+        MachineInstr *Def = MRI.getVRegDef(Reg);
+        if (!Def || Def->getOpcode() != TargetOpcode::G_CONSTANT)
+          return false;
+        uint64_t Val = Def->getOperand(1).getCImm()->getZExtValue() & 0xFFFF;
+        return Val == 0xFFFF;
+      };
+      Register MinusOneVar;
+      if (getMinusOneI16(RHS) && !STI.hasSM83() && MRI.hasOneNonDBGUse(LHS))
+        MinusOneVar = LHS;
+      else if (getMinusOneI16(LHS) && !STI.hasSM83() &&
+               MRI.hasOneNonDBGUse(RHS))
+        MinusOneVar = RHS;
+      if (MinusOneVar.isValid()) {
+        if (!RBI.constrainGenericRegister(MinusOneVar, Z80::GR16RegClass, MRI))
+          return false;
+        // Copy var into a fresh GR16 virtual so INC's mutation is local.
+        Register Tmp = MRI.createVirtualRegister(&Z80::GR16RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Tmp)
+            .addReg(MinusOneVar);
+        // INC rr — for GR16 vreg, emit INC16 pseudo (handles HL/DE/BC).
+        BuildMI(MBB, MI, DL, TII.get(Z80::INC16), Tmp).addReg(Tmp);
+        // LD A, tmp_lo; OR tmp_hi — sets Z=1 iff tmp == 0 iff r was 0xFFFF.
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(Tmp, RegState{}, Z80::sub_lo);
+        Register HiReg = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiReg)
+            .addReg(Tmp, RegState{}, Z80::sub_hi);
+        BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(HiReg);
+        BuildMI(MBB, MI, DL, TII.get(JumpOpc)).addMBB(TargetMBB);
+        MI.eraseFromParent();
+        return true;
+      }
       // Check if either operand is a small constant (0-255) for optimized
       // comparison. For constant C with high byte 0:
       //   C==0: LD A, L; OR H          (3 bytes, 12T)
