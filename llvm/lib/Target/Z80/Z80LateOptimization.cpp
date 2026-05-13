@@ -5579,6 +5579,140 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: `mem |= 1<<N` / `mem &= ~(1<<N)` → SET/RES n,(HL) ---
+  // Three-instruction sequence:
+  //   LD_A_nnind <Sym>        (3 B)
+  //   {OR_n,AND_n} K          (2 B)
+  //   LD_nnind_A <Sym>        (3 B)   ; same address as load
+  // For single-bit ops (popcount(K)==1 for OR, popcount(~K & 0xFF)==1
+  // for AND), replace with:
+  //   LD_HL_nn <Sym>           (3 B)
+  //   {SET,RES}_b_(HL)         (2 B)
+  // Saves 3 B per fire.  For two-bit ops, replace with two SET/RES
+  // — saves 1 B.  More bits: no win, skip.  ravn/llvm-z80#147.
+  //
+  // Safety: A must be dead after the store (we don't preserve the
+  // OR/AND result in A); HL must be dead at the load position (we
+  // clobber HL).
+  {
+    static const std::pair<unsigned, unsigned> SetOps[8] = {
+        {Z80::SET_0_HLind, 0}, {Z80::SET_1_HLind, 1},
+        {Z80::SET_2_HLind, 2}, {Z80::SET_3_HLind, 3},
+        {Z80::SET_4_HLind, 4}, {Z80::SET_5_HLind, 5},
+        {Z80::SET_6_HLind, 6}, {Z80::SET_7_HLind, 7},
+    };
+    static const std::pair<unsigned, unsigned> ResOps[8] = {
+        {Z80::RES_0_HLind, 0}, {Z80::RES_1_HLind, 1},
+        {Z80::RES_2_HLind, 2}, {Z80::RES_3_HLind, 3},
+        {Z80::RES_4_HLind, 4}, {Z80::RES_5_HLind, 5},
+        {Z80::RES_6_HLind, 6}, {Z80::RES_7_HLind, 7},
+    };
+    auto sameAddrOp = [](const MachineOperand &A,
+                         const MachineOperand &B) -> bool {
+      if (A.isGlobal() && B.isGlobal())
+        return A.getGlobal() == B.getGlobal() &&
+               A.getOffset() == B.getOffset();
+      if (A.isMCSymbol() && B.isMCSymbol())
+        return A.getMCSymbol() == B.getMCSymbol() &&
+               A.getOffset() == B.getOffset();
+      return false;
+    };
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        auto LdIt = MII++;
+        if (LdIt->getOpcode() != Z80::LD_A_nnind)
+          continue;
+        if (MII == MIE)
+          continue;
+        // Skip forward over A-unrelated insns until we find the
+        // OR/AND.  Bail if any intervening insn READS or WRITES A —
+        // removing the LD_A_nnind in our replacement would invalidate
+        // their A-state.  (A more sophisticated variant could
+        // preserve `LD A,(HL)` after the address load when readers
+        // are present; tracked separately.)
+        auto OpIt = MII;
+        bool BailIntervening = false;
+        while (OpIt != MIE) {
+          unsigned O = OpIt->getOpcode();
+          if (O == Z80::OR_n || O == Z80::AND_n)
+            break;
+          if (OpIt->isTerminator() || OpIt->isCall()) {
+            BailIntervening = true;
+            break;
+          }
+          for (const MachineOperand &MO : OpIt->operands()) {
+            if (MO.isReg() && MO.getReg().isPhysical() &&
+                TRI->regsOverlap(MO.getReg(), Z80::A)) {
+              BailIntervening = true;
+              break;
+            }
+          }
+          if (BailIntervening)
+            break;
+          ++OpIt;
+        }
+        if (BailIntervening || OpIt == MIE)
+          continue;
+        unsigned Opc = OpIt->getOpcode();
+        bool IsOr = (Opc == Z80::OR_n);
+        bool IsAnd = (Opc == Z80::AND_n);
+        if (!IsOr && !IsAnd)
+          continue;
+        auto StIt = std::next(OpIt);
+        if (StIt == MIE || StIt->getOpcode() != Z80::LD_nnind_A)
+          continue;
+        if (!sameAddrOp(LdIt->getOperand(0), StIt->getOperand(0)))
+          continue;
+
+        // A must be dead after the store.
+        auto AfterSt = std::next(StIt);
+        if (!isRegDeadAfter(AfterSt, MBB, TRI, Z80::A))
+          continue;
+        // HL must be dead at the load (we clobber it with LD_HL_nn).
+        if (!isRegDeadAfter(LdIt, MBB, TRI, Z80::H) ||
+            !isRegDeadAfter(LdIt, MBB, TRI, Z80::L))
+          continue;
+
+        // Decode K and count active bits.
+        int64_t K = OpIt->getOperand(0).getImm() & 0xFF;
+        unsigned EffMask = IsOr ? (unsigned)K : ((~(unsigned)K) & 0xFF);
+        unsigned Pop = llvm::popcount(EffMask);
+        if (Pop == 0 || Pop > 2)
+          continue;
+        // Cost: 3 B (LD_HL_nn) + 2*Pop B (SET/RES each 2 B) vs 8 B.
+        // Pop 1: 5 B → save 3 B.
+        // Pop 2: 7 B → save 1 B.
+
+        DebugLoc DL = LdIt->getDebugLoc();
+        // Emit LD_HL_nn with the same address operand.
+        auto NewLd = BuildMI(MBB, *LdIt, DL, TII->get(Z80::LD_HL_nn));
+        const MachineOperand &Addr = LdIt->getOperand(0);
+        if (Addr.isGlobal())
+          NewLd.addGlobalAddress(Addr.getGlobal(), Addr.getOffset());
+        else if (Addr.isMCSymbol())
+          NewLd.addSym(Addr.getMCSymbol(), Addr.getOffset());
+        else {
+          // Shouldn't happen given the sameAddrOp guard, but bail safely.
+          NewLd.getInstr()->eraseFromParent();
+          continue;
+        }
+        // Emit SET/RES for each set bit in EffMask.
+        const auto *Table = IsOr ? SetOps : ResOps;
+        for (unsigned Bit = 0; Bit < 8; ++Bit) {
+          if (EffMask & (1u << Bit))
+            BuildMI(MBB, *LdIt, DL, TII->get(Table[Bit].first));
+        }
+        // Erase the original three instructions.
+        StIt->eraseFromParent();
+        OpIt->eraseFromParent();
+        MII = std::next(LdIt);
+        LdIt->eraseFromParent();
+        Changed = true;
+      }
+    }
+  }
+
   // --- Redundant PUSH AF/POP AF around BSS spill ---
   // When A already holds the source register's value, the SPILL_GR8 expansion
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF
