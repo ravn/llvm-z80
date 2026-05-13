@@ -5895,6 +5895,46 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: SBC A,A; AND 1; RRCA; SBC A,A round-trip elimination ---
+  // Post-#144 chain after icmp sext-to-i16:
+  //   sbc a, a    ; A = 0xFF/0x00 (i1 sign-extended)
+  //   and 1       ; A = 0x01/0x00
+  //   rrca        ; CF = bit 0
+  //   sbc a, a    ; A = 0xFF/0x00 (round-trip back to first SBC's output)
+  // The trailing `and 1; rrca; sbc a, a` triple is a no-op when the
+  // first SBC A,A is in scope: it converts the i1-sign-extension to
+  // {0,1} form and back.  Delete the triple.  ravn/llvm-z80#151.
+  for (MachineBasicBlock &MBB : MF) {
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      auto SbcAA = MII++;
+      if (SbcAA->getOpcode() != Z80::SBC_A_A)
+        continue;
+      // Expect next three: AND_n 1, RRCA, SBC_A_A.
+      auto AndIt = MII;
+      if (AndIt == MIE || AndIt->getOpcode() != Z80::AND_n)
+        continue;
+      if ((AndIt->getOperand(0).getImm() & 0xFF) != 1)
+        continue;
+      auto RrcaIt = std::next(AndIt);
+      if (RrcaIt == MIE || RrcaIt->getOpcode() != Z80::RRCA)
+        continue;
+      auto Sbc2It = std::next(RrcaIt);
+      if (Sbc2It == MIE || Sbc2It->getOpcode() != Z80::SBC_A_A)
+        continue;
+      // Delete the three intermediate insns; the second SBC_A_A
+      // already produced the same A value as the first, so the
+      // chain (AND, RRCA, SBC) is a no-op.  We keep the first
+      // SBC (it's the original i1 sign-extension) and let MII
+      // continue from there.
+      auto After = std::next(Sbc2It);
+      Sbc2It->eraseFromParent();
+      RrcaIt->eraseFromParent();
+      AndIt->eraseFromParent();
+      MII = After;
+      Changed = true;
+    }
+  }
+
   // --- Redundant PUSH AF/POP AF around BSS spill ---
   // When A already holds the source register's value, the SPILL_GR8 expansion
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF

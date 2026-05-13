@@ -11,10 +11,11 @@
 ; REG_SEQUENCE` — A becomes 0xFF or 0 based on bit 0, then both
 ; halves of the destination get A.
 ;
-; Saving: 7 B per occurrence (22 B → 15 B).  Residual `and 1;
-; rrca; sbc a, a` chain is logically a no-op after the icmp's own
-; SBC A, A produced 0xFF/0 — tracked in a follow-up issue for a
-; post-RA peephole.
+; Saving: 7 B per occurrence (22 B → 15 B).  The follow-up
+; ravn/llvm-z80#151 post-RA peephole removes the residual
+; `and 1; rrca; sbc a, a` round-trip that lands immediately
+; after the icmp's own SBC A, A, yielding the compact tail
+; `sub 1; sbc a,a; ld e,a; ld d,a`.
 
 declare i16 @get()
 
@@ -23,14 +24,14 @@ declare i16 @get()
 ; CHECK:       xor	1
 ; CHECK:       or	{{[bdh]}}
 ; CHECK:       sub	1
-; CHECK:       sbc	a,a
-; CHECK:       rrca
 ; CHECK-NEXT:  sbc	a,a
 ; CHECK-NEXT:  ld	e,a
 ; CHECK-NEXT:  ld	d,a
 ; CHECK-NOT:   add	a,a
 ; CHECK-NOT:   ld	h,a
 ; CHECK-NOT:   ld	l,0
+; CHECK-NOT:   rrca
+; CHECK-NOT:   and	1
 define i16 @select_test(i16 %a) {
   %eq = icmp eq i16 %a, 1
   %res = sext i1 %eq to i16
