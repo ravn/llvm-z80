@@ -5462,6 +5462,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                   Prev->isLayoutSuccessor(Succ)) {
                 // Some other MBB falls-through to Succ; we can't
                 // insert before Succ without breaking that path.
+                // See ravn/llvm-z80#143 for the reuse-existing-
+                // compensation enhancement, which also requires
+                // relaxing the UsedElsewhere gate below.
                 BailSucc = true;
                 break;
               }
@@ -5485,13 +5488,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             MBB_B = Succ;
             LoadIt = FirstTouch;
           }
-          // DEBUG-#132
-          errs() << "[#132] MF=" << MF.getName()
-                 << " MBB_A=BB#" << MBB_A.getNumber()
-                 << " STORE=" << TII->getName(MII->getOpcode())
-                 << " BailSucc=" << BailSucc
-                 << " MBB_B=" << (MBB_B ? MBB_B->getNumber() : -1)
-                 << " Escapes=" << Escapes.size() << "\n";
+          LLVM_DEBUG(dbgs() << "[#132] MF=" << MF.getName()
+                            << " MBB_A=BB#" << MBB_A.getNumber()
+                            << " STORE=" << TII->getName(MII->getOpcode())
+                            << " BailSucc=" << BailSucc
+                            << " MBB_B="
+                            << (MBB_B ? (int)MBB_B->getNumber() : -1)
+                            << " Escapes=" << Escapes.size() << "\n");
           if (BailSucc || !MBB_B)
             continue;
 
@@ -5625,14 +5628,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           continue;
         if (MII == MIE)
           continue;
-        // Skip forward over A-unrelated insns until we find the
-        // OR/AND.  Bail if any intervening insn READS or WRITES A —
-        // removing the LD_A_nnind in our replacement would invalidate
-        // their A-state.  (A more sophisticated variant could
-        // preserve `LD A,(HL)` after the address load when readers
-        // are present; tracked separately.)
+        // Skip forward over insns that don't write A or touch
+        // memory until we find the OR/AND.  Bail if an intervening
+        // insn WRITES A (would clobber our reload), TOUCHES memory
+        // (could read/write the target slot or HL), or is a
+        // terminator/call.  A-READS are tolerated: ravn/llvm-z80#152
+        // preserves A via `LD A,(HL)` after the address load.
         auto OpIt = MII;
         bool BailIntervening = false;
+        bool HadAReader = false;
         while (OpIt != MIE) {
           unsigned O = OpIt->getOpcode();
           if (O == Z80::OR_n || O == Z80::AND_n)
@@ -5641,12 +5645,23 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             BailIntervening = true;
             break;
           }
+          // Detect actual memory access via MachineMemOperand
+          // (mayLoad/mayStore are spuriously set on Z80 register
+          // copies and can't be trusted here).
+          if (!OpIt->memoperands_empty()) {
+            BailIntervening = true;
+            break;
+          }
           for (const MachineOperand &MO : OpIt->operands()) {
-            if (MO.isReg() && MO.getReg().isPhysical() &&
-                TRI->regsOverlap(MO.getReg(), Z80::A)) {
+            if (!MO.isReg() || !MO.getReg().isPhysical())
+              continue;
+            if (!TRI->regsOverlap(MO.getReg(), Z80::A))
+              continue;
+            if (MO.isDef()) {
               BailIntervening = true;
               break;
             }
+            HadAReader = true;
           }
           if (BailIntervening)
             break;
@@ -5680,12 +5695,20 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         unsigned Pop = llvm::popcount(EffMask);
         if (Pop == 0 || Pop > 2)
           continue;
-        // Cost: 3 B (LD_HL_nn) + 2*Pop B (SET/RES each 2 B) vs 8 B.
+        // With an intervening A-reader the rewrite also emits a 1 B
+        // `LD A,(HL)` to preserve A.  Cost becomes 4 B + 2*Pop:
+        //   Pop 1: 6 B → save 2 B (and 1 T-state).
+        //   Pop 2: 8 B → break even on size but +14 T — skip.
+        // ravn/llvm-z80#152.
+        if (HadAReader && Pop != 1)
+          continue;
+        // Cost without reader: 3 B + 2*Pop B vs 8 B.
         // Pop 1: 5 B → save 3 B.
         // Pop 2: 7 B → save 1 B.
 
         DebugLoc DL = LdIt->getDebugLoc();
-        // Emit LD_HL_nn with the same address operand.
+        // Emit LD_HL_nn with the same address operand at LdIt's
+        // position (the new sequence's prologue).
         auto NewLd = BuildMI(MBB, *LdIt, DL, TII->get(Z80::LD_HL_nn));
         const MachineOperand &Addr = LdIt->getOperand(0);
         if (Addr.isGlobal())
@@ -5697,11 +5720,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           NewLd.getInstr()->eraseFromParent();
           continue;
         }
-        // Emit SET/RES for each set bit in EffMask.
+        // With an A-reader: emit `LD A,(HL)` right after LD_HL_nn so
+        // intervening A-readers see the loaded value.
+        if (HadAReader)
+          BuildMI(MBB, *LdIt, DL, TII->get(Z80::LD_A_HLind));
+        // Emit SET/RES at OpIt's position (after any intervening
+        // insns; without readers this is adjacent to LdIt).
         const auto *Table = IsOr ? SetOps : ResOps;
         for (unsigned Bit = 0; Bit < 8; ++Bit) {
           if (EffMask & (1u << Bit))
-            BuildMI(MBB, *LdIt, DL, TII->get(Table[Bit].first));
+            BuildMI(MBB, *OpIt, DL, TII->get(Table[Bit].first));
         }
         // Erase the original three instructions.
         StIt->eraseFromParent();
