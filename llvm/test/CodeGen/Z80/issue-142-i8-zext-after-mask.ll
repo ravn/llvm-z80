@@ -29,7 +29,7 @@ declare i16 @recv_byte_t()
 ; CHECK-LABEL: check_soh_mask:
 ; CHECK:       call	_recv_byte_t
 ; CHECK:       and	127
-; CHECK:       cp	1
+; CHECK:       {{(cp	1|dec	a)}}
 ; CHECK-NOT:   or	h
 ; CHECK-NOT:   sub	1
 define i8 @check_soh_mask() {
@@ -50,7 +50,7 @@ ok:
 ; CHECK-LABEL: check_soh_mask_eq:
 ; CHECK:       call	_recv_byte_t
 ; CHECK:       and	127
-; CHECK:       cp	1
+; CHECK:       {{(cp	1|dec	a)}}
 ; CHECK-NOT:   or	h
 ; CHECK-NOT:   sub	1
 define i8 @check_soh_mask_eq() {

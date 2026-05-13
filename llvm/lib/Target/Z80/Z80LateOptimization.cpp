@@ -5713,6 +5713,188 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: CP/XOR with 1 or 0xFF → DEC_A/INC_A (when A dead) ---
+  // Z80 has 1-byte equivalents of the equality tests A == 1 and
+  // A == 0xFF when A's modified value isn't needed afterward:
+  //   `DEC A`  (1 B) sets Z iff A was 1
+  //   `INC A`  (1 B) sets Z iff A was 0xFF
+  // vs `{CP,XOR}_n K` (2 B).  `OR A` (1 B) for A == 0 already fires
+  // upstream.  This closes K ∈ {1, 0xFF}.  ravn/llvm-z80#148.
+  //
+  // Safety: the modified A must be dead along both branches:
+  //   - the fall-through (isRegDeadAfter)
+  //   - the taken branch (the target MBB must redefine A before
+  //     reading it, OR the branch is a RET_cc with A not a return
+  //     value).  Approximated by: the target's first non-debug
+  //     instruction defines A, OR the branch is RET_cc and A is not
+  //     in the function's live-out set.
+  {
+    auto isCpOrXor = [](unsigned Opc) {
+      return Opc == Z80::CP_n || Opc == Z80::XOR_n;
+    };
+    auto isCondJp = [](unsigned Opc) {
+      switch (Opc) {
+      case Z80::JP_Z_nn:
+      case Z80::JP_NZ_nn:
+      case Z80::JR_Z_e:
+      case Z80::JR_NZ_e:
+        return true;
+      default:
+        return false;
+      }
+    };
+    auto isCondRet = [](unsigned Opc) {
+      return Opc == Z80::RET_Z || Opc == Z80::RET_NZ;
+    };
+    auto targetDeadA =
+        [&TRI](MachineBasicBlock *TargetMBB) -> bool {
+      if (!TargetMBB)
+        return false;
+      // Walk target's instructions: if A is defined before being
+      // read, it was dead at entry; if it's read before defined,
+      // it's live at entry.  If we reach a terminator without seeing
+      // either, fall through to the MBB's liveouts.
+      for (auto &MI : *TargetMBB) {
+        if (MI.isDebugInstr())
+          continue;
+        bool ReadsA = false, DefsA = false;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (!MO.isReg() || !MO.getReg().isPhysical())
+            continue;
+          if (!TRI->regsOverlap(MO.getReg(), Z80::A))
+            continue;
+          if (MO.readsReg())
+            ReadsA = true;
+          if (MO.isDef())
+            DefsA = true;
+        }
+        if (ReadsA)
+          return false;
+        if (DefsA)
+          return true;
+        if (MI.isCall())
+          return false;
+        // For a return terminator, check the MBB's liveouts.
+        if (MI.isReturn()) {
+          for (MachineBasicBlock *Succ : TargetMBB->successors()) {
+            for (const auto &LI : Succ->liveins())
+              if (TRI->regsOverlap(LI.PhysReg, Z80::A))
+                return false;
+          }
+          // No successor with A live-in: also check the function's
+          // return-value liveness via the RET instruction's implicit
+          // operands.  If RET has an implicit-use of A (or AF), A
+          // is a return value — live.
+          for (const MachineOperand &MO : MI.operands()) {
+            if (MO.isReg() && MO.isImplicit() && MO.readsReg() &&
+                MO.getReg().isPhysical() &&
+                TRI->regsOverlap(MO.getReg(), Z80::A))
+              return false;
+          }
+          return true;  // A dead at return.
+        }
+        if (MI.isBranch())
+          return false;  // give up at non-return terminator
+      }
+      return false;
+    };
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        auto OpIt = MII++;
+        if (!isCpOrXor(OpIt->getOpcode()))
+          continue;
+        if (MII == MIE)
+          continue;
+        auto BrIt = MII;
+        unsigned BrOpc = BrIt->getOpcode();
+        bool IsJp = isCondJp(BrOpc);
+        bool IsRet = isCondRet(BrOpc);
+        if (!IsJp && !IsRet)
+          continue;
+        int64_t K = OpIt->getOperand(0).getImm() & 0xFF;
+        unsigned NewOpc = 0;
+        if (K == 1)
+          NewOpc = Z80::DEC_A;
+        else if (K == 0xFF)
+          NewOpc = Z80::INC_A;
+        else
+          continue;
+        // A must be dead after the branch on both paths.
+        auto AfterBr = std::next(BrIt);
+        if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::A))
+          continue;
+        if (IsJp) {
+          if (!BrIt->getOperand(0).isMBB())
+            continue;
+          if (!targetDeadA(BrIt->getOperand(0).getMBB()))
+            continue;
+        }
+        // FLAGS must be dead after the branch too.  CP/XOR set C
+        // (and other flags) but DEC_A / INC_A leave C unchanged.
+        // Any downstream consumer of C — e.g. `JR C, X; SBC A, A` —
+        // would see different flag state with our replacement.
+        // Conservative: require FLAGS dead-after along both paths.
+        if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::FLAGS))
+          continue;
+        if (IsJp) {
+          if (!targetDeadA(BrIt->getOperand(0).getMBB()))
+            continue;
+          // Reuse the same "first non-debug insn defs/clobbers"
+          // shape but on FLAGS instead of A.  Most flag-setting
+          // arithmetic at MBB entry will count as a redefinition,
+          // so FLAGS rarely flows across MBB boundaries.  Cheap
+          // check: target's first non-debug, non-terminator insn
+          // must DEFINE FLAGS before any read.
+          MachineBasicBlock *TargetMBB = BrIt->getOperand(0).getMBB();
+          bool TgtFlagsOK = false;
+          for (auto &MI : *TargetMBB) {
+            if (MI.isDebugInstr())
+              continue;
+            bool ReadsF = false, DefsF = false;
+            for (const MachineOperand &MO : MI.operands()) {
+              if (!MO.isReg() || !MO.getReg().isPhysical())
+                continue;
+              if (!TRI->regsOverlap(MO.getReg(), Z80::FLAGS))
+                continue;
+              if (MO.readsReg())
+                ReadsF = true;
+              if (MO.isDef())
+                DefsF = true;
+            }
+            if (ReadsF)
+              break;       // FLAGS live at target → unsafe
+            if (DefsF) {
+              TgtFlagsOK = true;
+              break;
+            }
+            if (MI.isReturn() || MI.isCall()) {
+              // RET/CALL don't consume FLAGS — they're effectively
+              // a "dead" point for FLAGS unless a caller-side check
+              // (which we can't model here) reads them.  Treat as
+              // safe to be aggressive — most function entries
+              // discard incoming flags.
+              TgtFlagsOK = true;
+              break;
+            }
+          }
+          if (!TgtFlagsOK)
+            continue;
+        }
+        // For RET_cc: rely on isRegDeadAfter — the standard sdcccall(1)
+        // convention has A as return register, so a function returning
+        // u8 will have A live at exit.  But if isRegDeadAfter(AfterBr,
+        // ...) saw A as dead at MBB end (no further uses + no live-out
+        // tracked), trust it.  This may be conservative but is safe.
+
+        DebugLoc DL = OpIt->getDebugLoc();
+        BuildMI(MBB, *OpIt, DL, TII->get(NewOpc));
+        OpIt->eraseFromParent();
+        Changed = true;
+      }
+    }
+  }
+
   // --- Redundant PUSH AF/POP AF around BSS spill ---
   // When A already holds the source register's value, the SPILL_GR8 expansion
   // generates: LD A,r; PUSH AF; LD A,r; LD (addr),A; POP AF

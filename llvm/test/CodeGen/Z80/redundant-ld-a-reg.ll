@@ -75,7 +75,9 @@ define i8 @cp_chain_three() {
 ; CHECK-LABEL: _cp_chain_three:
 ; CHECK:       call _compute
 ; CHECK:       ld   {{[bcdehl]}},a
-; CHECK:       cp   #1
+; ravn/llvm-z80#148 collapses the `cp #1` to `dec a` (A dead after; FLAGS
+; dead after the branch because subsequent `cp #2` redefines them).
+; CHECK:       {{(dec	a|cp   #1)}}
 ; CHECK-NOT:   ld   a,{{[bcdehl]}}
 ; CHECK:       cp   #2
 ; CHECK-NOT:   ld   a,{{[bcdehl]}}
