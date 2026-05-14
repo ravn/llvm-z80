@@ -5513,6 +5513,22 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (BailSucc || !MBB_B)
             continue;
 
+          // ravn/llvm-z80#156: MBB_B must be reached only from MBB_A.
+          // If MBB_B has other predecessors (typically a loop back-edge),
+          // those paths enter MBB_B without having executed the STORE
+          // (now PUSH) — the LOAD-rewritten-as-POP fires without a
+          // matching PUSH, leaking 2 B off SP per back-edge traversal.
+          // Caught originally in aes256.c gf_log under +static-stack:
+          // entry block stored the K&R-promoted param, loop header
+          // loaded it for the `atb != x` test, and the loop back-edge
+          // re-entered the loop header from the loop body.  The peephole
+          // happily rewrote STORE→PUSH at entry and LOAD→POP at loop
+          // header; SP grew by 2 B per iteration until wrap, then a RET
+          // popped 0x0000 as the return address and execution escaped.
+          if (MBB_B->pred_size() != 1 ||
+              *MBB_B->pred_begin() != &MBB_A)
+            continue;
+
           // No other MBB may reference the slot (covers transitive
           // escape MBBs, unreachable blocks, etc.).
           bool UsedElsewhere = false;
