@@ -66,9 +66,18 @@ using namespace llvm;
 // after.  Tracked as ravn/llvm-z80#100; full breadcrumb in
 // `llvm-z80/tasks/followup-77a-rotation-around-call.md`.  Until #100
 // closes the default stays off; the pass is opt-in via
-// `-mllvm -z80-loop-rotate=true`.
+// `-mllvm -enable-z80-loop-rotate=true`.
+//
+// NOTE: the flag name MUST NOT be "z80-loop-rotate" — that string is
+// already taken by this pass's INITIALIZE_PASS_BEGIN ArgName (it uses
+// DEBUG_TYPE = "z80-loop-rotate" for the pass's command-line name in
+// the legacy PassRegistry).  Two cl::opts with the same name produce
+// a runtime "Option 'z80-loop-rotate' registered more than once"
+// error in any binary that links the Z80 backend.  Verified on opt
+// startup; clang happens to resolve the conflict differently due to
+// initialization order but the collision is real.
 static cl::opt<bool>
-    EnableZ80LoopRotate("z80-loop-rotate", cl::init(false), cl::Hidden,
+    EnableZ80LoopRotate("enable-z80-loop-rotate", cl::init(false), cl::Hidden,
                         cl::desc("Enable Z80 target-specific loop rotation "
                                  "(off by default; gates on #100)"));
 

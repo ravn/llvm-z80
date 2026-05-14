@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr -z80-loop-rotate < %s | FileCheck %s --check-prefix=ROT
+; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr -enable-z80-loop-rotate < %s | FileCheck %s --check-prefix=ROT
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr < %s | FileCheck %s --check-prefix=NOROT
 ;
 ; Issue #77a: head-test do-while-decrement loops shouldn't pay the
@@ -13,7 +13,7 @@
 ; target-specific Z80LoopRotate pass bypasses that gate by calling
 ; LoopRotation() directly with a non-zero threshold.
 ;
-; The pass remains gated behind `-z80-loop-rotate` (default off).  The
+; The pass remains gated behind `-enable-z80-loop-rotate` (default off).  The
 ; original gate was #97 (BC ping-pong in rotated single-BB self-loops),
 ; which is now closed by the post-RA peephole in Z80LateOptimization.cpp.
 ; A second regression — rotated loops containing a CALL force BSS-spills
@@ -41,13 +41,13 @@ exit:
   ret void
 }
 
-; With -z80-loop-rotate ON, the back-edge branch uses the Z flag from the
+; With -enable-z80-loop-rotate ON, the back-edge branch uses the Z flag from the
 ; body's `dec` directly — no re-test via `or a`.
 ; ROT-LABEL: countdown:
 ; ROT-NOT:   or{{[ \t]+}}a
 ; ROT:       jr{{[ \t]+}}nz,
 
-; With -z80-loop-rotate OFF (default), the head-test shape survives: the
+; With -enable-z80-loop-rotate OFF (default), the head-test shape survives: the
 ; loop header re-tests A with `or a` even though the body's dec already
 ; set Z.  This is the regression #77a will close once #97 unblocks the
 ; default flip.
