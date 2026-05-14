@@ -1122,18 +1122,20 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         unsigned NewOpc = getALUWithReg(It->getOpcode(), SrcReg);
         if (!NewOpc) continue;
         // Safety (#159): the LD r,A save we're about to erase establishes
-        // TempReg's value. If TempReg is not killed by the ALU (i.e., its
-        // value is needed later), erasing the save leaves a later read of
-        // TempReg observing whatever was in it before — a silent miscompile.
-        // Only fire the peephole when the ALU has a kill flag on TempReg.
-        bool TempKilledByAlu = false;
-        for (const auto &MO : It->operands()) {
-          if (MO.isReg() && MO.getReg() == TempReg && MO.isKill()) {
-            TempKilledByAlu = true;
-            break;
-          }
-        }
-        if (!TempKilledByAlu) continue;
+        // TempReg's value.  If TempReg is needed after the ALU instruction
+        // (i.e., not dead), erasing the save leaves a later read observing
+        // whatever was in TempReg before — silent miscompile.
+        //
+        // Use computeRegisterLiveness rather than just MO.isKill() (#161):
+        // post-RA regalloc doesn't always mark the last use of a register
+        // with a kill flag, even when the register IS provably dead after
+        // that use.  The kill-flag-only check left 2 B on the table per
+        // safe site (autoload-in-c's main_relocated had one such site).
+        // computeRegisterLiveness queries actual liveness in the local
+        // neighborhood.  Treat LQR_Unknown as live for safety.
+        auto NextIt = std::next(It);
+        auto Liveness = MBB.computeRegisterLiveness(TRI, TempReg, NextIt);
+        if (Liveness != MachineBasicBlock::LQR_Dead) continue;
         LLVM_DEBUG(dbgs() << "  Commutative ALU shortcut: "
                           << TII->getName(MII->getOpcode()) << "; "
                           << TII->getName(LdA->getOpcode()) << "; "
