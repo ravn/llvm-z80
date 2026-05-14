@@ -12,7 +12,7 @@ introduced in rc700-gensmedet (`tasks/aes256-corpus/`).
 
 | llvm-z80 | Title | Class | Impact |
 |---|---|---|---|
-| **#159 (merged)** | "Commutative ALU shortcut" peephole erases LD r,A without checking later uses of r | **Silent miscompile** | autoload PROM +2 B (latent miscompile was hiding by luck); aes256-corpus ANSI variant unblocked |
+| **#159 (merged)** | "Commutative ALU shortcut" peephole erases LD r,A without checking later uses of r | **Silent miscompile** | autoload PROM +2 B (#161: kill-check conservatism cost, not a real recovery); aes256-corpus ANSI variant unblocked |
 | **#158 (merged)** | TruncInstCombine refused to narrow expressions rooted at function arguments | Missed optimisation | aes256 K&R clang.bin 5114 → 4642 B (−9.2%); BIOS 5941 → 5925 B (−16 B); 81% of #160 closed as side effect |
 | **opt fix (merged)** | `cl::opt<"z80-loop-rotate">` collided with legacy pass arg-name of same string | Build infra | AggressiveInstCombine lit suite went from unrunnable (35 false-FAIL) to 36 PASS |
 
