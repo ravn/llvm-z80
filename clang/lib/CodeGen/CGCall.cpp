@@ -2968,6 +2968,43 @@ void CodeGenModule::ConstructAttributeList(StringRef Name,
 
       if (canApplyNoFPClass(AI, ParamType, false))
         Attrs.addNoFPClassAttr(getNoFPClassTestMask(getLangOpts()));
+
+      // ravn/llvm-z80#162: K&R-style typed-parameter declarations of narrow
+      // integer types are int-promoted at the ABI boundary.  Per C's default
+      // argument promotion rules, the caller zero- or sign-extends the value
+      // into the wider integer it passes; the high bits of the parameter are
+      // therefore provably zero (for unsigned narrow) or sign-extension of
+      // the low bits (for signed narrow).  Reflect this in IR by tagging the
+      // wider parameter with ZExt or SExt, which lets mid-end passes
+      // (TruncInstCombine, fshl/rotate recognition) narrow the function
+      // body's chains back to the natural width on small-int targets
+      // (Z80/MSP430/AVR etc. where int < 32 bits and K&R narrow params
+      // routinely show up).
+      if (!Attrs.contains(llvm::Attribute::ZExt) &&
+          !Attrs.contains(llvm::Attribute::SExt) &&
+          ParamType->isIntegerType() && TargetDecl) {
+        if (const auto *FD = dyn_cast<FunctionDecl>(TargetDecl)) {
+          // ArgNo into FI's arg list maps 1:1 to FD->getParamDecl() for plain
+          // C functions (no `this`, no sret in FI's args).  For C++ methods
+          // FI's first arg is `this` — but K&R declarations only exist in C,
+          // so a mismatch indicates we're in territory K&R doesn't apply to.
+          if (FI.arg_size() == FD->getNumParams() &&
+              ArgNo < FD->getNumParams()) {
+            const ParmVarDecl *PVD = FD->getParamDecl(ArgNo);
+            if (PVD->isKNRPromoted()) {
+              QualType OrigTy = PVD->getOriginalType();
+              if (OrigTy->isIntegerType() &&
+                  getContext().getTypeSize(OrigTy) <
+                      getContext().getTypeSize(ParamType)) {
+                if (OrigTy->isSignedIntegerOrEnumerationType())
+                  Attrs.addAttribute(llvm::Attribute::SExt);
+                else if (OrigTy->isUnsignedIntegerOrEnumerationType())
+                  Attrs.addAttribute(llvm::Attribute::ZExt);
+              }
+            }
+          }
+        }
+      }
       break;
     case ABIArgInfo::Indirect: {
       if (AI.getInReg())
