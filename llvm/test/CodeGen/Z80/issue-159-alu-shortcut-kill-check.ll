@@ -20,6 +20,12 @@
 ; BEFORE the destructive XOR, then reload it for the next rotation.
 
 define zeroext i8 @rj_sb_inv(i8 zeroext %x) {
+; Post-#161 codegen: the first rotated value MUST be preserved (it's
+; needed for the third rotation, which the peephole would corrupt by
+; eliding the save before the destructive xor).  The third rotated
+; value (y_3) is dead immediately after the final xor, so the
+; computeRegisterLiveness check in #161 correctly allows the peephole
+; to fire there (no save of y_3 needed).
 ; CHECK-LABEL: rj_sb_inv:
 ; CHECK:        xor 99
 ; CHECK-NEXT:   rlca
@@ -34,9 +40,7 @@ define zeroext i8 @rj_sb_inv(i8 zeroext %x) {
 ; CHECK-NEXT:   rlca
 ; CHECK-NEXT:   rlca
 ; CHECK-NEXT:   rlca
-; CHECK-NEXT:   ld e,a
-; CHECK-NEXT:   ld a,d
-; CHECK-NEXT:   xor e
+; CHECK-NEXT:   xor d
 ; CHECK-NEXT:   ret
   %y0 = xor i8 %x, 99
   %y1 = tail call i8 @llvm.fshl.i8(i8 %y0, i8 %y0, i8 1)
