@@ -1121,6 +1121,19 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (AluReg != TempReg) continue;
         unsigned NewOpc = getALUWithReg(It->getOpcode(), SrcReg);
         if (!NewOpc) continue;
+        // Safety (#159): the LD r,A save we're about to erase establishes
+        // TempReg's value. If TempReg is not killed by the ALU (i.e., its
+        // value is needed later), erasing the save leaves a later read of
+        // TempReg observing whatever was in it before — a silent miscompile.
+        // Only fire the peephole when the ALU has a kill flag on TempReg.
+        bool TempKilledByAlu = false;
+        for (const auto &MO : It->operands()) {
+          if (MO.isReg() && MO.getReg() == TempReg && MO.isKill()) {
+            TempKilledByAlu = true;
+            break;
+          }
+        }
+        if (!TempKilledByAlu) continue;
         LLVM_DEBUG(dbgs() << "  Commutative ALU shortcut: "
                           << TII->getName(MII->getOpcode()) << "; "
                           << TII->getName(LdA->getOpcode()) << "; "
