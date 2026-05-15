@@ -49,6 +49,9 @@ STATISTIC(NumIcmpsNarrowed,
 STATISTIC(NumAndMaskRootsInjected,
           "Number of (and X, MASK) patterns narrowed via synthetic trunc root "
           "(ravn/llvm-z80#163, #164)");
+STATISTIC(NumCallArgRootsInjected,
+          "Number of call arguments narrowed via callee-body-peek synthetic "
+          "trunc root (ravn/llvm-z80#162 path 2)");
 
 /// Decide whether an ICmpInst that uses an in-graph value can be narrowed
 /// alongside the trunc-rooted expression graph.  Returns true when:
@@ -770,6 +773,135 @@ bool TruncInstCombine::run(Function &F) {
       ++NumExprsReduced;
       ++NumAndMaskRootsInjected;
       MadeIRChange = true;
+    }
+  }
+
+  // Phase 3 (ravn/llvm-z80#162 path 2): synthesise a trunc-rooted graph
+  // from a call argument when the callee's entry block begins with
+  // `trunc iW %argN to iM`.  This observation proves the high (W-M) bits
+  // of the corresponding caller argument are discarded by the callee,
+  // making it safe to inject `(zext (trunc V to iM) to iW)` at the call
+  // site and let the established narrowing engine shrink V's chain.
+  //
+  // This is the K&R-into-K&R-call pattern: both caller and callee promote
+  // u8 parameters to i16 at the ABI boundary, so the high byte is always
+  // observably dead but the existing engine (phase 1) had no trunc root
+  // to walk back from.  Phase 2 (and-mask sink) handles `(and X, MASK)`
+  // shapes but not call-argument shapes where the only narrow signal is
+  // inside the callee body.
+  for (auto &BB : F) {
+    if (!DT.isReachableFromEntry(&BB))
+      continue;
+    for (auto &I : llvm::make_early_inc_range(BB)) {
+      auto *Call = dyn_cast<CallBase>(&I);
+      if (!Call)
+        continue;
+      Function *Callee = Call->getCalledFunction();
+      if (!Callee || Callee->isDeclaration() || Callee->isVarArg() ||
+          Callee == &F)
+        continue;
+
+      // Peek: scan the first few entry-block instructions for
+      // `trunc iW %paramK to iM`.  Stop at the first non-trunc
+      // non-debug instruction we don't recognise to avoid touching
+      // unrelated functions.  Limit to a small window so this stays
+      // O(1) per call site.
+      constexpr int ScanLimit = 8;
+      BasicBlock &CalleeEntry = Callee->getEntryBlock();
+
+      for (unsigned ArgIdx = 0;
+           ArgIdx < Call->arg_size() && ArgIdx < Callee->arg_size();
+           ++ArgIdx) {
+        Value *ArgVal = Call->getArgOperand(ArgIdx);
+        Type *OrigTy = ArgVal->getType();
+        if (!OrigTy->isIntegerTy())
+          continue;
+        unsigned OrigBits = OrigTy->getScalarSizeInBits();
+        if (OrigBits <= 8)
+          continue; // Already narrow.
+        if (isa<Constant>(ArgVal) || isa<TruncInst>(ArgVal))
+          continue;
+        Argument *CalleeArg = Callee->getArg(ArgIdx);
+        if (CalleeArg->getType() != OrigTy)
+          continue;
+
+        // Two patterns prove the high bits are observably discarded by
+        // the callee:
+        //   1.  Explicit `trunc iW %argN to iM` (rare post-InstCombine).
+        //   2.  `(and iW %argN, 2^M - 1)` (canonical form: InstCombine
+        //       rewrites `(zext (trunc X to iM) to iW)` to this and).
+        unsigned NarrowBits = 0;
+        int Remaining = ScanLimit;
+        for (auto &CI : CalleeEntry) {
+          if (CI.isDebugOrPseudoInst())
+            continue;
+          if (--Remaining < 0)
+            break;
+          if (auto *TI = dyn_cast<TruncInst>(&CI)) {
+            if (TI->getOperand(0) != CalleeArg)
+              continue;
+            NarrowBits = TI->getType()->getScalarSizeInBits();
+            break;
+          }
+          if (auto *AI = dyn_cast<BinaryOperator>(&CI)) {
+            if (AI->getOpcode() != Instruction::And)
+              continue;
+            if (AI->getOperand(0) != CalleeArg)
+              continue;
+            auto *MC = dyn_cast<ConstantInt>(AI->getOperand(1));
+            if (!MC)
+              continue;
+            if (!MC->getValue().isMask())
+              continue;
+            NarrowBits = MC->getValue().countTrailingOnes();
+            break;
+          }
+        }
+        if (NarrowBits == 0 || NarrowBits >= OrigBits)
+          continue;
+        if (!DL.isLegalInteger(NarrowBits))
+          continue;
+        Type *NarrowTy = IntegerType::get(F.getContext(), NarrowBits);
+        // Cost gate (#164): same rationale as phase 2.  When zext
+        // re-insertion is free, fire unconditionally; otherwise require
+        // ArgVal->hasOneUse() so the narrowing only displaces one chain
+        // value and no extra zext sites are introduced.
+        if (!ArgVal->hasOneUse() && !TTI.isZExtFree(NarrowTy, OrigTy))
+          continue;
+
+        IRBuilder<> Builder(Call);
+        auto *Tr =
+            dyn_cast<TruncInst>(Builder.CreateTrunc(ArgVal, NarrowTy));
+        if (!Tr)
+          continue;
+        // Swap the call's argument to a `zext(trunc ArgVal)` bracket
+        // BEFORE probing.  Without this, ArgVal would have two users
+        // at probe time (the original call + the synthetic Tr), and
+        // getBestTruncatedType would reject the chain on the
+        // outside-graph multi-use check.  After the swap, ArgVal is
+        // used only by Tr, and the chain is single-rooted.
+        Value *Zx = Builder.CreateZExt(Tr, OrigTy);
+        Call->setArgOperand(ArgIdx, Zx);
+
+        CurrentTruncInst = Tr;
+        Type *NewDstSclTy = getBestTruncatedType();
+        if (!NewDstSclTy || InstInfoMap.empty()) {
+          // Roll back: restore the call's original argument and erase
+          // the synthetic bracket.  Erase Zx first (uses Tr), then Tr.
+          Call->setArgOperand(ArgIdx, ArgVal);
+          if (auto *ZxI = dyn_cast<Instruction>(Zx))
+            ZxI->eraseFromParent();
+          Tr->eraseFromParent();
+          continue;
+        }
+
+        LLVM_DEBUG(dbgs() << "ICE: TruncInstCombine reducing call argument "
+                            "expression graph via callee-body peek\n");
+        ReduceExpressionGraph(NewDstSclTy);
+        ++NumExprsReduced;
+        ++NumCallArgRootsInjected;
+        MadeIRChange = true;
+      }
     }
   }
 
