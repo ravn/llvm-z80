@@ -1886,6 +1886,15 @@ bool Z80RegisterInfo::getRegAllocationHints(
     }
     done_16bit_hints:;
 
+    // ravn/llvm-z80#115 + #27 S2 (session 73): a soft `Hints.insert(begin, HL)`
+    // for GR16 vregs used by LOAD8_IND/STORE8_IND was attempted here and
+    // produced **zero** byte change on the AES corpus — 21 such hints fire
+    // in aes_mc_inv alone, but greedy's copy-elim heuristic overrides every
+    // one of them.  Confirms the prediction in `tasks/plan-115-27-regalloc-cluster.md`
+    // that hint-flavored fixes for #27 don't work on this allocator path.
+    // S3 (pre-RA single-register-class pointer-split pass) is the next
+    // escalation.  Test-runner 685/42/56/207 unchanged either way.
+
     // i16 self-loop-counter hint (#99): when an i16 vreg is the
     // back-edge counter of a self-back-edge JR_NZ loop (def-by-DEC16
     // or matching INC16 paired with a 16-bit zero-test branching to

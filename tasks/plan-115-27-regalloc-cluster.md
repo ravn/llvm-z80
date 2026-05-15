@@ -149,6 +149,36 @@ greedy without remat changes (#15) or a different allocator.
 
 ## Status
 
-- **Planned**: session 73 (2026-05-15).  No code landed.
-- **S1**: in progress / will land same session as plan doc.
-- **S2-S5**: future sessions; decision points above.
+- **Planned**: session 73 (2026-05-15).
+- **S1**: landed in `0dd9e4e24daf` — `-z80-log-regalloc-hints` cl::opt
+  + lit test.  Smoke test confirmed: pointer vregs land in class
+  `GR16` at hint time (NOT `Anyi16`/`Ptr16`); first decision point in
+  the plan NOT triggered.
+- **S2 (session 73)**: attempted, **negative result**.  Soft
+  `Hints.insert(begin, HL)` for vregs whose uses are
+  `LOAD8_IND`/`STORE8_IND` fires 21 times in `aes_mc_inv` alone,
+  produces ZERO byte change on the AES corpus, test-runner unchanged.
+  Per plan's S2 decision point ("greedy ignores hints as #110/#115
+  predict: proceed to S3, document"), confirms hint-flavored work
+  cannot move bytes for #27 / `aes_mc_inv` on this backend.  Code
+  reverted; comment retained in `Z80RegisterInfo.cpp` near
+  `done_16bit_hints:` so future contributors don't retry the same
+  path.
+- **S3-S5**: future sessions; decision points above.
+
+### S2 empirical breakdown
+
+| Step | Result |
+|---|---|
+| Build clang+llc with HL hint | OK |
+| AES corpus sweep (13 configs) | byte-identical to post-#165 |
+| `aes_mc_inv` (09_Oz_prod_like) | 535 → 535 B (no change) |
+| `aes_mc_inv` (05_Oz_static_stack) | 548 → 548 B (no change) |
+| `.s` diff pre/post S2 on aes256.c | 0 lines (byte-identical) |
+| Hint fired in aes_mc_inv | 21 times for LOAD8_IND/STORE8_IND uses |
+| z80-utils test-runner | 685/42/56/207 (unchanged) |
+
+**Interpretation**: greedy's copy-elim heuristic dominates target
+hints when the live range crosses any cheaper local copy.  This is
+the structural finding that motivated #115's design.  S3 is the
+required escalation.
