@@ -45,6 +45,7 @@ class DominatorTree;
 class Function;
 class Instruction;
 class TargetLibraryInfo;
+class TargetTransformInfo;
 class TruncInst;
 class Type;
 class Value;
@@ -52,6 +53,7 @@ class Value;
 class TruncInstCombine {
   AssumptionCache &AC;
   TargetLibraryInfo &TLI;
+  const TargetTransformInfo &TTI;
   const DataLayout &DL;
   const DominatorTree &DT;
 
@@ -84,8 +86,9 @@ class TruncInstCombine {
 
 public:
   TruncInstCombine(AssumptionCache &AC, TargetLibraryInfo &TLI,
-                   const DataLayout &DL, const DominatorTree &DT)
-      : AC(AC), TLI(TLI), DL(DL), DT(DT) {}
+                   const TargetTransformInfo &TTI, const DataLayout &DL,
+                   const DominatorTree &DT)
+      : AC(AC), TLI(TLI), TTI(TTI), DL(DL), DT(DT) {}
 
   /// Perform TruncInst pattern optimization on given function.
   bool run(Function &F);
