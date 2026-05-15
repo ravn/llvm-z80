@@ -84,6 +84,20 @@ class TruncInstCombine {
   /// as a non-trivial outside user.  ravn/llvm-z80#160.
   SmallVector<class ICmpInst *, 4> PendingIcmps;
 
+  /// AndInst users of in-graph instructions where the other operand is a
+  /// constant fitting in the narrowed type.  Rewritten alongside the main
+  /// graph as `(zext (and Xnarrow, ConstTrunc) to OrigTy)` so downstream
+  /// consumers keep their original type.  ravn/llvm-z80#165 (and-mask
+  /// outside-user extension; companion to the icmp non-const path).
+  SmallVector<class BinaryOperator *, 4> PendingAndMasks;
+
+  /// Transient signal from phase-2 (and-mask synthetic trunc root) telling
+  /// the outside-user check NOT to add the "parent" And to PendingAndMasks
+  /// — phase 2 will replace the parent And itself.  Without this, the
+  /// parent And ends up in PendingAndMasks AND is erased by phase 2,
+  /// leaving a dangling pointer for the rewrite loop.
+  Instruction *AndMaskParentSkip = nullptr;
+
 public:
   TruncInstCombine(AssumptionCache &AC, TargetLibraryInfo &TLI,
                    const TargetTransformInfo &TTI, const DataLayout &DL,
@@ -125,6 +139,13 @@ private:
     return llvm::ComputeNumSignBits(
         V, DL, &AC, /*CtxI=*/cast<Instruction>(CurrentTruncInst), &DT);
   }
+
+  /// Decide whether an ICmpInst that uses an in-graph value can be narrowed
+  /// alongside the trunc-rooted expression graph.  Accepts both the
+  /// ConstantInt-on-other-side shape (ravn/llvm-z80#160) and the
+  /// non-constant-but-KnownBits-narrowable shape (ravn/llvm-z80#165).
+  bool canNarrowIcmpThroughGraph(ICmpInst *Cmp, Value *GraphValue,
+                                 Type *NarrowTy);
 
   /// Given a \p V value and a \p SclTy scalar type return the generated reduced
   /// value of \p V based on the type \p SclTy.
