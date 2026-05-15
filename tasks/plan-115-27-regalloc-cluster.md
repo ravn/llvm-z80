@@ -164,7 +164,30 @@ greedy without remat changes (#15) or a different allocator.
   reverted; comment retained in `Z80RegisterInfo.cpp` near
   `done_16bit_hints:` so future contributors don't retry the same
   path.
-- **S3-S5**: future sessions; decision points above.
+- **S3 (session 73, deferred)**: shape-mismatch reconnaissance found
+  S3-as-written (single-register class `HLReg` pre-RA pass mirroring
+  `Z80SplitDjnzCounters`) **will not move bytes on aes_mc_inv**.  See
+  `tasks/aes-mc-inv-s3-shape-mismatch.md`.  Plan decision point #3
+  ("Shape wrong; pause — likely missed existing constraint") triggered.
+
+  Empirical: post-greedy MIR shows 4 i16 pointer vregs (`%205`, `%194`,
+  `%188`, `%179`) materialized via clean `INC16` chain, all in `$hl`
+  across their LOAD8_IND uses.  Greedy *already* keeps the load-side
+  pointer in HL via the existing hint.  Spills happen because all 4
+  must SURVIVE to the matching STORE8_IND later in the iteration
+  body; the intervening XOR chain uses the remaining pairs.  Pinning
+  one of the 4 to HLReg cannot prevent the other 3 from spilling —
+  greedy's hint already wins HL for whichever one HLReg would pick.
+  Reclassified to S3'.
+
+- **S3' (next session)**: pointer rematerialization for
+  `G_PTR_ADD(base, const)` + `INC16` chains.  Same target byte range
+  (~60-90 B on aes_mc_inv) via a different mechanism (`isReally
+  TriviallyReMaterializable` audit for INC16 / LD16-from-BSS).  Maps
+  onto open issue #15 broadened beyond IX constants.  Plan steps in
+  `aes-mc-inv-s3-shape-mismatch.md` §Recommendation.
+
+- **S4-S5**: future sessions; decision points above.
 
 ### S2 empirical breakdown
 
