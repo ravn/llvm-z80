@@ -33,9 +33,19 @@
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #define DEBUG_TYPE "z80-reginfo"
+
+// ravn/llvm-z80#115 + #27 S1 (session 73): runtime-toggleable instrumentation
+// for `getRegAllocationHints`.  Off by default; lit tests for the pre-RA
+// pointer-vreg cost-model work flip this on with `-z80-log-regalloc-hints`.
+// Uses cl::opt rather than DEBUG_WITH_TYPE so it works in Release builds
+// (LLVM_ENABLE_ASSERTIONS=OFF is the default here).
+static llvm::cl::opt<bool> Z80LogRegallocHints(
+    "z80-log-regalloc-hints", llvm::cl::Hidden, llvm::cl::init(false),
+    llvm::cl::desc("Log every getRegAllocationHints query (Z80 #115/#27 S1)"));
 
 #define GET_REGINFO_TARGET_DESC
 #include "Z80GenRegisterInfo.inc"
@@ -1826,6 +1836,27 @@ bool Z80RegisterInfo::getRegAllocationHints(
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   const TargetRegisterClass *RC = MRI.getRegClass(VirtReg);
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
+
+  // ravn/llvm-z80#115 + #27 S1 instrumentation (session 73): log every
+  // hint query so we can see, in any pre-RA dump, which vregs are being
+  // hinted, at what RC, and what opcodes consume them.  Used to debug
+  // pointer-vreg pressure shapes (aes_mc_inv-class) before designing a
+  // single-register-class pre-RA pass.  No behavioural change.  Off by
+  // default; enable with `-debug-only=z80-regalloc-hint`.
+  if (Z80LogRegallocHints) {
+    dbgs() << "z80-regalloc-hint: VReg=" << printReg(VirtReg, this)
+           << " RC=" << getRegClassName(RC) << " in "
+           << MF.getName() << " uses=[";
+    const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+    bool First = true;
+    for (const MachineInstr &Use : MRI.use_nodbg_instructions(VirtReg)) {
+      if (!First)
+        dbgs() << ",";
+      First = false;
+      dbgs() << TII->getName(Use.getOpcode());
+    }
+    dbgs() << "]\n";
+  }
 
   // For 16-bit registers: if the vreg is used by an instruction that
   // constrains its operand to GR16_BCDE (ADD HL,rr / SUB HL,rr etc.),
