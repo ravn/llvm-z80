@@ -1300,15 +1300,23 @@ def LD_r16_nn : Z80Pseudo<(outs GR16:$dst), (ins i16imm:$imm)> {
 
 // INC/DEC 16-bit pseudo instructions.
 // Expanded in expandPostRAPseudo to the concrete INC/DEC opcode.
+// Real Z80 INC/DEC rr does NOT touch flags — marking them
+// isAsCheapAsAMove + isReMaterializable lets the regalloc recompute
+// `base + small_const` pointer chains at the use site instead of
+// spilling each intermediate.  S3' of #115/#27 (session 73b).
 def INC16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
   let Constraints = "$dst = $src";
   let mayLoad = false;
   let mayStore = false;
+  let isAsCheapAsAMove = true;
+  let isReMaterializable = true;
 }
 def DEC16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
   let Constraints = "$dst = $src";
   let mayLoad = false;
   let mayStore = false;
+  let isAsCheapAsAMove = true;
+  let isReMaterializable = true;
 }
 
 // SUB_HL_xx: 16-bit subtraction pseudo instructions.
