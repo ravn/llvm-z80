@@ -2149,7 +2149,7 @@ static bool runImpl(Function &F, AssumptionCache &AC, TargetTransformInfo &TTI,
                     AliasAnalysis &AA, bool &MadeCFGChange) {
   bool MadeChange = false;
   const DataLayout &DL = F.getDataLayout();
-  TruncInstCombine TIC(AC, TLI, DL, DT);
+  TruncInstCombine TIC(AC, TLI, TTI, DL, DT);
   MadeChange |= TIC.run(F);
   MadeChange |= foldUnusualPatterns(F, DT, TTI, TLI, AA, AC, MadeCFGChange);
   return MadeChange;

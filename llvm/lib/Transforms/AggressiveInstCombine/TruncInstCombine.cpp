@@ -28,6 +28,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
@@ -45,6 +46,9 @@ STATISTIC(NumInstrsReduced,
           "Number of instructions whose bit width was reduced");
 STATISTIC(NumIcmpsNarrowed,
           "Number of icmps narrowed alongside trunc-rooted graph (ravn/llvm-z80#160)");
+STATISTIC(NumAndMaskRootsInjected,
+          "Number of (and X, MASK) patterns narrowed via synthetic trunc root "
+          "(ravn/llvm-z80#163, #164)");
 
 /// Decide whether an ICmpInst that uses an in-graph value can be narrowed
 /// alongside the trunc-rooted expression graph.  Returns true when:
@@ -248,6 +252,13 @@ unsigned TruncInstCombine::getMinBitWidth() {
       CurrentTruncInst->getOperand(0)->getType()->getScalarSizeInBits();
 
   if (isa<Constant>(Src))
+    return TruncBitWidth;
+
+  // Argument leaves impose no bit-width requirement of their own (see
+  // #158).  The walker handles Argument operands of in-graph instructions;
+  // here we handle the case where the trunc's direct operand is itself an
+  // Argument (chain root with no intermediate instructions).
+  if (isa<Argument>(Src))
     return TruncBitWidth;
 
   Worklist.push_back(Src);
@@ -684,6 +695,80 @@ bool TruncInstCombine::run(Function &F) {
                  << CurrentTruncInst << '\n');
       ReduceExpressionGraph(NewDstSclTy);
       ++NumExprsReduced;
+      MadeIRChange = true;
+    }
+  }
+
+  // Phase 2 (ravn/llvm-z80#163 + #164): synthesise a trunc-rooted expression
+  // graph from `(and X, MASK)` patterns where MASK = 2^M - 1 and M is a legal
+  // integer width.  After InstCombine canonicalises `(zext (trunc X to iM)
+  // to iW)` to `(and X, 2^M - 1)`, the trunc root is gone and the existing
+  // phase 1 worklist can no longer reach the iM-narrow expression that feeds
+  // X.  Reintroducing a synthetic `trunc X to iM` lets the established
+  // narrowing engine recover those chains.
+  //
+  // Cost gate (ravn/llvm-z80#164): on targets where the eventual
+  // re-extension is not free, only fire when the and has a single user
+  // (so no extra zext sites are introduced).  When zext is free, fire
+  // unconditionally — matches the upstream `trunc_multi_uses.ll`
+  // expectation that narrowing should happen.
+  for (auto &BB : F) {
+    if (!DT.isReachableFromEntry(&BB))
+      continue;
+    for (auto &I : llvm::make_early_inc_range(BB)) {
+      auto *And = dyn_cast<BinaryOperator>(&I);
+      if (!And || And->getOpcode() != Instruction::And)
+        continue;
+      auto *MaskC = dyn_cast<ConstantInt>(And->getOperand(1));
+      if (!MaskC)
+        continue;
+      const APInt &Mask = MaskC->getValue();
+      if (!Mask.isMask())
+        continue;
+      unsigned NarrowBits = Mask.countTrailingOnes();
+      Type *OrigTy = And->getType();
+      if (NarrowBits == 0 ||
+          NarrowBits >= OrigTy->getScalarSizeInBits())
+        continue;
+      if (!DL.isLegalInteger(NarrowBits))
+        continue;
+      Type *NarrowTy = IntegerType::get(F.getContext(), NarrowBits);
+      // Cost gate: skip if zext re-insertion at every use would exceed
+      // the narrowing gain.  Approximated as `!isZExtFree && !hasOneUse`.
+      if (!And->hasOneUse() && !TTI.isZExtFree(NarrowTy, OrigTy))
+        continue;
+      Value *X = And->getOperand(0);
+      if (isa<Constant>(X))
+        continue;
+
+      IRBuilder<> Builder(And);
+      auto *Tr = dyn_cast<TruncInst>(Builder.CreateTrunc(X, NarrowTy));
+      if (!Tr)
+        continue; // IRBuilder folded; nothing to narrow.
+
+      CurrentTruncInst = Tr;
+      Type *NewDstSclTy = getBestTruncatedType();
+      // Rollback conditions:
+      //   - chain feeding X isn't narrowable at all (getBestTruncatedType
+      //     returned nullptr), OR
+      //   - chain has no internal instructions, only the Argument/Constant
+      //     leaf reached via getReducedOperand.  In that case the synthetic
+      //     trunc+zext bracket produces a worthless trunc-then-extend
+      //     roundtrip on the same value — InstCombine would canonicalise
+      //     it straight back to the original `and X, MASK`.
+      if (!NewDstSclTy || InstInfoMap.empty()) {
+        Tr->eraseFromParent();
+        continue;
+      }
+
+      Value *Zx = Builder.CreateZExt(Tr, OrigTy);
+      And->replaceAllUsesWith(Zx);
+      And->eraseFromParent();
+      LLVM_DEBUG(dbgs() << "ICE: TruncInstCombine reducing (and X, MASK) "
+                          "expression graph via synthetic trunc root\n");
+      ReduceExpressionGraph(NewDstSclTy);
+      ++NumExprsReduced;
+      ++NumAndMaskRootsInjected;
       MadeIRChange = true;
     }
   }
