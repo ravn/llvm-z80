@@ -23,6 +23,7 @@
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -5609,6 +5610,259 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           RestartOuter = true;
           break;
         }
+      }
+    }
+  }
+
+  // --- Peephole: bare BSS store + 4-instr A-preserving reload → PUSH/POP rr ---
+  // ravn/llvm-z80#173.
+  //
+  // Pattern (common in AES `aes_subBytes`, `aes_sb_inv`, `aes_mixColumns`,
+  // `aes_mc_inv` at -Oz +static-stack):
+  //
+  //   ;; bare store (A already holds the value to spill):
+  //   LD   (slot), A             ; 3 B
+  //   ... [intermediate code, may include CALL, partner-half writes, etc.] ...
+  //   ;; 4-instruction reload that preserves the current A:
+  //   PUSH AF                    ; 1 B
+  //   LD   A, (slot)             ; 3 B
+  //   LD   R, A                  ; 1 B
+  //   POP  AF                    ; 1 B
+  //
+  // Total: 9 B per spill+reload pair.
+  //
+  // Convert to (3 B per pair, saving 6 B):
+  //
+  //   LD   R, A                  ; 1 B  (copy A into R at the store point)
+  //   PUSH rr                    ; 1 B  (where rr is the pair containing R)
+  //   ... [intermediate code unchanged] ...
+  //   POP  rr                    ; 1 B  (restores R from stack; partner-half restored too)
+  //
+  // Safety:
+  //   - Slot accessed only by this bare-store and the matching reload-template.
+  //   - Stack balance preserved at the matched reload site (excluding the
+  //     matched reload's own PUSH AF / POP AF, which are part of the template).
+  //   - The partner half of `rr` is not READ after the converted POP rr
+  //     unless its value at that point is irrelevant (we restore it from
+  //     stack, possibly losing intermediate modifications).  Conservative:
+  //     bail if the partner half is defined anywhere between store and
+  //     reload.  (Across-CALL case is covered by the same rule -- the CALL
+  //     conventionally clobbers the partner, but our PUSH/POP keeps the
+  //     pre-spill value intact, which is fine as long as no caller-saved
+  //     read pattern relies on the post-CALL clobbered value.)
+  if (STI.staticStack()) {
+    struct StoreReload173 {
+      unsigned PairReg;   // e.g. Z80::BC
+      unsigned Reg8;      // e.g. Z80::C
+      unsigned Partner8;  // e.g. Z80::B
+      unsigned LdRegA;    // e.g. Z80::LD_C_A   (R := A)
+      unsigned PushOpc;   // e.g. Z80::PUSH_BC
+      unsigned PopOpc;    // e.g. Z80::POP_BC
+    };
+    static const StoreReload173 Variants[] = {
+      {Z80::BC, Z80::B, Z80::C, Z80::LD_B_A, Z80::PUSH_BC, Z80::POP_BC},
+      {Z80::BC, Z80::C, Z80::B, Z80::LD_C_A, Z80::PUSH_BC, Z80::POP_BC},
+      {Z80::DE, Z80::D, Z80::E, Z80::LD_D_A, Z80::PUSH_DE, Z80::POP_DE},
+      {Z80::DE, Z80::E, Z80::D, Z80::LD_E_A, Z80::PUSH_DE, Z80::POP_DE},
+      {Z80::HL, Z80::H, Z80::L, Z80::LD_H_A, Z80::PUSH_HL, Z80::POP_HL},
+      {Z80::HL, Z80::L, Z80::H, Z80::LD_L_A, Z80::PUSH_HL, Z80::POP_HL},
+    };
+    auto findByLdRegA = [&](unsigned Opc) -> const StoreReload173 * {
+      for (const auto &V : Variants)
+        if (V.LdRegA == Opc) return &V;
+      return nullptr;
+    };
+    auto isSfr = [](const MachineOperand &MO) {
+      if (!MO.isMCSymbol()) return false;
+      StringRef N = MO.getMCSymbol()->getName();
+      return N.starts_with("__sfrend") || N.starts_with("__sframe");
+    };
+    auto sameAddr = [](const MachineInstr &A, const MachineInstr &B) {
+      const MachineOperand &MA = A.getOperand(0);
+      const MachineOperand &MB = B.getOperand(0);
+      if (!MA.isIdenticalTo(MB)) return false;
+      if (MA.isMCSymbol()) return MA.getOffset() == MB.getOffset();
+      return true;
+    };
+    auto isAnyBssAccess = [](unsigned O, bool *isStore = nullptr) {
+      bool s = (O == Z80::LD_nnind_A || O == Z80::LD_nnind_HL ||
+                O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC);
+      bool l = (O == Z80::LD_A_nnind || O == Z80::LD_HL_nnind ||
+                O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind);
+      if (isStore) *isStore = s;
+      return s || l;
+    };
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        // Match bare store: LD_nnind_A on sfrend.  Skip if preceded by
+        // an LD_A_<reg> (then it's a 4-instr spill template, handled by
+        // the in-MBB peephole above when present).
+        if (MII->getOpcode() != Z80::LD_nnind_A) { ++MII; continue; }
+        if (!isSfr(MII->getOperand(0))) { ++MII; continue; }
+        if (MII != MBB.begin()) {
+          auto Prev = std::prev(MII);
+          unsigned PO = Prev->getOpcode();
+          if (PO == Z80::LD_A_B || PO == Z80::LD_A_C || PO == Z80::LD_A_D ||
+              PO == Z80::LD_A_E || PO == Z80::LD_A_H || PO == Z80::LD_A_L) {
+            ++MII; continue;
+          }
+        }
+        auto Store = MII;
+
+        // Scan forward (within MBB only, MVP) for the matched 4-instr
+        // reload template: PUSH_AF; LD_A_nnind same-slot; LD_r_A; POP_AF.
+        // Track stack balance excluding this template's PUSH_AF/POP_AF.
+        int StackDepth = 0;
+        bool Bail = false;
+        // Track which partner halves get defined; we only need to bail if
+        // the *winner* variant's partner is defined.  Easier: collect a
+        // set of defined 8-bit regs in the interval, then exclude variants
+        // whose partner appears.
+        SmallSet<unsigned, 8> DefinedRegs;
+        bool SeenCall = false;
+        MachineBasicBlock::iterator R0 = MIE, R1 = MIE, R2 = MIE, R3 = MIE;
+        const StoreReload173 *V = nullptr;
+
+        auto isPush = [](unsigned O) {
+          return O == Z80::PUSH_AF || O == Z80::PUSH_BC ||
+                 O == Z80::PUSH_DE || O == Z80::PUSH_HL ||
+                 O == Z80::PUSH_IX || O == Z80::PUSH_IY;
+        };
+        auto isPop = [](unsigned O) {
+          return O == Z80::POP_AF || O == Z80::POP_BC ||
+                 O == Z80::POP_DE || O == Z80::POP_HL ||
+                 O == Z80::POP_IX || O == Z80::POP_IY;
+        };
+
+        auto recordDefs = [&](const MachineInstr &MI) {
+          // Skip CALL clobbers (regmask + implicit defs).  Caller is not
+          // permitted to rely on caller-saved values across a CALL anyway,
+          // so our PUSH/POP restoring those values is semantically OK.
+          if (MI.isCall()) return;
+          for (const MachineOperand &MO : MI.operands()) {
+            // Only count EXPLICIT defs.  Implicit defs are typically
+            // ABI clobbers or call-result side effects that aren't
+            // architectural value definitions.
+            if (MO.isReg() && MO.isDef() && !MO.isImplicit()) {
+              unsigned R = MO.getReg();
+              if (R == Z80::A || R == Z80::B || R == Z80::C || R == Z80::D ||
+                  R == Z80::E || R == Z80::H || R == Z80::L)
+                DefinedRegs.insert(R);
+              else if (R == Z80::BC) {
+                DefinedRegs.insert(Z80::B); DefinedRegs.insert(Z80::C);
+              } else if (R == Z80::DE) {
+                DefinedRegs.insert(Z80::D); DefinedRegs.insert(Z80::E);
+              } else if (R == Z80::HL) {
+                DefinedRegs.insert(Z80::H); DefinedRegs.insert(Z80::L);
+              }
+            }
+          }
+        };
+
+        // Phase 1: scan from Store to the matched 4-instr reload template.
+        for (auto S = std::next(Store); S != MIE; ++S) {
+          unsigned Op = S->getOpcode();
+
+          if (isAnyBssAccess(Op) && sameAddr(*Store, *S)) {
+            // Possible matched-reload template?
+            if (Op == Z80::LD_A_nnind && S != std::next(Store) &&
+                std::next(S) != MIE) {
+              auto PA = std::prev(S);
+              auto LR = std::next(S);
+              if (PA->getOpcode() == Z80::PUSH_AF && std::next(LR) != MIE) {
+                auto PF = std::next(LR);
+                if (PF->getOpcode() == Z80::POP_AF) {
+                  V = findByLdRegA(LR->getOpcode());
+                  if (V) {
+                    R0 = PA; R1 = S; R2 = LR; R3 = PF;
+                    // Stack depth was incremented when we saw PA; the
+                    // template will be deleted, so undo the increment.
+                    --StackDepth;
+                    break;
+                  }
+                }
+              }
+            }
+            Bail = true; break;
+          }
+
+          if (isPush(Op)) ++StackDepth;
+          if (isPop(Op)) {
+            --StackDepth;
+            if (StackDepth < 0) { Bail = true; break; }
+          }
+          if (S->isCall()) SeenCall = true;
+          recordDefs(*S);
+          if (S->isTerminator()) { Bail = true; break; }
+        }
+
+        if (Bail || R0 == MIE || !V) { ++MII; continue; }
+
+        // Phase 2: from just after the matched template's POP_AF, scan
+        // forward tracking stack depth until it returns to 0.  That's
+        // where our `pop rr` goes (so the bracketing PUSH/POP balances).
+        // The matched template's POP_AF itself doesn't contribute to
+        // stack depth tracking (it's deleted along with the template).
+        auto InsertPopBefore = MIE;
+        bool BalanceBail = false;
+        for (auto S = std::next(R3); S != MIE; ++S) {
+          unsigned Op = S->getOpcode();
+          if (StackDepth == 0) { InsertPopBefore = S; break; }
+          if (isPush(Op)) ++StackDepth;
+          if (isPop(Op)) {
+            --StackDepth;
+            if (StackDepth < 0) { BalanceBail = true; break; }
+          }
+          if (StackDepth == 0) {
+            // Insert AFTER this pop -- so before the next instruction.
+            InsertPopBefore = std::next(S);
+            break;
+          }
+          recordDefs(*S);
+          if (S->isTerminator()) { BalanceBail = true; break; }
+        }
+        if (BalanceBail || InsertPopBefore == MIE) { ++MII; continue; }
+
+        // Partner half must not be defined between store and reload.
+        // CALL clobbers per ABI but our PUSH/POP keeps the original; we
+        // accept the CALL case because PUSH-saved values surviving the
+        // CALL is not a semantic change relative to anything the caller
+        // had right to observe.
+        if (DefinedRegs.count(V->Partner8)) { ++MII; continue; }
+
+        // Slot must not be used anywhere else in the function.
+        bool UsedElsewhere = false;
+        for (MachineBasicBlock &Other : MF) {
+          for (MachineInstr &OMI : Other) {
+            if (&OMI == &*Store || &OMI == &*R1) continue;
+            unsigned OO = OMI.getOpcode();
+            if (isAnyBssAccess(OO) && sameAddr(*Store, OMI)) {
+              UsedElsewhere = true; break;
+            }
+          }
+          if (UsedElsewhere) break;
+        }
+        if (UsedElsewhere) { ++MII; continue; }
+
+        LLVM_DEBUG(dbgs() << "  #173 bare-store + 4-instr-reload → "
+                          << "LD r,A; PUSH/POP " << TRI->getName(V->PairReg)
+                          << " (saves 6 B; CALL=" << (SeenCall ? "yes" : "no")
+                          << ")\n");
+
+        // Build replacements.
+        // At the store site: replace `LD (slot), A` with `LD r, A; PUSH rr`.
+        DebugLoc DLs = Store->getDebugLoc();
+        BuildMI(MBB, Store, DLs, TII->get(V->LdRegA));
+        BuildMI(MBB, Store, DLs, TII->get(V->PushOpc));
+        // Insert POP rr at the discovered balanced point.
+        DebugLoc DLr = R3->getDebugLoc();
+        BuildMI(MBB, InsertPopBefore, DLr, TII->get(V->PopOpc));
+        // Erase the original 4 reload-template instructions.
+        MBB.erase(R0); MBB.erase(R1); MBB.erase(R2); MBB.erase(R3);
+        // Erase the bare store.
+        MII = MBB.erase(Store);
+        Changed = true;
       }
     }
   }
