@@ -3780,6 +3780,18 @@ static bool foldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
       return Changed;
   }
 
+  // Cost-gated bailout for targets with no branch prediction (e.g. Z80).
+  // When branches are cheap and selects must be lowered to a branch anyway,
+  // speculatively executing both arms then picking via a select is a net
+  // loss: the compute-both pattern runs the speculated work unconditionally
+  // every iteration, whereas a conditional branch skips it half the time.
+  // Only allow folds where the speculated cost is free (e.g. a constant
+  // load that materializes for free in the parent block).
+  // See ravn/llvm-z80#167 (gf_alog/gf_log AES-256 hot loop) and #168.
+  if (TTI.getPredictableBranchThreshold().isZero() &&
+      Cost > TargetTransformInfo::TCC_Free)
+    return Changed;
+
   // If we folded the first phi, PN dangles at this point.  Refresh it.  If
   // we ran out of PHIs then we simplified them all.
   PN = dyn_cast<PHINode>(BB->begin());
