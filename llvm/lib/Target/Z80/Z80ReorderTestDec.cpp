@@ -154,107 +154,141 @@ nextNonMeta(MachineBasicBlock::iterator It, MachineBasicBlock::iterator End) {
   return It;
 }
 
+// Match the shared shape: I0 = $a = COPY %src ; I1 = <ALU on A>;
+// I2 = vreg = COPY $a (dest must NOT be %src); I3 = $a = COPY %src
+// (same %src as I0); I4 = <flag-only test on A>; I5 = conditional
+// branch on flags.  Returns true if shape matches; iterators are
+// set to the matched instructions.  AluOpc filters which ALU at I1
+// (DEC_A for P1, ADD_A_A for P2).  TestOpcMatcher tests whether
+// I4 is the expected flag-only test for that variant.
+template <typename TestOpcMatcher>
+static bool matchSharedShape(MachineBasicBlock::iterator MII,
+                             MachineBasicBlock::iterator MIE,
+                             unsigned AluOpc,
+                             TestOpcMatcher TestMatches,
+                             MachineBasicBlock::iterator &I0,
+                             MachineBasicBlock::iterator &I1,
+                             MachineBasicBlock::iterator &I2,
+                             MachineBasicBlock::iterator &I3,
+                             MachineBasicBlock::iterator &I4,
+                             MachineBasicBlock::iterator &I5,
+                             Register &CounterVReg) {
+  if (!isCopyToA(*MII, CounterVReg)) return false;
+  I0 = MII;
+
+  I1 = nextNonMeta(std::next(I0), MIE);
+  if (I1 == MIE || I1->getOpcode() != AluOpc) return false;
+
+  I2 = nextNonMeta(std::next(I1), MIE);
+  if (I2 == MIE || !isCopyFromA(*I2)) return false;
+  // Critical safety gate: I2's destination must differ from
+  // CounterVReg.  Else the regalloc reused the vreg for the POST
+  // value, and the "reload" in I3 actually loads POST -- different
+  // test semantics than what the rewrite produces.
+  if (I2->getOperand(0).getReg() == CounterVReg) return false;
+
+  I3 = nextNonMeta(std::next(I2), MIE);
+  Register I3Src;
+  if (I3 == MIE || !isCopyToA(*I3, I3Src) || I3Src != CounterVReg)
+    return false;
+
+  I4 = nextNonMeta(std::next(I3), MIE);
+  if (I4 == MIE || !TestMatches(*I4)) return false;
+
+  I5 = nextNonMeta(std::next(I4), MIE);
+  if (I5 == MIE) return false;
+  return true;
+}
+
+// True iff MI is `OR_A` or `OR_r $a` (both encode the same byte).
+static bool isOrATest(const MachineInstr &MI) {
+  if (MI.getOpcode() == Z80::OR_A) return true;
+  if (MI.getOpcode() == Z80::OR_r &&
+      MI.getNumOperands() >= 1 && MI.getOperand(0).isReg() &&
+      MI.getOperand(0).getReg() == Z80::A)
+    return true;
+  return false;
+}
+
+// True iff MI is RLCA (rotate left through carry, no carry-in
+// dependency).  The post-ISel form here is plain RLCA; ADD_A_A's
+// carry-out has the SAME bit (bit 7 of the input) as RLCA's
+// carry-out, so the RLCA is redundant work after ADD_A_A on the
+// same register provided no flag-clobbering instruction lies
+// between them.
+static bool isRLCA(const MachineInstr &MI) {
+  return MI.getOpcode() == Z80::RLCA;
+}
+
 bool Z80ReorderTestDec::rewriteInMBB(MachineBasicBlock &MBB) {
   const TargetInstrInfo *TII = MBB.getParent()->getSubtarget().getInstrInfo();
   bool Changed = false;
 
   for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; /* incremented */) {
+    MachineBasicBlock::iterator I0, I1, I2, I3, I4, I5;
     Register CounterVReg;
-    if (!isCopyToA(*MII, CounterVReg)) {
-      ++MII;
-      continue;
-    }
-    auto I0 = MII;
+    unsigned CarryOpc = 0;
 
-    // I1: DEC_A
-    auto I1 = nextNonMeta(std::next(I0), MIE);
-    if (I1 == MIE || I1->getOpcode() != Z80::DEC_A) {
-      ++MII;
-      continue;
+    // P1: DEC + OR_A test.  Rewrite to SUB_n 1; ...; JR_C.
+    bool P1 = matchSharedShape(MII, MIE, Z80::DEC_A, isOrATest,
+                               I0, I1, I2, I3, I4, I5, CounterVReg);
+    if (P1) {
+      CarryOpc = getCarryFormOpcode(I5->getOpcode());
+      if (CarryOpc == 0) P1 = false;
     }
 
-    // I2: vreg = COPY $a (save dec'd value).  Critical: I2's
-    // destination MUST be a different vreg than CounterVReg --
-    // otherwise CounterVReg is redefined to the POST-dec value,
-    // and the "reload" in I3 is actually loading the POST value,
-    // not the PRE value.  That changes the meaning of the test:
-    // OR_A would test POST==0, not PRE==0, and my SUB-with-carry
-    // rewrite (which tests PRE==0) would be incorrect.
-    auto I2 = nextNonMeta(std::next(I1), MIE);
-    if (I2 == MIE || !isCopyFromA(*I2)) {
-      ++MII;
-      continue;
-    }
-    if (I2->getOperand(0).getReg() == CounterVReg) {
-      // POST-test shape (regalloc reused the vreg).  Not a PRE-test.
-      // Skip this match -- the test semantics are different.
-      ++MII;
-      continue;
-    }
-
-    // I3: $a = COPY <same counter vreg>
-    auto I3 = nextNonMeta(std::next(I2), MIE);
-    Register I3SrcVReg;
-    if (I3 == MIE || !isCopyToA(*I3, I3SrcVReg) ||
-        I3SrcVReg != CounterVReg) {
-      ++MII;
-      continue;
-    }
-
-    // I4: OR A operating on the just-reloaded $a (test for zero).
-    // In post-MachineScheduler MIR this appears as `OR_r $a` (the
-    // parametric form with $a as the source operand); the assembler
-    // emits the same byte as `OR A`.  Match either.
-    auto I4 = nextNonMeta(std::next(I3), MIE);
-    if (I4 == MIE) {
-      ++MII;
-      continue;
-    }
-    bool I4Matches = false;
-    if (I4->getOpcode() == Z80::OR_A) {
-      I4Matches = true;
-    } else if (I4->getOpcode() == Z80::OR_r) {
-      // OR_r's first operand is the source register.  Match when it's $a.
-      if (I4->getNumOperands() >= 1 && I4->getOperand(0).isReg() &&
-          I4->getOperand(0).getReg() == Z80::A) {
-        I4Matches = true;
+    // P2: ADD_A_A + RLCA bit-7 test.  Rewrite to ADD_A_A alone; use its
+    // carry directly at the branch.  Both ADD_A_A and RLCA set CARRY :=
+    // bit 7 of the input value, so when both operate on the same
+    // freshly-loaded value, the second is redundant.  Safety: the
+    // shared-shape's I2-destination-differs-from-source gate ensures
+    // CounterVReg isn't redefined between the two loads.
+    bool P2 = false;
+    if (!P1) {
+      P2 = matchSharedShape(MII, MIE, Z80::ADD_A_A, isRLCA,
+                            I0, I1, I2, I3, I4, I5, CounterVReg);
+      if (P2) {
+        // I5 must be a flag-conditional branch (JR_C, JR_NC, JP_C, JP_NC).
+        unsigned BrOpc = I5->getOpcode();
+        if (BrOpc != Z80::JR_C_e && BrOpc != Z80::JR_NC_e &&
+            BrOpc != Z80::JP_C_nn && BrOpc != Z80::JP_NC_nn) {
+          P2 = false;
+        }
       }
     }
-    if (!I4Matches) {
+
+    if (!P1 && !P2) {
       ++MII;
       continue;
     }
 
-    // I5: conditional Z branch (JR_Z_e or JP_Z_nn).
-    auto I5 = nextNonMeta(std::next(I4), MIE);
-    unsigned CarryOpc;
-    if (I5 == MIE || (CarryOpc = getCarryFormOpcode(I5->getOpcode())) == 0) {
-      ++MII;
-      continue;
-    }
-
-    LLVM_DEBUG(dbgs() << DEBUG_TYPE << ": rewrite in " << MBB.getName()
+    LLVM_DEBUG(dbgs() << DEBUG_TYPE << ": rewrite ("
+                      << (P1 ? "P1 DEC+OR" : "P2 ADD+RLCA")
+                      << ") in " << MBB.getName()
                       << " starting at " << *I0);
 
-    // Rewrite:
-    //   1. Replace DEC_A with SUB_n 1 (defines A, sets CARRY).
-    //   2. Erase I3 (redundant reload).
-    //   3. Erase I4 (OR_A no longer needed; carry is set by SUB_n).
-    //   4. Change I5 from JR_Z/JP_Z to JR_C/JP_C.
-
-    DebugLoc DL = I1->getDebugLoc();
-    // SUB_n's implicit uses ($a) and defs ($a, FLAGS) are declared in
-    // Z80InstrCommon.td; BuildMI inserts them automatically.
-    BuildMI(MBB, I1, DL, TII->get(Z80::SUB_n)).addImm(1);
-
-    // Erase the old DEC_A, redundant LD_A_R (I3), and OR_A (I4).
-    I1->eraseFromParent();
-    I3->eraseFromParent();
-    I4->eraseFromParent();
-
-    // Change I5's opcode (in-place opcode swap, operands unchanged).
-    const MCInstrDesc &CarryDesc = TII->get(CarryOpc);
-    I5->setDesc(CarryDesc);
+    if (P1) {
+      // Rewrite P1:
+      //   1. Replace DEC_A with SUB_n 1 (defines A, sets CARRY).
+      //   2. Erase I3 (redundant reload).
+      //   3. Erase I4 (OR_A no longer needed; carry is set by SUB_n).
+      //   4. Change I5 from JR_Z/JP_Z to JR_C/JP_C.
+      DebugLoc DL = I1->getDebugLoc();
+      BuildMI(MBB, I1, DL, TII->get(Z80::SUB_n)).addImm(1);
+      I1->eraseFromParent();
+      I3->eraseFromParent();
+      I4->eraseFromParent();
+      const MCInstrDesc &CarryDesc = TII->get(CarryOpc);
+      I5->setDesc(CarryDesc);
+    } else {
+      // Rewrite P2: ADD_A_A is kept (it sets CARRY = bit 7 of input).
+      //   1. Erase I3 (redundant reload of original value).
+      //   2. Erase I4 (RLCA -- ADD_A_A's CARRY is already what we want).
+      //   3. I5 (JR_C/NC or JP_C/NC) is kept unchanged -- it tests the
+      //      same flag (CARRY = bit 7 of input).
+      I3->eraseFromParent();
+      I4->eraseFromParent();
+    }
 
     // Advance MII past the rewritten region.  After the rewrites,
     // the structure is: I0, SubN, I2, I5'.  Continue scanning from

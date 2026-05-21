@@ -53,11 +53,19 @@ define i8 @gf_alog(i16 noundef %0) nounwind {
 ; CHECK:      sub{{[ \t]+}}#1
 ; CHECK:      jr{{[ \t]+}}c
 ;
-; Anti-pattern: the OLD redundant-reload pattern.  After the fix
-; we should NOT see `dec a` followed by `or a` (the test) followed
-; by `jr z` -- that's the unfixed shape.
+; Anti-pattern (P1): the OLD redundant-reload pattern.  After the
+; fix we should NOT see `dec a` followed by `or a` (the test)
+; followed by `jr z` -- that's the unfixed shape.
 ; CHECK-NOT:  dec{{[ \t]+}}a
 ; CHECK-NOT:  or{{[ \t]+}}a
+;
+; Anti-pattern (P2): the bit-7 test redundant-reload pattern.
+; Original shape: `add a,a` (sets carry = bit 7) followed by
+; `ld <r>, a` (save shifted) then `ld a, <reg>` (reload original)
+; then `rlca` (re-derive same carry).  After P2 fix the second
+; reload + rlca disappear -- only the add a,a remains, with the
+; conditional branch using its carry directly.
+; CHECK-NOT:  rlca
 
   %2 = trunc i16 %0 to i8
   br label %3
