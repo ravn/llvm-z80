@@ -42,6 +42,7 @@
 #include "Z80IndexIV.h"
 #include "Z80LoopIdiomFill.h"
 #include "Z80LoopRotate.h"
+#include "Z80NarrowIV.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -151,6 +152,10 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
           PM.addPass(Z80IndexIV());
           return true;
         }
+        if (Name == "z80-narrow-iv") {
+          PM.addPass(Z80NarrowIV());
+          return true;
+        }
         return false;
       });
   PB.registerPipelineParsingCallback(
@@ -170,6 +175,11 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
   PB.registerLateLoopOptimizationsEPCallback(
       [](LoopPassManager &PM, OptimizationLevel Level) {
         if (Level != OptimizationLevel::O0) {
+          // Narrow i16 loop counters to i8 BEFORE Z80IndexIV runs --
+          // IndexIV is gated off under +static-stack and we want the
+          // counter narrowing regardless.  See ravn/llvm-z80#77 fix
+          // path 1.
+          PM.addPass(Z80NarrowIV());
           PM.addPass(Z80IndexIV());
         }
       });

@@ -154,6 +154,91 @@ needs Fix path 2 to fully realize the savings).
 Risk: same as session 73m's investigation — high; the +11% regressor
 wasn't isolated.
 
+## Fix path 1 attempt: Z80NarrowIV pass
+
+Implemented an IR-level Z80NarrowIV pass that narrows i16 loop counters
+to i8 when SCEV proves the unsigned range fits in [0, 255] and all
+"wide" users (icmp, zext, trunc, and-mask) reduce cleanly to the
+narrowed form.
+
+### What works
+
+- Minimal `aes_subBytes_repro` test (`while (i--) buf[i] =
+  rj_sbox(buf[i])` standalone): narrowed correctly, IR is `phi i8 [16,
+  _], [phi-1, _]` with `icmp eq i8 phi, 0`.  Codegen emits clean
+  `ld c, 16; ld a, c; or a; ret z; dec a; ld c, a; ...` — exactly what
+  #77 wants.
+- AES `09_Oz_prod_like` (production target, LICM/CSE/LSR disabled):
+  PASS verify, -12 B size, -334 K tstates (-2.2%).
+- AES `13_Oz_no_omit_fp_no_licm_cse_gc`: PASS, -39 B / -0.2%.
+- AES `07_Oz_no_lsr`: PASS, -148 B / -5.9%.
+- cpnos clang PROM1: -4 B (2030 → 2026), polypascal-test PASS.
+
+### What breaks
+
+AES `01_baseline_Oz` and `05_Oz_static_stack` (configs with
+LICM/CSE/LSR enabled) FAIL the verifier with an infinite loop.
+
+Root cause: a downstream LLVM pass (suspect IndVarSimplify's
+`createWideIVs` reverse path or LoopRotation's re-rotation) rewrites
+the narrowed phi into a "shift-by-1" form.  The narrowed IR is:
+
+```
+%3 = phi i8 [ 16, %1 ], [ %6, %5 ]      ; %3 ∈ {16, 15, ..., 1, 0}
+%4 = icmp eq i8 %3, 0
+br i1 %4, label %exit, label %5
+%6 = add nsw i8 %3, -1                  ; %6 = next-iter %3
+```
+
+But the generated asm is
+
+```asm
+ld   c, 15                              ; <-- starts at 15, not 16
+.loop:
+    ld   a, c
+    inc  a                              ; <-- inc, not "or a"
+    ret  z                              ; exit if A == 0 (i.e. C == -1)
+.body:
+    ld   e, c                           ; index = C
+    ; body work
+    push af                             ; <-- A = inc'd value (current %3)
+    call _rj_sbox
+    pop  af                             ; <-- A restored to current %3
+    dec  a                              ; <-- but we wanted next-iter's
+                                        ;     carrier (= current %6 = %3 - 1 - 1)
+    ld   c, a                           ; <-- C stays at current %6, off-by-1
+    jr   .loop
+```
+
+The push/pop preserves the post-inc A (= current %3), then `dec a`
+gives current %3 - 1 = current %6 = same as preceding C.  C never
+advances → infinite loop.
+
+The IR shape is fine (rendered as expected `phi i8 [16, _], [%6, _]`
+in `-emit-llvm`).  The bug must be in the backend's interpretation,
+likely block-placement deciding to use the `(phi - 1) + 1 == 0` form
+without correctly preserving the pre-inc value across the CALL push.
+
+### Decision: pass lands, default off
+
+The Z80NarrowIV pass is correct in isolation and works on the
+production target (09_Oz_prod_like).  Default-off because the
+downstream backend bug can be triggered on configs that leave
+LICM/CSE/LSR enabled, which is unsafe for users running plain -Oz.
+
+Opt-in: `-mllvm -enable-z80-narrow-iv=true`.
+
+Follow-up tasks (one per session):
+
+- Isolate WHICH downstream pass rotates the narrowed IV.  Suspects
+  in pipeline order: IndVarSimplify, LoopStrengthReduce (disabled
+  in prod_like), LoopRotation, post-isel SDAG/GISel passes.  Bisect
+  via `-mllvm -print-after-all` + diff.
+- File the codegen bug as a new ravn/llvm-z80 issue with a reduced
+  repro (the AES `aes_subBytes` shape compiled at `-Oz +static-stack`
+  without the production knob set).  Tag as a blocker for
+  Z80NarrowIV default-on.
+
 ## Decision: drop this branch, redirect
 
 The peephole as sketched in session 73m's #77 comment is the wrong
