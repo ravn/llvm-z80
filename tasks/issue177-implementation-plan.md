@@ -5,30 +5,42 @@ to plan #177 thoroughly before starting code work.
 
 ## Work clock
 
-**Phase 2 work clock starts 2026-05-21** per user direction.  Initial
-estimate was "4-6 weeks of focused work"; **revised to 2-4 weeks
-after Phase A investigation** (Phase E retired -- see Phase A
-findings doc, summary below).
+**Phase 2 work clock starts 2026-05-21** per user direction.
 
-Realistic calendar window (revised):
-
-- **Aggressive target: 2026-06-04** (~2 weeks, Tier 1+2+3 land).
-- **Conservative target: 2026-06-18** (~4 weeks, all remaining phases).
-- ~~Earliest viable #128 revert: 2026-06-04~~ — **retired**, see below.
-
-Each phase commits to main via the existing `--no-ff` merge bubble
-pattern (session-73p-phase2-issue177 → main).  Phase A's deliverable
-unblocks Phase B; subsequent phases can land in parallel.
+- Initial estimate: "4-6 weeks of focused work"
+- **Revised to 2-4 weeks** after Phase A (Phase E retired)
+- **Re-revised to 2-3 days** after Phase B0 (Tier 1 low impact -- see
+  `issue177-phase-b0-investigation.md`).  Phase B is now best-effort
+  target-truthful overrides, not a multi-week implementation.
 
 Status tracking:
-- **Phase A complete: 2026-05-21** ✓ (this session; see
-  `issue177-phase-a-investigation.md`)
-- Phase B (Tier 1) commits landing: ___
-- Phase C (Tier 2) commits landing: ___
-- Phase D (Tier 3 + 4 cleanup) commits landing: ___
-- ~~Phase E~~: **retired** (see Phase A findings)
+- **Phase A complete: 2026-05-21** ✓ (`issue177-phase-a-investigation.md`)
+- **Phase B0 complete: 2026-05-22** ✓ (`issue177-phase-b0-investigation.md`)
+- Phase B (re-scoped Tier 1+2 overrides): ___ (2-3 days)
+- ~~Phase C~~: deferred (Phase B0 finding)
+- ~~Phase D~~: deferred (Phase B0 finding)
+- ~~Phase E~~: retired (Phase A finding)
 - ~~Phase F~~: merged into Phase B
-- #177 closed: ___
+- #177 closed: ___ (estimate end of session-73p or session-73q)
+
+## Phase B re-scope (post-Phase-B0)
+
+Phase B is now: land target-truthful overrides for the hooks that
+return wrong values on Z80 by upstream-default, even though current
+codegen impact is near-zero.  Each override is documented for the
+future pass that might consult it.
+
+Phase B hooks to land (each with lit gate + AES corpus gate per commit):
+
+1. `getArithmeticInstrCost`: i16 ops 2-4×; mul/div = libcall (TCC_Expensive).
+2. `getCastInstrCost`: native-width trunc = 0; i8->i16 zext = 0;
+   i8->i16 sext = 2.
+3. `getCmpSelInstrCost`: compare-with-zero = 1; select = 2-3.
+4. `getCFInstrCost`: PHI = 0; CondBr = 1.
+5. `getMemoryOpCost`: i8/i16 load/store at known address = 1.
+
+Phase C/D **deferred indefinitely**.  Pursue if a future Z80-specific
+IR pass needs them.
 
 ## Phase A findings (summary)
 
