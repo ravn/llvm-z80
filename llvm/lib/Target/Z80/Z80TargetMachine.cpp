@@ -12,6 +12,7 @@
 
 #include "Z80TargetMachine.h"
 #include "Z80PinAluAccumulator.h"
+#include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
 
 #include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
@@ -72,6 +73,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80NarrowIVLegacyPassPass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
+  initializeZ80ReorderTestDecPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
   initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PinAluAccumulatorPass(PR);
@@ -323,6 +325,16 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // Run the coalescer twice to coalesce RMW patterns revealed by the first
     // coalesce.
     insertPass(&llvm::TwoAddressInstructionPassID, &llvm::RegisterCoalescerID);
+
+    // Z80ReorderTestDec runs BEFORE register allocation but AFTER
+    // instruction selection.  It rewrites the post-ISel "DEC_A;
+    // RELOAD; OR_A; JR_Z" pattern to "SUB_n 1; JR_C" -- closes the
+    // dominant gf_log/gf_alog inner-loop redundant-reload pattern
+    // identified in ravn/llvm-z80#179 + #174.  Same lifecycle as
+    // Z80SplitDjnzCounters below (insert after MachineScheduler,
+    // before the LiveIntervals re-run).
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80ReorderTestDecPass());
 
     // Z80SplitDjnzCounters must run BEFORE the LiveIntervals re-run
     // (inserted just below) so the per-loop counter COPYs the pass

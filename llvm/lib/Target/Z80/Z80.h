@@ -32,6 +32,7 @@ void initializeZ80NarrowIVLegacyPassPass(PassRegistry &);
 void initializeZ80LowerSelectPass(PassRegistry &);
 void initializeZ80PinAluAccumulatorPass(PassRegistry &);
 void initializeZ80PostRAScavengingPass(PassRegistry &);
+void initializeZ80ReorderTestDecPass(PassRegistry &);
 void initializeZ80ShiftRotateChainPass(PassRegistry &);
 void initializeZ80SplitDjnzCountersPass(PassRegistry &);
 
