@@ -92,6 +92,66 @@ public:
     return false;
   }
 
+  // Z80 has no vector / SIMD instructions and no auto-vectorization
+  // story.  The target-independent default returns true, which
+  // encourages passes (vectorize / LSR) to treat vector-style
+  // addressing as cheap.  On Z80 it would just be dead-code paths.
+  bool prefersVectorizedAddressing() const override { return false; }
+
+  // ravn/llvm-z80#177 Phase B (post-B1 bisect): only the clean cases
+  // ship.  See `tasks/issue177-phase-b1-finding.md` and
+  // `tasks/issue177-phase-b2-bisect.md`.
+  //
+  // Cases that ship:
+  //   getArithmeticInstrCost: Mul -> TCC_Expensive (Z80 has no mul).
+  //   getCastInstrCost:       i16->i8 trunc, i8->i16 zext free;
+  //                           i8->i16 sext = 2.
+  //
+  // Case held back (filed as ravn/llvm-z80#184):
+  //   getArithmeticInstrCost: i16 = 2 / i32 = 4 / i64+ = expensive.
+  //   Reason: causes IndVarSimplify-style IV narrowing that the
+  //   `+static-stack` BSS-slot allocator mishandles -- AES
+  //   `05_Oz_static_stack` FAILs at 100M ts, `02_Os` + `04_O2`
+  //   silently miscompile.  Bisect-isolated to the i16 width charge.
+
+  InstructionCost getArithmeticInstrCost(
+      unsigned Opcode, Type *Ty, TargetTransformInfo::TargetCostKind CostKind,
+      TargetTransformInfo::OperandValueInfo Op1Info = {
+          TargetTransformInfo::OK_AnyValue, TargetTransformInfo::OP_None},
+      TargetTransformInfo::OperandValueInfo Op2Info = {
+          TargetTransformInfo::OK_AnyValue, TargetTransformInfo::OP_None},
+      ArrayRef<const Value *> Args = {},
+      const Instruction *CxtI = nullptr) const override {
+    // Z80 has no hardware multiplier; mul is a libcall.  Default
+    // returns TCC_Expensive for SDiv/SRem/UDiv/URem/FDiv/FRem but
+    // not Mul.  Add Mul to the libcall set.
+    if (Opcode == Instruction::Mul)
+      return TargetTransformInfo::TCC_Expensive;
+    return BaseT::getArithmeticInstrCost(Opcode, Ty, CostKind, Op1Info,
+                                         Op2Info, Args, CxtI);
+  }
+
+  InstructionCost
+  getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
+                   TargetTransformInfo::CastContextHint CCH,
+                   TargetTransformInfo::TargetCostKind CostKind,
+                   const Instruction *I = nullptr) const override {
+    if (Dst->isIntegerTy() && Src->isIntegerTy()) {
+      unsigned DstBits = Dst->getIntegerBitWidth();
+      unsigned SrcBits = Src->getIntegerBitWidth();
+      // Trunc i16 -> i8 is free on Z80: just use the low byte of the pair.
+      if (Opcode == Instruction::Trunc && SrcBits == 16 && DstBits == 8)
+        return 0;
+      // Zext i8 -> i16 is essentially free: LD H, 0.
+      if (Opcode == Instruction::ZExt && SrcBits == 8 && DstBits == 16)
+        return 0;
+      // Sext i8 -> i16 needs a sign-bit test sequence (~3 bytes:
+      // LD A, L; RLCA; SBC A, A; LD H, A).
+      if (Opcode == Instruction::SExt && SrcBits == 8 && DstBits == 16)
+        return 2;
+    }
+    return BaseT::getCastInstrCost(Opcode, Dst, Src, CCH, CostKind, I);
+  }
 };
 
 } // end namespace llvm
