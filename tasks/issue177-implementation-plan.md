@@ -3,6 +3,32 @@
 Date: 2026-05-21 (session 73p Phase 2).  Triggered by user direction
 to plan #177 thoroughly before starting code work.
 
+## Work clock
+
+**Phase 2 work clock starts 2026-05-21** per user direction.  "4-6
+weeks of focused work" is the estimate from the phase breakdown
+(Phase A 4-6 h + Phase B 1-2 wk + Phase C 3-5 d + Phase D 1-2 d +
+Phase E 1 wk + Phase F 1 wk).  Realistic calendar window:
+
+- **Aggressive target: 2026-06-18** (~4 weeks, all phases land).
+- **Conservative target: 2026-07-02** (~6 weeks, all phases land).
+- **Earliest viable Phase B revert of #128: 2026-06-04** (~2 weeks,
+  Tier 1 hooks land and demonstrate Phase E's path).
+
+Each phase commits to main via the existing `--no-ff` merge bubble
+pattern (session-73p-phase2-issue177 → main).  Phase A's deliverable
+unblocks Phase B; subsequent phases can land in parallel if the
+hooks don't interact.
+
+Status tracking:
+- Phase A complete: ___ (date)
+- Phase B (Tier 1) commits landing: ___
+- Phase C (Tier 2) commits landing: ___
+- Phase D (Tier 3) commits landing: ___
+- Phase E (#128 revert candidate): ___
+- Phase F (Tier 4 exploratory): ___
+- #177 closed: ___
+
 ## What TTI is and why Z80 needs it
 
 `TargetTransformInfo` (TTI) is LLVM's mechanism for backends to tell
