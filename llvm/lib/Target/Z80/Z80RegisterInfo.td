@@ -178,6 +178,13 @@ def GR8 : Z80Reg8Class<(add D, E, H, L, C, B, A)>;
 // tasks/regalloc-sequential-djnz-investigation.md (#98 / #94).
 def BReg : Z80Reg8Class<(add B)>;
 
+// Single-register class containing only A.  Used by Z80PinAluAccumulator
+// to pin 8-bit ALU accumulator vregs to A by class -- elides the
+// `ld a, r; ALU; ld r, a` shuttle that the greedy regalloc otherwise
+// produces around every XOR/AND/OR/ADD chain.  Sister of BReg (#94 / #98
+// DJNZ counter pinning).  See ravn/llvm-z80#172.
+def AReg : Z80Reg8Class<(add A)>;
+
 // Shadow-only register class (for constraints that need shadow specifically)
 def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;
 

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Z80TargetMachine.h"
+#include "Z80PinAluAccumulator.h"
 #include "Z80SplitDjnzCounters.h"
 
 #include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
@@ -73,6 +74,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
   initializeZ80SplitDjnzCountersPass(PR);
+  initializeZ80PinAluAccumulatorPass(PR);
   initializeZ80PostRACompareMergePass(PR);
 }
 
@@ -331,6 +333,14 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // (#94 / #98).
     insertPass(&llvm::MachineSchedulerID,
                createZ80SplitDjnzCountersPass());
+
+    // Pin 8-bit ALU accumulator vregs to A by class.  Same lifecycle
+    // requirements as Z80SplitDjnzCounters above -- must run BEFORE
+    // the LiveIntervals re-run so the per-loop COPYs the pass creates
+    // are present when LiveIntervals recomputes for greedy.  See
+    // ravn/llvm-z80#172.
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80PinAluAccumulatorPass());
 
     // Re-run Live Intervals after coalescing to renumber the contained values.
     // This can allow constant rematerialization after aggressive coalescing.
