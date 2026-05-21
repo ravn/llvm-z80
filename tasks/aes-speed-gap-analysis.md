@@ -341,9 +341,38 @@ peephole would also apply elsewhere.
 ## Open issues to drill alongside
 
 - **#173 — 8-bit BSS spill via A**: addresses Cost #2 (~0.4 M ts).
+- **#175 — Missing 8-bit ALU with memory operand** (NEW from
+  session 73p IX-mode investigation): \`XOR (HL)\`, \`XOR (IX+d)\`, and
+  the 22 sibling fused 8-bit ALU instructions are entirely absent
+  from the .td.  clang emits 0 of them; SDCC uses 50+ per AES round.
+  Adding them is mechanical (~24 .td lines + ISel patterns).
+  ~10-15 K ts saving on AES IX-frame configs; opens path to
+  IX-frame mode being net-competitive with static-stack.
 - **#172 — A-pin loop carrier**: addresses part of Cost #1 + Cost #4
   (~0.5 M ts combined estimate).  Needs LiveIntervals + PHI walk.
 - **#27, #115**: distributed regalloc churn (Cost #4 fragments).
+
+## Aside: does clang's IX-frame mode help?
+
+Investigated during session 73p (per user prompt).  clang has an
+IX-frame mode (\`-fno-omit-frame-pointer\`) used by AES corpus
+configs 12 and 13.  Empirically:
+
+| Config | bin B | tstates |
+|---|---:|---:|
+| 09 prod-like (static-stack) | 2 667 | 14 887 472 |
+| 13 IX-frame prod-like | 3 639 | 15 080 454 |
+| SDCC 01 baseline | 3 323 | 12 080 289 |
+
+clang IX-frame is **+972 B BIGGER and +0.18 % SLOWER** than clang
+static-stack.  Not a magic bullet -- the IX-frame setup overhead
+isn't recovered by spill cost savings, because clang's selector
+**doesn't emit fused \`xor a, (ix+d)\` instructions** (0 instances in
+the corpus vs SDCC's 50+).  This is the missing primitive filed as
+**#175**.  Until #175 lands, IX-frame mode is structurally worse on
+clang.  After #175 lands, IX-frame mode might become competitive
+with static-stack, but neither beats SDCC overall -- that requires
+#174 (the dominant gf_log/gf_alog cost center).
 
 ## Prioritization
 
