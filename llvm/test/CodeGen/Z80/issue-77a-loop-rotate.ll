@@ -13,13 +13,15 @@
 ; target-specific Z80LoopRotate pass bypasses that gate by calling
 ; LoopRotation() directly with a non-zero threshold.
 ;
-; The pass remains gated behind `-enable-z80-loop-rotate` (default off).  The
-; original gate was #97 (BC ping-pong in rotated single-BB self-loops),
-; which is now closed by the post-RA peephole in Z80LateOptimization.cpp.
-; A second regression — rotated loops containing a CALL force BSS-spills
-; of the loop carrier across the call (rcbios +33 B, cpnos-rom +4 B in
-; 2026-05-02 measurement) — is tracked as #100 and keeps the default
-; off pending follow-up work.
+; Pass remains gated behind `-enable-z80-loop-rotate` (default off).
+; #100 closed at the MIR layer via the post-RA BC-ping-pong peephole.
+; Session 73m added CALL-skip + small-trip-count guards in this pass
+; aiming to flip the default on; measurement showed cpnos -4 B and
+; AES production-like -2.2% tstates, but AES -Oz baseline regressed
+; +11% tstates (LICM-hoisted invariants in the duplicated header are
+; suspected but not isolated).  Default stays off pending either a
+; tighter guard or the peephole alternative for #77.  See the comment
+; on `EnableZ80LoopRotate` in `Z80LoopRotate.cpp` for the numbers.
 
 define void @countdown(ptr %p) {
 entry:

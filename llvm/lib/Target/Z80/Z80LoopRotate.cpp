@@ -43,6 +43,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
@@ -76,10 +77,31 @@ using namespace llvm;
 // error in any binary that links the Z80 backend.  Verified on opt
 // startup; clang happens to resolve the conflict differently due to
 // initialization order but the collision is real.
+// Default off pending closer investigation.  Session 73m measurement
+// (commit cd2a2ace8754, AES corpus + cpnos) with the CALL-skip + trip-
+// count guards below enabled produced:
+//
+//   - cpnos clang PROM1: 2030 -> 2026 B  (-4 B)
+//   - AES 09_Oz_prod_like: same size, -334 K ts (-2.2%)
+//   - AES 01_baseline_Oz: -8 B but +1.66 M ts (+11.0%)   <-- blocker
+//   - AES 05_Oz_static_stack: same size, +1.73 M ts (+11.8%)
+//   - test-runner clang suite: 681/46/56/207 unchanged
+//
+// The trip-count guard recovered the SIZE regression on baseline-Oz
+// configs but the per-call-iteration time still regressed; per-instr
+// counting on `gf_alog` showed rotated form ~4 ts cheaper, so the
+// +11% must come from another function (aes_mixColumns / aes_mc_inv
+// suspected) interacting with LICM/CSE-hoisted invariants in a way
+// the entry guard can't recover.  Diagnosed but not isolated.
+//
+// Cleaner alternative path for #77: a post-RA peephole that fuses
+// `ld a,r; or a; jr nz` -> `dec r; jr nz` when the preceding `dec r`
+// is dead-flag and no flag-clobber sits between.  That's surgical
+// and avoids the LICM interaction this pass has.
 static cl::opt<bool>
     EnableZ80LoopRotate("enable-z80-loop-rotate", cl::init(false), cl::Hidden,
                         cl::desc("Enable Z80 target-specific loop rotation "
-                                 "(off by default; gates on #100)"));
+                                 "(off by default; see #77 / #100)"));
 
 namespace {
 
@@ -87,6 +109,13 @@ namespace {
 // uses as DefaultRotationThreshold.  Loops with headers larger than this
 // won't be rotated (the duplicated header would offset the win).
 static constexpr unsigned Z80LoopRotateThreshold = 16;
+
+// Loops with statically-known trip count below this value are skipped:
+// the rotation cost (entry guard + exit branch) doesn't amortize over
+// few iterations.  Empirical break-even on AES corpus -Oz baseline:
+// 3-iter loop in aes_expandEncKey regressed +214 B, 4-iter loops in
+// aes_mixColumns regressed +43 B, 8-iter loops broke even or won.
+static constexpr unsigned Z80LoopRotateMinTripCount = 8;
 
 bool runOnFunctionImpl(Function &F, AssumptionCache &AC, DominatorTree &DT,
                        LoopInfo &LI, ScalarEvolution &SE,
@@ -108,6 +137,52 @@ bool runOnFunctionImpl(Function &F, AssumptionCache &AC, DominatorTree &DT,
         Loops.push_back(L);
 
   for (Loop *L : Loops) {
+    // Option 4 from ravn/llvm-z80#100: skip rotation when the loop body
+    // contains a CALL.  Rotated loops with a CALL inside force the
+    // regalloc to BSS-spill the loop carrier across the call (rcbios
+    // +33 B, cpnos -- 1708 -> 1712 B with rotation on).  Call-free
+    // inner loops (AES mixColumns / mc_inv / gf_alog etc.) win the
+    // `or a` -> `dec r; jr nz` rewrite cleanly and are the dominant
+    // payoff for #77a.  When #100 closes properly (peephole or
+    // regalloc cost-model fix) this guard can be relaxed.
+    bool HasCall = false;
+    for (BasicBlock *BB : L->blocks()) {
+      for (Instruction &I : *BB) {
+        if (isa<CallInst>(&I) || isa<InvokeInst>(&I)) {
+          if (auto *CB = dyn_cast<CallBase>(&I)) {
+            // Ignore intrinsics that don't lower to a real CALL.
+            if (auto *II = dyn_cast<IntrinsicInst>(CB))
+              if (II->getIntrinsicID() != Intrinsic::not_intrinsic &&
+                  isa<DbgInfoIntrinsic>(II))
+                continue;
+          }
+          HasCall = true;
+          break;
+        }
+      }
+      if (HasCall) break;
+    }
+    if (HasCall) {
+      LLVM_DEBUG(dbgs() << "z80-loop-rotate: skipping loop in "
+                        << F.getName() << " (contains CALL — #100)\n");
+      continue;
+    }
+
+    // Small-trip-count guard: rotation cost (duplicated entry test,
+    // exit branch, longer code layout) only amortizes if the loop runs
+    // enough times.  Short-trip loops like `for(i=4;i<16;i+=4)`
+    // (3 iterations) measured +214 B regression on aes_expandEncKey
+    // (-Oz baseline, 2026-05-21).  Skip when the trip count is
+    // statically known and below the break-even point.
+    if (unsigned TripCount = SE.getSmallConstantMaxTripCount(L)) {
+      if (TripCount < Z80LoopRotateMinTripCount) {
+        LLVM_DEBUG(dbgs() << "z80-loop-rotate: skipping loop in "
+                          << F.getName() << " (trip count " << TripCount
+                          << " < " << Z80LoopRotateMinTripCount << ")\n");
+        continue;
+      }
+    }
+
     bool Rotated =
         LoopRotation(L, &LI, &TTI, &AC, &DT, &SE, MSSAU, SQ,
                      /*RotationOnly=*/true, Z80LoopRotateThreshold,
