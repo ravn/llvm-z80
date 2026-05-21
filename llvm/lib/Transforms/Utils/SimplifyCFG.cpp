@@ -3699,6 +3699,14 @@ static bool foldTwoEntryPHINode(PHINode *PN, const TargetTransformInfo &TTI,
   if (isa<ConstantInt>(IfCond))
     return false;
 
+  // Targets with no branch prediction (e.g. Z80) should prefer the
+  // branch over branchless compute-both-then-select, since the select
+  // must be lowered to a branch anyway and the speculated computation
+  // adds work on every iteration.  Mirrors the existing guard at the
+  // top of SpeculativelyExecuteBB.  See ravn/llvm-z80#167.
+  if (TTI.getPredictableBranchThreshold().isZero())
+    return false;
+
   BasicBlock *DomBlock = DomBI->getParent();
   SmallVector<BasicBlock *, 2> IfBlocks;
   llvm::copy_if(PN->blocks(), std::back_inserter(IfBlocks),
