@@ -5,29 +5,69 @@ to plan #177 thoroughly before starting code work.
 
 ## Work clock
 
-**Phase 2 work clock starts 2026-05-21** per user direction.  "4-6
-weeks of focused work" is the estimate from the phase breakdown
-(Phase A 4-6 h + Phase B 1-2 wk + Phase C 3-5 d + Phase D 1-2 d +
-Phase E 1 wk + Phase F 1 wk).  Realistic calendar window:
+**Phase 2 work clock starts 2026-05-21** per user direction.  Initial
+estimate was "4-6 weeks of focused work"; **revised to 2-4 weeks
+after Phase A investigation** (Phase E retired -- see Phase A
+findings doc, summary below).
 
-- **Aggressive target: 2026-06-18** (~4 weeks, all phases land).
-- **Conservative target: 2026-07-02** (~6 weeks, all phases land).
-- **Earliest viable Phase B revert of #128: 2026-06-04** (~2 weeks,
-  Tier 1 hooks land and demonstrate Phase E's path).
+Realistic calendar window (revised):
+
+- **Aggressive target: 2026-06-04** (~2 weeks, Tier 1+2+3 land).
+- **Conservative target: 2026-06-18** (~4 weeks, all remaining phases).
+- ~~Earliest viable #128 revert: 2026-06-04~~ — **retired**, see below.
 
 Each phase commits to main via the existing `--no-ff` merge bubble
 pattern (session-73p-phase2-issue177 → main).  Phase A's deliverable
-unblocks Phase B; subsequent phases can land in parallel if the
-hooks don't interact.
+unblocks Phase B; subsequent phases can land in parallel.
 
 Status tracking:
-- Phase A complete: ___ (date)
+- **Phase A complete: 2026-05-21** ✓ (this session; see
+  `issue177-phase-a-investigation.md`)
 - Phase B (Tier 1) commits landing: ___
 - Phase C (Tier 2) commits landing: ___
-- Phase D (Tier 3) commits landing: ___
-- Phase E (#128 revert candidate): ___
-- Phase F (Tier 4 exploratory): ___
+- Phase D (Tier 3 + 4 cleanup) commits landing: ___
+- ~~Phase E~~: **retired** (see Phase A findings)
+- ~~Phase F~~: merged into Phase B
 - #177 closed: ___
+
+## Phase A findings (summary)
+
+**1. MachineLICM/CSE do NOT use TTI.**  Empirically verified by
+grepping `llvm/lib/CodeGen/MachineLICM.cpp` and `MachineCSE.cpp`
+for any TTI references — zero matches.  These passes use
+`TargetInstrInfo` + `MachineRegisterInfo` + their own pressure-
+tracking heuristics.
+
+**Implication**: Phase E (the proposed TTI-based per-function
+optsize/minsize gating that would enable a revert of #128's
+global `disablePass()` workaround) **is not viable via TTI**.
+Phase E retired.  #128's workaround stays.
+
+**2. `getMemoryOpCost` and `getCFInstrCost` are vectorize-dominant.**
+Used almost exclusively by `LoopVectorize`, `SLPVectorize`,
+`VectorCombine`, `IROutliner`.  Z80 doesn't vectorize.  Demoted
+from prior plan's Tier 1 to current Tier 4 (no-vectorization
+cleanup with conservative defaults).
+
+**3. `getInstructionCost` is the single highest-leverage hook.**
+Used by LICMPass, LoopUnroll, SimplifyCFG, and InlinerPass — four
+critical IR-level passes simultaneously.  Tier 1 confirmed.
+
+**4. New Tier 1 priorities (revised):**
+
+1. `getInstructionCost` (touches 4 critical passes)
+2. `getUnrollingPreferences` (Z80 should mostly disable unroll)
+3. `isProfitableToHoist` (SimplifyCFG hoist-decision cost)
+
+See `issue177-phase-a-investigation.md` for full per-hook
+per-pass mapping.
+
+## ROI on Phase A investigation
+
+~30 minutes of focused investigation saved ~1 week of misdirected
+Phase E work.  **50× ROI on Phase A.**  Lesson confirmed (per
+`feedback_no_commit_first_version`): validate the premise
+empirically before committing to multi-week work.
 
 ## What TTI is and why Z80 needs it
 
