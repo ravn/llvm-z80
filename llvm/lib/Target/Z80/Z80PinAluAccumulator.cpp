@@ -35,6 +35,8 @@
 #include "Z80InstrInfo.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -49,29 +51,36 @@ using namespace llvm;
 
 #define DEBUG_TYPE "z80-pin-alu-accumulator"
 
-// Default off pending the liveness gating.  Session 73n's first
-// implementation pins any GR8 vreg whose ALU-chain side matches, but
-// when multiple chains' vregs are simultaneously live (e.g.,
-// aes_mixColumns with three parallel XOR accumulators in nested
-// blocks), forcing them all to A produces unsatisfiable constraints
-// and either spill explosions (+285 B / +3.8 % ts on
-// 01_baseline_Oz, 02_Os) or backend crashes (segfault on
-// 05_Oz_static_stack).
+// Session 73p: scope tightened to "at most one candidate vreg per MBB".
+// The first cut (session 73o) pinned every matching GR8 vreg, which
+// segfaulted on aes_mixColumns because multiple short-lived proxies
+// around independent XOR chains were all forced to A simultaneously
+// (unsatisfiable: at most one vreg can hold A at any point).
 //
-// Needs: per-loop "primary accumulator" selection + interference
-// check so only ONE vreg per overlapping live-range gets pinned.
-// MachineLoopInfo + LiveIntervals would give this.  Not isolated
-// this session.
+// The new invariant: bucket candidate vregs by their unique-MBB
+// liveness; pin only buckets whose size is exactly 1.  Multi-candidate
+// blocks (the classic parallel-XOR shape in aes_mixColumns /
+// aes_subBytes) get no pinning at all -- the original segfault path
+// is gone.  Multi-block-liveness vregs are dropped (no MBB-local
+// interference reasoning available).
 //
-// On `gf_alog_mini` standalone the pass does collapse part of the
-// shuttle correctly (xor 27 / xor d chained in A without
-// intermediate ld a, r).  Enable via `-mllvm
-// -enable-z80-pin-alu-accumulator=true` for the standalone case.
+// Empirical result (session 73p):
+//   * Removes the 05_Oz_static_stack segfault from 73o.
+//   * Net-on-AES still a small REGRESSION (01_baseline +61 B / +0.19 %,
+//     05_static_stack +81 B / +0.36 %, 09_prod_like +24 B / +0.02 %).
+//     Root cause: pinning a proxy forces a materializing `LD A, r`
+//     that greedy was previously eliding via a non-A allocation.
+//     Single-candidate doesn't imply pin is free.
+//
+// Default stays OFF.  Real fix path: MachineLoopInfo + LiveIntervals
+// to pin the loop CARRIER (the PHI cycle) only when its full chain
+// is interference-free and no upstream materializing COPY is required.
+// That's the ~200-400 line investment session 73o flagged.
 static cl::opt<bool> EnablePinAluAccumulator(
     "enable-z80-pin-alu-accumulator", cl::init(false), cl::Hidden,
     cl::desc("Pin 8-bit ALU accumulator vregs to A by class "
-             "(ravn/llvm-z80#172, off by default -- needs liveness "
-             "gating before flipping on)"));
+             "(ravn/llvm-z80#172).  Default off; flip on with "
+             "-mllvm -enable-z80-pin-alu-accumulator=true."));
 
 namespace {
 
@@ -158,18 +167,32 @@ static bool isCopyFromAAfterALU(Register Reg, const MachineRegisterInfo &MRI) {
   return true;
 }
 
+// Return the unique MBB containing every def + use of Reg, or nullptr if
+// any reference is outside (so the candidate's liveness is multi-block
+// and we can't reason about it from MBB-local scope alone).
+static MachineBasicBlock *uniqueRefMBB(Register Reg,
+                                       MachineRegisterInfo &MRI) {
+  MachineBasicBlock *MBB = nullptr;
+  for (MachineInstr &MI : MRI.reg_nodbg_instructions(Reg)) {
+    if (!MBB)
+      MBB = MI.getParent();
+    else if (MI.getParent() != MBB)
+      return nullptr;
+  }
+  return MBB;
+}
+
 bool Z80PinAluAccumulator::runOnMachineFunction(MachineFunction &MF) {
   if (!EnablePinAluAccumulator)
     return false;
 
   MachineRegisterInfo &MRI = MF.getRegInfo();
-  bool Changed = false;
 
-  // Walk every GR8 vreg and rewrite its register class to AReg if its
-  // entire live range fits the accumulator pattern: every use is
-  // `$a = COPY %v` followed by an ALU RMW, and every def is `%v = COPY $a`
-  // preceded by an ALU RMW.  Constraining the class forces greedy
-  // regalloc to allocate the vreg to A, collapsing the COPYs.
+  // Phase 1: collect all candidate vregs and bucket them by the unique
+  // MBB their liveness is confined to.  Multi-block-liveness vregs are
+  // dropped (their interference can't be settled MBB-locally).
+  DenseMap<MachineBasicBlock *, SmallVector<Register, 4>> CandidatesByMBB;
+
   for (unsigned i = 0, e = MRI.getNumVirtRegs(); i != e; ++i) {
     Register VReg = Register::index2VirtReg(i);
     if (MRI.reg_nodbg_empty(VReg))
@@ -177,17 +200,30 @@ bool Z80PinAluAccumulator::runOnMachineFunction(MachineFunction &MF) {
     if (!Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(VReg)))
       continue;
     if (MRI.getRegClass(VReg) == &Z80::ARegRegClass)
-      continue; // already pinned
+      continue;
 
-    // Pin when EITHER side of the chain matches.  Chains typically have
-    // separate vregs on each side of A (with a PHI in between), so
-    // requiring both would never fire.  Pin both halves independently.
     bool InMatches = isCopyToAFollowedByALU(VReg, MRI);
     bool OutMatches = isCopyFromAAfterALU(VReg, MRI);
     if (!InMatches && !OutMatches)
       continue;
 
-    MRI.setRegClass(VReg, &Z80::ARegRegClass);
+    MachineBasicBlock *MBB = uniqueRefMBB(VReg, MRI);
+    if (!MBB)
+      continue;
+
+    CandidatesByMBB[MBB].push_back(VReg);
+  }
+
+  // Phase 2: pin only the MBBs with EXACTLY one candidate vreg.  Multi-
+  // candidate blocks (parallel XOR chains in AES mixColumns / subBytes)
+  // get no pinning -- they're the ones that overconstrained A in the
+  // first cut.  The single-candidate case is what we want to land: it
+  // collapses a real shuttle without competing for A within the block.
+  bool Changed = false;
+  for (auto &KV : CandidatesByMBB) {
+    if (KV.second.size() != 1)
+      continue;
+    MRI.setRegClass(KV.second.front(), &Z80::ARegRegClass);
     Changed = true;
   }
 

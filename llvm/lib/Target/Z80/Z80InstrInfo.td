@@ -1331,6 +1331,15 @@ def DEC16 : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
 let isPseudo = true, isCodeGenOnly = true in {
 
 // ADD HL,rr (plain addition, no carry capture)
+//
+// #166 attempted to mark this isAsCheapAsAMove + isReMaterializable
+// (session 73p).  Byte-identical AES corpus result -- the flag is
+// silently ignored because ADD_HL_rr has no virtual output: HL is
+// implicitly defined via `Defs = [HL, FLAGS]`, not as an SSA vreg in
+// OutOperandList.  Greedy's rematerializer only clones instructions
+// that DEFINE a vreg it can rewire; physreg-only defs have no vreg
+// to remat.  ADD16_tied (below) is the SSA-shaped sibling but is
+// "not yet used by ISel" -- wiring that up is the real #166 path.
 def ADD_HL_rr : Z80Inst<"add_hl_rr"> {
   let InOperandList = (ins GR16_BCDE:$rhs);
   let OutOperandList = (outs);

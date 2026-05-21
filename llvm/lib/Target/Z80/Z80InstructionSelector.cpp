@@ -2923,6 +2923,24 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         !RBI.constrainGenericRegister(BaseReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(OffReg, Z80::GR16_BCDERegClass, MRI))
       return false;
+    // #166 (session 73p): tried to substitute this 3-instruction
+    // sequence with a single ADD16_tied (which has an SSA-shaped vreg
+    // output and would unlock isReMaterializable).  Two attempts both
+    // miscompiled:
+    //   1. ADD16_tied with $dst class GR16 (allowing BC/DE) -- the
+    //      expansion's BC/DE-through-HL fallback silently clobbered
+    //      HL without declaring it in Defs.  All 13 AES configs FAIL.
+    //   2. ADD16_tied with $dst class HLI (HL/IX/IY only, fallback
+    //      removed).  Still miscompiles: 13/13 AES FAIL, test-runner
+    //      173/990 FAIL (vs baseline 46/990) + 4 lit failures.  Root
+    //      cause not yet isolated -- appears to be regalloc/two-addr
+    //      interaction with tied operands on a narrow physreg class
+    //      when BaseReg lands outside HLI, but the miscompile pattern
+    //      affects values UNRELATED to the ADD16_tied output.
+    // Both branches were exercised on `session-73p-issue166-add16-tied`
+    // (not committed).  Keep the explicit COPY-HL + ADD_HL_rr + COPY-
+    // from-HL pattern here until ADD16_tied's tied-operand wire-up is
+    // diagnosed and fixed.  See issue #166 for the full thread.
     BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::HL)
         .addReg(BaseReg);
     BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD_HL_rr)).addReg(OffReg);
