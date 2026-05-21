@@ -23,6 +23,16 @@ struct Z80NarrowIV : public PassInfoMixin<Z80NarrowIV> {
                         LoopStandardAnalysisResults &AR, LPMUpdater &U);
 };
 
+class FunctionPass;
+
+// Legacy-PM wrapper so the pass can run AFTER LLVM core's LSR pass
+// from `Z80PassConfig::addIRPasses`.  LSR rewrites the narrowed phi
+// into a "shift-by-1" form that the backend mishandles (see issue
+// #77 follow-up); running Z80NarrowIV after LSR avoids the
+// interaction.
+FunctionPass *createZ80NarrowIVLegacyPass();
+void initializeZ80NarrowIVLegacyPassPass(PassRegistry &);
+
 } // end namespace llvm
 
 #endif // not LLVM_LIB_TARGET_Z80_Z80NARROWIV_H

@@ -43,9 +43,14 @@
 
 #include "Z80NarrowIV.h"
 
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/Pass.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -58,26 +63,45 @@
 
 using namespace llvm;
 
-// Default off pending investigation of a downstream codegen bug.
-// Session 73n measurement: with the pass enabled on the AES corpus,
-// configs that DO disable LICM/CSE/LSR (09_Oz_prod_like, 13) get clean
-// wins (cpnos -4 B, AES 09 -12 B / -2.2% ts).  But configs that leave
-// LICM/CSE enabled (01_baseline_Oz, 05_Oz_static_stack) FAIL the AES
-// verifier -- a downstream pass rewrites the narrowed phi into a
-// "shift-by-1" form (`ld c, 15; ld a, c; inc a; ret z`) where the
-// preserved-across-CALL carrier register holds an off-by-one value,
-// producing an infinite loop.  The minimal repro (`while (i--)
-// buf[i] = rj_sbox(buf[i])` standalone) is fine; the bug only
-// surfaces when LICM/CSE-touched code interacts with the narrowed IV.
+// Session 73n investigation found that running this pass in the New PM
+// IR pipeline (where it was originally registered) caused AES configs
+// with LSR enabled to FAIL the verifier: LLVM core's
+// LoopStrengthReduce -- which runs LATER in the CodeGen-IR pipeline --
+// rewrites the narrowed phi into a "shift-by-1" form
+// (`ld c, 15; ld a, c; inc a; ret z`) where the preserved-across-CALL
+// carrier register holds an off-by-one value, producing an infinite
+// loop.  The minimal repro (`while (i--) buf[i] = f(buf[i])`
+// standalone) is fine.  Bisect via `-disable-lsr` confirmed LSR as
+// the corruptor.
 //
-// Until the downstream interaction is isolated (likely
-// IndVarSimplify's `wideIVs` reverse path, or LoopRotation's
-// rerotation after our narrow), the pass stays opt-in via
-// `-mllvm -enable-z80-narrow-iv=true`.
+// Fix: move the pass to run AFTER LSR via the legacy-PM hook in
+// `Z80PassConfig::addIRPasses()`.  The legacy-PM wrapper below is
+// what's registered there; the New PM Loop entry point remains for
+// `opt -passes='loop-mssa(z80-narrow-iv)'` debugging but is not on
+// the codegen path.
+//
+// With the after-LSR placement, all 13 AES corpus configs PASS
+// (session 73n measurement, 2026-05-21).
+// Default off pending investigation of test-runner regressions.
+// Session 73n: after moving the pass to run AFTER LSR (via the
+// legacy-PM `Z80PassConfig::addIRPasses` hook below), AES corpus is
+// 100% PASS with -12 B on production target.  But the z80-utils
+// test-runner regressed 681 -> 666 PASS (15 new failures), notably
+// `test_94_bss_self_clear` and `test_96_iy_largeoffset_spill` at
+// multiple opt levels.  Both produce wrong runtime values rather
+// than crashing -- some interaction with non-obvious downstream
+// passes corrupting semantics on certain loop shapes (parallel
+// i8/i16 phis suspected on test_94).  Not isolated this session.
+//
+// Opt-in via `-mllvm -enable-z80-narrow-iv=true` -- safe for
+// AES corpus + production builds (cpnos + AES prod_like); not safe
+// for general -Oz code until the test-runner regressions are
+// understood.
 static cl::opt<bool> EnableZ80NarrowIV(
     "enable-z80-narrow-iv", cl::init(false), cl::Hidden,
     cl::desc("Enable Z80 target-specific loop-counter IV narrowing "
-             "(off by default; see #77 fix path 1 + session 73n notes)"));
+             "(off by default; see session 73n notes for the "
+             "test-runner regressions blocking default-on)"));
 
 static cl::opt<int> Z80NarrowIVLimit(
     "z80-narrow-iv-limit", cl::init(-1), cl::Hidden,
@@ -239,6 +263,33 @@ static bool tryNarrowPhi(PHINode *Phi, Loop &L, ScalarEvolution &SE) {
 
 } // end anonymous namespace
 
+// Shared body for both PM entry points.  Walks the innermost loops in F
+// and tries to narrow each one's header phi.
+static bool runOnLoopsImpl(Function &F, LoopInfo &LI, ScalarEvolution &SE) {
+  if (!EnableZ80NarrowIV)
+    return false;
+
+  bool Changed = false;
+  // Collect innermost loops first; tryNarrowPhi mutates IR.
+  SmallVector<Loop *, 8> Loops;
+  for (Loop *Outer : LI)
+    for (Loop *L : depth_first(Outer))
+      if (L->isInnermost())
+        Loops.push_back(L);
+
+  for (Loop *L : Loops) {
+    BasicBlock *Header = L->getHeader();
+    if (!Header)
+      continue;
+    SmallVector<PHINode *, 4> Phis;
+    for (PHINode &P : Header->phis())
+      Phis.push_back(&P);
+    for (PHINode *P : Phis)
+      Changed |= tryNarrowPhi(P, *L, SE);
+  }
+  return Changed;
+}
+
 PreservedAnalyses Z80NarrowIV::run(Loop &L, LoopAnalysisManager &AM,
                                    LoopStandardAnalysisResults &AR,
                                    LPMUpdater &) {
@@ -267,4 +318,52 @@ PreservedAnalyses Z80NarrowIV::run(Loop &L, LoopAnalysisManager &AM,
   auto PA = getLoopPassPreservedAnalyses();
   PA.preserveSet<CFGAnalyses>();
   return PA;
+}
+
+namespace {
+
+// Legacy-PM Function pass wrapper.  Used by Z80PassConfig::addIRPasses
+// so this pass can run AFTER LLVM core's LoopStrengthReduce pass
+// (which rewrites the narrowed phi into a "shift-by-1" form the
+// backend mishandles).
+class Z80NarrowIVLegacyPass : public FunctionPass {
+public:
+  static char ID;
+  Z80NarrowIVLegacyPass() : FunctionPass(ID) {
+    initializeZ80NarrowIVLegacyPassPass(*PassRegistry::getPassRegistry());
+  }
+
+  bool runOnFunction(Function &F) override {
+    if (skipFunction(F))
+      return false;
+    auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+    auto &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
+    return runOnLoopsImpl(F, LI, SE);
+  }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<LoopInfoWrapperPass>();
+    AU.addRequired<ScalarEvolutionWrapperPass>();
+    AU.addPreserved<DominatorTreeWrapperPass>();
+    AU.addPreserved<LoopInfoWrapperPass>();
+  }
+
+  StringRef getPassName() const override {
+    return "Z80 Narrow IV (legacy)";
+  }
+};
+
+} // end anonymous namespace
+
+char Z80NarrowIVLegacyPass::ID = 0;
+
+INITIALIZE_PASS_BEGIN(Z80NarrowIVLegacyPass, "z80-narrow-iv-legacy",
+                      "Z80 Narrow IV", false, false)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
+INITIALIZE_PASS_END(Z80NarrowIVLegacyPass, "z80-narrow-iv-legacy",
+                    "Z80 Narrow IV", false, false)
+
+FunctionPass *llvm::createZ80NarrowIVLegacyPass() {
+  return new Z80NarrowIVLegacyPass();
 }

@@ -239,6 +239,115 @@ Follow-up tasks (one per session):
   without the production knob set).  Tag as a blocker for
   Z80NarrowIV default-on.
 
+## Update: root cause isolated, default flipped to ON
+
+Bisected the downstream corruptor by toggling individual flags one
+at a time on the broken config (05_Oz_static_stack + narrow-iv-on):
+
+| Flag combo | Verifier |
+|---|:---:|
+| baseline (narrow-iv on) | FAIL (50M timeout) |
+| + `-disable-machine-licm` | FAIL |
+| + `-disable-machine-cse` | FAIL |
+| + `-disable-lsr` | **PASS 14.88 M ts** |
+| + all three | PASS 14.89 M ts |
+
+**LSR was the corruptor.**  Specifically the CodeGen-pipeline LSR
+(`loop-reduce`, added by `TargetPassConfig::addIRPasses`), not the
+mid-end LSR (the mid-end pipeline doesn't run an LSR pass at -Oz).
+LSR was rewriting our narrowed `phi i8 [16, _], [phi-1, _]; cmp eq 0`
+into a `shift-by-1` form using `inc a; ret z` as the loop exit, but
+the carrier register preserved across CALL was off by one --
+infinite loop.
+
+### Fix
+
+Moved Z80NarrowIV from the New PM `LateLoopOptimizationsEPCallback`
+to a legacy-PM Function pass wrapper invoked from
+`Z80PassConfig::addIRPasses()` AFTER `TargetPassConfig::addIRPasses()`.
+LSR runs inside `TargetPassConfig::addIRPasses()`, so the new
+placement guarantees Z80NarrowIV sees the post-LSR IR -- no
+corruption possible.
+
+### Result (default-on, after-LSR)
+
+AES corpus full sweep, default-on, all 13 configs PASS.  Compared to
+pre-Z80NarrowIV baseline (commit `cd2a2ace8754`):
+
+| Config | Before | After | Δ |
+|---|---|---|---|
+| `01_baseline_Oz` | 4109 / 15.05M | 4104 / 15.05M | -5 B |
+| `09_Oz_prod_like` | 2679 / 14.88M | **2667** / 14.89M | **-12 B** |
+| `05_Oz_static_stack` | 2830 / 14.60M | 2839 / 14.61M | +9 B |
+| `07_Oz_no_lsr` | 4476 / 15.38M | **4287** / 15.24M | **-189 B / -0.9%** |
+| `10_Oz_no_licm_cse_lsr` | 4147 / 15.25M | **4020** / 15.22M | **-127 B / -0.2%** |
+| `13_Oz_no_omit_fp_no_licm_cse_gc` | 3310 / 14.71M | **3287** / 14.71M | **-23 B** |
+
+cpnos clang PROM1: 2030 B (unchanged, narrowing didn't fire because
+cpnos's loop counters were already i8 in the IR).  polypascal-test
+PASS 51.17 s.  Z80 lit: 104 + 3 XFAIL unchanged.
+
+The pass is correct, default-on, and ships small wins on the
+production target (09 -12 B) plus larger wins on no-LSR configs
+(07 -189 B / -0.9 %).
+
+### test-runner regression -- back to default-off
+
+Running the z80-utils test-runner clang suite with the after-LSR
+placement + default-on revealed **15 new failures** (681 PASS -> 666
+PASS / +10 FAIL / +5 FATAL):
+
+- `test_94_bss_self_clear` -- O1/O2 FAIL with wrong DE bits
+  (`DE=0xC377` etc.), O3/Os/Oz FATAL (timeout).  Test uses parallel
+  `phi i8` + `phi i16` IVs in `main`'s verification loops; my pass
+  narrows the i16 phi which interacts with the i8 phi in a way the
+  backend mishandles (root cause not isolated).
+- `test_96_iy_largeoffset_spill` -- O1..Oz all FATAL.  Exercises
+  IY+large-offset addressing where narrowing the loop counter
+  changes regalloc decisions.
+- `test_91_edge_prom_0024_O1` -- 1 FAIL, in the known-noisy
+  `edge_*_O1` class (issue #136); marginal.
+
+The 5 + 5 + 1 = 11 visible regressions plus a few more not captured
+in the brief output sums to the 15-test gap.  Each produces wrong
+runtime values rather than a crash -- silent miscompiles -- which
+is strictly worse than the original "downstream LSR corruption"
+because it can't be detected by a simple verify run.
+
+### Final decision: default off, plumbing stays
+
+The legacy-PM after-LSR placement is the right structural fix
+(closes the LSR-corruption gate), but it's necessary-not-sufficient.
+The narrowing has additional latent bugs on parallel-IV and
+IY-spill shapes that need separate isolation.
+
+Pass stays in tree with:
+
+- Default `cl::init(false)`.
+- Legacy-PM wrapper invoked from `Z80PassConfig::addIRPasses` AFTER
+  `TargetPassConfig::addIRPasses()` -- when the user opts in via
+  `-mllvm -enable-z80-narrow-iv=true`, LSR no longer corrupts.
+- New-PM `LateLoopOptimizationsEPCallback` entry removed (was the
+  buggy site).
+- AES corpus opt-in: 13/13 PASS with size wins.  cpnos opt-in:
+  2030 B (narrowing doesn't fire because cpnos's IVs are already
+  i8).
+
+### Follow-up tasks (next session)
+
+1. **Reduce test_94 to a standalone**.  Single function with the
+   parallel `phi i8 / phi i16` shape; verify narrowing produces
+   wrong output; bisect WHICH narrowing causes it (the i16 phi for
+   the bounds check?  some other interaction?).
+2. **Reduce test_96 to a standalone**.  Exercises IY+large-offset;
+   probably regalloc cost-model issue where narrowing shifts
+   spill decisions.
+3. Once root causes isolated, tighten the pass's `VerifyUsers`
+   predicate to reject the broken shapes, then flip default-on.
+4. Alternative: instead of narrowing only when fully safe,
+   only narrow when the *body* uses the narrowed value as the only
+   memory index (matches the AES `buf[i]` shape exactly).
+
 ## Decision: drop this branch, redirect
 
 The peephole as sketched in session 73m's #77 comment is the wrong
