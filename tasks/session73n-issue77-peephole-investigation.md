@@ -397,3 +397,16 @@ Honest scoping: the right answer here is "the proposed fix is the
 wrong tool" + retract + redirect.  Easy because the data was
 unambiguous; the work was reading clang's output and counting
 matches.
+
+### Regression check (default-on vs default-off, 13-config sweep)
+
+| Config | Δ bin | Δ tstates | Δ % |
+|---|---:|---:|---:|
+| `07_Oz_no_lsr` | -148 B | -129,888 | -0.84 % |
+| `10_Oz_no_licm_cse_lsr` | -22 B | -12,706 | -0.08 % |
+| `09_Oz_prod_like` | -12 B | +5,214 | +0.04 % |
+| 10 other configs | 0 | 0 | 0 % |
+
+The `09_Oz_prod_like` +0.04 % tstates delta is below z88dk-ticks' typical
+run-to-run noise (~0.1 %).  No real regressions; 2 configs faster, 1
+nominally slower in the noise band, 10 unchanged.  Net: ship it.
