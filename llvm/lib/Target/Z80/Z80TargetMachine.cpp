@@ -217,7 +217,24 @@ namespace {
 class Z80PassConfig : public TargetPassConfig {
 public:
   Z80PassConfig(Z80TargetMachine &TM, PassManagerBase &PM)
-      : TargetPassConfig(TM, PM) {}
+      : TargetPassConfig(TM, PM) {
+    // ravn/llvm-z80#128: MachineLICM and MachineCSE consistently
+    // pessimize Z80 code because the 3-pair register file (DE/HL/BC)
+    // cannot hold the loop-invariants they want to hoist or the
+    // common subexpressions they want to share.  The hoisted/shared
+    // values get BSS-spilled across CALLs and reloaded each use,
+    // costing more bytes + tstates than the redundant computes they
+    // were meant to eliminate.  Measured on AES corpus at -Oz:
+    // disabling these two saves ~280 B per config at <0.3% tstate
+    // cost; on cpnos-rom snios_c.o: -141 B / -16% size.
+    //
+    // Disable globally pending #177 (Z80 TTI) which would let us
+    // gate this on per-function optsize/minsize attributes for a
+    // proper opt-level-sensitive decision.
+    disablePass(&EarlyMachineLICMID);
+    disablePass(&MachineLICMID);
+    disablePass(&MachineCSELegacyID);
+  }
 
   Z80TargetMachine &getZ80TargetMachine() const {
     return getTM<Z80TargetMachine>();
