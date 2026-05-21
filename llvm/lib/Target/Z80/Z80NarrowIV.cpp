@@ -98,10 +98,9 @@ using namespace llvm;
 // for general -Oz code until the test-runner regressions are
 // understood.
 static cl::opt<bool> EnableZ80NarrowIV(
-    "enable-z80-narrow-iv", cl::init(false), cl::Hidden,
+    "enable-z80-narrow-iv", cl::init(true), cl::Hidden,
     cl::desc("Enable Z80 target-specific loop-counter IV narrowing "
-             "(off by default; see session 73n notes for the "
-             "test-runner regressions blocking default-on)"));
+             "(default on with single-phi-only guard; see #77 / #170)"));
 
 static cl::opt<int> Z80NarrowIVLimit(
     "z80-narrow-iv-limit", cl::init(-1), cl::Hidden,
@@ -284,6 +283,15 @@ static bool runOnLoopsImpl(Function &F, LoopInfo &LI, ScalarEvolution &SE) {
     SmallVector<PHINode *, 4> Phis;
     for (PHINode &P : Header->phis())
       Phis.push_back(&P);
+
+    // Conservative gate from ravn/llvm-z80#170: don't narrow if the
+    // header has more than one phi.  Parallel `phi i8` + `phi i16` IVs
+    // in the same header (test_94 verifier loops) are observed to
+    // miscompile when only the i16 phi is narrowed -- the regalloc/
+    // coalescer treats two i8 phis differently from an i8+i16 pair.
+    if (Phis.size() != 1)
+      continue;
+
     for (PHINode *P : Phis)
       Changed |= tryNarrowPhi(P, *L, SE);
   }
