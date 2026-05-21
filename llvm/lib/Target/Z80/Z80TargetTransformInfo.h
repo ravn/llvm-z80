@@ -92,6 +92,29 @@ public:
     return false;
   }
 
+  // Z80 has no vector / SIMD instructions and no auto-vectorization
+  // story.  The target-independent default returns true, which
+  // encourages passes (vectorize / LSR) to treat vector-style
+  // addressing as cheap.  On Z80 it would just be dead-code paths.
+  // Filed as part of ravn/llvm-z80#177 Phase B scaffolding.
+  bool prefersVectorizedAddressing() const override { return false; }
+
+  // ravn/llvm-z80#177 Phase B Tier 1 hooks to implement (TODOs).
+  // Each requires empirical baseline measurement + per-commit
+  // AES corpus + Decision E full oracle gating before landing.
+  // Tracked in `tasks/issue177-implementation-plan.md` and
+  // `tasks/issue177-phase-a-investigation.md`.
+  //
+  //   getInstructionCost(...)      -- touches LICM, LoopUnroll,
+  //                                   SimplifyCFG, Inliner (4 critical
+  //                                   IR passes simultaneously).
+  //   getUnrollingPreferences(...) -- Z80 should mostly disable
+  //                                   unroll: branches are cheap,
+  //                                   unrolled bodies expand BSS spill.
+  //   isProfitableToHoist(...)     -- SimplifyCFG hoist-decision cost
+  //                                   (default true; Z80 hoist of
+  //                                   non-A 8-bit ops often pessimizes
+  //                                   due to BSS-spill traffic).
 };
 
 } // end namespace llvm
