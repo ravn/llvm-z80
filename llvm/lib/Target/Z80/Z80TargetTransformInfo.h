@@ -107,12 +107,19 @@ public:
   //   getCastInstrCost:       i16->i8 trunc, i8->i16 zext free;
   //                           i8->i16 sext = 2.
   //
-  // Case held back (filed as ravn/llvm-z80#184):
+  // Case held back (correctness-safe post #184 + #185 fixes, but
+  // production-target cost > savings):
   //   getArithmeticInstrCost: i16 = 2 / i32 = 4 / i64+ = expensive.
-  //   Reason: causes IndVarSimplify-style IV narrowing that the
-  //   `+static-stack` BSS-slot allocator mishandles -- AES
-  //   `05_Oz_static_stack` FAILs at 100M ts, `02_Os` + `04_O2`
-  //   silently miscompile.  Bisect-isolated to the i16 width charge.
+  //   With both #184 (peephole #148 fall-through MBB check) and
+  //   #185 (DJNZ peephole B-clobber safety) fixed, AES corpus
+  //   13/13 PASS with i16=2 applied.  But production targets:
+  //     - cpnos PROM1: 2028 -> 2037 B (+9 B; eats into 2 KB hard cap)
+  //     - autoload PROM: 1652 -> 1668 B (+16 B)
+  //     - AES `09_Oz_prod_like`: 2562 -> 2606 B (+44 B)
+  //     - BIOS: 5922 -> 5916 B (−6 B)
+  //   Net: production cost outweighs benefits.  Skipping the i16
+  //   width charge keeps the IR pipeline's existing IV decisions,
+  //   which are already well-tuned for Z80 via Z80NarrowIV (#77).
 
   InstructionCost getArithmeticInstrCost(
       unsigned Opcode, Type *Ty, TargetTransformInfo::TargetCostKind CostKind,
