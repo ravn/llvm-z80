@@ -767,6 +767,22 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::A)) {
           ++MII; continue;
         }
+        // ravn/llvm-z80#185: B must not be redefined anywhere in this
+        // MBB between begin() and I1 (DEC_A).  If something else
+        // clobbers B (e.g. body uses `ld b, h` for parallel BC
+        // pointer arithmetic in aes_done at -Os with i16=2 cost),
+        // then the LD_B_A we're about to erase is ESSENTIAL — it
+        // restores the counter value into B before the test.
+        // DJNZ would operate on the clobbered B and loop ~100+ extra
+        // iterations, corrupting low memory.
+        bool BClobberedInBody = false;
+        for (auto It = MBB.begin(); It != I1; ++It) {
+          if (It->modifiesRegister(Z80::B, TRI)) {
+            BClobberedInBody = true;
+            break;
+          }
+        }
+        if (BClobberedInBody) { ++MII; continue; }
         MachineBasicBlock *TargetMBB = IBranch->getOperand(0).getMBB();
         DebugLoc DL = I1->getDebugLoc();
         LLVM_DEBUG(dbgs() << "  DEC A; LD B,A; [OR A;] JR NZ → DJNZ\n");
