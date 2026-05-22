@@ -6070,6 +6070,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       for (auto &MI : *TargetMBB) {
         if (MI.isDebugInstr())
           continue;
+        // XOR_A is the canonical "clear A" idiom: `xor a` zeros A.  It
+        // formally reads A (Uses=[A]) but the read value is irrelevant
+        // — the instruction unconditionally sets A to 0.  Treat it as
+        // a full def (A dead at entry to this MBB).
+        if (MI.getOpcode() == Z80::XOR_A)
+          return true;
         bool ReadsA = false, DefsA = false;
         for (const MachineOperand &MO : MI.operands()) {
           if (!MO.isReg() || !MO.getReg().isPhysical())
@@ -6141,6 +6147,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (!BrIt->getOperand(0).isMBB())
             continue;
           if (!targetDeadA(BrIt->getOperand(0).getMBB()))
+            continue;
+        }
+        // ravn/llvm-z80#184 fix: the fall-through MBB also needs an
+        // explicit A-dead check.  `isRegDeadAfter(AfterBr)` reaches
+        // the end of the current MBB and only inspects Succ->liveins(),
+        // which may not have been refreshed post-regalloc.  Walk the
+        // fall-through MBB's instructions directly via targetDeadA.
+        // This is needed for BOTH IsJp (where AfterBr falls through
+        // to a body that uses A via push af) and IsRet (similar).
+        if (MachineBasicBlock *Fall = MBB.getNextNode()) {
+          if (!targetDeadA(Fall))
             continue;
         }
         // FLAGS must be dead after the branch too.  CP/XOR set C
