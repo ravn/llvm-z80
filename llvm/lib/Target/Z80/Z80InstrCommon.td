@@ -19,6 +19,12 @@
 
 // LD r,r' - Load register to register
 // Opcode: 0b01dddsss where ddd=dest, sss=src
+// Register-only operation -- touches no memory and sets no flags.  Per
+// ravn/llvm-z80#154, the conservative Z80Inst defaults (mayLoad =
+// mayStore = hasSideEffects = true) caused peepholes that filter by
+// memory-side-effect to bail on these moves.  Override here so the
+// MachineInstr-level flags reflect the actual semantics.
+let mayLoad = 0, mayStore = 0, hasSideEffects = 0 in {
 def LD_B_B : Inst8<"ld b,b", 0x40> { let Uses = [B]; let Defs = [B]; }
 def LD_B_C : Inst8<"ld b,c", 0x41> { let Uses = [C]; let Defs = [B]; }
 def LD_B_D : Inst8<"ld b,d", 0x42> { let Uses = [D]; let Defs = [B]; }
@@ -74,6 +80,7 @@ def LD_A_E : Inst8<"ld a,e", 0x7B> { let Uses = [E]; let Defs = [A]; }
 def LD_A_H : Inst8<"ld a,h", 0x7C> { let Uses = [H]; let Defs = [A]; }
 def LD_A_L : Inst8<"ld a,l", 0x7D> { let Uses = [L]; let Defs = [A]; }
 def LD_A_A : Inst8<"ld a,a", 0x7F> { let Uses = [A]; let Defs = [A]; }
+} // mayLoad = 0, mayStore = 0, hasSideEffects = 0
 
 // LD r,n - Load immediate to register
 def LD_B_n : LDrn<REG_B> { let Defs = [B]; }

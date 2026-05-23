@@ -1063,7 +1063,10 @@ let mayLoad = 1, mayStore = 1, hasSideEffects = 0 in {
 
 let Predicates = [HasZ80, HasUndocumented] in {
 
-// --- LD IXH/IXL,r (load register into IX half) ---
+// --- LD IXH/IXL,r and LD r,IXH/IXL (8-bit half-register reg-reg moves) ---
+// Register-only operation -- override conservative Z80Inst defaults.
+// See ravn/llvm-z80#154.
+let mayLoad = 0, mayStore = 0, hasSideEffects = 0 in {
 def LD_IXH_A : InstDD8<"ld ixh,a", 0x67> { let Uses = [A]; let Defs = [IXH]; }
 def LD_IXH_B : InstDD8<"ld ixh,b", 0x60> { let Uses = [B]; let Defs = [IXH]; }
 def LD_IXH_C : InstDD8<"ld ixh,c", 0x61> { let Uses = [C]; let Defs = [IXH]; }
@@ -1091,6 +1094,7 @@ def LD_D_IXH : InstDD8<"ld d,ixh", 0x54> { let Uses = [IXH]; let Defs = [D]; }
 def LD_D_IXL : InstDD8<"ld d,ixl", 0x55> { let Uses = [IXL]; let Defs = [D]; }
 def LD_E_IXH : InstDD8<"ld e,ixh", 0x5C> { let Uses = [IXH]; let Defs = [E]; }
 def LD_E_IXL : InstDD8<"ld e,ixl", 0x5D> { let Uses = [IXL]; let Defs = [E]; }
+} // mayLoad = 0, mayStore = 0, hasSideEffects = 0 (LD IX{H,L} reg-reg)
 
 // --- LD IXH/IXL,n (load immediate) ---
 def LD_IXH_n : InstDD16<"ld ixh,", 0x26, Imm8Mode> { let Defs = [IXH]; }
@@ -1121,6 +1125,9 @@ def CP_IXH : InstDD8<"cp ixh", 0xBC> { let Uses = [A, IXH]; let Defs = [FLAGS]; 
 def CP_IXL : InstDD8<"cp ixl", 0xBD> { let Uses = [A, IXL]; let Defs = [FLAGS]; }
 
 // --- IYH/IYL equivalents (FD prefix) ---
+// Register-only moves -- override conservative Z80Inst defaults.
+// See ravn/llvm-z80#154.
+let mayLoad = 0, mayStore = 0, hasSideEffects = 0 in {
 def LD_IYH_A : InstFD8<"ld iyh,a", 0x67> { let Uses = [A]; let Defs = [IYH]; }
 def LD_IYH_B : InstFD8<"ld iyh,b", 0x60> { let Uses = [B]; let Defs = [IYH]; }
 def LD_IYH_C : InstFD8<"ld iyh,c", 0x61> { let Uses = [C]; let Defs = [IYH]; }
@@ -1147,6 +1154,7 @@ def LD_D_IYH : InstFD8<"ld d,iyh", 0x54> { let Uses = [IYH]; let Defs = [D]; }
 def LD_D_IYL : InstFD8<"ld d,iyl", 0x55> { let Uses = [IYL]; let Defs = [D]; }
 def LD_E_IYH : InstFD8<"ld e,iyh", 0x5C> { let Uses = [IYH]; let Defs = [E]; }
 def LD_E_IYL : InstFD8<"ld e,iyl", 0x5D> { let Uses = [IYL]; let Defs = [E]; }
+} // mayLoad = 0, mayStore = 0, hasSideEffects = 0 (LD IY{H,L} reg-reg)
 
 def LD_IYH_n : InstFD16<"ld iyh,", 0x26, Imm8Mode> { let Defs = [IYH]; }
 def LD_IYL_n : InstFD16<"ld iyl,", 0x2E, Imm8Mode> { let Defs = [IYL]; }
