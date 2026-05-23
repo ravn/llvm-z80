@@ -95,6 +95,86 @@ TEST(LoopUtils, DeleteDeadLoopNest) {
       });
 }
 
+// Regression test for ravn/llvm-z80#182 / upstream-submission queue:
+// deleteDeadLoop's exit-block-phi update used to assume every phi entry
+// in the exit block came from one of the loop's exiting blocks.  When
+// the exit block is reachable from outside the loop too -- e.g. when
+// the exit block is another loop's header with its own backedge phi
+// entries -- the original code mistakenly removed those non-loop
+// entries, producing malformed SSA.
+//
+// This test constructs the offending shape directly:
+//   loop1's exit block IS loop2's header.  loop2's header has phi
+//   entries from BOTH loop1's exiting block AND loop2's own backedge.
+// After deleteDeadLoop(loop1), loop2's phi must keep its backedge
+// entry and remap only the from-loop1 entry to loop1's preheader.
+TEST(LoopUtils, DeleteDeadLoopExitIntoAnotherLoopHeader) {
+  LLVMContext C;
+  std::unique_ptr<Module> M =
+      parseIR(C, "define void @foo() {\n"
+                 "entry:\n"
+                 "  br label %loop1\n"
+                 "loop1:\n"
+                 "  %i1 = phi i32 [ 0, %entry ], [ %i1.next, %loop1 ]\n"
+                 "  %i1.next = add nsw i32 %i1, 1\n"
+                 "  %done1 = icmp eq i32 %i1.next, 100\n"
+                 "  br i1 %done1, label %loop2, label %loop1\n"
+                 "loop2:\n"
+                 "  %i2 = phi i32 [ 0, %loop1 ], [ %i2.next, %loop2 ]\n"
+                 "  %i2.next = add nsw i32 %i2, 1\n"
+                 "  %done2 = icmp eq i32 %i2.next, 100\n"
+                 "  br i1 %done2, label %exit, label %loop2\n"
+                 "exit:\n"
+                 "  ret void\n"
+                 "}\n");
+
+  run(*M, "foo",
+      [&](Function &F, DominatorTree &DT, ScalarEvolution &SE, LoopInfo &LI) {
+        assert(LI.begin() != LI.end() && "Expecting loops in function foo");
+        // Find loop1 (the dead-deletable one).
+        Loop *Loop1 = nullptr;
+        for (Loop *L : LI) {
+          if (L->getName() == "loop1") {
+            Loop1 = L;
+            break;
+          }
+        }
+        assert(Loop1 && "Expecting loop1");
+
+        deleteDeadLoop(Loop1, &DT, &SE, &LI);
+
+        // After deletion, loop2's header must still have a well-formed
+        // phi (one entry per predecessor).  Pre-fix this assertion would
+        // fail: loop2's phi would have only one incoming entry while the
+        // block has two predecessors (loop1's preheader and loop2's
+        // backedge), and the kept entry would bind the wrong predecessor.
+        BasicBlock *Loop2Header = nullptr;
+        for (BasicBlock &BB : F)
+          if (BB.getName() == "loop2") {
+            Loop2Header = &BB;
+            break;
+          }
+        assert(Loop2Header && "Expecting loop2 header to survive");
+
+        PHINode *PN = dyn_cast<PHINode>(&Loop2Header->front());
+        ASSERT_TRUE(PN && "Expecting phi in loop2 header");
+        EXPECT_EQ(PN->getNumIncomingValues(), 2u);
+
+        // Verify both predecessor blocks are represented in the phi.
+        SmallPtrSet<BasicBlock *, 4> PhiPreds;
+        for (unsigned I = 0, E = PN->getNumIncomingValues(); I < E; ++I)
+          PhiPreds.insert(PN->getIncomingBlock(I));
+        SmallPtrSet<BasicBlock *, 4> BBPreds;
+        for (BasicBlock *Pred : predecessors(Loop2Header))
+          BBPreds.insert(Pred);
+        EXPECT_EQ(PhiPreds, BBPreds);
+
+        // Verify dominator tree and loop info are still valid.
+        EXPECT_TRUE(DT.verify(DominatorTree::VerificationLevel::Fast));
+        LI.verify(DT);
+      });
+}
+
 TEST(LoopUtils, IsKnownPositiveInLoopTest) {
   LLVMContext C;
   std::unique_ptr<Module> M =
