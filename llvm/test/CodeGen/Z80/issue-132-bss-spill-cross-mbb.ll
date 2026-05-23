@@ -21,8 +21,10 @@ declare i16 @target()
 ; CHECK:       pop	af
 ; CHECK:       dec	a
 ; CHECK-LABEL: %ret1
-; CHECK-NEXT:  inc	sp
-; CHECK-NEXT:  inc	sp
+; Per ravn/llvm-z80#138: comp uses `pop af` (1 B) when AF is dead at
+; the escape, instead of `inc sp; inc sp` (2 B).  Here %ret1 returns
+; a constant so A and FLAGS are unused; the fast comp form applies.
+; CHECK-NEXT:  pop	af
 ; CHECK-NEXT:  ld	de,1
 ; CHECK-NEXT:  ret
 ; CHECK-NOT:   ld	{{.*}}({{.*}}sfrend{{.*}})

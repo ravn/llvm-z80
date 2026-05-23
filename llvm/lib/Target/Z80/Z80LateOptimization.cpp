@@ -5520,12 +5520,35 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
               continue;
           }
 
-          // Cost gate.  PUSH/POP are 1 B each.  Compensation is 2 B
-          // (inc sp; inc sp) per escape edge, regardless of strategy.
-          //   Save = (StoreBytes - 1) + (LoadBytes - 1) - 2 * Nesc
+          // Cost gate.  PUSH/POP are 1 B each.  Compensation is normally
+          // 2 B (inc sp; inc sp) per escape edge.  Per ravn/llvm-z80#138:
+          // if a register class is dead at the escape MBB's live-in set,
+          // emit `POP rr` (1 B) instead, saving 1 B per such escape.
+          // Order: AF first (lowest impact if wrong), then HL/DE/BC.
+          //
+          // Probe each escape's MBB_C for a fully-dead pair.  An MCPhysReg
+          // pair is "fully dead" iff none of its sub-registers are in
+          // MBB_C's live-in set.
+          SmallVector<unsigned, 4> EscPopOpc(Escapes.size(), 0u);
+          unsigned CompCost = 0;
+          for (size_t i = 0; i < Escapes.size(); ++i) {
+            MachineBasicBlock *MBB_C = Escapes[i].MBB_C;
+            struct { unsigned Op; MCPhysReg Hi, Lo; } Pairs[] = {
+              {Z80::POP_AF, Z80::A, Z80::FLAGS},
+              {Z80::POP_HL, Z80::H, Z80::L},
+              {Z80::POP_DE, Z80::D, Z80::E},
+              {Z80::POP_BC, Z80::B, Z80::C},
+            };
+            for (const auto &P : Pairs) {
+              if (!MBB_C->isLiveIn(P.Hi) && !MBB_C->isLiveIn(P.Lo)) {
+                EscPopOpc[i] = P.Op;
+                break;
+              }
+            }
+            CompCost += EscPopOpc[i] ? 1 : 2;
+          }
           unsigned PushPopSave =
               (CSI->StoreBytes - 1) + (CSI->LoadBytes - 1);
-          unsigned CompCost = 2u * Escapes.size();
           if (PushPopSave <= CompCost)
             continue;
 
@@ -5546,24 +5569,34 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           BuildMI(*MBB_B, *LoadIt, DLl, TII->get(CSI->PopOpc));
           MBB_B->erase(LoadIt);
 
-          // Compensate each escape.
-          for (auto &E : Escapes) {
+          // Compensate each escape.  Uses POP rr (1 B) when a register
+          // pair is dead at the escape (per #138 liveness probe above);
+          // falls back to INC SP; INC SP (2 B) otherwise.
+          for (size_t i = 0; i < Escapes.size(); ++i) {
+            auto &E = Escapes[i];
             MachineBasicBlock *MBB_C = E.MBB_C;
             DebugLoc DLc;
+            unsigned PopOpc = EscPopOpc[i];
+            auto emitComp = [&](MachineBasicBlock *MBB,
+                                MachineBasicBlock::iterator It) {
+              if (PopOpc) {
+                BuildMI(*MBB, It, DLc, TII->get(PopOpc));
+              } else {
+                BuildMI(*MBB, It, DLc, TII->get(Z80::INC_SP));
+                BuildMI(*MBB, It, DLc, TII->get(Z80::INC_SP));
+              }
+            };
             if (E.Kind == ESC_PrependInPlace) {
-              // Prepend "inc sp; inc sp" in-place — MBB_A is MBB_C's
-              // sole predecessor so this only runs on this path.
-              BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
-              BuildMI(*MBB_C, MBB_C->begin(), DLc, TII->get(Z80::INC_SP));
+              // Prepend in-place — MBB_A is MBB_C's sole predecessor so
+              // this only runs on this path.
+              emitComp(MBB_C, MBB_C->begin());
             } else {
               // Edge-split: create a new MBB just before MBB_C in
-              // layout, fill with "inc sp; inc sp", fall through
-              // to MBB_C.  Rewrite MBB_A's terminator operand from
-              // MBB_C to NewMBB.
+              // layout, fall through to MBB_C.  Rewrite MBB_A's
+              // terminator operand from MBB_C to NewMBB.
               MachineBasicBlock *NewMBB = MF.CreateMachineBasicBlock();
               MF.insert(MBB_C->getIterator(), NewMBB);
-              BuildMI(NewMBB, DLc, TII->get(Z80::INC_SP));
-              BuildMI(NewMBB, DLc, TII->get(Z80::INC_SP));
+              emitComp(NewMBB, NewMBB->end());
               NewMBB->addSuccessor(MBB_C);
               MBB_A.ReplaceUsesOfBlockWith(MBB_C, NewMBB);
             }
