@@ -42,6 +42,7 @@
 #include "Z80ExpandPseudo.h"
 #include "Z80FixupImplicitDefs.h"
 #include "Z80IndexIV.h"
+#include "Z80AutoStaticStack.h"
 #include "Z80LoopIdiomFill.h"
 #include "Z80LoopRotate.h"
 #include "Z80LateOptimization.h"
@@ -69,6 +70,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80LateOptimizationPass(PR);
   initializeZ80LoopIdiomFillLegacyPassPass(PR);
   initializeZ80LoopRotateLegacyPassPass(PR);
+  initializeZ80AutoStaticStackPass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80ReorderTestDecPass(PR);
@@ -264,6 +266,15 @@ void Z80PassConfig::addIRPasses() {
   // Z80 is single-threaded: lower all atomic operations to plain
   // non-atomic load/store/rmw sequences at the IR level.
   addPass(createLowerAtomicPass());
+
+  // ravn/llvm-z80#176/#40: auto-inject +static-stack on leaf functions
+  // (opt-in via -mllvm -z80-auto-static-stack=true).  Only register
+  // the pass in the pipeline when enabled -- otherwise its mere
+  // presence as a no-op pass shifts downstream behavior (#187
+  // pipeline-ordering side effect), costing ~2 B on cpnos PROM1
+  // for users who don't opt in.
+  if (isZ80AutoStaticStackEnabled())
+    addPass(createZ80AutoStaticStackPass());
 
   TargetPassConfig::addIRPasses();
   if (getOptLevel() != CodeGenOptLevel::None) {

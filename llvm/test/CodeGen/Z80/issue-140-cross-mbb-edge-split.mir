@@ -1,0 +1,89 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80#140: regression coverage for the cross-MBB BSS-spill
+# peephole (see #132 commit 15e4eef6e62d).
+#
+# IR-level lit fixtures don't reliably survive regalloc to produce the
+# exact post-RA shape (the in-MBB peepholes and regalloc spill
+# decisions are aggressive enough to keep the spill in-MBB or
+# eliminate it).  This .mir fixture synthesises the post-RA MIR
+# directly so the cross-MBB path is exercised by the test suite.
+#
+# CFG shape: bb.0 STORES A to a BSS slot via the __sframe symbol,
+# CALLs sink (regmask-clobbered A), then conditionally branches to
+# bb.2 (escape) or fall-throughs to bb.1 (LOAD).  bb.1 is sole-pred
+# from bb.0, so MBB_B's pred check passes.  bb.2 is the single
+# escape, so the prepend-in-place compensation applies.
+#
+# Expected post-pass:
+#   - bb.0's LD_nnind_A (STORE) becomes PUSH_AF.
+#   - bb.1's LD_A_nnind (LOAD) becomes POP_AF.
+#   - bb.2's first instruction is the SP compensation (per #138,
+#     POP rr if AF/HL/DE/BC dead at bb.2 entry; otherwise INC SP;
+#     INC SP).  Here bb.2 returns a constant, so AF is dead -> POP AF.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+
+  declare void @sink()
+
+  @__sframe_foo = global i8 0
+  @__sfrend_foo = global i8 0
+
+  ; CHECK-LABEL: name: foo
+  ; The cross-MBB store/load pair is now PUSH/POP-rewritten.
+  ; CHECK:       PUSH_AF
+  ; CHECK:       CALL_nn @sink
+  ; CHECK:       POP_AF
+  ; The escape MBB starts with SP-compensation (per #138 -- POP_AF
+  ; because AF is dead at bb.2 entry).
+  ; CHECK:       POP_AF
+  ; CHECK-NOT:   LD_nnind_A
+  ; CHECK-NOT:   LD_A_nnind
+
+  define void @foo(i8 %t) {
+  entry:
+    br label %branch
+  branch:
+    call void @sink()
+    br i1 false, label %escape, label %use
+  use:
+    ret void
+  escape:
+    ret void
+  }
+
+...
+---
+name:            foo
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$a' }
+body:             |
+  bb.0.entry:
+    successors: %bb.1(0x7c000000), %bb.2(0x04000000)
+    liveins: $a
+
+    ; STORE A to BSS slot.
+    LD_nnind_A <mcsymbol __sframe_foo>, implicit $a
+    CALL_nn @sink, z80_csr, implicit-def dead $a, implicit-def dead $bc, implicit-def dead $de, implicit-def dead $hl, implicit-def $iy, implicit-def $flags
+    ; Carry from CALL's flags drives the branch.
+    JR_C_e %bb.2, implicit $flags
+
+  bb.1.use:
+    successors:
+
+    ; LOAD from BSS slot, then return.
+    LD_A_nnind <mcsymbol __sframe_foo>, implicit-def $a
+    LD_E_A implicit-def $e, implicit $a
+    LD_D_n 0, implicit-def $d
+    RET implicit $de
+
+  bb.2.escape:
+    LD_DE_nn 0, implicit-def $de
+    RET implicit $de
+
+...
