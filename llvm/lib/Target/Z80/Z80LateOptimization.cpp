@@ -1314,17 +1314,28 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
 
         // Matched: LD C,L; LD B,H; EX DE,HL; ADD HL,BC
         // Replace with: ADD HL,DE
-        // Safety: the original writes BC (clobbers it). Our replacement
-        // does not write BC — safe as long as nobody reads BC expecting
-        // the old HL value. Check that BC is not read between ADD and
-        // the next BC def (i.e., BC was only a temporary for this ADD).
-        // Also check DE is not clobbered between EX and ADD (trivially
-        // true since they're adjacent).
+        // Safety: the original writes BC (clobbers it).  Our replacement
+        // does not write BC, so any downstream read of BC will see the
+        // pre-block value instead of (old HL).  Bail if BC is live past
+        // the rewrite point.  See ravn/llvm-z80#109.
         DebugLoc DL = I0->getDebugLoc();
 
         // Check for trailing EX DE,HL (result needed in DE).
         auto I4 = std::next(I3);
         bool HasTrailingEX = (I4 != MIE && I4->getOpcode() == Z80::EX_DE_HL);
+
+        // BC safety: must be dead after the rewrite point.  Without this
+        // check, regalloc choices that reuse BC across the original block
+        // (relying on BC's then-current value being the old HL) would
+        // miscompile after the rewrite removes the BC write.  Empirically
+        // GISel doesn't seem to produce such shapes, but the check is
+        // cheap and matches the original safety comment that was
+        // aspirational, not enforced (#109).
+        auto AfterRewrite = HasTrailingEX ? std::next(I4) : std::next(I3);
+        if (!isRegDeadAfter(AfterRewrite, MBB, TRI, Z80::BC)) {
+          ++MII;
+          continue;
+        }
 
         if (HasTrailingEX) {
           // LD C,L; LD B,H; EX DE,HL; ADD HL,BC; EX DE,HL
