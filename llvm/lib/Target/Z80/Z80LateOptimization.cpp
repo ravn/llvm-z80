@@ -5327,6 +5327,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
              O == Z80::POP_HL || O == Z80::POP_IX || O == Z80::POP_IY;
     };
 
+    // Per ravn/llvm-z80#143: track the NewMBBs we create via edge-split
+    // compensation so subsequent fires can recognize them and bypass the
+    // `Prev->canFallThrough() && Prev->isLayoutSuccessor(Succ)` bail
+    // check.  The check was meant to protect UNRELATED fall-throughs into
+    // MBB_C; an MBB we created ourselves earlier this iteration is not
+    // an unrelated path and must not block us.
+    SmallPtrSet<MachineBasicBlock *, 4> OurNewMBBs;
     for (MachineBasicBlock &MBB_A : MF) {
       bool RestartOuter = true;
       while (RestartOuter) {
@@ -5438,12 +5445,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
               }
               MachineBasicBlock *Prev = Succ->getPrevNode();
               if (Prev && Prev->canFallThrough() &&
-                  Prev->isLayoutSuccessor(Succ)) {
-                // Some other MBB falls-through to Succ; we can't
-                // insert before Succ without breaking that path.
-                // See ravn/llvm-z80#143 for the reuse-existing-
-                // compensation enhancement, which also requires
-                // relaxing the UsedElsewhere gate below.
+                  Prev->isLayoutSuccessor(Succ) &&
+                  !OurNewMBBs.contains(Prev)) {
+                // Some unrelated MBB falls-through to Succ; we can't
+                // insert before Succ without breaking that path.  If
+                // Prev is a peer-created NewMBB (peer 1's edge-split
+                // compensation), allow the bail to be skipped -- peer 2
+                // can chain its own NewMBB before Prev without
+                // conflicting with the existing fall-through, because
+                // peer 1's NewMBB came from THIS function's earlier
+                // iteration and we own the layout (#143).
                 BailSucc = true;
                 break;
               }
@@ -5599,6 +5610,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
               emitComp(NewMBB, NewMBB->end());
               NewMBB->addSuccessor(MBB_C);
               MBB_A.ReplaceUsesOfBlockWith(MBB_C, NewMBB);
+              OurNewMBBs.insert(NewMBB); // ravn/llvm-z80#143
+              // After this fire, NewMBB sits between MBB_C's old layout-
+              // predecessor and MBB_C, falling-through into MBB_C.  If a
+              // future peer also escapes to MBB_C, the bail check above
+              // would normally block it (because Prev=NewMBB now satisfies
+              // canFallThrough + isLayoutSuccessor).  The OurNewMBBs set
+              // tells that check to ignore peer-created NewMBBs.
             }
           }
 
