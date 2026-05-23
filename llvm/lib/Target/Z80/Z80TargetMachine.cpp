@@ -44,7 +44,6 @@
 #include "Z80IndexIV.h"
 #include "Z80LoopIdiomFill.h"
 #include "Z80LoopRotate.h"
-#include "Z80NarrowIV.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -70,7 +69,6 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80LateOptimizationPass(PR);
   initializeZ80LoopIdiomFillLegacyPassPass(PR);
   initializeZ80LoopRotateLegacyPassPass(PR);
-  initializeZ80NarrowIVLegacyPassPass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80ReorderTestDecPass(PR);
@@ -157,10 +155,6 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
           PM.addPass(Z80IndexIV());
           return true;
         }
-        if (Name == "z80-narrow-iv") {
-          PM.addPass(Z80NarrowIV());
-          return true;
-        }
         return false;
       });
   PB.registerPipelineParsingCallback(
@@ -180,10 +174,6 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
   PB.registerLateLoopOptimizationsEPCallback(
       [](LoopPassManager &PM, OptimizationLevel Level) {
         if (Level != OptimizationLevel::O0) {
-          // NOTE: Z80NarrowIV is NOT registered here.  LSR (which runs
-          // later in the CodeGen-IR pipeline) corrupts narrowed phis.
-          // Instead the legacy-PM wrapper is added in
-          // `Z80PassConfig::addIRPasses` AFTER LSR.
           PM.addPass(Z80IndexIV());
         }
       });
@@ -277,12 +267,6 @@ void Z80PassConfig::addIRPasses() {
 
   TargetPassConfig::addIRPasses();
   if (getOptLevel() != CodeGenOptLevel::None) {
-    // Z80NarrowIV must run AFTER `TargetPassConfig::addIRPasses` --
-    // that's where LLVM core's LoopStrengthReduce pass is added, and
-    // running our IV narrowing BEFORE LSR causes LSR to rewrite the
-    // narrowed phi into a "shift-by-1" form the backend mishandles
-    // (see ravn/llvm-z80#77 fix path 1 / session 73n investigation).
-    addPass(createZ80NarrowIVLegacyPass());
     addPass(createInstructionCombiningPass());
     // Pattern-fill rewrite (issue #88).  Runs from llc's IR pipeline
     // here; clang's pipeline picks it up via PassBuilder hook.

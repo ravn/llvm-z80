@@ -119,7 +119,10 @@ public:
   //     - BIOS: 5922 -> 5916 B (−6 B)
   //   Net: production cost outweighs benefits.  Skipping the i16
   //   width charge keeps the IR pipeline's existing IV decisions,
-  //   which are already well-tuned for Z80 via Z80NarrowIV (#77).
+  //   which LSR canonicalizes acceptably for Z80 (see also #169/#170/
+  //   #171: Z80NarrowIV removed in session 73q because LSR's choice
+  //   under these TTI hooks already produces the desired narrowed
+  //   form on the documented inputs).
 
   InstructionCost getArithmeticInstrCost(
       unsigned Opcode, Type *Ty, TargetTransformInfo::TargetCostKind CostKind,
