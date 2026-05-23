@@ -3508,10 +3508,21 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(Src1Reg);
         if (ImmVal) {
-          unsigned ImmOpc =
-              (Opcode == TargetOpcode::G_OR) ? Z80::OR_n : Z80::XOR_n;
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(ImmOpc))
-              .addImm(*ImmVal & 0xFF);
+          // G_XOR x, -1 (the canonical "not" form) lowers to CPL (1 B,
+          // 4 T) when the result's flags are discarded by the caller.
+          // At GISel time, any flag-consumer downstream (G_ICMP eq,
+          // G_BR_COND) selects to its own fresh compare instruction,
+          // so the XOR_n form's S/Z/P flag side-effect is never
+          // observed by Z80 code emitted from clean IR.  See session
+          // 73q C1 drill (writeup tasks/session73q-C1-drill-180.md).
+          if (Opcode == TargetOpcode::G_XOR && (*ImmVal & 0xFF) == 0xFF) {
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CPL));
+          } else {
+            unsigned ImmOpc =
+                (Opcode == TargetOpcode::G_OR) ? Z80::OR_n : Z80::XOR_n;
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(ImmOpc))
+                .addImm(*ImmVal & 0xFF);
+          }
         } else {
           unsigned AluOpc =
               (Opcode == TargetOpcode::G_OR) ? Z80::OR_r : Z80::XOR_r;
