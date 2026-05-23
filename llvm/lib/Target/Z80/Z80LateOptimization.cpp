@@ -767,6 +767,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::A)) {
           ++MII; continue;
         }
+        // FLAGS must also be dead after the JR NZ.  DEC A sets Z (which
+        // JR NZ tests) and S/P/H from the result; DJNZ doesn't touch
+        // FLAGS at all.  If any code past the branch consumes FLAGS, the
+        // rewrite would observe the pre-DEC flag state instead.
+        // ravn/llvm-z80#108 (site 1).
+        if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::FLAGS)) {
+          ++MII; continue;
+        }
         // ravn/llvm-z80#185: B must not be redefined anywhere in this
         // MBB between begin() and I1 (DEC_A).  If something else
         // clobbers B (e.g. body uses `ld b, h` for parallel BC
@@ -807,6 +815,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
         auto NextIt = std::next(MII);
         if (NextIt == MIE || NextIt->getOpcode() != Z80::JR_NZ_e) {
+          ++MII;
+          continue;
+        }
+        // FLAGS must be dead after the JR NZ.  DEC B sets Z (tested by
+        // JR NZ) plus S/P/H from the result; DJNZ doesn't touch FLAGS.
+        // ravn/llvm-z80#108 (site 2).
+        if (!isRegDeadAfter(std::next(NextIt), MBB, TRI, Z80::FLAGS)) {
           ++MII;
           continue;
         }
@@ -1555,6 +1570,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // "imm >= A_orig" (JR NC) → "A_orig < imm+1" → CP (imm+1); JR C
         // Only valid when imm < 255 (imm+1 doesn't overflow 8 bits).
         if (Imm >= 255) { ++MII; continue; }
+
+        // FLAGS must be dead after the branch.  The rewrite changes the
+        // CP operand (different result), so Z/S/P/H differ between the
+        // original and the rewrite.  Only carry is preserved-and-flipped
+        // (the branch reads it correctly).  ravn/llvm-z80#108 (site 4).
+        if (!isRegDeadAfter(std::next(I3), MBB, TRI, Z80::FLAGS)) {
+          ++MII; continue;
+        }
 
         // The LD r,A (I0) writes a physical register. If that register
         // is live-out of this basic block (used in a successor), we
@@ -2591,6 +2614,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         case Z80::JR_C_e:  NewBrOpc = Z80::JR_NC_e; break;
         case Z80::JP_C_nn: NewBrOpc = Z80::JP_NC_nn; break;
         default: ++MII; continue;
+        }
+
+        // FLAGS must be dead after the branch.  The original chain
+        // sets FLAGS via SBC A,H (16-bit SBC result); the rewrite
+        // sets FLAGS via CP_n (8-bit subtract).  Carry is preserved
+        // (and flipped via the branch swap), but Z/S/P/H bits differ.
+        // ravn/llvm-z80#108 (site 5).
+        if (!isRegDeadAfter(std::next(Br), MBB, TRI, Z80::FLAGS)) {
+          ++MII; continue;
         }
 
         DebugLoc DL = LdLA->getDebugLoc();
