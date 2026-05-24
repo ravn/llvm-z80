@@ -22,7 +22,26 @@ clang.ram` PASS 11 516 046 ts; Z80 lit 111 PASS + 5 XFAIL). Production byte-iden
      of IY values (40+ sub-register sites). Tried a `G_UNMERGE_VALUES` constraint, reverted
      (folds bypass it). Writeup: `session73s-issue112-iy-unreserve-scope.md`.
 
-## UPDATE (post-reboot): user chose (B); (B) tried and FAILED -> reverted
+## UPDATE 2026-05-25: #112/#14 loop-carried residual ROOT-CAUSED + FIXED
+
+Commit `dfa073a23e99`.  The loop-carried-value-in-IY hang was NOT a coalescer
+bug -- it was the **Z80LateOptimization "IX/IY transfer" peephole** (Form 2,
+COPY16_PUSHPOP pair; Form 1 latent) collapsing `COPY16_PUSHPOP IY,rr ...
+COPY16_PUSHPOP rr,IY` -> `PUSH rr ... POP rr` and **dropping the `IY <- rr`
+write** because it assumed IY dead-scratch.  For a loop-carried high word that
+write is the per-iteration update; IY is live-out via the back-edge.  Found by
+`-print-after-all` bisection (survives postrapseudos+scavenging, gone after
+z80-late-opt).  Fix: `computeRegisterLiveness(IXReg, after-closing-copy) ==
+LQR_Dead` guard on BOTH forms.  Reliable repro: `test_166_iy_shiftloop`
+(test-runner, NOT the DIY harness).  Lit guard `iy-loop-carried-112.ll`.
+
+Result: IY-on suite 684->694 pass; production IY-off 696/37/56 byte-identical
+(AES 11516046 ts, lit 112+5).  **#112 IY-unreserve loop-carried residual is
+CLOSED.**  Remaining IY-on deltas are ~2 tests (down from 70).  Next: identify
+those 2 (run `cargo run -- clang` with flag temp-on, diff vs the 696/37/56
+IY-off set) -- likely a separate small class, no longer the dominant blocker.
+
+## (historical) UPDATE (post-reboot): user chose (B); (B) tried and FAILED -> reverted
 
 Built `Z80ConstrainByteAccess` (pre-RA: narrow byte-accessed vregs + enforce declared
 GR16NoIR operand classes off IX/IY).  It removed the undocumented `IYH/IYL` (0 refs in
