@@ -210,6 +210,45 @@ decision. The −33 B AES win + 3-pair-pressure relief is real either way; (A) i
 In all cases, run the full production oracle (AES 13/13, cpnos/autoload/BIOS sizes + MAME
 boots — #14 was a MAME runtime crash, so boots are mandatory) before un-reserving for real.
 
+## (B) attempted and REVERTED: class-narrowing is insufficient AND the residual is deeper
+
+User chose path (B) (keep `!undocumented`, constrain IY off byte-accessed values).
+Built `Z80ConstrainByteAccess`, a pre-RA pass (addPreRegAlloc, all opt levels) that:
+(1) narrows any vreg with a sub-register (byte) operand to `GR16NoIR`; (2) enforces
+each instruction's *declared* operand register class when it excludes IX/IY (the
+`CMP16`/`XOR_CMP` pseudos declare `GR16NoIR` but BuildMI doesn't auto-constrain, so
+it was unenforced); (3) narrows `REG_SEQUENCE`/`INSERT_SUBREG` destinations.  Gated to
+no-op unless IX/IY un-reserved and `!undocumented` (production byte-identical).
+
+Result (full test-runner, IY-on):
+- It **did** remove the undocumented half-register ops: `test_04`/`test_40` `-O2`
+  asm went from 26 `iyh`/`iyl` refs to **0**.
+- But the tests **still FAIL** (`test_04` O1/O2/O3/Os, `test_40` O2/O3 — same as before),
+  and it **newly broke** `test_30_linked_list` (O1/O2/O3/Os).  Net **10 regressions vs
+  baseline 690/37/56** (680/47/56) — *worse* than the LEA-only path's 6.
+
+**This corrects the earlier diagnosis.** The undocumented `IYH/IYL` were a *co-symptom*,
+not the cause.  With byte access made documented (0 undoc refs), `test_04`/`test_40` still
+compute the wrong value -> the real residual is a **wrong-value regalloc miscompile when IY
+holds byte-decomposed (i32-chunk) values**, and the narrowing additionally *triggers* the
+same failure class on a pointer test (`test_30`).  This is the **same RegisterCoalescer
+out-of-class behaviour as #178** (assigns / mishandles registers against a narrowed class).
+Class-narrowing at the vreg level does not make the coalescer/regalloc honour the
+constraint reliably.
+
+Reverted the pass entirely (net-harmful, gated-off infra that doesn't fix its target).
+The `LEA_IX_FI` fix and `-z80-unreserve-iy` flag stay (committed, correct, 63/70).
+
+**Caveat on (A):** z88dk-ticks (the test-runner emulator) may not faithfully execute
+undocumented `IYH/IYL` ops, so even (A) `+undocumented` must be validated in **MAME**, not
+the test-runner.  Do not assume (A) is clean from a green test-runner alone.
+
+**Revised recommendation:** #112 is gated on the **shared #178 RegisterCoalescer
+out-of-class root cause** (a focused regalloc investigation that would unblock both), OR on
+(A) `+undocumented` validated end-to-end in MAME.  Class-narrowing (B) is a dead end on its
+own.  The shipped `LEA_IX_FI` fix remains valuable for the eventual un-reserve (pure-pointer
+IY values), but full IY allocation is not reachable without the deeper fix.
+
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
 - Baseline rebuilt and re-verified: AES `make clang.ram` **PASS** (11 516 046 tstates), lit 110+5.

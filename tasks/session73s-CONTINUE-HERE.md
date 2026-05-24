@@ -22,7 +22,24 @@ clang.ram` PASS 11 516 046 ts; Z80 lit 111 PASS + 5 XFAIL). Production byte-iden
      of IY values (40+ sub-register sites). Tried a `G_UNMERGE_VALUES` constraint, reverted
      (folds bypass it). Writeup: `session73s-issue112-iy-unreserve-scope.md`.
 
-## THE OPEN DECISION (ask the user first when resuming)
+## UPDATE (post-reboot): user chose (B); (B) tried and FAILED -> reverted
+
+Built `Z80ConstrainByteAccess` (pre-RA: narrow byte-accessed vregs + enforce declared
+GR16NoIR operand classes off IX/IY).  It removed the undocumented `IYH/IYL` (0 refs in
+test_04/40) BUT the tests still FAILED and it broke `test_30` (net 10 vs baseline 6).
+**Diagnosis corrected:** undoc was a co-symptom; the residual is a deeper wrong-value
+regalloc miscompile when IY holds byte-decomposed values — the **same RegisterCoalescer
+out-of-class root as #178**.  Class-narrowing reverted (net-harmful).  `LEA_IX_FI` fix +
+`-z80-unreserve-iy` flag stay (committed).
+
+**Where #112 stands now:** gated on the shared **#178 RegisterCoalescer** fix (one
+investigation unblocks both), OR on (A) `+undocumented` — but (A) must be validated in
+**MAME**, since z88dk-ticks may not execute undocumented IYH/IYL faithfully.  Next move is
+a user decision: (A)+MAME validation, or invest in the RegisterCoalescer out-of-class fix
+(highest leverage — clears #178 and #112's residual together).  See
+`session73s-issue112-iy-unreserve-scope.md` "(B) attempted and REVERTED".
+
+## THE ORIGINAL DECISION (now resolved: user picked B, B failed)
 
 #112's remaining win is gated on a **strategic choice**, not more drilling:
 
