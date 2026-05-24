@@ -2002,122 +2002,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    // --- Peephole: HL save-via-BC roundtrip (issue #84) ---
-    //
-    // Pattern-fill loop bodies emitted by GISel for sequences like
-    //   for (...) *p++ = const_word;
-    // produce a back-edge MBB that saves HL into BC, increments BC by
-    // the iteration step (typically 2), runs the body, then restores
-    // HL from BC.  The body itself already advances HL (one INC_HL
-    // between two byte stores), so the save/restore is a wasteful
-    // 6-byte dance that can be replaced by `INC_HL × (N-M)` after
-    // the body, where N is the BC pre-increment count and M is the
-    // INC_HL count inside the body.
-    //
-    // Pattern:
-    //   bb.body:
-    //     LD_C_L                      ; HL.lo → C
-    //     LD_B_H                      ; HL.hi → B
-    //     INC_BC × N                  ; BC = HL + N
-    //     <body, increments HL M times, doesn't otherwise touch BC>
-    //     LD_L_C                      ; restore HL = original + N
-    //     LD_H_B
-    //     <branch>
-    //
-    // Rewrite:
-    //   bb.body:
-    //     <body unchanged>
-    //     INC_HL × (N - M)
-    //     <branch>
-    //
-    // Saves N + 4 - (N - M) = M + 4 bytes.  For the canonical
-    // setup_ivt-class loop (N=2, M=1): -5 B per iter (ignoring iter
-    // count, this is per-loop-body-MBB savings since the MIR is
-    // emitted once).
-    {
-      for (auto &BB : MF) {
-        if (BB.empty()) continue;
-        auto It = BB.begin();
-        // Skip leading non-relevant instrs (e.g. KILL).
-        while (It != BB.end() && It->isMetaInstruction()) ++It;
-        if (It == BB.end()) continue;
-        if (It->getOpcode() != Z80::LD_C_L) continue;
-        auto LdCL = It; ++It;
-        while (It != BB.end() && It->isMetaInstruction()) ++It;
-        if (It == BB.end() || It->getOpcode() != Z80::LD_B_H) continue;
-        auto LdBH = It; ++It;
-        // Count INC_BC.
-        unsigned IncBcN = 0;
-        while (It != BB.end() && It->getOpcode() == Z80::INC_BC) {
-          ++IncBcN; ++It;
-        }
-        if (IncBcN < 1) continue;
-        // Find end pair: last two non-terminator non-metadata.
-        auto Term = BB.getFirstTerminator();
-        if (Term == BB.begin()) continue;
-        auto EndIt = std::prev(Term);
-        while (EndIt != It && EndIt->isMetaInstruction())
-          --EndIt;
-        if (EndIt->getOpcode() != Z80::LD_H_B) continue;
-        auto LdHB = EndIt;
-        --EndIt;
-        while (EndIt != It && EndIt->isMetaInstruction())
-          --EndIt;
-        if (EndIt->getOpcode() != Z80::LD_L_C) continue;
-        auto LdLC = EndIt;
-        // Body is [It .. LdLC).  Count INC_HL; bail if anything
-        // touches BC (would invalidate the save/restore).
-        unsigned IncHlM = 0;
-        bool BcTouched = false;
-        for (auto BIt = It; BIt != LdLC; ++BIt) {
-          if (BIt->isMetaInstruction()) continue;
-          if (BIt->getOpcode() == Z80::INC_HL) { ++IncHlM; continue; }
-          // Conservative: bail if BC, B, or C is read or written for
-          // anything other than INC_HL (which doesn't touch BC).
-          for (const MachineOperand &MO : BIt->operands()) {
-            if (MO.isRegMask()) { BcTouched = true; break; }
-            if (!MO.isReg()) continue;
-            Register R = MO.getReg();
-            if (!R.isPhysical()) continue;
-            if (TRI->regsOverlap(R, Z80::BC) ||
-                TRI->regsOverlap(R, Z80::B)  ||
-                TRI->regsOverlap(R, Z80::C)) {
-              BcTouched = true; break;
-            }
-          }
-          if (BcTouched) break;
-        }
-        if (BcTouched) continue;
-        if (IncHlM > IncBcN) continue;  // body advances HL further than save anticipated; out of scope
-        // Rewrite.
-        DebugLoc DL = LdCL->getDebugLoc();
-        unsigned ExtraIncs = IncBcN - IncHlM;
-        for (unsigned i = 0; i < ExtraIncs; ++i)
-          BuildMI(BB, std::next(LdHB), DL, TII->get(Z80::INC_HL));
-        LdCL->eraseFromParent();
-        LdBH->eraseFromParent();
-        // Erase the INC_BCs (they are between LdBH and the body).
-        // We saved their range as [It .. body start) effectively;
-        // re-walk from BB.begin() to find them.
-        SmallVector<MachineInstr *, 4> ToErase;
-        for (auto Iter = BB.begin(); Iter != BB.end(); ++Iter) {
-          if (Iter->getOpcode() == Z80::INC_BC) {
-            ToErase.push_back(&*Iter);
-            if (ToErase.size() == IncBcN) break;
-          } else if (Iter->getOpcode() != Z80::INC_BC &&
-                     !Iter->isMetaInstruction()) {
-            // Stop at first non-INC_BC after we've started collecting.
-            if (!ToErase.empty()) break;
-          }
-        }
-        for (auto *MI : ToErase) MI->eraseFromParent();
-        LdLC->eraseFromParent();
-        LdHB->eraseFromParent();
-        Changed = true;
-        LLVM_DEBUG(dbgs() << "  #84: removed HL-via-BC roundtrip in "
-                          << printMBBReference(BB) << "\n");
-      }
-    }
+    // (Peephole HL save-via-BC roundtrip, issue #84, removed in
+    // session 73s -- never fires on current production code.  Per
+    // ravn/llvm-z80#180 C2 re-test methodology: disable + measure;
+    // result was cpnos PROM1 byte-identical, AES production target
+    // byte-identical, test-runner sweep zero per-test diff
+    // (990/690/37/56/207 unchanged).  Same pattern as session-73s
+    // peephole #24 removal: GISel canonicalization no longer emits
+    // the HL-via-BC save/restore shape for 
+    // loops.  See tasks/session73s-issue23-retest.md.)
+
 
     // (Peephole BC ping-pong in single-BB self-loops, issue #97,
     // removed in session 73s -- never fires on current production
