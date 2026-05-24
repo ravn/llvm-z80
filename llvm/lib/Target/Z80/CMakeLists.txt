@@ -5,7 +5,13 @@ set(LLVM_TARGET_DEFINITIONS Z80.td)
 tablegen(LLVM Z80GenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM Z80GenAsmWriter.inc -gen-asm-writer)
 tablegen(LLVM Z80GenCallingConv.inc -gen-callingconv)
-tablegen(LLVM Z80GenDAGISel.inc -gen-dag-isel)
+# NOTE (#181, session 73s): no -gen-dag-isel.  The Z80 backend is GlobalISel
+# only -- there is no SelectionDAG instruction selector (no Z80ISelDAGToDAG.cpp,
+# no SelectionDAGISel subclass, no setOperationAction/LowerOperation anywhere).
+# The generated Z80GenDAGISel.inc table was never #included by any source file
+# (vestigial from the LLVM-MOS infra port, 6d1fd0b); dropping it removes dead
+# build-time work and the false impression of a coexisting DAGISel path.  See
+# tasks/session73s-issue181-dagisel-gisel-audit.md.
 tablegen(LLVM Z80GenDisassemblerTables.inc -gen-disassembler)
 tablegen(LLVM Z80GenPreLegalizeGICombiner.inc -gen-global-isel-combiner
               -combiners="Z80PreLegalizerCombiner")
