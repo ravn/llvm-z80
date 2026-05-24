@@ -304,6 +304,39 @@ loop-carried AND allocated to IY (or: keep loop-carried PHI values off IY).
 was kicked off to trace the PHI/regalloc handling with `-debug-only=regalloc` on the 6-line
 repro -- the precise next step.  `LEA_IX_FI` fix + flag remain; production byte-identical.
 
+## Assertions toolchain built; minimal-repro extraction needs the reliable harness
+
+Built an assertions-enabled toolchain at `build-macos-asserts`
+(`-DLLVM_ENABLE_ASSERTIONS=ON`, sccache, ninja) for `-debug-only=regalloc` /
+`-verify-machineinstrs` tracing.  (Process lesson: do NOT edit source files while a
+background build of the same tree runs -- the first attempt link-failed because the pass
+add landed mid-build; rebuilt clean.)
+
+Tried to reduce the residual to a minimal repro with a DIY ticks harness
+(`/tmp/iyrepro`, reset_clang.s + clang.ld, store result to 0xC000).  **The DIY harness is
+unreliable for this**: the return register varies (HL vs DE depending on type/path), the
+`halt; jp _done` epilogue spins to the ticks tstate limit (so tstates is not a clean hang
+signal), and `volatile`/opt interactions shift results -- e.g. a bare `while(v) v>>=1; n++`
+gave O2 IY-*off* = 16 (a wrong baseline = harness artifact, not codegen).  So the DIY
+minimal-repro numbers are NOT trustworthy and were not used to draw conclusions.
+
+**The reliable oracle remains the test-runner**, which is solid: clean build (LEA fix, NO
+(B) pass), IY-on -> `test_04_i32_bitwise` and `test_40_hash_crc` **FATAL = emulator timeout
+(hang)** at O1/O2/O3/Os (PASS at O0/Oz); `test_30_linked_list` PASSES (it was a (B)-pass
+artifact).  The post-regalloc MIR of test_04's popcount loop (`bb.3`) holds the i32 loop
+variable's halves in `$de` + `$iy` and *appears* to update both at the back-edge
+(`$iy = COPY $bc` after `$bc = LSHR16 $bc`), yet the loop hangs -- so the bug is a subtle
+expansion/flags/COPY16_PUSHPOP interaction, not an obviously-missing update.  Static MIR
+reading did not pinpoint it.
+
+**Precise next step (fresh session):** reduce via the TEST-RUNNER (add a minimal
+`testcases/clang/test_NN_i32_shift_loop.c` with a `/* expect */`, temp-flip the
+`-z80-unreserve-iy` default, run the reliable runner), then single-step the failing loop in
+z88dk-ticks (or `-debug-only=regalloc` with the `build-macos-asserts` clang) to watch the
+i32 loop variable across one iteration and find where it stops decreasing.  Likely suspects:
+`LSHR16` expansion or the `COPY16_PUSHPOP` (push/pop iy) for the loop-carried `$iy` under
+this exact register assignment.  Do NOT trust the DIY `/tmp/iyrepro` harness numbers.
+
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
 - Baseline rebuilt and re-verified: AES `make clang.ram` **PASS** (11 516 046 tstates), lit 110+5.

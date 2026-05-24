@@ -51,14 +51,30 @@ FATAL = emulator TIMEOUT (loop hang) at O1/O2/O3/Os only.  Minimal 6-line repro 
   chunk not maintained.  This is the parked #14 class (loop-carried PHI value in IY +
   push/pop-copy regalloc mishandling), NOT byte-decomposition/undoc, NOT #178's tied-operand.
 
-**Next step (assertions build IN PROGRESS, `build-macos-asserts`):** when it finishes, trace
-the 6-line repro at -O2 IY-on (`-mllvm -z80-unreserve-iy -debug-only=regalloc -print-after-all`)
-through PHI-elim / two-addr / coalescer / greedy; find where the loop-back COPY into IY is
-dropped/misplaced.  Build cmd: `cmake -C clang/cmake/caches/Z80.cmake -DLLVM_ENABLE_ASSERTIONS=ON
--DCMAKE_MAKE_PROGRAM=<ninja> -DCMAKE_C/CXX_COMPILER_LAUNCHER=<sccache> -G Ninja -S llvm -B build-macos-asserts`.
-Likely fix: keep loop-carried PHI values off IY (a targeted constraint), OR fix the IY
-loop-back COPY handling.  The OLD cheap hypothesis (ADD16_tied .td=HLI) is for the separate
-#178 manifestation only -- not this.
+**Assertions toolchain BUILT and ready:** `build-macos-asserts/bin/clang` (and llc),
+`-DLLVM_ENABLE_ASSERTIONS=ON`.  Reproduces the residual.  Use for `-debug-only=regalloc` /
+`-verify-machineinstrs`.  (Process lesson: do NOT edit source while a background build of the
+same tree runs.)
+
+**What was tried + ruled out this session:**
+- A pre-RA pass narrowing PHI 16-bit operands off IX/IY (`Z80ConstrainByteAccess`, PHI
+  variant): did NOT fix the hang -> the value reaching IY is a COPY of the loop-carried
+  value, not the PHI vreg itself.  Reverted.
+- DIY ticks harness (`/tmp/iyrepro`) for minimal repro: UNRELIABLE (return-reg HL-vs-DE
+  ambiguity, `halt;jp _done` spins to tstate limit, volatile/opt artifacts -- a bare shift
+  loop even gave a wrong IY-*off* baseline).  Do not trust its numbers.
+
+**Reliable next step (fresh session):**
+1. Reduce via the TEST-RUNNER (the reliable oracle): add `testcases/clang/test_NN_i32_shift_loop.c`
+   with `while(v){v>>=1;}`-style body + `/* expect */`, temp-flip `-z80-unreserve-iy` default
+   to true, `cargo run -- clang test_NN`.  Confirm the minimal hang there (NOT in /tmp/iyrepro).
+2. Single-step the failing loop in z88dk-ticks (pipe trace through tail -- disk!) OR
+   `build-macos-asserts/bin/clang ... -mllvm -debug-only=regalloc` to watch the i32 loop
+   variable (`$de`+`$iy`) across one iteration; find where it stops decreasing.
+3. Suspects: `LSHR16` expansion or `COPY16_PUSHPOP` (push/pop iy) for the loop-carried `$iy`
+   under this exact register assignment.  test_04 bb.3 MIR *appears* to update $iy at the
+   back-edge yet hangs -> subtle expansion/flags bug.
+The OLD cheap hypothesis (ADD16_tied .td=HLI) is for the separate #178 manifestation only.
 
 ## THE ORIGINAL DECISION (now resolved: user picked B, B failed)
 
