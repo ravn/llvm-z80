@@ -1104,6 +1104,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // The peephole replaces the 3-instruction sequence (4B) with LD A,H (1B).
     // Safe when H and L are dead after (the LD H,0 overwrites H, and LD A,L
     // is the last use of L before it's overwritten or dead).
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  PEEPHOLE IS LIVE.  Keep.
     {
       SmallVector<MachineInstr *, 4> ToErase;
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
@@ -1138,6 +1141,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Occurs when ISel emits BC/DE → HL copy before extracting low byte
     // for narrowed compare (#59), but HL is dead-stored: it's reassigned
     // before any read of H or any other read of L.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +7 B,
+    // AES production +14 B.  PEEPHOLE IS LIVE.  Keep.
     {
       // Map LD L,r opcode → source register (must not be A or L itself).
       auto getLDLsrcOther = [](unsigned Opc) -> MCPhysReg {
@@ -1622,6 +1628,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Pattern: LD reg,A; [non-clobbering instrs]; LD A,reg → remove LD A,reg
     // Also handles LD A,(addr); LD reg,A; [non-clobbering]; LD A,reg.
     // Saves 1 byte per instance.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  Either real firing or pipeline noise; keep.
     {
       // Get the LD A,reg opcode for a given register, or 0.
       auto getLDArOpc = [](MCPhysReg R) -> unsigned {
