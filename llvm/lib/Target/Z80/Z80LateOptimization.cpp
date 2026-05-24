@@ -622,45 +622,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   }
 
   for (MachineBasicBlock &MBB : MF) {
-    // --- Peephole: POP rr; PUSH rr → (remove both) ---
-    // When a register pair is popped and immediately pushed back, the stack
-    // state is unchanged (SP net effect = 0, same value on stack). If the
-    // register pair is dead after the push (overwritten before next use),
-    // both instructions are redundant. Common on SM83 where consecutive
-    // stack accesses via LDHL SP,# each need push/pop HL around them.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE;) {
-      static const struct {
-        unsigned PopOpc;
-        unsigned PushOpc;
-        MCPhysReg Reg;
-      } PopPushPairs[] = {
-          {Z80::POP_BC, Z80::PUSH_BC, Z80::BC},
-          {Z80::POP_DE, Z80::PUSH_DE, Z80::DE},
-          {Z80::POP_HL, Z80::PUSH_HL, Z80::HL},
-      };
-
-      unsigned Opc = MII->getOpcode();
-      bool Matched = false;
-      for (const auto &PP : PopPushPairs) {
-        if (Opc != PP.PopOpc)
-          continue;
-        auto NextIt = std::next(MII);
-        if (NextIt == MIE || NextIt->getOpcode() != PP.PushOpc)
-          break;
-        auto AfterPush = std::next(NextIt);
-        if (!isRegDeadAfter(AfterPush, MBB, TRI, PP.Reg))
-          break;
-        LLVM_DEBUG(dbgs() << "  Removing redundant POP+PUSH: " << *MII);
-        NextIt->eraseFromParent();
-        MII = MBB.erase(MII);
-        Changed = true;
-        Matched = true;
-        break;
-      }
-      if (!Matched)
-        ++MII;
-    }
+    // (Peephole "POP rr; PUSH rr -> (remove both)" removed in session 73s
+    // -- never fires on current production code.  Per ravn/llvm-z80#180 C2
+    // re-test methodology: disable + measure; result was AES production
+    // .text byte-identical (2228 B), cpnos PROM1 SHRINKS by 1 B
+    // (2028 -> 2027 B; pipeline-ordering benefit from removing the
+    // peephole), test-runner sweep zero per-test diff.  The pattern
+    // targeted SM83's LDHL-SP boilerplate which no longer reaches this
+    // pass at HEAD.  See tasks/session73s-issue2-retest.md.)
 
     // --- Peephole: LD A,r; DEC A; LD r,A; OR A; JR NZ → DEC r; JR NZ ---
     // Replaces a 5-instruction decrement-and-branch sequence (28T, 6B) with
