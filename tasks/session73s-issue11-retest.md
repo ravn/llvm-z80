@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-24
 **Predecessors:** `session73q-C2-audit-table-update.md` flagged peephole #11 as "Likely Keep" pending profiling.
-**Outcome:** Peephole #11 (consecutive `AND_n`/`OR_n` with same imm) removed.  cpnos PROM1: 2029 → **2027 B (−2 B)**.
+**Outcome:** Peephole #11 (consecutive `AND_n`/`OR_n` with same imm) removed.  cpnos PROM1: 2029 → **2028 B (−1 B)**.
 
 ## What was wrong (or rather, what was unnecessary)
 
@@ -18,8 +18,10 @@ Disabled the peephole via `if (false) { ... }`, rebuilt, measured.
 - AES `aes256.c -Oz` `.text`: 3299 B (byte-identical).
 
 Then DELETED the peephole entirely.
-- cpnos PROM1: 2029 → **2027 B** (−2 B vs baseline; −1 B more vs disabled-but-present).
+- cpnos PROM1: 2029 → **2028 B** (−1 B vs baseline; same as disabled-but-present, the dead-block scope wasn't the issue).
 - AES + lit unchanged.
+
+(An earlier in-session reading of 2027 B turned out to be a stale-sccache misread; the clean-rebuild value is 2028 B and is what the commit message should reflect.)
 
 ## Sweep
 
@@ -29,7 +31,7 @@ test-runner clang sweep with peephole removed: 990/689/38/56/207, zero per-test 
 
 This is the **fourth peephole this session series** (after Z80NarrowIV, #15, and now #11) where the C2 "Re-test" methodology -- "disable, measure, decide" -- successfully identifies a dead peephole.  Each removal:
 - 0 behavioral regressions.
-- 1-2 B cpnos PROM1 SHRINK from removing the pipeline-ordering overhead.
+- 1 B cpnos PROM1 SHRINK from removing the pipeline-ordering overhead.
 
 The audit's original LOC ceiling of ~2300 has now been revised THREE times based on cumulative findings:
 - Original: 2300 (16 Migrate candidates).
