@@ -177,14 +177,38 @@ emitted (`feedback_no_undocumented_default`). There is no 32-bit reg class that 
 IY (only `Fakei32`); the path is i32 -> 16-bit chunks -> `G_UNMERGE` -> 8-bit ops, and the
 chunk landed in IY.
 
-**Next-drill fix (precise):** constrain a 16-bit value that is unmerged into 8-bit halves
-to `GR16NoIR` (exclude IX/IY) when `!hasUndocumented`, so its halves are always documented
-(B/C/D/E/H/L). Likely in the `G_UNMERGE_VALUES` selection (source reg class) and/or the
-RegisterBank/legalizer for i16->2×i8. This is reg-bank/ISel surgery (must not regress the
-`+undocumented` path), so it needs its own drill + full re-validation. Then re-run the
-test-runner A/B (expect zero IY regressions), un-reserve for real, and run the full
-production oracle (AES 13/13, cpnos/autoload/BIOS sizes + MAME boots — #14 was a MAME
-runtime crash, so boots are mandatory).
+**The residual is PERVASIVE, not a single site (session 73s drill).** First attempt:
+constrain the `G_UNMERGE_VALUES` selection source (`Z80InstructionSelector.cpp:5146`) to
+`GR16NoIR` when `!hasUndocumented`. Built it — **test_04 still had 26 undocumented refs**
+(`xor iyh`×12, `xor iyl`×12, `ld a,iyh/iyl`). Reverted (earned nothing). Reason: the 8-bit
+ALU paths (`G_AND`/`G_OR`/`G_XOR` at lines 3314/3473) **fold a `G_UNMERGE` operand by
+extracting the sub-register of its source directly**, bypassing the `G_UNMERGE_VALUES`
+selection. And there are **40+ `sub_lo`/`sub_hi` extraction sites** in the selector, any of
+which yields `IYH/IYL` when its GR16 source is allocated to IY.
+
+This is the crux: **IY's byte halves are undocumented**, and byte-decomposition of 16-bit
+values is pervasive across the backend — which is *why* IY was reserved. So "un-reserve IY"
+splits into two regimes:
+
+1. **Pure 16-bit values never byte-accessed** (pointers, addresses, `ADD IY,rr`, 16-bit
+   load/store) — safe with IY today. The `LEA_IX_FI` fix above enables exactly this class,
+   and that is where most of the −33 B AES pressure relief originates.
+2. **Byte-decomposed values** (i32 chunks, 16-bit logic done byte-wise, byte extraction) —
+   **cannot** use IY without `+undocumented`, because the access *is* `IYH/IYL`.
+
+Realistic completion paths for #112 (a strategic choice, not a quick patch):
+- **(A) Enable `+undocumented` in production.** The user's real Z80 and MAME both execute
+  `IYH/IYL` correctly; the only barrier is the rule `feedback_no_undocumented_default` (don't
+  emit undocumented *without* the flag). Flipping it makes IY fully allocatable and legal —
+  the cheapest path to the win; needs user sign-off on the undocumented-ops policy.
+- **(B) Keep `!undocumented` and prevent IY for byte-accessed values.** Needs a regalloc-level
+  constraint (a vreg with any sub-register use must not get IX/IY) or guarding all 40+
+  extraction sites with `GR16NoIR` — large and fragile.
+
+**Recommendation:** the `LEA_IX_FI` fix is shipped; take #112 to the user as the (A)-vs-(B)
+decision. The −33 B AES win + 3-pair-pressure relief is real either way; (A) is far cheaper.
+In all cases, run the full production oracle (AES 13/13, cpnos/autoload/BIOS sizes + MAME
+boots — #14 was a MAME runtime crash, so boots are mandatory) before un-reserving for real.
 
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
