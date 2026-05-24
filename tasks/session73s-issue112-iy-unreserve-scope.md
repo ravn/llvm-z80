@@ -106,6 +106,39 @@ across all 70 regressions (systemic), so one root-cause likely clears the whole 
 Then re-run this A/B to confirm zero IY-caused regressions before un-reserving for real,
 followed by the full production oracle (AES 13/13, cpnos/autoload/BIOS + MAME boots).
 
+## Root characterization: IY read before written (def dropped)
+
+Drilled the smallest repro `test_28_pointer_arith` (IY-on returns `status=0x0B`,
+bit 2 = 0x04 missing -> the "array of 3 pointers summed in a loop" block is the one
+that miscompiles; O0/O1/Oz fail, O2/O3/Os pass). Reduced to a 10-line function
+(`t28b2.c`: `int16_t *ptrs[3]={&a,&b,&c}; for i in 0..3: sum += *ptrs[i]`) and diffed
+IY-off vs IY-on asm at `-Oz`. The IY-on output has IY references in this program order:
+
+```
+push iy        ; setup: stores a pointer value into ptrs[]  <-- READS IY
+ld   iy,3      ; <-- FIRST WRITE to IY (the loop counter)
+.LBB0_1:
+push iy        ; loop condition test (reads counter)
+dec  iy
+```
+
+**`push iy` reads IY before any `ld iy,...` writes it — IY is read uninitialized.**
+The allocator placed a pointer-address value in IY but **its defining instruction was
+dropped**; only the copy-OUT (`push iy; pop hl`, the COPY16_PUSHPOP lowering of
+`%hl = COPY %iy`) survived. Reading stale/caller IY -> wrong pointer stored to `ptrs[]`
+-> `*ptrs[i]` reads garbage -> `sum != 600` -> bit 2 clears. This is exactly the parked
+**#14** class ("PUSH/POP for IY copies + code-layout change trigger a latent regalloc
+bug"): the COPY-out-of-IY survives while the COPY-into-IY **def** is lost.
+
+**Hypothesis for the fix session:** a coalescing or `COPY16_PUSHPOP` expansion path
+elides/mis-orders the def when the source of a `%iy = COPY %x` (or the def of an
+IY-allocated vreg) is itself dead/rematerialized — leaving a use with no reaching def.
+Trace with `-print-after-all` on `t28b2.c -Oz` IY-on, watching the IY vreg's def from
+`finalize-isel` through coalescing, two-address, regalloc, and `Z80ExpandPseudo`; find
+the pass that drops it. Because the failure is systemic (70 tests), one fix should clear
+the set. Re-run the test-runner A/B to confirm zero IY-caused regressions, then the full
+production oracle (AES 13/13, cpnos/autoload/BIOS + MAME boots) before un-reserving.
+
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
 - Baseline rebuilt and re-verified: AES `make clang.ram` **PASS** (11 516 046 tstates), lit 110+5.
