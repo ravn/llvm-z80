@@ -32,12 +32,23 @@ regalloc miscompile when IY holds byte-decomposed values — the **same Register
 out-of-class root as #178**.  Class-narrowing reverted (net-harmful).  `LEA_IX_FI` fix +
 `-z80-unreserve-iy` flag stay (committed).
 
-**Where #112 stands now:** gated on the shared **#178 RegisterCoalescer** fix (one
-investigation unblocks both), OR on (A) `+undocumented` — but (A) must be validated in
-**MAME**, since z88dk-ticks may not execute undocumented IYH/IYL faithfully.  Next move is
-a user decision: (A)+MAME validation, or invest in the RegisterCoalescer out-of-class fix
-(highest leverage — clears #178 and #112's residual together).  See
-`session73s-issue112-iy-unreserve-scope.md` "(B) attempted and REVERTED".
+**Where #112 stands now (after the option-1 investigation):** the residual is a genuine
+**regalloc/coalescer correctness bug**, NOT a documented/undocumented issue.  Confirmed:
+ticks executes undocumented IXH/IYH correctly (`canixh()` true for Z80), so the IY-on test
+failures are REAL wrong-value miscompiles -> **(A) +undocumented would NOT fix them** either.
+(B) class-narrowing removed the undoc ops but the value stayed wrong + broke a pointer test
+(test_30) -> narrow 16-bit classes under IX/IY pressure trigger regalloc miscompiles, same
+family as #178's out-of-class assignment.
+
+**Prerequisite for the real fix:** an **assertions-enabled LLVM build** (current Release has
+assertions OFF, so `-debug-only=regalloc` / coalescer tracing is unavailable).  Plan: build
+LLVM with `-DLLVM_ENABLE_ASSERTIONS=ON` (watch disk -- was 91% used), reproduce the #178
+out-of-class (re-add `-z80-add16-tied`) and a #112 narrowed-class miscompile, trace
+RegisterCoalescer / recomputeRegClass / greedy with `-debug-only`, find where an out-of-class
+physreg or wrong join happens.  Hypothesis to test first (cheap, no assertions): does
+declaring `ADD16_tied`'s `$dst` as `HLI` (not `GR16`) in the .td stop recomputeRegClass from
+widening it back to GR16 and re-admitting BC?  If yes, the bug is per-pseudo .td operand
+classes (tractable); if no, it's deeper in the coalescer/greedy.
 
 ## THE ORIGINAL DECISION (now resolved: user picked B, B failed)
 

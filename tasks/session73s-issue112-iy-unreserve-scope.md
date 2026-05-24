@@ -239,15 +239,30 @@ constraint reliably.
 Reverted the pass entirely (net-harmful, gated-off infra that doesn't fix its target).
 The `LEA_IX_FI` fix and `-z80-unreserve-iy` flag stay (committed, correct, 63/70).
 
-**Caveat on (A):** z88dk-ticks (the test-runner emulator) may not faithfully execute
-undocumented `IYH/IYL` ops, so even (A) `+undocumented` must be validated in **MAME**, not
-the test-runner.  Do not assume (A) is clean from a green test-runner alone.
+**ticks DOES execute undocumented IXH/IYH (correction).** I checked the emulator:
+`src/ticks/cpu.h:40  #define canixh() (c_cpu & (CPU_Z80|CPU_Z80N|CPU_R800|CPU_EZ80))`,
+and ticks.c substitutes H/L -> IYH/IYL for the FD-prefixed half-register ops gated on
+`canixh()`.  So on a Z80 target ticks runs `xor iyh` etc. **correctly**.  This *reverses*
+an earlier worry and sharpens the conclusion:
 
-**Revised recommendation:** #112 is gated on the **shared #178 RegisterCoalescer
-out-of-class root cause** (a focused regalloc investigation that would unblock both), OR on
-(A) `+undocumented` validated end-to-end in MAME.  Class-narrowing (B) is a dead end on its
-own.  The shipped `LEA_IX_FI` fix remains valuable for the eventual un-reserve (pure-pointer
-IY values), but full IY allocation is not reachable without the deeper fix.
+- The IY-on test failures are **real wrong-value miscompiles**, not an emulation gap (ticks
+  executes the ops faithfully, yet the computed value is wrong).
+- Therefore **(A) `+undocumented` would NOT fix the residual** either: it emits
+  correctly-executing `xor iyh`, but the underlying value is genuinely wrong.  (A) only
+  removes the *policy* objection to the half-reg ops; it does not fix the miscompile.
+- (B) class-narrowing removed the undoc ops (0 refs) but the value is *still* wrong, and it
+  broke a pointer test (test_30).  So **narrow 16-bit classes under IX/IY-allocatable
+  pressure trigger regalloc miscompiles** — the same regalloc-correctness family as #178's
+  out-of-class assignment.
+
+**Revised recommendation:** the IY-allocation residual is a genuine **regalloc/coalescer
+correctness bug** (manifests as out-of-class assignment in #178 and as wrong-value
+miscompiles under narrowed classes here).  Neither (A) nor (B)-narrowing fixes it.  The real
+fix is a focused **register-allocator investigation that needs an assertions-enabled LLVM
+build** (`-debug-only=regalloc`, `-verify-machineinstrs`) — the current Release build has
+assertions OFF, so the coalescer/greedy internals can't be traced.  That, plus disk headroom
+(was 91% used), are prerequisites for the next attempt.  The shipped `LEA_IX_FI` fix stays
+valuable for the eventual un-reserve (pure-pointer IY values, which do NOT hit this bug).
 
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
