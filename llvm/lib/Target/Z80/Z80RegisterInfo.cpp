@@ -47,6 +47,19 @@ static llvm::cl::opt<bool> Z80LogRegallocHints(
     "z80-log-regalloc-hints", llvm::cl::Hidden, llvm::cl::init(false),
     llvm::cl::desc("Log every getRegAllocationHints query (Z80 #115/#27 S1)"));
 
+// #112 bring-up: un-reserve IY so it becomes an allocatable 4th 16-bit pair.
+// Default OFF -- IY stays reserved.  Session 73s: the encoder opcode-0 crash
+// is fixed (GR16NoIR/GR16_BCDE discipline) and the dominant runtime miscompile
+// (LEA_IX_FI missing IY case -> silent no-op in Release) is fixed below, but a
+// residual remains (i32 decomposition emits undocumented IYH/IYL half-ops when
+// IY holds part of a 32-bit value).  Flip on only for #112 bring-up work; do
+// NOT enable in production until the i32 path is guarded and the full oracle
+// (test-runner + MAME) is clean.  See session73s-issue112-iy-unreserve-scope.md.
+static llvm::cl::opt<bool> Z80UnreserveIY(
+    "z80-unreserve-iy", llvm::cl::Hidden, llvm::cl::init(false),
+    llvm::cl::desc("Make IY an allocatable 16-bit register (ravn/llvm-z80#112 "
+                   "bring-up; default off, has known residual i32 miscompile)"));
+
 #define GET_REGINFO_TARGET_DESC
 #include "Z80GenRegisterInfo.inc"
 
@@ -264,7 +277,8 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // design (single-register-class GR16NoIR exclusion on the affected
   // tied operands).  IY/IX stay reserved until #112 lands.
   Reserved.set(Z80::IX);
-  Reserved.set(Z80::IY);
+  if (!Z80UnreserveIY)  // #112 bring-up flag; default reserves IY
+    Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
     Reserved.set(Z80::IX);
     Reserved.set(Z80::IY);
@@ -1483,6 +1497,14 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
         } else if (DstReg == Z80::IX) {
           BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
           BuildMI(MBB, MI, DL, TII.get(Z80::POP_IX));
+        } else if (DstReg == Z80::IY) {
+          // #112: IY destination (allocatable once un-reserved).  Without
+          // this case LEA_IX_FI hit llvm_unreachable, which in a Release
+          // build is a no-op -- the instruction was erased emitting NOTHING,
+          // leaving IY undefined and a downstream spill reading garbage
+          // (session 73s root-cause of the IY-allocatable miscompile).
+          BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+          BuildMI(MBB, MI, DL, TII.get(Z80::POP_IY));
         } else {
           llvm_unreachable("Unexpected register for LEA_IX_FI");
         }
@@ -1502,6 +1524,10 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_DE));
       else if (DstReg == Z80::BC)
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_BC));
+      else if (DstReg == Z80::IX)
+        BuildMI(MBB, MI, DL, TII.get(Z80::POP_IX));
+      else if (DstReg == Z80::IY)  // #112
+        BuildMI(MBB, MI, DL, TII.get(Z80::POP_IY));
       else
         llvm_unreachable("Unexpected register for LEA_IX_FI");
     } else if (DstReg == Z80::HL) {
@@ -1540,6 +1566,29 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, Z80::BC, PreserveFlags);
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_B_H));
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_C_L));
+      if (NeedSaveHL)
+        BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
+    } else if (DstReg == Z80::IX || DstReg == Z80::IY) {
+      // #112: compute the address into HL (via a BC/DE scratch), then move it
+      // into the index register via PUSH/POP.  Without this, an IX/IY dest
+      // hit llvm_unreachable -> silent no-op in Release -> undefined index reg.
+      bool PreserveFlags = isFlagsLiveAfter(MI, this);
+      auto NextIt = std::next(MI);
+      bool NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, this);
+      Register TempReg = !isRegLiveAt(Z80::BC, MBB, NextIt, this)   ? Z80::BC
+                         : !isRegLiveAt(Z80::DE, MBB, NextIt, this) ? Z80::DE
+                                                                    : Z80::BC;
+      bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, this);
+      if (NeedSaveHL)
+        BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+      if (NeedSaveTemp)
+        BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
+      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+      BuildMI(MBB, MI, DL,
+              TII.get(DstReg == Z80::IX ? Z80::POP_IX : Z80::POP_IY));
+      if (NeedSaveTemp)
+        BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
     } else {
