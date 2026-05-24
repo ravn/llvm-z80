@@ -948,62 +948,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    // --- Peephole: OR A; LD r,0; JR Z → OR A; LD r,A; JR Z ---
-    // In select lowering: OR A; LD r,0; JR Z skip; LD r,imm; skip:
-    // After OR A, if A==0 the JR Z is taken with r=0 (correct via LD r,A).
-    // On the NZ fall-through, r is overwritten by the non-zero select arm.
-    // LD r,A is 1B/4T vs LD r,#0 at 2B/7T.  Saves 1B and 3T per instance.
-    //
-    // Safety: only fire when the LD r,0 sequence is followed by a Z-flag
-    // branch (JR Z/NZ or JP Z/NZ), confirming this is a select pattern.
-    // Without the branch check, LD r,0 in non-select code would be
-    // incorrectly replaced when A != 0.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE; ++MII) {
-      // Look for OR_A (tests A, sets Z if A==0).
-      if (MII->getOpcode() != Z80::OR_A)
-        continue;
-      // Collect candidate LD r,0 instructions between OR A and a branch.
-      SmallVector<std::pair<MachineBasicBlock::iterator, unsigned>, 2>
-          Candidates; // {iterator, LDrA opcode}
-      auto Scan = std::next(MII);
-      bool FoundBranch = false;
-      while (Scan != MIE) {
-        unsigned SOpc = Scan->getOpcode();
-        // Check for Z-flag conditional branch — confirms select pattern.
-        if (SOpc == Z80::JR_Z_e || SOpc == Z80::JR_NZ_e ||
-            SOpc == Z80::JP_Z_nn || SOpc == Z80::JP_NZ_nn) {
-          FoundBranch = true;
-          break;
-        }
-        // Check for LD r,#0 where r != A.
-        Register Dst;
-        if (SOpc == Z80::LD_B_n) Dst = Z80::B;
-        else if (SOpc == Z80::LD_C_n) Dst = Z80::C;
-        else if (SOpc == Z80::LD_D_n) Dst = Z80::D;
-        else if (SOpc == Z80::LD_E_n) Dst = Z80::E;
-        else if (SOpc == Z80::LD_H_n) Dst = Z80::H;
-        else if (SOpc == Z80::LD_L_n) Dst = Z80::L;
-        else break; // unknown instruction — stop scanning
-
-        if (Scan->getOperand(0).getImm() != 0)
-          break; // not loading zero
-
-        unsigned LdRA = getLDrAOpcode(Dst);
-        if (!LdRA) break;
-        Candidates.push_back({Scan, LdRA});
-        ++Scan;
-      }
-      // Only apply if we confirmed a Z-flag branch follows.
-      if (FoundBranch) {
-        for (auto &[It, LdRA] : Candidates) {
-          LLVM_DEBUG(dbgs() << "  OR A; LD r,0 → LD r,A: " << *It);
-          BuildMI(MBB, *It, It->getDebugLoc(), TII->get(LdRA));
-          It = MBB.erase(It);
-          Changed = true;
-        }
-      }
-    }
+    // (Peephole "OR A; LD r,0; JR Z -> OR A; LD r,A; JR Z" removed in
+    // session 73s -- never fires on current production targets.  Per
+    // ravn/llvm-z80#180 C2 re-test methodology: disable + measure;
+    // result was AES `-Oz +static-stack -disable-lsr -disable-licm
+    // -disable-cse -ffunction-sections -fdata-sections` `.text` 2228 B
+    // byte-identical, cpnos PROM1 2028 B byte-identical, test-runner
+    // sweep zero per-test diff.  Same pattern as #15 / #11 retests:
+    // peephole's input shape (select-lowering OR_A + LD r,0 + JR Z)
+    // no longer appears in clang output post session-73p TTI/cost
+    // changes.  See tasks/session73s-issue9-retest.md.)
 
     // --- Peephole: LD rr,nn; INC/DEC rr → LD rr,nn±1 ---
     // Fold a 16-bit increment/decrement into the preceding immediate load.
