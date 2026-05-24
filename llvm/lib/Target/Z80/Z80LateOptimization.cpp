@@ -1303,6 +1303,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // LD A,(addr); DEC A; LD (addr),A → LD HL,addr; DEC (HL)  (4B vs 6B)
     // Requires: A is dead after the store, HL is available.
     // INC/DEC (HL) sets Z/S/H/P flags like INC/DEC A (not carry).
+    //
+    // Re-test in session 73s (#180 C2): production targets byte-identical
+    // (cpnos PROM1 2028, AES .text 2228) with peephole disabled, but full
+    // sweep not completed (disk-full during run).  Conservative: keep.
+    // Synthetic lit tests inmem-incdec-positive.ll and
+    // issue-104-incmem-h-liveness.ll require this peephole; if they were
+    // representative of real production patterns, the peephole would
+    // earn its keep there.  Re-test when disk space allows.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
@@ -2026,6 +2034,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
 
 
     // --- Peephole: u8 switch range-check 16-bit → 8-bit (issue #86) ---
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +3 B
+    // (2028 -> 2031).  PEEPHOLE IS LIVE.  Keep.
     //
     // GISel switch lowering on a u8 discriminator widens to i16 for
     // the jump-table index BEFORE the bound check, so the bound check
