@@ -1055,24 +1055,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
-    // --- Peephole: ALU #imm; ALU #imm → ALU #imm ---
-    // When the same immediate ALU instruction appears consecutively, the
-    // second is redundant for idempotent operations (AND, OR).
-    // Most common case: AND #1; AND #1 after SBC A,A; AND #1 sequences.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE;) {
-      MachineInstr &MI = *MII;
-      auto NextIt = std::next(MII);
-      if (NextIt != MIE && MI.getOpcode() == NextIt->getOpcode() &&
-          (MI.getOpcode() == Z80::AND_n || MI.getOpcode() == Z80::OR_n) &&
-          MI.getOperand(0).getImm() == NextIt->getOperand(0).getImm()) {
-        LLVM_DEBUG(dbgs() << "  Removing redundant: " << *NextIt);
-        NextIt->eraseFromParent();
-        Changed = true;
-        continue;
-      }
-      ++MII;
-    }
+    // (ALU #imm; ALU #imm idempotent collapse peephole removed in
+    // session 73s -- never fires on current production code.  Per
+    // ravn/llvm-z80#180 C2 re-test methodology: disable + measure;
+    // result was -1 B cpnos PROM1 (pipeline-ordering side effect),
+    // AES byte-identical, lit clean, test-runner zero per-test diff.
+    // Same pattern as the #15 retest: peephole's input shape no
+    // longer appears in clang output.  See tasks/session73s-issue11-retest.md.)
 
     // --- Peephole: LD r,A; LD A,r2; ALU r → ALU r2 ---
     // When the register allocator routes a commutative ALU operation through
