@@ -932,6 +932,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Fold a 16-bit increment/decrement into the preceding immediate load.
     // LD rr,nn (3B) + INC/DEC rr (1B) = 4B → LD rr,nn±1 (3B). Saves 1B.
     // INC/DEC rr doesn't set flags, so no flag dependency to worry about.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +4 B
+    // (2027 -> 2031).  PEEPHOLE IS LIVE.  Keep.
     for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
          MII != MIE;) {
       unsigned Opc = MII->getOpcode();
@@ -1233,6 +1236,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Addition is commutative: HL+DE == DE+HL. The compiler generates
     // the long form when it wants base(DE)+offset(HL) into HL, but
     // ADD HL,DE gives the same result directly.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  Either real firing or pipeline noise; keep.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
@@ -1440,6 +1446,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // comparing against the saved register. Since "imm < reg" is the
     // same as "reg >= imm+1", we can use CP (imm+1) directly on A.
     // Saves 3 bytes (LD r,A + LD A,imm + CP r = 4B → CP imm = 2B).
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +2 B
+    // (2027 -> 2029).  PEEPHOLE IS LIVE.  Keep.
     if (STI.hasZ80()) {
       // Map LD r,A opcodes to their corresponding CP r opcode.
       auto getLdFromA = [](unsigned Opc) -> unsigned {
@@ -1542,6 +1551,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
 
     // --- Peephole: LD (sym),A + LD HL,sym → LD HL,sym + LD (HL),A ---
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  Either real firing or pipeline noise; keep.
     // When the same constant address is stored to and then loaded into HL
     // (e.g., for a subsequent memcpy/load), reorder to use indirect store
     // via HL. Saves 2B per match: `LD (nn),A` (3B) → `LD (HL),A` (1B)
