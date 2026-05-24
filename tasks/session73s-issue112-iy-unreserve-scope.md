@@ -139,6 +139,45 @@ the pass that drops it. Because the failure is systemic (70 tests), one fix shou
 the set. Re-run the test-runner A/B to confirm zero IY-caused regressions, then the full
 production oracle (AES 13/13, cpnos/autoload/BIOS + MAME boots) before un-reserving.
 
+## FIX LANDED: LEA_IX_FI IY case (dominant cause, 63/70 cleared)
+
+Root cause of the dominant miscompile: `LEA_IX_FI`'s `eliminateFrameIndex`
+(Z80RegisterInfo.cpp) handled dst = HL/DE/BC/IX but had **no IY case** — it fell
+to `llvm_unreachable`, which in a **Release build (assertions off, our default)** is
+`__builtin_unreachable()`, a no-op. The pseudo was erased emitting **nothing**, so IY
+was never defined; the next `push iy` (spill) read garbage. (In test_28: the
+`LEA_IX_FI %stack.0` that should load `&a` into IY produced no instruction → wrong
+pointer stored in `ptrs[]` → `*ptrs[i]` garbage → sum≠600.)
+
+Fix (commit `27be55e2569d`): added IY cases to all three `LEA_IX_FI` branches
+(SP-relative, IX-based offset==0, IX-based large-offset), mirroring the IX path
+(`PUSH HL`/`PUSH IX`; `POP IY`). Added a hidden bring-up flag `-z80-unreserve-iy`
+(default OFF; replaces the throwaway env probe) and a lit guard `lea-fi-iy-112.ll`.
+
+Result (test-runner clang suite):
+
+| run | Pass | Fail | Fatal |
+|---|---|---|---|
+| baseline (IY reserved) | 690 | 37 | 56 |
+| IY-on, before fix | 622 | 85 | 76 |
+| **IY-on, after LEA_IX_FI fix** | **684** | **42** | **57** |
+
+`test_28_pointer_arith` now PASSes all 6 opt levels. Production unchanged
+(flag off, IY reserved): AES09 .text 2228 B byte-identical, AES runtime PASS, lit 111+5.
+
+## Residual (6 tests): i32 decomposition emits undocumented IYH/IYL
+
+The remaining ~6 regressions (`test_04_i32_bitwise` O1/O2/O3/Os, `test_40_hash_crc`
+O2/O3) are a **separate, narrower bug**: with IY allocatable, 32-bit values land in a
+reg class that includes IY (e.g. `BCIY`), and the i32 decomposition emits **undocumented
+half-register ops** — `xor iyh`, `xor iyl`, `ld a,iyh` (confirmed in `test_04` asm,
+`-O2`, IY-on). Undocumented is OFF, so these must not be emitted. **Next-drill fix:** make
+the i32 (and any 8-bit-decomposing) operand classes exclude IX/IY when `!hasUndocumented`
+— the same `GR16NoIR`/`GR16_BCDE` discipline the 16-bit paths already use, extended to the
+32-bit reg classes. Then re-run the test-runner A/B; expect zero IY regressions, after
+which un-reserve for real and run the full production oracle (AES 13/13, cpnos/autoload/
+BIOS sizes + MAME boots — #14 was a MAME runtime crash, so boots are mandatory).
+
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
 - Baseline rebuilt and re-verified: AES `make clang.ram` **PASS** (11 516 046 tstates), lit 110+5.
