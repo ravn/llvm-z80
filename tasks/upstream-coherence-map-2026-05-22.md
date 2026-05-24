@@ -82,7 +82,7 @@ presented.
 | **#169** | Z80NarrowIV + LSR interaction miscompiles narrowed-then-rewidened IV loops | Active (worked around) | Workaround: place NarrowIV after LSR.  **Underlying bug still needs fixing — would block enabling NarrowIV earlier.** |
 | **#170** | Z80NarrowIV miscompiles loop with parallel i8 + i16 IVs (test_94) | Active (worked around) | Workaround: single-phi-header guard.  **Same — underlying bug must be fixed before guard can be lifted.** |
 | **#171** | Z80NarrowIV times out test_96 IY-spill | Active (worked around) | Same guard; underlying timeout still unexplained. |
-| **#184** | getArithmeticInstrCost i16=2 miscompiles AES (infinite loop) | Active (cost kept off) | Cost staying off until root cause found; production tradeoff doc'd in 73p closeout. |
+| **#184** | getArithmeticInstrCost i16=2 miscompiles AES (infinite loop) | RESOLVED as won't-ship (session 73s confirm) | Correctness root-caused + fixed (#148 peephole fall-through + #185 DJNZ B-clobber); AES 13/13 PASS with i16=2 applied.  Held back purely on production-size tradeoff (cpnos +9 B, autoload +16 B, AES09 +44 B, BIOS -6 B) — net regression.  Decision + numbers documented in Z80TargetTransformInfo.h header.  No further code action; GitHub issue may be closed as won't-fix-tuning. |
 | **#185** | i16=2 AES halts after ~28 tstates (independent of #184 r/c 1) | CLOSED via DJNZ B-clobber safety check | Was a peephole miscompile, not a cost-model bug — surface estimate "regalloc-level multi-week" collapsed to a 5-line safety check. |
 | **#150** | (above) | Active | — |
 | **#2**  | IRTranslator crash: inline asm with "hl" register constraint | Active | Crash.  Workaround: avoid `"hl"` in inline asm (project source already does). |
@@ -99,7 +99,7 @@ patches.  They are not bugs in clang — they are missing functionality.
 | # | Title | State | Note |
 |---|---|---|---|
 | **#177** | No Z80-specific TTI (cross-listed with Tier I) | PARTIAL | Phase 2 landed: Mul=Expensive, getCastInstrCost (trunc/zext free, sext=2), prefersVectorizedAddressing=false.  Open: i16=2 (#184), per-callsite refinement. |
-| **#178** | Pseudos with implicit physreg outputs break rematerialization | Active (blocker) | Affects ADD_HL_rr, LD_HL_a16 (#166).  Drill in unpark doc Tier C. |
+| **#178** | Pseudos with implicit physreg outputs break rematerialization | Active (blocker isolated, session 73s) | Scope drill confirmed: SSA template `ADD16_tied` exists (Path A viable) but is NOT emitted — gated on a tied-operand two-address regalloc miscompile that corrupts UNRELATED values (attempt 2 on uncommitted `session-73p-issue166-add16-tied`, root cause unisolated). #178 + #166 both gate on isolating that one bug.  Next-session plan in `session73s-issue178-remat-drill.md`. |
 | **#172** | 8-bit ALU accumulator should live in A | Active (blocker — ISel pattern) | Default-off pass shipped; true fix is ISel-level snapshot-rotate XOR chain pattern. |
 
 ### III.b — Missing GISel patterns / instruction-selection coverage
