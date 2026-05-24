@@ -72,6 +72,50 @@ This is a complete drill result: the 73p "not isolated" blocker is isolated, wit
 - Functional source diff after revert: **empty** (only the in-place `Z80InstructionSelector.cpp` comment + this writeup). Codegen byte-identical to HEAD by construction.
 - Z80 lit suite: **109 PASS + 5 XFAIL** (114), healthy after clang+llc rebuild.
 
+## Follow-up: the non-tied `ADD16_acc` model (same session)
+
+Acting on the root cause, I built the alternative the analysis pointed to: a
+**non-tied** pseudo `ADD16_acc` (`(outs HLI:$dst), (ins GR16:$base, GR16_BCDE:$rhs)`,
+no `Constraints`), expanded post-RA to `COPY $dst<-$base; ADD HL,rr`. With no tie
+there is no SSA copy for the coalescer to fold the surviving base into, so `$dst`
+stays HL and the base lives independently in BC/DE.
+
+**Correctness: solved.** On the 5-line repro both indexed adds now emit `ADD HL,DE`
+with `dst=HL` — no BC fallback, no HL clobber, `A = p[j] + p[i]`. The #178 miscompile
+is gone. (Lit guard added: `llvm/test/CodeGen/Z80/add16-acc.ll`.)
+
+**But it is a size regression, and remat does not save it.** AES `09_Oz_prod_like`
+`.text`: baseline **2228 B**, `-z80-add16-acc` **2447 B (+219 B / +9.8%)**.
+A/B with `isReMaterializable` toggled on vs off: **byte-identical (2447 both)** —
+greedy never rematerializes `ADD16_acc`. Two independent reasons the lever has no
+payoff under the current allocator:
+
+1. **HL-pinning.** Constraining every `G_PTR_ADD` result to HLI (= HL, since IX/IY
+   are reserved) spikes HL pressure under the 3-pair file. The baseline 3-instruction
+   pattern lets the COPY-out target land in any GR16 (DE/HL/BC); pinning it to HL
+   forces extra spills/copies that dwarf any structural saving.
+2. **FLAGS-clobber blocks remat.** 16-bit `ADD` always clobbers H/N/C, so the pseudo
+   carries an implicit `Defs=[FLAGS]`. LLVM's rematerializer won't clone an instruction
+   that defines a live physreg, and dropping the FLAGS def would miscompile any
+   flag-dependent code. This is the *same* obstacle that stops `ADD_HL_rr` — having an
+   SSA value output does **not** dodge it.
+
+**Disposition.** `ADD16_acc` is kept (default-OFF, behind `-z80-add16-acc`) because it
+is correct and its `HLI` class already covers IX/IY: once **#112** un-reserves IX/IY the
+allocator gains 3 accumulators (`ADD HL/IX/IY,rr`) and the pinning cost should drop, so
+the mechanism is worth revisiting then. Default codegen is unchanged (AES09 = 2228 B with
+the flag off; lit 110+5).
+
+**Net #166/#178 verdict:** the "make 16-bit adds rematerializable to cut base-reuse copy
+traffic" line of attack is **exhausted for the IX/IY-reserved allocator** — the SSA-output
+blocker is solved, but FLAGS-clobber + HL-pinning leave no win. Re-open only as a
+post-#112 experiment (flip `-z80-add16-acc`, re-measure) or alongside a RegisterCoalescer
+tied-def class-clamp fix in the fork (in scope — fork-local, not an upstream PR — but wider
+blast radius).
+
 ## Files touched
-- `llvm/lib/Target/Z80/Z80InstructionSelector.cpp` — updated the in-place #166/#178 dead-end comment with the isolated root cause (no codegen change).
+- `llvm/lib/Target/Z80/Z80InstrInfo.td` — added `ADD16_acc` pseudo (non-tied, HLI dst, isReMaterializable; only emitted behind the flag).
+- `llvm/lib/Target/Z80/Z80InstrInfo.cpp` — `expandPostRAPseudo` case for `ADD16_acc` (COPY base->dst; ADD HL/IX/IY,rr).
+- `llvm/lib/Target/Z80/Z80InstructionSelector.cpp` — `-z80-add16-acc` flag (default off) + G_PTR_ADD wire-up; updated the in-place #166/#178 root-cause comment.
+- `llvm/test/CodeGen/Z80/add16-acc.ll` — lit guard for the non-tied lowering.
 - This writeup.

@@ -32,11 +32,28 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsZ80.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "z80-isel"
+
+// #178/#166 (session 73s).  Lower G_PTR_ADD via the NON-tied ADD16_acc
+// pseudo (SSA $dst, no tie -> no coalescer tie-join trap that sank
+// ADD16_tied) instead of the explicit COPY-HL + ADD_HL_rr + COPY-from-HL
+// pattern.  CORRECT, but default OFF: it pins every pointer-arithmetic
+// result to HL, which under the 3-pair (IX/IY-reserved) allocator costs
+// +219 B / +9.8% on AES 09_Oz_prod_like; remat does not recover it
+// (FLAGS-clobber blocks the rematerializer -- byte-identical with/without
+// isReMaterializable).  Revisit after #112 un-reserves IX/IY: ADD16_acc's
+// HLI class already covers IX/IY, giving 3 accumulators and lower pinning
+// cost.  See session73s-issue178-add16-tied-rootcause.md.
+static cl::opt<bool> EnableAdd16Acc(
+    "z80-add16-acc", cl::init(false), cl::Hidden,
+    cl::desc("Lower G_PTR_ADD via the non-tied ADD16_acc SSA pseudo "
+             "(ravn/llvm-z80#178; correct but currently a size regression "
+             "-- revisit after #112)."));
 
 namespace {
 
@@ -2919,6 +2936,21 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    if (EnableAdd16Acc) {
+      // #178: emit the non-tied ADD16_acc SSA pseudo.  $dst is HLI (-> HL);
+      // base stays GR16 and lives independently (no tie for the coalescer
+      // to fold the surviving base into the result -- the bug that sank
+      // ADD16_tied; see session73s-issue178-add16-tied-rootcause.md).
+      if (!RBI.constrainGenericRegister(DstReg, Z80::HLIRegClass, MRI) ||
+          !RBI.constrainGenericRegister(BaseReg, Z80::GR16RegClass, MRI) ||
+          !RBI.constrainGenericRegister(OffReg, Z80::GR16_BCDERegClass, MRI))
+        return false;
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD16_acc), DstReg)
+          .addReg(BaseReg)
+          .addReg(OffReg);
+      MI.eraseFromParent();
+      return true;
+    }
     if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(BaseReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(OffReg, Z80::GR16_BCDERegClass, MRI))
