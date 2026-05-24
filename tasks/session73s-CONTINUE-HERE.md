@@ -40,15 +40,25 @@ failures are REAL wrong-value miscompiles -> **(A) +undocumented would NOT fix t
 (test_30) -> narrow 16-bit classes under IX/IY pressure trigger regalloc miscompiles, same
 family as #178's out-of-class assignment.
 
-**Prerequisite for the real fix:** an **assertions-enabled LLVM build** (current Release has
-assertions OFF, so `-debug-only=regalloc` / coalescer tracing is unavailable).  Plan: build
-LLVM with `-DLLVM_ENABLE_ASSERTIONS=ON` (watch disk -- was 91% used), reproduce the #178
-out-of-class (re-add `-z80-add16-tied`) and a #112 narrowed-class miscompile, trace
-RegisterCoalescer / recomputeRegClass / greedy with `-debug-only`, find where an out-of-class
-physreg or wrong join happens.  Hypothesis to test first (cheap, no assertions): does
-declaring `ADD16_tied`'s `$dst` as `HLI` (not `GR16`) in the .td stop recomputeRegClass from
-widening it back to GR16 and re-admitting BC?  If yes, the bug is per-pseudo .td operand
-classes (tractable); if no, it's deeper in the coalescer/greedy.
+**SHARPENED (post-reboot drill): the residual is a loop-carried-value-in-IY miscompile.**
+Earlier undoc / byte-decomposition / coalescer framing was largely a red herring.  Clean-build
+test-runner (flag temp-ON) showed: test_30 PASSES (it was a (B)-pass artifact); test_04/40
+FATAL = emulator TIMEOUT (loop hang) at O1/O2/O3/Os only.  Minimal 6-line repro saved at
+`tasks/session73s-issue112-popcount-iy-repro.c`:
+  `volatile u32 val=0xA5A5A5A5; u8 count=0; u32 v=val; while(v){count+=(v&1); v>>=1;}` -> 0 at
+  -O2 IY-on (16 correct at O0/Oz).  Asm diff: v's high half is PINNED in IY across the loop
+  (`push hl; pop iy`) but the shifted-back value is never written into IY -> loop-carried
+  chunk not maintained.  This is the parked #14 class (loop-carried PHI value in IY +
+  push/pop-copy regalloc mishandling), NOT byte-decomposition/undoc, NOT #178's tied-operand.
+
+**Next step (assertions build IN PROGRESS, `build-macos-asserts`):** when it finishes, trace
+the 6-line repro at -O2 IY-on (`-mllvm -z80-unreserve-iy -debug-only=regalloc -print-after-all`)
+through PHI-elim / two-addr / coalescer / greedy; find where the loop-back COPY into IY is
+dropped/misplaced.  Build cmd: `cmake -C clang/cmake/caches/Z80.cmake -DLLVM_ENABLE_ASSERTIONS=ON
+-DCMAKE_MAKE_PROGRAM=<ninja> -DCMAKE_C/CXX_COMPILER_LAUNCHER=<sccache> -G Ninja -S llvm -B build-macos-asserts`.
+Likely fix: keep loop-carried PHI values off IY (a targeted constraint), OR fix the IY
+loop-back COPY handling.  The OLD cheap hypothesis (ADD16_tied .td=HLI) is for the separate
+#178 manifestation only -- not this.
 
 ## THE ORIGINAL DECISION (now resolved: user picked B, B failed)
 

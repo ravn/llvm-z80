@@ -264,6 +264,46 @@ assertions OFF, so the coalescer/greedy internals can't be traced.  That, plus d
 (was 91% used), are prerequisites for the next attempt.  The shipped `LEA_IX_FI` fix stays
 valuable for the eventual un-reserve (pure-pointer IY values, which do NOT hit this bug).
 
+## SHARPENED root cause (session 73s, post-reboot): loop-carried 16-bit value in IY
+
+Earlier framing (undocumented IYH/IYL; byte-decomposition; "shared coalescer root") was
+**largely a red herring**.  Reproduced the residual cleanly on the clean build (LEA fix, NO
+(B) pass) with the flag default temporarily ON, via the test-runner:
+
+- **test_30_linked_list PASSES** with clean IY-on -> it was broken by the reverted (B) pass,
+  NOT by IY-unreserve.  (B) was purely harmful; good that it's gone.
+- **test_04 / test_40 FATAL = emulator TIMEOUT (hang/wrong), at O1/O2/O3/Os only** (PASS at
+  O0/Oz).  The failure is a **control-flow / loop miscompile**, not the byte-compare blocks.
+
+test_04's only loop is bit 6's popcount.  Minimal repro (`tasks/session73s-issue112-popcount-iy-repro.c`):
+```c
+volatile u32 val=0xA5A5A5A5; u8 count=0; u32 v=val;
+while (v) { count += (v & 1); v >>= 1; }   /* expect count==16 */
+```
+With IY un-reserved, `-O2 +static-stack`: returns **0** (O0/Oz correct = 16).  6 lines.
+
+Asm diff (IY-off vs IY-on, `-O2`):
+- IY-off: the i32 loop variable `v`'s high half is reloaded from BSS each iteration.
+- IY-on: `v`'s **high half is pinned in IY** across the loop (`push hl; pop iy` at the loop
+  top; read back via `push iy; pop bc` to shift) -- but the **shifted-back value is never
+  written into IY**, so the loop-carried chunk in IY is not maintained across iterations.
+
+**This is the parked #14 class precisely:** a **loop-carried (PHI) 16-bit value allocated to
+IY** has its loop-back update mishandled -- the COPY-into-IY / COPY-out-of-IY (`push/pop iy`,
+COPY16_PUSHPOP) plus the loop PHI drop or misplace the write-back.  It is NOT a
+byte-decomposition or undocumented-op problem (the compare blocks with IY-constants are
+fine), and NOT the #178 tied-operand coalescer manifestation.
+
+**Scope correction:** the IY-allocation residual is narrower and more specific than feared --
+it's loop-carried values in IY, not pervasive byte access.  Pure-pointer and
+straight-line-i32 IY usage is correct (minimal i32 AND/OR/XOR/shift/compare repros all PASS
+with IY-on).  The fix target is the regalloc/PHI handling of a 16-bit value that is both
+loop-carried AND allocated to IY (or: keep loop-carried PHI values off IY).
+
+**Status:** an assertions-enabled LLVM build (`build-macos-asserts`, `-DLLVM_ENABLE_ASSERTIONS=ON`)
+was kicked off to trace the PHI/regalloc handling with `-debug-only=regalloc` on the 6-line
+repro -- the precise next step.  `LEA_IX_FI` fix + flag remain; production byte-identical.
+
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
 - Baseline rebuilt and re-verified: AES `make clang.ram` **PASS** (11 516 046 tstates), lit 110+5.
