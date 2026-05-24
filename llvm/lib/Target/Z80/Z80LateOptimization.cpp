@@ -871,6 +871,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         default: return MCPhysReg(0);
         }
       };
+      // #180 C2 RE-TEST (session 73s): disabling this peephole grows AES
+      // 09_Oz_prod_like .text by +18 B (2228 -> 2246).  PEEPHOLE IS LIVE.  Keep.
       for (auto MII = MBB.begin(); MII != MBB.end(); ) {
         auto Next = std::next(MII);
         if (Next == MBB.end()) { ++MII; continue; }
@@ -1050,6 +1052,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
       };
       SmallVector<MachineInstr *, 8> ToErase2;
+      // #180 C2 RE-TEST (session 73s): disabling this peephole grows AES
+      // 09_Oz_prod_like .text by +4 B (2228 -> 2232).  PEEPHOLE IS LIVE.  Keep.
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         // Match: LD r,A
         MCPhysReg TempReg = getLDrAdst(MII->getOpcode());
@@ -1751,6 +1755,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       bool Known = false;
       uint8_t A_val = 0;
 
+      // #180 C2 RE-TEST (session 73s): AES 09_Oz_prod_like .text and cpnos
+      // PROM1 are byte-neutral when this is disabled (those targets contain no
+      // matching shapes today), but bool-store-no-mask.ll (#83) REGRESSES:
+      // ISel still emits `ld a,#1; and #1` for `store i1 true` and this peephole
+      // is the sole remover of the dead AND.  PEEPHOLE IS LIVE.  Keep.
+      // (The #60-imm sub-case, known-zero-a.ll, now passes without this block --
+      // handled upstream -- but the #83 path keeps the whole block live.)
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         MachineInstr &MI = *MII;
         unsigned Opc = MI.getOpcode();
@@ -2195,6 +2206,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     {
 
       SmallVector<MachineInstr *, 8> ToErase;
+      // #180 C2 RE-TEST (session 73s): AES 09_Oz_prod_like .text is byte-neutral
+      // when disabled (no matching shape in that corpus), but mask-from-flag.ll
+      // REGRESSES: ISel still emits the 5-instr `and $1; rrca; and $80; add a,a;
+      // sbc a,a` mask-roundtrip for `(x!=y)?0xFF:0` and this is its sole remover
+      // (-8 B/site).  PEEPHOLE IS LIVE.  Keep.
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         if (MII->getOpcode() != Z80::SBC_A_A) continue;
         // The instruction whose tail we're considering -- mark and walk
