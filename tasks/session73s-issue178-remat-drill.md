@@ -4,6 +4,8 @@
 **Issue:** ravn/llvm-z80#178 ("Pseudos with implicit physreg outputs break rematerialization"); Tier C (mechanism-blocked).
 **Outcome:** Bounded read-only drill. Confirmed the issue's premise and isolated the precise gating sub-problem. The fix is gated on a deep regalloc bug (tied-operand two-address miscompile) that needs a dedicated session; not started here.
 
+> **SUPERSEDED (later in session 73s):** the "dedicated session" was done — the tied-operand miscompile is now fully root-caused (RegisterCoalescer assigns an out-of-HLI-class physreg to the tied def in the base-reuse pattern; the BC fallback's undeclared HL clobber corrupts unrelated values). See `session73s-issue178-add16-tied-rootcause.md` for the 5-line repro, MIR evidence, and why the obvious patches fail.
+
 ## The mechanism (confirmed)
 
 `ADD_HL_rr` and its siblings define their 16-bit result as an *implicit physreg* (`Defs = [HL, FLAGS]`) with an **empty `OutOperandList`**. Greedy's rematerializer only clones instructions that define a *vreg* it can rewire to a new use point, so `isAsCheapAsAMove`/`isReMaterializable` on these pseudos are silently ignored (confirmed in 73p: setting them on `ADD_HL_rr` produced byte-identical AES output).
