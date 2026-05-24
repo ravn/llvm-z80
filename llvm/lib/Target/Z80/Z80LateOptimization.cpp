@@ -1308,13 +1308,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Requires: A is dead after the store, HL is available.
     // INC/DEC (HL) sets Z/S/H/P flags like INC/DEC A (not carry).
     //
-    // Re-test in session 73s (#180 C2): production targets byte-identical
-    // (cpnos PROM1 2028, AES .text 2228) with peephole disabled, but full
-    // sweep not completed (disk-full during run).  Conservative: keep.
-    // Synthetic lit tests inmem-incdec-positive.ll and
-    // issue-104-incmem-h-liveness.ll require this peephole; if they were
-    // representative of real production patterns, the peephole would
-    // earn its keep there.  Re-test when disk space allows.
+    // #180 C2 RE-TEST (session 73s, finalized in resume): production targets
+    // are byte-neutral when disabled (cpnos PROM1 2028, AES .text 2228 -- those
+    // corpora contain no matching shape today), BUT inmem-incdec-positive.ll
+    // REGRESSES: ISel still emits `LD A,(addr); INC/DEC A; LD (addr),A` and this
+    // peephole is the sole remover (-2 B/site).  Same byte-neutral-but-live
+    // pattern as #21/#79 -- the per-pattern lit canary is the decisive signal
+    // when the production corpus is neutral.  PEEPHOLE IS LIVE.  Keep.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
