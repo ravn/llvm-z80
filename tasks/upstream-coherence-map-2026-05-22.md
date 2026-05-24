@@ -170,7 +170,7 @@ patch series for llvm/llvm-project.
 | # | Title | State | Note |
 |---|---|---|---|
 | **#180** | Peephole audit — 16/38 stand-ins for missing upstream infra (~2300 LOC) | Active | **Top-priority upstream gate per unpark doc.** |
-| **#181** | DAGISel vs GISel coexistence audit — Z80ISelLowering.cpp possibly dead code | Active | **Top-priority upstream gate per unpark doc.** |
+| **#181** | DAGISel vs GISel coexistence audit — Z80ISelLowering.cpp possibly dead code | RESOLVED (session 73s) | No DAGISel path exists; `Z80ISelLowering` is the live shared GISel `TargetLowering` (keep). Dead `-gen-dag-isel` tablegen line removed. See `session73s-issue181-dagisel-gisel-audit.md`. |
 | **#119** | Delete disabled EXX shadow-register conversion block (~150 LOC under #if 0) | CLOSED | Already cleaned up. |
 | **#121** | Dead code: in-pseudo IR16 PUSH/POP fallback in XOR_CMP_*16 expansion | CLOSED | Already cleaned up. |
 
