@@ -168,15 +168,23 @@ Result (test-runner clang suite):
 ## Residual (6 tests): i32 decomposition emits undocumented IYH/IYL
 
 The remaining ~6 regressions (`test_04_i32_bitwise` O1/O2/O3/Os, `test_40_hash_crc`
-O2/O3) are a **separate, narrower bug**: with IY allocatable, 32-bit values land in a
-reg class that includes IY (e.g. `BCIY`), and the i32 decomposition emits **undocumented
-half-register ops** — `xor iyh`, `xor iyl`, `ld a,iyh` (confirmed in `test_04` asm,
-`-O2`, IY-on). Undocumented is OFF, so these must not be emitted. **Next-drill fix:** make
-the i32 (and any 8-bit-decomposing) operand classes exclude IX/IY when `!hasUndocumented`
-— the same `GR16NoIR`/`GR16_BCDE` discipline the 16-bit paths already use, extended to the
-32-bit reg classes. Then re-run the test-runner A/B; expect zero IY regressions, after
-which un-reserve for real and run the full production oracle (AES 13/13, cpnos/autoload/
-BIOS sizes + MAME boots — #14 was a MAME runtime crash, so boots are mandatory).
+O2/O3) are a **separate, narrower bug**: with IY allocatable, a 16-bit chunk of a 32-bit
+value gets allocated to **IY**, then `G_UNMERGE_VALUES` extracts its 8-bit halves — which
+are physically **IYH/IYL**, undocumented. The 8-bit `G_XOR`/`G_AND`/`G_OR` path
+(`Z80InstructionSelector.cpp:3454+`) then emits `xor iyh` / `xor iyl` / `ld a,iyh`
+(confirmed in `test_04` asm, `-O2`, IY-on). Undocumented is OFF, so these must not be
+emitted (`feedback_no_undocumented_default`). There is no 32-bit reg class that includes
+IY (only `Fakei32`); the path is i32 -> 16-bit chunks -> `G_UNMERGE` -> 8-bit ops, and the
+chunk landed in IY.
+
+**Next-drill fix (precise):** constrain a 16-bit value that is unmerged into 8-bit halves
+to `GR16NoIR` (exclude IX/IY) when `!hasUndocumented`, so its halves are always documented
+(B/C/D/E/H/L). Likely in the `G_UNMERGE_VALUES` selection (source reg class) and/or the
+RegisterBank/legalizer for i16->2×i8. This is reg-bank/ISel surgery (must not regress the
+`+undocumented` path), so it needs its own drill + full re-validation. Then re-run the
+test-runner A/B (expect zero IY regressions), un-reserve for real, and run the full
+production oracle (AES 13/13, cpnos/autoload/BIOS sizes + MAME boots — #14 was a MAME
+runtime crash, so boots are mandatory).
 
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
