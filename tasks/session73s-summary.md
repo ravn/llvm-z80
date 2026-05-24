@@ -43,9 +43,40 @@ Inline `Re-test in session 73s ... PEEPHOLE IS LIVE.  Keep.` comments added next
 |---|---|---|
 | #17 | in-memory INC/DEC | Sized as byte-identical but sweep didn't complete (disk-full).  Conservative keep, annotated. |
 
-## Not yet re-tested in this pass
+## Re-tested in the session-73s resume (post disk-full) -- all LIVE
 
-#8, #12, #21 from the C2 list.  Each is moderate-to-complex; can be re-tested in a follow-up session.
+After the disk-full interruption was cleared (a 547 MB stray z88dk-ticks
+trace under `aes256-corpus/icode_diff/ph_trace.txt` -- the
+`feedback_docker_trace` antipattern -- deleted; disk back to 70+ GB free),
+the final four candidates were re-tested with the disable/measure pattern.
+**All four are LIVE; none deleted.**
+
+| # | Name | Signal | Verdict |
+|---|---|---|---|
+| #8  | A-via-(HL) via-r (#76) | AES .text +18 B when off (2228->2246) | LIVE, Keep |
+| #12 | commutative ALU shortcut | AES .text +4 B when off (2228->2232) | LIVE, Keep |
+| #21 | known-immediate A tracking (#60 imm/#83) | AES+cpnos byte-neutral, but `bool-store-no-mask.ll` (#83) regresses when off | LIVE, Keep |
+| #79 | mask-roundtrip after SBC A,A | AES byte-neutral, but `mask-from-flag.ll` regresses when off (-8 B/site) | LIVE, Keep |
+
+**Methodology lesson (extends the campaign):** AES-byte-identical is NOT
+sufficient to declare a peephole dead.  #21 and #79 are byte-neutral on
+both AES and cpnos yet provably live -- the dedicated per-pattern lit test
+is the decisive canary.  With #21 disabled, `bool-store-no-mask.ll` fails
+because ISel still emits `ld a,#1; and #1` for `store i1 true`; with #79
+disabled, `mask-from-flag.ll` fails because ISel still emits the 5-instr
+`(x!=y)?0xFF:0` mask-roundtrip.  Both peepholes are the sole remover of
+their shape.  Contrast with the 5 DELETED peepholes (#11/#9/#2/#24/#23),
+whose lit tests had to be XFAILed because the input shape vanished
+upstream entirely.  The discriminator: does the lit test still FAIL
+(opportunity exists, peephole live) or PASS (opportunity gone, dead)
+when the peephole is disabled.
+
+Commit: `4e82d95` (comment-only Keep annotations next to each).
+
+## Audit candidate list: COMPLETE
+
+All 16 original "Migrate" candidates are now resolved (5 deleted, 11 live).
+No C2 candidates remain untested.
 
 ## Updated tasks/session73q-C2-audit-table-update.md classification
 
@@ -55,10 +86,10 @@ Pre-session-73s:
 - Migrate -> Re-test: 1 (#15)
 - Stay Migrate: 11
 
-Post-session-73s (this session):
+Post-session-73s (this session, incl. resume):
 - Deleted (dead at HEAD): 5 (#11, #9, #2, #24, #23) + previously deleted Z80NarrowIV, #15
-- Live / Keep: 12 (#6, #7, #10, #13, #14, #16, #17, #18, #19, #20, #25, the existing #84-#97 lit tests now XFAILed)
-- Remaining to re-test: 3 (#8, #12, #21)
+- Live / Keep: 16 (#6, #7, #8, #10, #12, #13, #14, #16, #17, #18, #19, #20, #21, #25, #79, plus the existing #84-#97 lit tests now XFAILed)
+- Remaining to re-test: 0 (#8, #12, #21, #79 all done in the resume -- all LIVE)
 
 The audit's original "16 Migrate candidates, ~2300 LOC saving" framing was off in both directions:
 - Five were dead and could be DELETED outright (~572 LOC), not Migrate-and-keep.
