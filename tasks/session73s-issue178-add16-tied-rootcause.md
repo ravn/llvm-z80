@@ -113,6 +113,37 @@ post-#112 experiment (flip `-z80-add16-acc`, re-measure) or alongside a Register
 tied-def class-clamp fix in the fork (in scope — fork-local, not an upstream PR — but wider
 blast radius).
 
+## Safety audit: is the coalescer out-of-class bug latent elsewhere?
+
+The disease (coalescer assigns a tied def a physreg OUTSIDE its class) needs a
+tied pseudo whose **def-class is narrower than the tied-use's source class**, plus
+a surviving tied source. Audited all five tied-operand pseudos in `Z80InstrInfo.td`:
+
+| Pseudo | def / src class | emitted? | asymmetry? |
+|---|---|---|---|
+| `INC16` / `DEC16` | GR16 / GR16 | yes (ISel constrains BOTH to GR16) | none |
+| `LSHR16` / `ASHR16` | GR16NoIR / GR16NoIR | yes (uniform operand desc) | none |
+| `ADD16_tied` | GR16 / GR16 in `.td` | no (not emitted) | only via my ISel HLI-narrowing |
+
+**No shipped tied pseudo has the narrower-def-than-source asymmetry**, so the
+coalescer bug is **not a latent correctness risk in production code** — it appeared
+only because the ADD16_tied wire-up explicitly constrained `$dst` to HLI while the
+tied source stayed GR16. Reassuring: the #178 finding has zero blast radius on
+shipped codegen.
+
+## Fundamental note: FLAGS-clobber makes 16-bit ADD/SUB un-rematerializable on Z80
+
+The clean takeaway for #166/#178: `INC16`/`DEC16` ARE rematerializable (the #115 S3'
+win) precisely because real Z80 `INC/DEC rr` does **not** touch flags — they carry no
+`Defs=[FLAGS]`. `ADD HL,rr` / `SBC HL,rr` / 16-bit shifts genuinely set H/N/C, so any
+pseudo modelling them must declare `Defs=[FLAGS]`, and LLVM's rematerializer refuses to
+clone an instruction that defines a live physreg. **There is no SSA-shape trick around
+this** — the obstacle is the ISA flag side-effect, not the operand modelling. #166/#178
+("remat ADD HL,rr-style ops") is therefore fundamentally bounded: it can only help where
+FLAGS is provably dead at the clone point, which is rare. Treat #166/#178 as **closed
+for the IX/IY-reserved allocator**; the only live re-open hook is post-#112 (more
+accumulators reduce the HL-pinning cost of `ADD16_acc`, independent of remat).
+
 ## Files touched
 - `llvm/lib/Target/Z80/Z80InstrInfo.td` — added `ADD16_acc` pseudo (non-tied, HLI dst, isReMaterializable; only emitted behind the flag).
 - `llvm/lib/Target/Z80/Z80InstrInfo.cpp` — `expandPostRAPseudo` case for `ADD16_acc` (COPY base->dst; ADD HL/IX/IY,rr).
