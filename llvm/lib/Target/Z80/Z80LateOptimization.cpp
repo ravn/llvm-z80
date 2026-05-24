@@ -4297,6 +4297,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
           if (!Safe || PushIX == MIE)
             continue;
+          // Same liveness requirement as Form 2: the rewrite drops the
+          // IX/IY <- rr assignment, so IX/IY must be dead after the closing
+          // POP rr.  A loop-carried value in IY (live out via a back-edge) is
+          // not dead and must not lose its update.  ravn/llvm-z80#112 / #14.
+          if (MBB.computeRegisterLiveness(TRI, TP.IXReg,
+                                          std::next(std::next(PushIX))) !=
+              MachineBasicBlock::LQR_Dead)
+            continue;
           LLVM_DEBUG(dbgs() << "  IX transfer peephole: PUSH rr;POP IX...PUSH IX;POP rr"
                             << " → PUSH rr...POP rr (saves 4B)\n");
           PushIX->eraseFromParent();
@@ -4343,6 +4351,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             if (StackDepth < 0) { Safe = false; break; }
           }
           if (!Safe || EndCopy == MIE) continue;
+
+          // The rewrite drops the IX/IY <- rr write (the start copy), keeping
+          // IX/IY at its pre-pattern value.  That is only legal if IX/IY is
+          // dead after the closing copy.  A loop-carried value held in IY (live
+          // out via a back-edge) is NOT dead here -- dropping its update silently
+          // miscompiles the loop.  ravn/llvm-z80#112 / #14.
+          if (MBB.computeRegisterLiveness(TRI, IXReg, std::next(EndCopy)) !=
+              MachineBasicBlock::LQR_Dead)
+            continue;
 
           LLVM_DEBUG(dbgs() << "  IX transfer peephole: COPY16_PUSHPOP pair"
                             << " → PUSH rr...POP rr (saves 4B)\n");
