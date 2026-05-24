@@ -61,6 +61,51 @@ value. With that fixed, un-reserve IY (then evaluate IX separately), and validat
 the #14 crash was a MAME runtime bug, so production boots are mandatory before trusting
 the size win).
 
+## Isolation: the IY miscompile is systemic (test-runner A/B)
+
+Ran the full clang integration suite (z80-utils/test-runner, 990 cases via
+z88dk-ticks) IY-off vs IY-on and diffed:
+
+| run | Pass | Fail | Fatal | Skip |
+|---|---|---|---|---|
+| IY reserved (baseline) | 690 | 37 | 56 | 207 |
+| IY allocatable | 622 | 85 | 76 | 207 |
+
+**70 tests regress PASS -> FAIL/FATAL purely from IY allocation.** Excluding the
+known fuzz noise (`test_90_edge_*` / `test_91_edge_prom_*`, #136), the regressing
+**named functional** tests are clean minimal repros:
+
+| repro (base name) | FAIL opt-levels | FATAL |
+|---|---|---|
+| `test_28_pointer_arith` | 3 | — |
+| `test_26_array_basics` | 4 | — |
+| `test_27_array_2d` | 3 | — |
+| `test_35_memory_ops` | 3 | — |
+| `test_36_stack_pressure` | 5 | — |
+| `test_04_i32_bitwise` | 5 | — |
+| `test_41_integer_boundary` | 5 | — |
+| `test_40_hash_crc` | 2 | — |
+| `test_31_struct_ops` | 1 | — |
+| `test_58_fixed_point` | 1 | — |
+| `test_33_string_ops` | 5 | 1 |
+| `test_38_sort_search` | 3 | 1 |
+| `test_48_dynamic_alloca` | — | (fatal) |
+
+The breadth (pointer arith, arrays, struct/string ops, stack pressure, i32 bitwise —
+anything that puts a 4th live 16-bit value in play) shows this is **one systemic
+IY-allocation codegen bug**, not a per-test edge case. Both wrong-answer (FAIL) and
+crash/trap (FATAL) modes occur. Most likely location: IY copy/spill/reload lowering
+(`copyPhysReg` -> `COPY16_PUSHPOP`, or `Z80ExpandPseudo` SPILL/RELOAD for IY), exercised
+whenever IY holds a live value across a clobber — consistent with the parked #14
+('y'-screen-crash) framing.
+
+**Fix-session entry point:** `test_28_pointer_arith` (smallest, FAIL not FATAL). Reduce
+to the failing opt level, build IY-on, diff IY-on vs IY-off MIR with `-print-after-all`
+around regalloc + `Z80ExpandPseudo`, find the clobbered IY value. The fix is shared
+across all 70 regressions (systemic), so one root-cause likely clears the whole set.
+Then re-run this A/B to confirm zero IY-caused regressions before un-reserving for real,
+followed by the full production oracle (AES 13/13, cpnos/autoload/BIOS + MAME boots).
+
 ## Verification / hygiene
 - Throwaway probe (env-gated un-reserve) fully reverted; `Z80RegisterInfo.cpp` diff empty.
 - Baseline rebuilt and re-verified: AES `make clang.ram` **PASS** (11 516 046 tstates), lit 110+5.
