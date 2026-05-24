@@ -135,7 +135,7 @@ ignoring per-class prefix overhead and short-lived-value spill cost).
 
 | # | Title | State | Note |
 |---|---|---|---|
-| **#27** | Per-pair 16-bit register copy cost | Active | **Last Cluster A item open.**  #89 + #38 closed 2026-05-04.  Drill in unpark doc Tier B. |
+| **#27** | Per-pair 16-bit register copy cost | Active (RECLASSIFIED, session 73s) | Drill found the per-pair *copy-cost* lever exhausted: `copyPhysReg` already uses `EX DE,HL` optimally; IX/IY copies don't occur (reserved); dominant BC/DE<->HL traffic is *necessary* base re-materialization (loading base once + 2 B copy-to-HL beats reloading). Prototype reload-retarget peephole fired 0× on AES (all sites have the pair live). Reclassified to "reduce base re-materialization under 3-pair pressure" (regalloc-level, pairs with #110/#115). CopyCost knob offers no win while IX/IY reserved. See `session73s-issue27-percopy-cost-drill.md`. |
 | **#74** | Regalloc spills default to BSS; should use push/pop for short-lived 16-bit | Active | Companion to #96. |
 | **#96** | Investigation: regalloc-level PUSH/POP for short-lived 16-bit values (layer 3) | Active | "Layer 3" of the spill cluster.  Drill: instrument LiveInterval lengths at spill sites. |
 | **#16** | PUSH/POP instead of IX-indexed spills across CALLs | Active | Has a `BSS spill→PUSH/POP` peephole landed already; #16 is the regalloc-native version. |
