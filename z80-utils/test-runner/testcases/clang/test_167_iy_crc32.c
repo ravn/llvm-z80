@@ -1,3 +1,4 @@
+/* EXTRA-FLAGS: -mllvm -z80-unreserve-iy -Xclang -target-feature -Xclang +static-stack */
 /* Test 167: crc32 i32 loop-carried-value shift loop (ravn/llvm-z80#112 IY).
    Isolated from test_40.  crc32 of single byte 'A' (0x41) == 0xD3D99E8B.
    The loop carries a u32 (crc) shifted right each iteration; with IY
