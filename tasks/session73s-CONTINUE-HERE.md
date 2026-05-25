@@ -56,7 +56,9 @@ Dig-in (the AES/test-runner regressions are a regalloc CLASS, not one peephole):
 Status: the loop-carried peephole fix (below) stays shipped -- it cleared the dominant
 #14 crash.  IY-unreserve default-on remains gated on the i32-split regalloc cost model
 (+ dynamic_alloca).  New repros test_166/167/168 + lit `iy-loop-carried-112.ll` are the
-guards/vehicles for that work.  Consider filing a ravn/llvm-z80 issue with test_168.
+guards/vehicles for that work.  **Filed: ravn/llvm-z80 #189** (the i32-split-through-IY
+regalloc miscompile, the gate) and **#190** (dynamic_alloca FATAL, separate class).
+Backlog task added under `unpark-2026-05-22.md` "IY-unreserve default-on".
 
 ## UPDATE 2026-05-25: #112/#14 loop-carried residual ROOT-CAUSED + FIXED
 
