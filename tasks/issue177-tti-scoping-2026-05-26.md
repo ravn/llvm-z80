@@ -59,11 +59,15 @@ Used in: `cpnos-in-c/Makefile:111-113`, `autoload-in-c/Makefile:178`,
 
 ## The actual remaining #177 work (next session) — concrete, mostly non-gated
 
-**Task 1 — remove the redundant LICM/CSE flags (cleanup, ~30 min, low-risk).**
+**Task 1 — remove the redundant LICM/CSE flags (cleanup, low-risk).**
 `-disable-machine-licm` / `-disable-machine-cse` are no-ops (passes already off in
-the backend).  Drop them from cpnos/autoload/rcbios Makefiles + the AES configs.
-Validate byte-identical (they must be, since the passes don't run either way).
-Pure hygiene; simplifies the build flags the issue complained about.
+the backend).  **MEASURED 2026-05-26:** only `cpnos-in-c/Makefile` carries them
+(autoload-in-c:178 and rcbios-in-c/clang:40 have only `-disable-lsr`).  Removing
+both from cpnos and rebuilding -> PROM1 payload 2028 -> 1396 B, line program
+2028/2048 B = **byte-identical to baseline** (confirmed: the passes don't run
+either way).  So the cleanup is a single-file change to cpnos, verified safe.
+Deferred from this session only because rc700-gensmedet tracks dirty build
+artifacts; land it as a focused single-file commit when that repo is clean.
 
 **Task 2 — re-measure `-disable-lsr` per production target (the real payoff, ~1-2 h).**
 Now that `isLSRCostLess` (register-count-first) + `getNumberOfRegisters=3` are in
@@ -74,6 +78,18 @@ TTI, test whether TTI-guided LSR is acceptable without the flag:
   workaround obviated by the cost model).  cpnos is the prime suspect (2 KB cap,
   flag may be cargo-culted from a pre-TTI era).
 - If TTI-LSR regresses, that localizes the missing cost: feed it into Task 4.
+
+**MEASURED 2026-05-26 (cpnos):** removing `-disable-lsr` -> PROM1 line program
+2028 -> **2030 B (+2 B, 20->18 free)**, but the **raw payload is identical
+(2028 B both)** -- the +2 B is a *compression* artifact (LSR changed code content,
+not length; ZX0 compressed 1396 -> 1401).  So LSR is **size-neutral on cpnos's
+real code**; the flag's benefit is a marginal 2 B via compressibility.  At the
+2 KB hard cap that 2 B is worth keeping, but the flag is NOT the meaningful
+workaround the issue implied (contrast AES, where the docs show disabling LSR is
+*+333 B* -- LSR genuinely helps u8-heavy code).  Still TODO: measure autoload +
+BIOS (not 2 KB-capped, so LSR may matter differently there).  Net so far: the
+`-disable-lsr` story is target-specific and small; do not expect a big #177 win
+from removing it.
 
 **Task 3 — replace the blunt global LICM/CSE disable with a gated decision (medium).**
 The `disablePass` comment (line 225) states the intent: gate on per-function
