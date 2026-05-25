@@ -4563,6 +4563,34 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (UsedElsewhere) continue;
         }
 
+        // Also bail if the slot is accessed (any register class) earlier in
+        // THIS block, BEFORE the matched store.  The forward orphan scan only
+        // covers accesses after the store; a read before it is the signature
+        // of a loop-carried value whose home is this slot -- the slot is read
+        // at the loop top (via the back-edge) and written at the bottom.
+        // Converting the bottom store+reload to PUSH/POP drops the store, so
+        // the top read sees a stale slot every iteration.  ravn/llvm-z80
+        // #195/test_166: a popcount i32 loop hung because `LD (slot),BC` was
+        // converted to PUSH/POP while the loop top still read it via
+        // `LD HL,(slot)`.
+        {
+          auto isAnyBssAccessOpc = [](unsigned O) {
+            return O == Z80::LD_A_nnind  || O == Z80::LD_HL_nnind ||
+                   O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind ||
+                   O == Z80::LD_nnind_A  || O == Z80::LD_nnind_HL ||
+                   O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
+          };
+          bool ReadBeforeStore = false;
+          for (auto Prev = MBB.begin(); Prev != MII; ++Prev) {
+            if (isAnyBssAccessOpc(Prev->getOpcode()) &&
+                sameAddress(*MII, *Prev)) {
+              ReadBeforeStore = true;
+              break;
+            }
+          }
+          if (ReadBeforeStore) continue;
+        }
+
         // Cost: PUSH (1B) + N*POP (N B) + (N-1)*re-PUSH ((N-1) B) = 2N B.
         // Original: store (S B) + N*load (N*L B).
         // Multi-load with re-PUSH: after each POP except the last, insert
