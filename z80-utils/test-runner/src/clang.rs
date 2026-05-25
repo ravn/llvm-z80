@@ -14,6 +14,7 @@ pub struct ClangConfig {
     pub fast_math: bool,
     pub omit_fp: bool,
     pub inline_runtime: bool,
+    pub static_stack: bool,
     pub pattern: Option<String>,
 }
 
@@ -32,6 +33,12 @@ impl ClangConfig {
             flags.push("-Xclang");
             flags.push("+inline-i16-runtime");
         }
+        if self.static_stack {
+            flags.push("-Xclang");
+            flags.push("-target-feature");
+            flags.push("-Xclang");
+            flags.push("+static-stack");
+        }
         flags
     }
 
@@ -49,6 +56,9 @@ impl ClangConfig {
         }
         if self.inline_runtime {
             s.push_str("_inlrt");
+        }
+        if self.static_stack {
+            s.push_str("_ss");
         }
         s
     }

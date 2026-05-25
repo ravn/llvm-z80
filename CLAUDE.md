@@ -41,6 +41,7 @@ cargo run -- -opt O1                     # Single opt level
 cargo run -- clang                       # Clang C suite only
 cargo run -- clang -target sm83          # SM83 target
 cargo run -- clang -fast-math            # With -ffast-math
+cargo run -- clang -static-stack         # With +static-stack (BSS locals) -- exposes ravn/llvm-z80#192 class
 cargo run -- clang add                   # Filter by test name pattern
 cargo run -- sdcc                        # SDCC cross-build compatibility
 cargo run -- llc                         # LLC (LLVM IR) suite
