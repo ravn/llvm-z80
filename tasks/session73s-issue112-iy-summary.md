@@ -78,6 +78,29 @@ different codegen paths, so there are TWO distinct IY-unreserve bugs:
 - **#192** +static-stack -O1/-Os i32 select+shift+xor loop miscompile (production
   config, IY-independent) -- the headline finding.
 
+## #192 ROOT-CAUSED (instruction trace + per-pass MIR bisection)
+
+`crc_one(0xFF)` +static-stack -O1/-Os IY-off: the `select(crc&1 ? CONST : 0)`
+**always takes the xor path** (bc=EDB8 in all 8 iters; iters 1-6 happen to be odd
+so correct, 7-8 even so wrong -> 0xB6662D3D).
+
+The i32 `icmp eq (and crc,1),0` is selected as two `XOR_CMP_EQ16` (per 16-bit half)
+AND-combined.  Bisection: post-RA CORRECT; z80-late-opt INPUT correct; z80-late-opt
+OUTPUT broken.  **A z80-late-opt BSS store-to-load forwarding peephole eliminates
+flag1's BSS spill/reload and relocates its write `LD_D_A` (D := flag1) to BEFORE
+compare2.  But D is compare2's hi-byte input (set 0 by LD_D_n 0); the clobber makes
+compare2 compute `(flag1==0)=NOT(flag1)`, and the i32-== AND becomes
+`NOT(flag1) AND flag1 = 0` -> branch always falls to the CONST block.**  Same family
+as #189: a late-opt transform moving an instruction without a liveness guard on the
+destination register.  (CMP_Z16-const-fold's `LD_B_D` only changes surface form.)
+
+Fix direction (posted on #192): the BSS store-to-load forwarding peephole must not
+relocate the forwarded value's `LD r,A` write across an instruction that READS `r`
+(verify r dead in the skipped interval).  Production-config peephole -> needs full
+oracle (test-runner default + -static-stack + AES 13 + lit + MAME) before commit.
+Deferred as a focused fresh effort; NOT attempted at session end to avoid a rushed
+production miscompile.
+
 ## Test-runner additions
 test_166 (popcount), test_167 (crc32), test_168 (crc_inner), test_169 (uncond
 xor control), test_170 (cond-xor control); new `-static-stack` run mode.
