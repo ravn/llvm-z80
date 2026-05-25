@@ -1,4 +1,15 @@
+; XFAIL: *
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-stack -O2 < %s | FileCheck %s
+
+; Session 73s: post-RA peephole "HL save-via-BC roundtrip" removed per
+; #180 C2 audit re-test.  The GISel-emitted shape this test exercises
+; (LD C,L; LD B,H; INC BC × N; <body>; LD L,C; LD H,B) no longer
+; appears in production code at HEAD -- canonicalization changes since
+; the peephole was added (#177 TTI hooks, #128 LICM/CSE disable) route
+; through a different lowering.  Without the peephole, llc still
+; produces correct (working) code with the redundant save/restore but
+; this test forbids that shape.  Un-XFAIL when re-shaping happens or
+; the peephole is revived.  See tasks/session73s-issue23-retest.md.
 
 ; Issue #84: pattern-fill loop bodies emitted by GISel back HL up
 ; via BC (LD C,L; LD B,H; INC BC × N) at the top of the loop, run

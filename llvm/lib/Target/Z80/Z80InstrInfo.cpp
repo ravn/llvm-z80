@@ -1375,6 +1375,30 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     return true;
   }
 
+  case Z80::ADD16_acc: {
+    // Non-tied accumulator add: $dst = $base + $rhs (#178).
+    // $dst is HLI (HL, since IX/IY reserved); $base is GR16; $rhs is BC/DE.
+    Register Dst = MI.getOperand(0).getReg();
+    Register Base = MI.getOperand(1).getReg();
+    Register RHS = MI.getOperand(2).getReg();
+    bool KillBase = MI.getOperand(1).isKill();
+    // Move base into the accumulator unless regalloc already coincided.
+    if (Dst != Base)
+      copyPhysReg(MBB, MI, DL, Dst, Base, KillBase);
+    unsigned AddOpc = 0;
+    if (Dst == Z80::HL)
+      AddOpc = (RHS == Z80::BC) ? Z80::ADD_HL_BC : Z80::ADD_HL_DE;
+    else if (Dst == Z80::IX)
+      AddOpc = (RHS == Z80::BC) ? Z80::ADD_IX_BC : Z80::ADD_IX_DE;
+    else if (Dst == Z80::IY)
+      AddOpc = (RHS == Z80::BC) ? Z80::ADD_IY_BC : Z80::ADD_IY_DE;
+    else
+      llvm_unreachable("ADD16_acc: $dst not in HLI");
+    BuildMI(MBB, MI, DL, get(AddOpc));
+    MI.eraseFromParent();
+    return true;
+  }
+
   case Z80::ADD_HL_rr: {
     // ADD HL,rr — select ADD_HL_BC or ADD_HL_DE based on allocated register.
     Register RHS = MI.getOperand(0).getReg();

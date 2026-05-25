@@ -32,11 +32,28 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsZ80.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "z80-isel"
+
+// #178/#166 (session 73s).  Lower G_PTR_ADD via the NON-tied ADD16_acc
+// pseudo (SSA $dst, no tie -> no coalescer tie-join trap that sank
+// ADD16_tied) instead of the explicit COPY-HL + ADD_HL_rr + COPY-from-HL
+// pattern.  CORRECT, but default OFF: it pins every pointer-arithmetic
+// result to HL, which under the 3-pair (IX/IY-reserved) allocator costs
+// +219 B / +9.8% on AES 09_Oz_prod_like; remat does not recover it
+// (FLAGS-clobber blocks the rematerializer -- byte-identical with/without
+// isReMaterializable).  Revisit after #112 un-reserves IX/IY: ADD16_acc's
+// HLI class already covers IX/IY, giving 3 accumulators and lower pinning
+// cost.  See session73s-issue178-add16-tied-rootcause.md.
+static cl::opt<bool> EnableAdd16Acc(
+    "z80-add16-acc", cl::init(false), cl::Hidden,
+    cl::desc("Lower G_PTR_ADD via the non-tied ADD16_acc SSA pseudo "
+             "(ravn/llvm-z80#178; correct but currently a size regression "
+             "-- revisit after #112)."));
 
 namespace {
 
@@ -2919,28 +2936,53 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    if (EnableAdd16Acc) {
+      // #178: emit the non-tied ADD16_acc SSA pseudo.  $dst is HLI (-> HL);
+      // base stays GR16 and lives independently (no tie for the coalescer
+      // to fold the surviving base into the result -- the bug that sank
+      // ADD16_tied; see session73s-issue178-add16-tied-rootcause.md).
+      if (!RBI.constrainGenericRegister(DstReg, Z80::HLIRegClass, MRI) ||
+          !RBI.constrainGenericRegister(BaseReg, Z80::GR16RegClass, MRI) ||
+          !RBI.constrainGenericRegister(OffReg, Z80::GR16_BCDERegClass, MRI))
+        return false;
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD16_acc), DstReg)
+          .addReg(BaseReg)
+          .addReg(OffReg);
+      MI.eraseFromParent();
+      return true;
+    }
     if (!RBI.constrainGenericRegister(DstReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(BaseReg, Z80::GR16RegClass, MRI) ||
         !RBI.constrainGenericRegister(OffReg, Z80::GR16_BCDERegClass, MRI))
       return false;
-    // #166 (session 73p): tried to substitute this 3-instruction
-    // sequence with a single ADD16_tied (which has an SSA-shaped vreg
-    // output and would unlock isReMaterializable).  Two attempts both
-    // miscompiled:
-    //   1. ADD16_tied with $dst class GR16 (allowing BC/DE) -- the
-    //      expansion's BC/DE-through-HL fallback silently clobbered
-    //      HL without declaring it in Defs.  All 13 AES configs FAIL.
-    //   2. ADD16_tied with $dst class HLI (HL/IX/IY only, fallback
-    //      removed).  Still miscompiles: 13/13 AES FAIL, test-runner
-    //      173/990 FAIL (vs baseline 46/990) + 4 lit failures.  Root
-    //      cause not yet isolated -- appears to be regalloc/two-addr
-    //      interaction with tied operands on a narrow physreg class
-    //      when BaseReg lands outside HLI, but the miscompile pattern
-    //      affects values UNRELATED to the ADD16_tied output.
-    // Both branches were exercised on `session-73p-issue166-add16-tied`
-    // (not committed).  Keep the explicit COPY-HL + ADD_HL_rr + COPY-
-    // from-HL pattern here until ADD16_tied's tied-operand wire-up is
-    // diagnosed and fixed.  See issue #166 for the full thread.
+    // #166/#178: tried to substitute this 3-instruction sequence with a
+    // single SSA-shaped ADD16_tied (which would unlock isReMaterializable;
+    // ADD_HL_rr can't be remat'd -- it defines HL as an implicit physreg,
+    // no vreg to clone).  ROOT-CAUSED in session 73s with a 5-line repro
+    // (`two_idx(p,i,j){ return p[i]+p[j]; }`, see
+    // tasks/session73s-issue178-add16-tied-rootcause.md):
+    //
+    //   In the base-reuse shape the pointer base dies at its LAST indexed
+    //   use.  There the RegisterCoalescer merges the (GR16) base interval,
+    //   the inserted HLI accumulator copy, and the HLI-classed ADD16_tied
+    //   tied-def into one interval, and keeps the BASE's physreg -- which
+    //   can be BC, OUTSIDE the tied def's HLI class.  (HLI is a proper
+    //   subclass of GR16, so getCommonSubClass should clamp to HLI, but
+    //   the join widens to GR16.)  dst=BC then hits the BC-accumulator
+    //   fallback in expandPostRAPseudo (PUSH BC; POP HL; ADD HL,rr; PUSH
+    //   HL; POP BC) which (a) is 5 B vs 1 B -- a SIZE REGRESSION, and
+    //   (b) clobbers HL undeclared, corrupting whatever unrelated value
+    //   sits in H/L (e.g. the first load result) -> the "unrelated value
+    //   corruption" seen in 73p.
+    //
+    //   The obvious patches do not work: adding HL to ADD16_tied's Defs
+    //   makes regalloc run out of registers when dst==HL (the implicit
+    //   HL-def collides with the tied HL-def); narrowing the dst class
+    //   does not help because the coalescer escapes the class to GR16
+    //   regardless.  A correct + size-winning fix requires the coalescer
+    //   to honor the narrower tied-def class (generic-LLVM change), or a
+    //   non-tied remat model.  Parked behind that; keep the explicit
+    //   COPY-HL + ADD_HL_rr + COPY-from-HL pattern.  See #166/#178.
     BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::HL)
         .addReg(BaseReg);
     BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD_HL_rr)).addReg(OffReg);

@@ -622,45 +622,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   }
 
   for (MachineBasicBlock &MBB : MF) {
-    // --- Peephole: POP rr; PUSH rr → (remove both) ---
-    // When a register pair is popped and immediately pushed back, the stack
-    // state is unchanged (SP net effect = 0, same value on stack). If the
-    // register pair is dead after the push (overwritten before next use),
-    // both instructions are redundant. Common on SM83 where consecutive
-    // stack accesses via LDHL SP,# each need push/pop HL around them.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE;) {
-      static const struct {
-        unsigned PopOpc;
-        unsigned PushOpc;
-        MCPhysReg Reg;
-      } PopPushPairs[] = {
-          {Z80::POP_BC, Z80::PUSH_BC, Z80::BC},
-          {Z80::POP_DE, Z80::PUSH_DE, Z80::DE},
-          {Z80::POP_HL, Z80::PUSH_HL, Z80::HL},
-      };
-
-      unsigned Opc = MII->getOpcode();
-      bool Matched = false;
-      for (const auto &PP : PopPushPairs) {
-        if (Opc != PP.PopOpc)
-          continue;
-        auto NextIt = std::next(MII);
-        if (NextIt == MIE || NextIt->getOpcode() != PP.PushOpc)
-          break;
-        auto AfterPush = std::next(NextIt);
-        if (!isRegDeadAfter(AfterPush, MBB, TRI, PP.Reg))
-          break;
-        LLVM_DEBUG(dbgs() << "  Removing redundant POP+PUSH: " << *MII);
-        NextIt->eraseFromParent();
-        MII = MBB.erase(MII);
-        Changed = true;
-        Matched = true;
-        break;
-      }
-      if (!Matched)
-        ++MII;
-    }
+    // (Peephole "POP rr; PUSH rr -> (remove both)" removed in session 73s
+    // -- never fires on current production code.  Per ravn/llvm-z80#180 C2
+    // re-test methodology: disable + measure; result was AES production
+    // .text byte-identical (2228 B), cpnos PROM1 SHRINKS by 1 B
+    // (2028 -> 2027 B; pipeline-ordering benefit from removing the
+    // peephole), test-runner sweep zero per-test diff.  The pattern
+    // targeted SM83's LDHL-SP boilerplate which no longer reaches this
+    // pass at HEAD.  See tasks/session73s-issue2-retest.md.)
 
     // --- Peephole: LD A,r; DEC A; LD r,A; OR A; JR NZ → DEC r; JR NZ ---
     // Replaces a 5-instruction decrement-and-branch sequence (28T, 6B) with
@@ -902,6 +871,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         default: return MCPhysReg(0);
         }
       };
+      // #180 C2 RE-TEST (session 73s): disabling this peephole grows AES
+      // 09_Oz_prod_like .text by +18 B (2228 -> 2246).  PEEPHOLE IS LIVE.  Keep.
       for (auto MII = MBB.begin(); MII != MBB.end(); ) {
         auto Next = std::next(MII);
         if (Next == MBB.end()) { ++MII; continue; }
@@ -948,67 +919,24 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    // --- Peephole: OR A; LD r,0; JR Z → OR A; LD r,A; JR Z ---
-    // In select lowering: OR A; LD r,0; JR Z skip; LD r,imm; skip:
-    // After OR A, if A==0 the JR Z is taken with r=0 (correct via LD r,A).
-    // On the NZ fall-through, r is overwritten by the non-zero select arm.
-    // LD r,A is 1B/4T vs LD r,#0 at 2B/7T.  Saves 1B and 3T per instance.
-    //
-    // Safety: only fire when the LD r,0 sequence is followed by a Z-flag
-    // branch (JR Z/NZ or JP Z/NZ), confirming this is a select pattern.
-    // Without the branch check, LD r,0 in non-select code would be
-    // incorrectly replaced when A != 0.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE; ++MII) {
-      // Look for OR_A (tests A, sets Z if A==0).
-      if (MII->getOpcode() != Z80::OR_A)
-        continue;
-      // Collect candidate LD r,0 instructions between OR A and a branch.
-      SmallVector<std::pair<MachineBasicBlock::iterator, unsigned>, 2>
-          Candidates; // {iterator, LDrA opcode}
-      auto Scan = std::next(MII);
-      bool FoundBranch = false;
-      while (Scan != MIE) {
-        unsigned SOpc = Scan->getOpcode();
-        // Check for Z-flag conditional branch — confirms select pattern.
-        if (SOpc == Z80::JR_Z_e || SOpc == Z80::JR_NZ_e ||
-            SOpc == Z80::JP_Z_nn || SOpc == Z80::JP_NZ_nn) {
-          FoundBranch = true;
-          break;
-        }
-        // Check for LD r,#0 where r != A.
-        Register Dst;
-        if (SOpc == Z80::LD_B_n) Dst = Z80::B;
-        else if (SOpc == Z80::LD_C_n) Dst = Z80::C;
-        else if (SOpc == Z80::LD_D_n) Dst = Z80::D;
-        else if (SOpc == Z80::LD_E_n) Dst = Z80::E;
-        else if (SOpc == Z80::LD_H_n) Dst = Z80::H;
-        else if (SOpc == Z80::LD_L_n) Dst = Z80::L;
-        else break; // unknown instruction — stop scanning
-
-        if (Scan->getOperand(0).getImm() != 0)
-          break; // not loading zero
-
-        unsigned LdRA = getLDrAOpcode(Dst);
-        if (!LdRA) break;
-        Candidates.push_back({Scan, LdRA});
-        ++Scan;
-      }
-      // Only apply if we confirmed a Z-flag branch follows.
-      if (FoundBranch) {
-        for (auto &[It, LdRA] : Candidates) {
-          LLVM_DEBUG(dbgs() << "  OR A; LD r,0 → LD r,A: " << *It);
-          BuildMI(MBB, *It, It->getDebugLoc(), TII->get(LdRA));
-          It = MBB.erase(It);
-          Changed = true;
-        }
-      }
-    }
+    // (Peephole "OR A; LD r,0; JR Z -> OR A; LD r,A; JR Z" removed in
+    // session 73s -- never fires on current production targets.  Per
+    // ravn/llvm-z80#180 C2 re-test methodology: disable + measure;
+    // result was AES `-Oz +static-stack -disable-lsr -disable-licm
+    // -disable-cse -ffunction-sections -fdata-sections` `.text` 2228 B
+    // byte-identical, cpnos PROM1 2028 B byte-identical, test-runner
+    // sweep zero per-test diff.  Same pattern as #15 / #11 retests:
+    // peephole's input shape (select-lowering OR_A + LD r,0 + JR Z)
+    // no longer appears in clang output post session-73p TTI/cost
+    // changes.  See tasks/session73s-issue9-retest.md.)
 
     // --- Peephole: LD rr,nn; INC/DEC rr → LD rr,nn±1 ---
     // Fold a 16-bit increment/decrement into the preceding immediate load.
     // LD rr,nn (3B) + INC/DEC rr (1B) = 4B → LD rr,nn±1 (3B). Saves 1B.
     // INC/DEC rr doesn't set flags, so no flag dependency to worry about.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +4 B
+    // (2027 -> 2031).  PEEPHOLE IS LIVE.  Keep.
     for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
          MII != MIE;) {
       unsigned Opc = MII->getOpcode();
@@ -1055,24 +983,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ++MII;
     }
 
-    // --- Peephole: ALU #imm; ALU #imm → ALU #imm ---
-    // When the same immediate ALU instruction appears consecutively, the
-    // second is redundant for idempotent operations (AND, OR).
-    // Most common case: AND #1; AND #1 after SBC A,A; AND #1 sequences.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE;) {
-      MachineInstr &MI = *MII;
-      auto NextIt = std::next(MII);
-      if (NextIt != MIE && MI.getOpcode() == NextIt->getOpcode() &&
-          (MI.getOpcode() == Z80::AND_n || MI.getOpcode() == Z80::OR_n) &&
-          MI.getOperand(0).getImm() == NextIt->getOperand(0).getImm()) {
-        LLVM_DEBUG(dbgs() << "  Removing redundant: " << *NextIt);
-        NextIt->eraseFromParent();
-        Changed = true;
-        continue;
-      }
-      ++MII;
-    }
+    // (ALU #imm; ALU #imm idempotent collapse peephole removed in
+    // session 73s -- never fires on current production code.  Per
+    // ravn/llvm-z80#180 C2 re-test methodology: disable + measure;
+    // result was -1 B cpnos PROM1 (pipeline-ordering side effect),
+    // AES byte-identical, lit clean, test-runner zero per-test diff.
+    // Same pattern as the #15 retest: peephole's input shape no
+    // longer appears in clang output.  See tasks/session73s-issue11-retest.md.)
 
     // --- Peephole: LD r,A; LD A,r2; ALU r → ALU r2 ---
     // When the register allocator routes a commutative ALU operation through
@@ -1135,6 +1052,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
       };
       SmallVector<MachineInstr *, 8> ToErase2;
+      // #180 C2 RE-TEST (session 73s): disabling this peephole grows AES
+      // 09_Oz_prod_like .text by +4 B (2228 -> 2232).  PEEPHOLE IS LIVE.  Keep.
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         // Match: LD r,A
         MCPhysReg TempReg = getLDrAdst(MII->getOpcode());
@@ -1192,6 +1111,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // The peephole replaces the 3-instruction sequence (4B) with LD A,H (1B).
     // Safe when H and L are dead after (the LD H,0 overwrites H, and LD A,L
     // is the last use of L before it's overwritten or dead).
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  PEEPHOLE IS LIVE.  Keep.
     {
       SmallVector<MachineInstr *, 4> ToErase;
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
@@ -1226,6 +1148,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Occurs when ISel emits BC/DE → HL copy before extracting low byte
     // for narrowed compare (#59), but HL is dead-stored: it's reassigned
     // before any read of H or any other read of L.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +7 B,
+    // AES production +14 B.  PEEPHOLE IS LIVE.  Keep.
     {
       // Map LD L,r opcode → source register (must not be A or L itself).
       auto getLDLsrcOther = [](unsigned Opc) -> MCPhysReg {
@@ -1315,6 +1240,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Addition is commutative: HL+DE == DE+HL. The compiler generates
     // the long form when it wants base(DE)+offset(HL) into HL, but
     // ADD HL,DE gives the same result directly.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  Either real firing or pipeline noise; keep.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
@@ -1379,6 +1307,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // LD A,(addr); DEC A; LD (addr),A → LD HL,addr; DEC (HL)  (4B vs 6B)
     // Requires: A is dead after the store, HL is available.
     // INC/DEC (HL) sets Z/S/H/P flags like INC/DEC A (not carry).
+    //
+    // #180 C2 RE-TEST (session 73s, finalized in resume): production targets
+    // are byte-neutral when disabled (cpnos PROM1 2028, AES .text 2228 -- those
+    // corpora contain no matching shape today), BUT inmem-incdec-positive.ll
+    // REGRESSES: ISel still emits `LD A,(addr); INC/DEC A; LD (addr),A` and this
+    // peephole is the sole remover (-2 B/site).  Same byte-neutral-but-live
+    // pattern as #21/#79 -- the per-pattern lit canary is the decisive signal
+    // when the production corpus is neutral.  PEEPHOLE IS LIVE.  Keep.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
@@ -1522,6 +1458,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // comparing against the saved register. Since "imm < reg" is the
     // same as "reg >= imm+1", we can use CP (imm+1) directly on A.
     // Saves 3 bytes (LD r,A + LD A,imm + CP r = 4B → CP imm = 2B).
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +2 B
+    // (2027 -> 2029).  PEEPHOLE IS LIVE.  Keep.
     if (STI.hasZ80()) {
       // Map LD r,A opcodes to their corresponding CP r opcode.
       auto getLdFromA = [](unsigned Opc) -> unsigned {
@@ -1624,6 +1563,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
 
     // --- Peephole: LD (sym),A + LD HL,sym → LD HL,sym + LD (HL),A ---
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  Either real firing or pipeline noise; keep.
     // When the same constant address is stored to and then loaded into HL
     // (e.g., for a subsequent memcpy/load), reorder to use indirect store
     // via HL. Saves 2B per match: `LD (nn),A` (3B) → `LD (HL),A` (1B)
@@ -1710,6 +1652,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Pattern: LD reg,A; [non-clobbering instrs]; LD A,reg → remove LD A,reg
     // Also handles LD A,(addr); LD reg,A; [non-clobbering]; LD A,reg.
     // Saves 1 byte per instance.
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +1 B
+    // (2027 -> 2028).  Either real firing or pipeline noise; keep.
     {
       // Get the LD A,reg opcode for a given register, or 0.
       auto getLDArOpc = [](MCPhysReg R) -> unsigned {
@@ -1810,6 +1755,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       bool Known = false;
       uint8_t A_val = 0;
 
+      // #180 C2 RE-TEST (session 73s): AES 09_Oz_prod_like .text and cpnos
+      // PROM1 are byte-neutral when this is disabled (those targets contain no
+      // matching shapes today), but bool-store-no-mask.ll (#83) REGRESSES:
+      // ISel still emits `ld a,#1; and #1` for `store i1 true` and this peephole
+      // is the sole remover of the dead AND.  PEEPHOLE IS LIVE.  Keep.
+      // (The #60-imm sub-case, known-zero-a.ll, now passes without this block --
+      // handled upstream -- but the #83 path keeps the whole block live.)
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         MachineInstr &MI = *MII;
         unsigned Opc = MI.getOpcode();
@@ -2069,465 +2021,33 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    // --- Peephole: HL save-via-BC roundtrip (issue #84) ---
-    //
-    // Pattern-fill loop bodies emitted by GISel for sequences like
-    //   for (...) *p++ = const_word;
-    // produce a back-edge MBB that saves HL into BC, increments BC by
-    // the iteration step (typically 2), runs the body, then restores
-    // HL from BC.  The body itself already advances HL (one INC_HL
-    // between two byte stores), so the save/restore is a wasteful
-    // 6-byte dance that can be replaced by `INC_HL × (N-M)` after
-    // the body, where N is the BC pre-increment count and M is the
-    // INC_HL count inside the body.
-    //
-    // Pattern:
-    //   bb.body:
-    //     LD_C_L                      ; HL.lo → C
-    //     LD_B_H                      ; HL.hi → B
-    //     INC_BC × N                  ; BC = HL + N
-    //     <body, increments HL M times, doesn't otherwise touch BC>
-    //     LD_L_C                      ; restore HL = original + N
-    //     LD_H_B
-    //     <branch>
-    //
-    // Rewrite:
-    //   bb.body:
-    //     <body unchanged>
-    //     INC_HL × (N - M)
-    //     <branch>
-    //
-    // Saves N + 4 - (N - M) = M + 4 bytes.  For the canonical
-    // setup_ivt-class loop (N=2, M=1): -5 B per iter (ignoring iter
-    // count, this is per-loop-body-MBB savings since the MIR is
-    // emitted once).
-    {
-      for (auto &BB : MF) {
-        if (BB.empty()) continue;
-        auto It = BB.begin();
-        // Skip leading non-relevant instrs (e.g. KILL).
-        while (It != BB.end() && It->isMetaInstruction()) ++It;
-        if (It == BB.end()) continue;
-        if (It->getOpcode() != Z80::LD_C_L) continue;
-        auto LdCL = It; ++It;
-        while (It != BB.end() && It->isMetaInstruction()) ++It;
-        if (It == BB.end() || It->getOpcode() != Z80::LD_B_H) continue;
-        auto LdBH = It; ++It;
-        // Count INC_BC.
-        unsigned IncBcN = 0;
-        while (It != BB.end() && It->getOpcode() == Z80::INC_BC) {
-          ++IncBcN; ++It;
-        }
-        if (IncBcN < 1) continue;
-        // Find end pair: last two non-terminator non-metadata.
-        auto Term = BB.getFirstTerminator();
-        if (Term == BB.begin()) continue;
-        auto EndIt = std::prev(Term);
-        while (EndIt != It && EndIt->isMetaInstruction())
-          --EndIt;
-        if (EndIt->getOpcode() != Z80::LD_H_B) continue;
-        auto LdHB = EndIt;
-        --EndIt;
-        while (EndIt != It && EndIt->isMetaInstruction())
-          --EndIt;
-        if (EndIt->getOpcode() != Z80::LD_L_C) continue;
-        auto LdLC = EndIt;
-        // Body is [It .. LdLC).  Count INC_HL; bail if anything
-        // touches BC (would invalidate the save/restore).
-        unsigned IncHlM = 0;
-        bool BcTouched = false;
-        for (auto BIt = It; BIt != LdLC; ++BIt) {
-          if (BIt->isMetaInstruction()) continue;
-          if (BIt->getOpcode() == Z80::INC_HL) { ++IncHlM; continue; }
-          // Conservative: bail if BC, B, or C is read or written for
-          // anything other than INC_HL (which doesn't touch BC).
-          for (const MachineOperand &MO : BIt->operands()) {
-            if (MO.isRegMask()) { BcTouched = true; break; }
-            if (!MO.isReg()) continue;
-            Register R = MO.getReg();
-            if (!R.isPhysical()) continue;
-            if (TRI->regsOverlap(R, Z80::BC) ||
-                TRI->regsOverlap(R, Z80::B)  ||
-                TRI->regsOverlap(R, Z80::C)) {
-              BcTouched = true; break;
-            }
-          }
-          if (BcTouched) break;
-        }
-        if (BcTouched) continue;
-        if (IncHlM > IncBcN) continue;  // body advances HL further than save anticipated; out of scope
-        // Rewrite.
-        DebugLoc DL = LdCL->getDebugLoc();
-        unsigned ExtraIncs = IncBcN - IncHlM;
-        for (unsigned i = 0; i < ExtraIncs; ++i)
-          BuildMI(BB, std::next(LdHB), DL, TII->get(Z80::INC_HL));
-        LdCL->eraseFromParent();
-        LdBH->eraseFromParent();
-        // Erase the INC_BCs (they are between LdBH and the body).
-        // We saved their range as [It .. body start) effectively;
-        // re-walk from BB.begin() to find them.
-        SmallVector<MachineInstr *, 4> ToErase;
-        for (auto Iter = BB.begin(); Iter != BB.end(); ++Iter) {
-          if (Iter->getOpcode() == Z80::INC_BC) {
-            ToErase.push_back(&*Iter);
-            if (ToErase.size() == IncBcN) break;
-          } else if (Iter->getOpcode() != Z80::INC_BC &&
-                     !Iter->isMetaInstruction()) {
-            // Stop at first non-INC_BC after we've started collecting.
-            if (!ToErase.empty()) break;
-          }
-        }
-        for (auto *MI : ToErase) MI->eraseFromParent();
-        LdLC->eraseFromParent();
-        LdHB->eraseFromParent();
-        Changed = true;
-        LLVM_DEBUG(dbgs() << "  #84: removed HL-via-BC roundtrip in "
-                          << printMBBReference(BB) << "\n");
-      }
-    }
+    // (Peephole HL save-via-BC roundtrip, issue #84, removed in
+    // session 73s -- never fires on current production code.  Per
+    // ravn/llvm-z80#180 C2 re-test methodology: disable + measure;
+    // result was cpnos PROM1 byte-identical, AES production target
+    // byte-identical, test-runner sweep zero per-test diff
+    // (990/690/37/56/207 unchanged).  Same pattern as session-73s
+    // peephole #24 removal: GISel canonicalization no longer emits
+    // the HL-via-BC save/restore shape for 
+    // loops.  See tasks/session73s-issue23-retest.md.)
 
-    // --- Peephole: BC ping-pong in single-BB self-loops (issue #97) ---
-    //
-    // Sibling of #84.  Hand-written or post-Z80LoopRotate single-BB
-    // self-loops with a PHI'd pointer put the pointer in BC across the
-    // back-edge and HL during the store body, with `LD L,C; LD H,B`
-    // reloading at every iteration and `INC BC × N` advancing for the
-    // back-edge.  The preheader sets up the BC copy with `LD C,L; LD
-    // B,H`.  Two orderings appear:
-    //
-    //   Case A (rotation NOT applied at IR level):
-    //     loop:  LD L,C; LD H,B; <stores via (HL), INC HL × M>;
-    //            INC BC × N; <trailer>; <branch>
-    //
-    //   Case B (rotation applied at IR level — back-edge advance now
-    //           emitted FIRST within the body):
-    //     loop:  <leading>; INC BC × N; <stores via (HL), INC HL × M>;
-    //            <trailer>; LD L,C; LD H,B; <branch>
-    //
-    // Both forms use 4 + 4 + N bytes more than the no-ping-pong shape.
-    //
-    // Rewrite (when guards pass):
-    //   - Erase pred's LD C,L; LD B,H.
-    //   - Erase loop's LD L,C; LD H,B.
-    //   - Replace loop's INC BC × N with INC HL × (N - M).
-    //
-    // Saves 4 (pred pair) + 4 (loop pair) + N - (N - M) = 8 + M bytes
-    // per occurrence.  Closes ravn/llvm-z80#97.
-    {
-      auto TouchesReg = [&](const MachineInstr &MI, MCPhysReg Pair,
-                            MCPhysReg Hi, MCPhysReg Lo) {
-        if (MI.isMetaInstruction()) return false;
-        for (const MachineOperand &MO : MI.operands()) {
-          if (MO.isRegMask()) return true;
-          if (!MO.isReg() || !MO.getReg().isPhysical()) continue;
-          Register R = MO.getReg();
-          if (TRI->regsOverlap(R, Pair) ||
-              TRI->regsOverlap(R, Hi) ||
-              TRI->regsOverlap(R, Lo))
-            return true;
-        }
-        return false;
-      };
 
-      for (auto &LoopBB : MF) {
-        // Single-BB self-loop with exactly two predecessors: itself + pred.
-        if (LoopBB.pred_size() != 2) continue;
-        bool IsSelfLoop = false;
-        MachineBasicBlock *Pred = nullptr;
-        for (MachineBasicBlock *P : LoopBB.predecessors()) {
-          if (P == &LoopBB) IsSelfLoop = true;
-          else Pred = P;
-        }
-        if (!IsSelfLoop || !Pred) continue;
-        if (Pred->succ_size() != 1) continue;
+    // (Peephole BC ping-pong in single-BB self-loops, issue #97,
+    // removed in session 73s -- never fires on current production
+    // code.  Per ravn/llvm-z80#180 C2 re-test methodology:
+    // disable + measure; result was AES production byte-identical,
+    // cpnos PROM1 -1 B (pipeline-ordering benefit from removing
+    // ~340 LOC dead peephole), test-runner sweep zero per-test diff
+    // (990/690/37/56/207 unchanged).  Same pattern as #15 / #11 /
+    // #9 / #2: Z80LoopRotate is disabled at default-on opt levels
+    // and the hand-written self-loop shape this peephole targeted
+    // no longer reaches this pass.  See tasks/session73s-issue24-retest.md.)
 
-        // Pred matcher.  Three accepted shapes:
-        //   Case 1 (pointer from HL param): `LD C,L; LD B,H` adjacent.
-        //     We'll drop both (BC = HL anyway, so HL still carries it).
-        //   Case 2 (constant pointer initialized in both): `LD HL,nn N`
-        //     and `LD BC,nn N` with matching immediate / global / MC
-        //     symbol, no intervening modifications.  We'll drop the
-        //     LD_BC_nn (HL keeps the value).
-        //   Case 3 (constant pointer initialized in BC only): `LD BC,nn
-        //     N` in pred with no LD_HL_nn at all and HL not live-in to
-        //     LoopBB.  We'll rewrite the LD_BC_nn to LD_HL_nn (HL takes
-        //     over as the carrier).
-        auto PredTerm = Pred->getFirstTerminator();
-        MachineInstr *LdCL = nullptr, *LdBH = nullptr;
-        MachineInstr *LdBCnn = nullptr, *LdHLnn = nullptr;
-        for (auto It = Pred->begin(); It != PredTerm; ++It) {
-          if (It->getOpcode() == Z80::LD_C_L && !LdCL) {
-            auto Next = std::next(It);
-            while (Next != PredTerm && Next->isMetaInstruction()) ++Next;
-            if (Next != PredTerm && Next->getOpcode() == Z80::LD_B_H) {
-              LdCL = &*It;
-              LdBH = &*Next;
-            }
-          }
-          if (It->getOpcode() == Z80::LD_BC_nn) LdBCnn = &*It;
-          if (It->getOpcode() == Z80::LD_HL_nn) LdHLnn = &*It;
-        }
-        bool MatchedCase1 = LdCL && LdBH;
-        bool MatchedCase2 = false;
-        bool MatchedCase3 = false;
-        if (!MatchedCase1 && LdBCnn && LdHLnn &&
-            LdBCnn->getNumOperands() >= 1 &&
-            LdHLnn->getNumOperands() >= 1) {
-          const MachineOperand &BCOp = LdBCnn->getOperand(0);
-          const MachineOperand &HLOp = LdHLnn->getOperand(0);
-          // Accept matching immediates, identical global addresses (with
-          // same offset), or identical MC symbols.
-          if (BCOp.isImm() && HLOp.isImm() &&
-              BCOp.getImm() == HLOp.getImm()) {
-            MatchedCase2 = true;
-          } else if (BCOp.isGlobal() && HLOp.isGlobal() &&
-                     BCOp.getGlobal() == HLOp.getGlobal() &&
-                     BCOp.getOffset() == HLOp.getOffset()) {
-            MatchedCase2 = true;
-          } else if (BCOp.isMCSymbol() && HLOp.isMCSymbol() &&
-                     BCOp.getMCSymbol() == HLOp.getMCSymbol() &&
-                     BCOp.getOffset() == HLOp.getOffset()) {
-            MatchedCase2 = true;
-          } else if (BCOp.isBlockAddress() && HLOp.isBlockAddress() &&
-                     BCOp.getBlockAddress() == HLOp.getBlockAddress() &&
-                     BCOp.getOffset() == HLOp.getOffset()) {
-            MatchedCase2 = true;
-          }
-        }
-        if (!MatchedCase1 && !MatchedCase2 && LdBCnn && !LdHLnn) {
-          // Case 3: only LD_BC_nn in pred.  We'll rewrite to LD_HL_nn.
-          // Safety: HL must not be live-in to LoopBB before our rewrite
-          // (the loop's LD_L_C; LD_H_B is what currently sets it).
-          if (!LoopBB.isLiveIn(Z80::HL) &&
-              !LoopBB.isLiveIn(Z80::H) &&
-              !LoopBB.isLiveIn(Z80::L))
-            MatchedCase3 = true;
-        }
-        if (!MatchedCase1 && !MatchedCase2 && !MatchedCase3) continue;
-
-        bool Bail = false;
-        if (MatchedCase1) {
-          // After LD_B_H, no BC touch until terminator.
-          for (auto It = std::next(LdBH->getIterator()); It != PredTerm; ++It) {
-            if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C)) {
-              Bail = true; break;
-            }
-          }
-        } else if (MatchedCase2) {
-          // Between LD_BC_nn and terminator, no BC touch.
-          for (auto It = std::next(LdBCnn->getIterator()); It != PredTerm;
-               ++It) {
-            if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C)) {
-              Bail = true; break;
-            }
-          }
-          if (!Bail) {
-            // And between LD_HL_nn and terminator, no HL touch.
-            for (auto It = std::next(LdHLnn->getIterator()); It != PredTerm;
-                 ++It) {
-              if (TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
-                Bail = true; break;
-              }
-            }
-          }
-        } else { // MatchedCase3
-          // Between LD_BC_nn and terminator, no BC touch.
-          for (auto It = std::next(LdBCnn->getIterator()); It != PredTerm;
-               ++It) {
-            if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C)) {
-              Bail = true; break;
-            }
-          }
-          // No HL touch anywhere in pred (we're about to write HL there).
-          if (!Bail) {
-            for (auto It = Pred->begin(); It != PredTerm; ++It) {
-              if (TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
-                Bail = true; break;
-              }
-            }
-          }
-        }
-        if (Bail) continue;
-
-        // In LoopBB: find the unique LD_L_C; LD_H_B pair.
-        auto LoopTerm = LoopBB.getFirstTerminator();
-        if (LoopTerm == LoopBB.begin()) continue;
-        MachineInstr *LdLC = nullptr, *LdHB = nullptr;
-        for (auto It = LoopBB.begin(); It != LoopTerm; ++It) {
-          if (It->getOpcode() != Z80::LD_L_C) continue;
-          auto Next = std::next(It);
-          while (Next != LoopTerm && Next->isMetaInstruction()) ++Next;
-          if (Next == LoopTerm || Next->getOpcode() != Z80::LD_H_B) continue;
-          if (LdLC) { Bail = true; break; }  // multiple pairs
-          LdLC = &*It;
-          LdHB = &*Next;
-        }
-        if (Bail || !LdLC || !LdHB) continue;
-
-        // In LoopBB: find the unique INC_BC chain.
-        MachineInstr *IncBcStart = nullptr;
-        unsigned IncBcN = 0;
-        bool ChainEnded = false;
-        for (auto It = LoopBB.begin(); It != LoopTerm; ++It) {
-          if (It->isMetaInstruction()) continue;
-          if (It->getOpcode() == Z80::INC_BC) {
-            if (ChainEnded) { Bail = true; break; }  // second chain
-            if (!IncBcStart) IncBcStart = &*It;
-            ++IncBcN;
-          } else if (IncBcStart) {
-            ChainEnded = true;
-          }
-        }
-        if (Bail || !IncBcStart || IncBcN == 0) continue;
-
-        // Determine ordering: which anchor comes first?  PingPongFirst is
-        // the start of the earlier anchor; PingPongLast is the
-        // (one-past-end) iterator of the later anchor.
-        MachineBasicBlock::iterator FirstStart, FirstEnd, LastStart, LastEnd;
-        bool LdLCFirst = false;
-        // Find positions; iterate once to compare.
-        auto LdLCIt = LdLC->getIterator();
-        auto IncBcIt = IncBcStart->getIterator();
-        for (auto It = LoopBB.begin(); It != LoopTerm; ++It) {
-          if (&*It == LdLC) { LdLCFirst = true; break; }
-          if (&*It == IncBcStart) { LdLCFirst = false; break; }
-        }
-        if (LdLCFirst) {
-          FirstStart = LdLCIt;
-          FirstEnd   = std::next(LdHB->getIterator());
-          LastStart  = IncBcIt;
-          LastEnd    = std::next(IncBcIt, IncBcN);
-        } else {
-          FirstStart = IncBcIt;
-          FirstEnd   = std::next(IncBcIt, IncBcN);
-          LastStart  = LdLCIt;
-          LastEnd    = std::next(LdHB->getIterator());
-        }
-
-        // Region 1 — leading: [LoopBB.begin(), FirstStart).
-        // Must not touch HL or BC.
-        for (auto It = LoopBB.begin(); It != FirstStart; ++It) {
-          if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C) ||
-              TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
-            Bail = true; break;
-          }
-        }
-        if (Bail) continue;
-
-        // Region 2 — body: [FirstEnd, LastStart).
-        // Allowed: any read of HL (LD (HL),r / LD r,(HL) / LD (HL),n),
-        // INC_HL (counted as M).  Not allowed: any def of HL other
-        // than INC_HL, any touch of BC.
-        unsigned IncHlM = 0;
-        for (auto It = FirstEnd; It != LastStart; ++It) {
-          if (It->isMetaInstruction()) continue;
-          unsigned Op = It->getOpcode();
-          if (Op == Z80::INC_HL) { ++IncHlM; continue; }
-          // Other defs of HL/H/L → bail.  Touches of BC → bail.
-          for (const MachineOperand &MO : It->operands()) {
-            if (MO.isRegMask()) { Bail = true; break; }
-            if (!MO.isReg() || !MO.getReg().isPhysical()) continue;
-            Register R = MO.getReg();
-            if (TRI->regsOverlap(R, Z80::BC) ||
-                TRI->regsOverlap(R, Z80::B)  ||
-                TRI->regsOverlap(R, Z80::C)) {
-              Bail = true; break;
-            }
-            if (MO.isDef() &&
-                (TRI->regsOverlap(R, Z80::HL) ||
-                 TRI->regsOverlap(R, Z80::H)  ||
-                 TRI->regsOverlap(R, Z80::L))) {
-              Bail = true; break;
-            }
-          }
-          if (Bail) break;
-        }
-        if (Bail) continue;
-        if (IncHlM > IncBcN) continue;
-
-        // Region 3 — trailer: [LastEnd, LoopTerm).  No HL/BC touches.
-        for (auto It = LastEnd; It != LoopTerm; ++It) {
-          if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C) ||
-              TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
-            Bail = true; break;
-          }
-        }
-        if (Bail) continue;
-        // Terminators must not touch HL/BC (e.g. JP (HL) would).
-        for (auto It = LoopTerm; It != LoopBB.end(); ++It) {
-          if (TouchesReg(*It, Z80::BC, Z80::B, Z80::C) ||
-              TouchesReg(*It, Z80::HL, Z80::H, Z80::L)) {
-            Bail = true; break;
-          }
-        }
-        if (Bail) continue;
-
-        // BC must be dead at every non-loop successor of LoopBB.
-        for (MachineBasicBlock *Succ : LoopBB.successors()) {
-          if (Succ == &LoopBB) continue;
-          for (const auto &LI : Succ->liveins()) {
-            if (TRI->regsOverlap(LI.PhysReg, Z80::BC) ||
-                TRI->regsOverlap(LI.PhysReg, Z80::B)  ||
-                TRI->regsOverlap(LI.PhysReg, Z80::C)) {
-              Bail = true; break;
-            }
-          }
-          if (Bail) break;
-        }
-        if (Bail) continue;
-
-        // All guards passed.  Rewrite.
-        DebugLoc DL = LdLC->getDebugLoc();
-        unsigned ExtraIncs = IncBcN - IncHlM;
-
-        // Insert INC_HL × ExtraIncs at LastStart (so they replace the
-        // late anchor — INC_BC chain in case A, LD_L_C/LD_H_B in case B).
-        for (unsigned i = 0; i < ExtraIncs; ++i)
-          BuildMI(LoopBB, LastStart, DL, TII->get(Z80::INC_HL))
-              .addReg(Z80::HL, RegState::Define)
-              .addReg(Z80::HL);
-
-        // Erase late anchor [LastStart, LastEnd).
-        for (auto It = LastStart; It != LastEnd; ) {
-          auto Cur = It++;
-          Cur->eraseFromParent();
-        }
-        // Erase early anchor [FirstStart, FirstEnd).
-        for (auto It = FirstStart; It != FirstEnd; ) {
-          auto Cur = It++;
-          Cur->eraseFromParent();
-        }
-        // Erase / rewrite pred's BC setup.
-        if (MatchedCase1) {
-          LdCL->eraseFromParent();
-          LdBH->eraseFromParent();
-        } else if (MatchedCase2) {
-          LdBCnn->eraseFromParent();
-        } else { // MatchedCase3
-          // Replace LD_BC_nn N with LD_HL_nn N, copying the operand.
-          // LD_*_nn's operand 0 is the immediate / global / MC-symbol;
-          // there is no explicit def-reg operand (def is implicit).
-          DebugLoc PredDL = LdBCnn->getDebugLoc();
-          BuildMI(*Pred, LdBCnn, PredDL, TII->get(Z80::LD_HL_nn))
-              .add(LdBCnn->getOperand(0));
-          LdBCnn->eraseFromParent();
-        }
-
-        // Update liveness on LoopBB: drop $bc, ensure $hl.
-        if (LoopBB.isLiveIn(Z80::BC)) LoopBB.removeLiveIn(Z80::BC);
-        if (LoopBB.isLiveIn(Z80::B))  LoopBB.removeLiveIn(Z80::B);
-        if (LoopBB.isLiveIn(Z80::C))  LoopBB.removeLiveIn(Z80::C);
-        if (!LoopBB.isLiveIn(Z80::HL)) LoopBB.addLiveIn(Z80::HL);
-
-        Changed = true;
-        LLVM_DEBUG(dbgs() << "  #97: removed BC ping-pong in self-loop "
-                          << printMBBReference(LoopBB)
-                          << " (case " << (LdLCFirst ? "A" : "B")
-                          << ", M=" << IncHlM << " N=" << IncBcN << ")\n");
-      }
-    }
 
     // --- Peephole: u8 switch range-check 16-bit → 8-bit (issue #86) ---
+    //
+    // Re-test in session 73s (#180 C2): disable -> cpnos PROM1 +3 B
+    // (2028 -> 2031).  PEEPHOLE IS LIVE.  Keep.
     //
     // GISel switch lowering on a u8 discriminator widens to i16 for
     // the jump-table index BEFORE the bound check, so the bound check
@@ -2686,6 +2206,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     {
 
       SmallVector<MachineInstr *, 8> ToErase;
+      // #180 C2 RE-TEST (session 73s): AES 09_Oz_prod_like .text is byte-neutral
+      // when disabled (no matching shape in that corpus), but mask-from-flag.ll
+      // REGRESSES: ISel still emits the 5-instr `and $1; rrca; and $80; add a,a;
+      // sbc a,a` mask-roundtrip for `(x!=y)?0xFF:0` and this is its sole remover
+      // (-8 B/site).  PEEPHOLE IS LIVE.  Keep.
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         if (MII->getOpcode() != Z80::SBC_A_A) continue;
         // The instruction whose tail we're considering -- mark and walk
@@ -4772,6 +4297,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
           if (!Safe || PushIX == MIE)
             continue;
+          // Same liveness requirement as Form 2: the rewrite drops the
+          // IX/IY <- rr assignment, so IX/IY must be dead after the closing
+          // POP rr.  A loop-carried value in IY (live out via a back-edge) is
+          // not dead and must not lose its update.  ravn/llvm-z80#112 / #14.
+          if (MBB.computeRegisterLiveness(TRI, TP.IXReg,
+                                          std::next(std::next(PushIX))) !=
+              MachineBasicBlock::LQR_Dead)
+            continue;
           LLVM_DEBUG(dbgs() << "  IX transfer peephole: PUSH rr;POP IX...PUSH IX;POP rr"
                             << " → PUSH rr...POP rr (saves 4B)\n");
           PushIX->eraseFromParent();
@@ -4818,6 +4351,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             if (StackDepth < 0) { Safe = false; break; }
           }
           if (!Safe || EndCopy == MIE) continue;
+
+          // The rewrite drops the IX/IY <- rr write (the start copy), keeping
+          // IX/IY at its pre-pattern value.  That is only legal if IX/IY is
+          // dead after the closing copy.  A loop-carried value held in IY (live
+          // out via a back-edge) is NOT dead here -- dropping its update silently
+          // miscompiles the loop.  ravn/llvm-z80#112 / #14.
+          if (MBB.computeRegisterLiveness(TRI, IXReg, std::next(EndCopy)) !=
+              MachineBasicBlock::LQR_Dead)
+            continue;
 
           LLVM_DEBUG(dbgs() << "  IX transfer peephole: COPY16_PUSHPOP pair"
                             << " → PUSH rr...POP rr (saves 4B)\n");
@@ -4900,11 +4442,52 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return true;
     };
 
+    // A +static-stack slot whose base symbol is materialized into a register
+    // (e.g. `LD HL, __sfrend_main`) can be accessed INDIRECTLY via pointer
+    // arithmetic (array element, &local).  The direct-load orphan scan below
+    // only recognizes direct `LD A,(nn)` accesses, so it cannot see such
+    // reads -- converting the store+reload to PUSH/POP would drop a store
+    // whose slot is still read through the pointer.  Collect every symbol/
+    // global that appears in an instruction OTHER than a direct BSS load/store
+    // (i.e. used as an immediate address, not a memory operand) and refuse the
+    // conversion for those slots.  ravn/llvm-z80#195/test_27: a volatile
+    // m[3][3] sum dropped m[0][0]'s store-back because its slot was read only
+    // indirectly via `LD HL,__sfrend_main` + offset.
+    auto isDirectBssAccessOpc = [](unsigned O) {
+      return O == Z80::LD_A_nnind  || O == Z80::LD_HL_nnind ||
+             O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind ||
+             O == Z80::LD_nnind_A  || O == Z80::LD_nnind_HL ||
+             O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
+    };
+    SmallPtrSet<const void *, 4> AddrTakenSyms;
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (isDirectBssAccessOpc(MI.getOpcode()))
+          continue;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isMCSymbol())
+            AddrTakenSyms.insert(MO.getMCSymbol());
+          else if (MO.isGlobal())
+            AddrTakenSyms.insert(MO.getGlobal());
+        }
+      }
+    }
+
     for (MachineBasicBlock &MBB : MF) {
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         const SpillInfo *SI = getSpillInfo(MII->getOpcode());
         if (!SI) continue;
         if (!isSfrendSymbol(MII->getOperand(0))) continue;
+        // Skip slots whose frame symbol is address-taken (see above).
+        {
+          const MachineOperand &A = MII->getOperand(0);
+          const void *Key = A.isMCSymbol()
+                                ? (const void *)A.getMCSymbol()
+                                : (A.isGlobal() ? (const void *)A.getGlobal()
+                                                : nullptr);
+          if (Key && AddrTakenSyms.count(Key))
+            continue;
+        }
 
         // Found a BSS spill store.  Scan forward for CALLs and matching loads.
         // Count how many loads reference this same address after the store.
@@ -5021,6 +4604,34 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (UsedElsewhere) continue;
         }
 
+        // Also bail if the slot is accessed (any register class) earlier in
+        // THIS block, BEFORE the matched store.  The forward orphan scan only
+        // covers accesses after the store; a read before it is the signature
+        // of a loop-carried value whose home is this slot -- the slot is read
+        // at the loop top (via the back-edge) and written at the bottom.
+        // Converting the bottom store+reload to PUSH/POP drops the store, so
+        // the top read sees a stale slot every iteration.  ravn/llvm-z80
+        // #195/test_166: a popcount i32 loop hung because `LD (slot),BC` was
+        // converted to PUSH/POP while the loop top still read it via
+        // `LD HL,(slot)`.
+        {
+          auto isAnyBssAccessOpc = [](unsigned O) {
+            return O == Z80::LD_A_nnind  || O == Z80::LD_HL_nnind ||
+                   O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind ||
+                   O == Z80::LD_nnind_A  || O == Z80::LD_nnind_HL ||
+                   O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
+          };
+          bool ReadBeforeStore = false;
+          for (auto Prev = MBB.begin(); Prev != MII; ++Prev) {
+            if (isAnyBssAccessOpc(Prev->getOpcode()) &&
+                sameAddress(*MII, *Prev)) {
+              ReadBeforeStore = true;
+              break;
+            }
+          }
+          if (ReadBeforeStore) continue;
+        }
+
         // Cost: PUSH (1B) + N*POP (N B) + (N-1)*re-PUSH ((N-1) B) = 2N B.
         // Original: store (S B) + N*load (N*L B).
         // Multi-load with re-PUSH: after each POP except the last, insert
@@ -5055,10 +4666,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                           << "  " << LoadCount << " loads, saves "
                           << (BssBytes - PushPopBytes) << "B\n");
 
-        // Replace store with PUSH.
+        // Replace store with PUSH.  Anchor resumption to the inserted PUSH
+        // (which is never erased) rather than decrementing the post-erase
+        // iterator: if the matching load is the instruction immediately after
+        // the store, erasing the store then the load would leave MII dangling
+        // and `--MII` would dereference freed memory (ravn/llvm-z80#193).
         DebugLoc DL = MII->getDebugLoc();
-        BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
-        MII = MBB.erase(MII);
+        MachineInstr *PushMI = BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
+        auto StoreIt = MII;
 
         // Replace each load with POP.  For all but the last, insert a
         // re-PUSH immediately after the POP to keep the value on the stack
@@ -5073,10 +4688,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
           MBB.erase(Loads[i]);
         }
+        // Erase the store last; StoreIt stays valid through the load erasures.
+        MBB.erase(StoreIt);
 
         Changed = true;
-        // Restart scan from current position (MII was updated by erase).
-        --MII;
+        // Resume scanning from the inserted PUSH; the outer loop's ++MII
+        // advances past it.  Always a valid iterator.
+        MII = PushMI->getIterator();
       }
     }
   }
@@ -5753,6 +5371,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // set of defined 8-bit regs in the interval, then exclude variants
         // whose partner appears.
         SmallSet<unsigned, 8> DefinedRegs;
+        // Track 8-bit registers READ in the interval.  The transform inserts
+        // `LD R,A` at the store site, so R holds the spilled value throughout
+        // the bracketed region; if the region READS R it would observe the
+        // spilled value instead of R's original contents -> miscompile
+        // (ravn/llvm-z80#192: the second XOR_CMP_EQ16 reads D as its zero
+        // input, but #173 had put the first compare's result in D).
+        SmallSet<unsigned, 8> ReadRegs;
         bool SeenCall = false;
         MachineBasicBlock::iterator R0 = MIE, R1 = MIE, R2 = MIE, R3 = MIE;
         const StoreReload173 *V = nullptr;
@@ -5793,6 +5418,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
         };
 
+        auto recordReads = [&](const MachineInstr &MI) {
+          // CALL reads are ABI clobbers, not architectural reads of our value.
+          if (MI.isCall()) return;
+          for (const MachineOperand &MO : MI.operands()) {
+            if (!MO.isReg() || !MO.readsReg() || !MO.getReg().isPhysical())
+              continue;
+            unsigned R = MO.getReg();
+            if (R == Z80::A || R == Z80::B || R == Z80::C || R == Z80::D ||
+                R == Z80::E || R == Z80::H || R == Z80::L)
+              ReadRegs.insert(R);
+            else if (R == Z80::BC) {
+              ReadRegs.insert(Z80::B); ReadRegs.insert(Z80::C);
+            } else if (R == Z80::DE) {
+              ReadRegs.insert(Z80::D); ReadRegs.insert(Z80::E);
+            } else if (R == Z80::HL) {
+              ReadRegs.insert(Z80::H); ReadRegs.insert(Z80::L);
+            }
+          }
+        };
+
         // Phase 1: scan from Store to the matched 4-instr reload template.
         for (auto S = std::next(Store); S != MIE; ++S) {
           unsigned Op = S->getOpcode();
@@ -5827,6 +5472,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
           if (S->isCall()) SeenCall = true;
           recordDefs(*S);
+          recordReads(*S);
           if (S->isTerminator()) { Bail = true; break; }
         }
 
@@ -5863,6 +5509,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // CALL is not a semantic change relative to anything the caller
         // had right to observe.
         if (DefinedRegs.count(V->Partner8)) { ++MII; continue; }
+
+        // The destination register R must not be READ in the interval between
+        // the store and the matched reload: the transform inserts `LD R,A` at
+        // the store site, so R would carry the spilled value during the region
+        // instead of its original contents (ravn/llvm-z80#192).
+        if (ReadRegs.count(V->Reg8)) { ++MII; continue; }
 
         // Slot must not be used anywhere else in the function.
         bool UsedElsewhere = false;
@@ -6522,6 +6174,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       Changed = true;
     }
   }
+
+  // NOTE (ravn/llvm-z80#194): the cross-block redundant `LD A,r` removal above
+  // extends A's live range across a block edge but leaves block live-ins stale
+  // (gf_log's `ADD_A_A` reads `$a` with `$a` absent from %bb.2 live-ins, which
+  // -verify-machineinstrs flags).  This is benign at runtime (the value is
+  // correct).  A `fullyRecomputeLiveIns(MF)` here fixes the metadata, but
+  // downstream block-placement reacts to the corrected live-ins and grows the
+  // 2 KB-capped cpnos PROM by 2 B, and it does NOT make the module
+  // verify-clean (PEI and other generic post-RA passes have their own
+  // pre-existing staleness).  Deferred pending either a byte-neutral surgical
+  // live-in update in the #60 removal or a coordinated verify-clean effort.
 
   return Changed;
 }

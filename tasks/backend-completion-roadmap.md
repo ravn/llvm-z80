@@ -54,7 +54,7 @@ must be audited:
 | 6 | Frame lowering | `Z80FrameLowering.cpp` | hasFP=false runtime bug (#12 parked) |
 | 7 | Register info | `Z80RegisterInfo.cpp` | `getRegAllocationHints` partial (#92) |
 | 8 | Instr info | `Z80InstrInfo.cpp` | `isReallyTriviallyReMaterializable` partial |
-| 9 | Target lowering | `Z80ISelLowering.cpp` (DAGISel) | Coexists with GISel; status unclear |
+| 9 | Target lowering | `Z80ISelLowering.cpp` (GISel `TargetLowering`) | RESOLVED (#181, session 73s): GISel-only, no DAGISel selector exists; file is the live shared `TargetLowering` base. Dead `-gen-dag-isel` tablegen line removed. |
 | 10 | TargetTransformInfo | `Z80TargetTransformInfo.{h,cpp}` | **No Z80 TTI** (#95 needs one) |
 | 11 | Pseudo expansion | `Z80ExpandPseudo.cpp` | Working; possibly incomplete coverage |
 | 12 | Peephole layer | `Z80LateOptimization.cpp` | **Bloated**; multiple stand-ins for upstream gaps |

@@ -1371,6 +1371,34 @@ def ADD16_tied : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src, GR16_BCDE:$rhs)> {
   let mayStore = false;
 }
 
+// ADD16_acc (#178): NON-tied accumulator add.  $dst = $base + $rhs.
+//
+// Unlike ADD16_tied this has NO tie between $dst and the base operand, so
+// the RegisterCoalescer has no SSA copy to fold the (often-surviving) base
+// into the HLI-classed result -- which is what made ADD16_tied assign an
+// out-of-class physreg (BC) to $dst and miscompile (session 73s
+// root-cause).  $dst stays in HLI (-> HL, since IX/IY are reserved) and the
+// base lives independently in GR16.  expandPostRAPseudo materialises it as
+//   COPY $dst <- $base   (skipped if regalloc already placed them together)
+//   ADD  $dst, $rhs      (ADD HL/IX/IY,rr)
+// $dst is a real SSA vreg, so the pseudo can be marked isReMaterializable
+// to let greedy clone "$dst = base + off" at a use point instead of
+// spilling -- the #166/#178 win, attacking the base-reuse copy traffic #27
+// measured.
+def ADD16_acc : Z80Pseudo<(outs HLI:$dst), (ins GR16:$base, GR16_BCDE:$rhs)> {
+  let Defs = [FLAGS];
+  let mayLoad = false;
+  let mayStore = false;
+  // SSA $dst is the prerequisite for remat (ADD_HL_rr's physreg output is
+  // not).  HOWEVER session-73s A/B showed remat-on and remat-off produce
+  // byte-identical AES: the implicit FLAGS def blocks LLVM's rematerializer
+  // in practice (16-bit ADD always clobbers H/N/C; dropping the FLAGS def
+  // would miscompile flag-dependent code).  Kept true to document intent;
+  // it currently never fires.  See session73s-issue178-add16-tied-rootcause.md.
+  let isReMaterializable = true;
+  let isAsCheapAsAMove = true;
+}
+
 // AND A; SBC HL,rr (subtraction without borrow)
 def SUB_HL_rr : Z80Inst<"sub_hl_rr"> {
   let InOperandList = (ins GR16_BCDE:$rhs);

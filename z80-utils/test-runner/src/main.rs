@@ -147,6 +147,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     let mut opt_filter = "all".to_string();
     let mut fast_math = false;
     let mut omit_fp = false;
+    let mut static_stack = false;
     let mut pattern = None;
 
     let mut i = 0;
@@ -161,6 +162,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
             }
             "-fast-math" => fast_math = true,
             "-omit-frame-pointer" => omit_fp = true,
+            "-static-stack" => static_stack = true,
             s if !s.starts_with('-') => pattern = Some(s.to_string()),
             _ => {}
         }
@@ -176,6 +178,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
         fast_math,
         omit_fp,
         inline_runtime: false,
+        static_stack,
         pattern,
     };
 
