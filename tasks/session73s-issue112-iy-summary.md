@@ -33,15 +33,32 @@ Real test-runner regressions (rest is known `test_90/91` edge noise, #136):
 `test_38_sort_search`.  Lit shifts: `add16-acc` (`add iy,de`), `ldir-aftermath`
 (reorder), `issue-156-bss-spill-loop-header-pop` (`push hl` reappears).
 
-## Dig-in conclusion (regalloc-class, not a peephole)
+## Dig-in conclusion — TWO distinct bugs (corrected via instruction-level trace)
 
 Reliable repros `test_167_iy_crc32` / `test_168_iy_crc_inner` (crc i32 reduction
-loops).  `-print-after-all` on `crc_one` O1: the z80-late-opt copy removals are
-**legal** (redundant `iy=hl; hl=iy` where IY is provably dead).  The corruption is
-in the **register assignment** — the allocator places halves of a split 32-bit
-value in IY and shuffles them through expensive `push iy`/`pop hl` round-trips.
-This is the Phase-3 regalloc cost-model work #112 was always gated on, same family
-as #27 / #110 / #115.  `dynamic_alloca` is a separate frame-pointer class.
+loops); controls `test_169` (`(crc>>1)^const`) and `test_170` (cond-xor only)
+both PASS, so the bug needs the select+shift+xor combination.
+
+**Important:** the test-runner builds **without `+static-stack`** (SP-relative
+frame), while production/AES use `+static-stack` (BSS locals).  These are
+different codegen paths, so there are TWO distinct IY-unreserve bugs:
+
+1. **`test_168` (non-`+static-stack`): SP-relative store aliases a pushed
+   register.**  `z88dk-ticks -trace` of `crc_one(0xFF)` O1: the carried HIGH
+   half `0xEDB8` is saved by `push hl`, but before its `pop hl` there is a second
+   `push hl` plus an SP-relative store `ld hl,4; add hl,sp; ld (hl),a` whose
+   offset lands on the saved HIGH half — clobbering its high byte `0xED -> 0x44`.
+   The corrupted HIGH (`0x41B8`) shifts into IY as `0x20DC` (not `0x76DC`) and the
+   error propagates to the wrong result `0x0044`.  Root cause: frame-index ->
+   SP-offset computation does not account for the live pushed value; IY-unreserve
+   triggers the nested-push spill shape.  This is frame-lowering, NOT a cost model.
+   (My earlier `+static-stack`-asm "cost-model" reading was wrong for this path;
+   corrected on #189.)
+
+2. **AES (`+static-stack`): a separate, still-unreduced bug.**  No SP-relative
+   frame (locals in BSS), so it cannot be bug #1.  Mechanism TBD.
+
+`dynamic_alloca` (#190) is a third, frame-pointer class.
 
 ## Filed / tracked
 
