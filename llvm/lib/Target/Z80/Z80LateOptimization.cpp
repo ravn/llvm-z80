@@ -4597,10 +4597,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                           << "  " << LoadCount << " loads, saves "
                           << (BssBytes - PushPopBytes) << "B\n");
 
-        // Replace store with PUSH.
+        // Replace store with PUSH.  Anchor resumption to the inserted PUSH
+        // (which is never erased) rather than decrementing the post-erase
+        // iterator: if the matching load is the instruction immediately after
+        // the store, erasing the store then the load would leave MII dangling
+        // and `--MII` would dereference freed memory (ravn/llvm-z80#193).
         DebugLoc DL = MII->getDebugLoc();
-        BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
-        MII = MBB.erase(MII);
+        MachineInstr *PushMI = BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
+        auto StoreIt = MII;
 
         // Replace each load with POP.  For all but the last, insert a
         // re-PUSH immediately after the POP to keep the value on the stack
@@ -4615,10 +4619,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
           MBB.erase(Loads[i]);
         }
+        // Erase the store last; StoreIt stays valid through the load erasures.
+        MBB.erase(StoreIt);
 
         Changed = true;
-        // Restart scan from current position (MII was updated by erase).
-        --MII;
+        // Resume scanning from the inserted PUSH; the outer loop's ++MII
+        // advances past it.  Always a valid iterator.
+        MII = PushMI->getIterator();
       }
     }
   }
