@@ -1,3 +1,4 @@
+/* EXTRA-FLAGS: -mllvm -z80-unreserve-iy -Xclang -target-feature -Xclang +static-stack */
 /* Test 168: crc inner 8-step reduction, no outer loop (ravn/llvm-z80#112 IY).
    Isolated IY-heavy inner reduction from crc32.  crc_one(0xFF) low16 == 0xEF8D
    (full = 0x2D02EF8D, verified with host cc). */

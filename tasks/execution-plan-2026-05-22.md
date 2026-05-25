@@ -368,3 +368,44 @@ After **3 sessions** of executing this plan, revisit:
 
 If yes to any of these, refresh `upstream-coherence-map-*.md` and
 this plan.
+
+## Reprioritization 2026-05-25 (user directive)
+
+**Primary focus is the Z80 backend -> `llvm-z80/llvm-z80`.** The
+"upstream-upstream" `llvm/llvm-project` work is deferred until the
+backend is submittable — *except* generic bugs that **interfere with
+the Z80 backend**, which stay in scope because they block it.
+
+This **demotes Track A**: the §"first move" recommendation to lead with
+A1/A2/A3 (generic-LLVM PRs) is now wrong for this priority. Track A
+shrinks to only its interfering subset:
+- **#128** — MachineLICM long-live-ranges pessimization, currently masked
+  by a fork-only `disablePass()`; directly degrades the Z80 backend.
+- **#182** — ScalarEvolution crash that fires on the Z80 corpus build.
+
+The rest of Track A (TruncInstCombine, SimplifyCFG cost gate) is pure
+density help with no backend dependency -> wait. **New order of the day:
+Tracks B (correctness) + C (cleanup gates) + D (packaging); A only as
+needed to unblock B/C/D.**
+
+### #189 reclassified (drill 2026-05-25)
+
+`issue189-27-regalloc-cost-model-drill-2026-05-25.md` (GO). The
+IX/IY-as-GPR regalloc gap has **two faces split on `+static-stack`**:
+- **Tier IV density** under `+static-stack` (production): IY-on is
+  value-correct (36/36 repros PASS all opt levels) but bloated by
+  `push iy`/`pop rr` shuttles.
+- **Tier II correctness** in the default (IX-frame) config: IY-on
+  **miscompiles** (test_168 -> `0x0044` @ -O1/-Os) and **hangs**
+  (test_167 @ -O2/-O3), because the IY push/pop shuttle collides with
+  stack-based spill/reload.
+
+Root cause (both): `GR16` allocation order includes IY, so a 16-bit
+value that gets **byte-decomposed** (`LSHR16`/`.sub_lo`/`XOR_CMP_EQ16`)
+can land in IY, forcing a shuttle the cost model can't price. **One fix
+for both:** constrain those byte-accessed operands to `GR16NoIR` at
+ISel (register classes express legality; costs only express preference —
+confirmed against `CodeGenerator.html` + `Target.td`). Likely the shared
+root of **#27 / #110 / #115** too. Next: reduce the default-config
+miscompile to a minimal `llc` lit XFAIL + file the ravn/llvm-z80 issue,
+then implement the `GR16NoIR` constraint with a pressure histogram.

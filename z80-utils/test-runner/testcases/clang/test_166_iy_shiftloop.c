@@ -1,3 +1,4 @@
+/* EXTRA-FLAGS: -mllvm -z80-unreserve-iy -Xclang -target-feature -Xclang +static-stack */
 /* Test 166: i32 loop-carried-value shift loop (ravn/llvm-z80#112 IY residual).
    Isolated from test_04 bit 6.  popcount(0xA5A5A5A5) == 16.
    With -z80-unreserve-iy the i32 loop-carried value lands in IY and the
