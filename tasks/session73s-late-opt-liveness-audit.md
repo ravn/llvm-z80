@@ -61,8 +61,20 @@ liveins / a removed-or-moved A def without metadata update).  Reproduces at plai
 static-stack-only, nor #189 which only fires on IX/IY copies).  **Benign at runtime**
 (AES is byte-correct), so it is a liveness-*metadata* staleness, not a value
 miscompile — but it is exactly the latent class that bites a later pass trusting
-the stale liveness.  Filed as ravn/llvm-z80#194.  Pinpointing the exact peephole
-needs `llvm-extract` (not built here) or a pass bisection.
+the stale liveness.  Filed as ravn/llvm-z80#194.
+
+**Bisected (via `-stop-before`/`-stop-after=z80-late-opt`):** the **cross-block
+redundant-`LD A,r` removal (#60, ~3874)** removes gf_log bb.2's `LD_A_E` (A==E
+enters bb.2 from bb.1, correctly) but does NOT add `$a` to bb.2's live-ins, so
+`ADD_A_A` then reads `$a` with `$a` absent from live-ins.  A `fullyRecomputeLiveIns`
+at end of late-opt fixes it but (a) grows the 2 KB-capped cpnos PROM by 2 B via
+downstream block-placement, and (b) does NOT achieve module verify-clean (PEI and
+other generic post-RA passes have their own pre-existing staleness, e.g.
+`aes_ar_cpy` PUSH_AF).  **Fix deferred** — needs a byte-neutral surgical live-in
+update in the #60 removal, or a coordinated verify-clean effort.  In-code NOTE
+left at `runOnMachineFunction` end (commit `ca8938268442`).  Minor side note:
+cpnos size fluxes ±1 B across clang rebuilds from comment-only changes (a peephole
+iterating a pointer-keyed DenseMap — non-deterministic order).
 
 ## Recommendation
 - New peepholes that erase/move instructions should use the shared `isRegDeadAfter`
