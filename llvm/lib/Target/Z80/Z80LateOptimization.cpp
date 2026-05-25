@@ -5295,6 +5295,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // set of defined 8-bit regs in the interval, then exclude variants
         // whose partner appears.
         SmallSet<unsigned, 8> DefinedRegs;
+        // Track 8-bit registers READ in the interval.  The transform inserts
+        // `LD R,A` at the store site, so R holds the spilled value throughout
+        // the bracketed region; if the region READS R it would observe the
+        // spilled value instead of R's original contents -> miscompile
+        // (ravn/llvm-z80#192: the second XOR_CMP_EQ16 reads D as its zero
+        // input, but #173 had put the first compare's result in D).
+        SmallSet<unsigned, 8> ReadRegs;
         bool SeenCall = false;
         MachineBasicBlock::iterator R0 = MIE, R1 = MIE, R2 = MIE, R3 = MIE;
         const StoreReload173 *V = nullptr;
@@ -5335,6 +5342,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
         };
 
+        auto recordReads = [&](const MachineInstr &MI) {
+          // CALL reads are ABI clobbers, not architectural reads of our value.
+          if (MI.isCall()) return;
+          for (const MachineOperand &MO : MI.operands()) {
+            if (!MO.isReg() || !MO.readsReg() || !MO.getReg().isPhysical())
+              continue;
+            unsigned R = MO.getReg();
+            if (R == Z80::A || R == Z80::B || R == Z80::C || R == Z80::D ||
+                R == Z80::E || R == Z80::H || R == Z80::L)
+              ReadRegs.insert(R);
+            else if (R == Z80::BC) {
+              ReadRegs.insert(Z80::B); ReadRegs.insert(Z80::C);
+            } else if (R == Z80::DE) {
+              ReadRegs.insert(Z80::D); ReadRegs.insert(Z80::E);
+            } else if (R == Z80::HL) {
+              ReadRegs.insert(Z80::H); ReadRegs.insert(Z80::L);
+            }
+          }
+        };
+
         // Phase 1: scan from Store to the matched 4-instr reload template.
         for (auto S = std::next(Store); S != MIE; ++S) {
           unsigned Op = S->getOpcode();
@@ -5369,6 +5396,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           }
           if (S->isCall()) SeenCall = true;
           recordDefs(*S);
+          recordReads(*S);
           if (S->isTerminator()) { Bail = true; break; }
         }
 
@@ -5405,6 +5433,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // CALL is not a semantic change relative to anything the caller
         // had right to observe.
         if (DefinedRegs.count(V->Partner8)) { ++MII; continue; }
+
+        // The destination register R must not be READ in the interval between
+        // the store and the matched reload: the transform inserts `LD R,A` at
+        // the store site, so R would carry the spilled value during the region
+        // instead of its original contents (ravn/llvm-z80#192).
+        if (ReadRegs.count(V->Reg8)) { ++MII; continue; }
 
         // Slot must not be used anywhere else in the function.
         bool UsedElsewhere = false;
