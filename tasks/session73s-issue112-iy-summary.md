@@ -55,10 +55,32 @@ different codegen paths, so there are TWO distinct IY-unreserve bugs:
    (My earlier `+static-stack`-asm "cost-model" reading was wrong for this path;
    corrected on #189.)
 
-2. **AES (`+static-stack`): a separate, still-unreduced bug.**  No SP-relative
-   frame (locals in BSS), so it cannot be bug #1.  Mechanism TBD.
+2. **`+static-stack` `-O1`/`-Os`: i32 select+shift+xor loop miscompiles,
+   INDEPENDENT of IY (ravn/llvm-z80#192).**  Reliable memory-dump harness
+   (validated: trivial i32 +static-stack correct; non-static crc correct):
+   `crc_one(0xFF)` returns `0xB6662D3D` instead of `0x2D02EF8D` at O1/Os with IY
+   reserved.  Same select+shift+xor combination requirement as bug #1; same
+   i32-loop-carried-spill defect, but via the BSS spill path under `+static-stack`
+   (bug #1 is the SP-relative path under IY-on).  **This is the most important: it
+   affects the shipped compiler in the production config (`+static-stack -Os`),
+   no IY work required.**  The test-runner never caught it because it built only
+   without `+static-stack` -- now fixed by the new `cargo run -- clang -static-stack`
+   mode (commit `2d6ccd4`), which reproduces #192 via `test_168` (`_ss`, FAIL O1/Os).
 
-`dynamic_alloca` (#190) is a third, frame-pointer class.
+`dynamic_alloca` (#190) is a fourth, frame-pointer class.
+
+## Issues filed this session
+- **#189** IY-unreserve SP-relative-store-vs-push (test_168 non-static, IY-on).
+- **#190** IY-unreserve dynamic_alloca FATAL.
+- **#191** llvm-objdump can't auto-detect Z80 ELFs (ELFObjectFile::getArch has no
+  EM_Z80 case; e_machine=8080 IS the correct EM_Z80 per LLVM ELF.h -- my initial
+  "220" claim was wrong).
+- **#192** +static-stack -O1/-Os i32 select+shift+xor loop miscompile (production
+  config, IY-independent) -- the headline finding.
+
+## Test-runner additions
+test_166 (popcount), test_167 (crc32), test_168 (crc_inner), test_169 (uncond
+xor control), test_170 (cond-xor control); new `-static-stack` run mode.
 
 ## Filed / tracked
 
