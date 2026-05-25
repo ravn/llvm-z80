@@ -6106,6 +6106,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // NOTE (ravn/llvm-z80#194): the cross-block redundant `LD A,r` removal above
+  // extends A's live range across a block edge but leaves block live-ins stale
+  // (gf_log's `ADD_A_A` reads `$a` with `$a` absent from %bb.2 live-ins, which
+  // -verify-machineinstrs flags).  This is benign at runtime (the value is
+  // correct).  A `fullyRecomputeLiveIns(MF)` here fixes the metadata, but
+  // downstream block-placement reacts to the corrected live-ins and grows the
+  // 2 KB-capped cpnos PROM by 2 B, and it does NOT make the module
+  // verify-clean (PEI and other generic post-RA passes have their own
+  // pre-existing staleness).  Deferred pending either a byte-neutral surgical
+  // live-in update in the #60 removal or a coordinated verify-clean effort.
+
   return Changed;
 }
 
