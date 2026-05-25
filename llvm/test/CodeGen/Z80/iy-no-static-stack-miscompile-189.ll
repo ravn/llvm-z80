@@ -1,26 +1,26 @@
 ; RUN: llc -mtriple=z80 -O1 -z80-unreserve-iy < %s | FileCheck %s
-; XFAIL: *
 ;
-; ravn/llvm-z80#189 (default-config face) -- IX/IY-as-GPR miscompile.
+; ravn/llvm-z80#189 / #27 -- IX/IY-as-GPR miscompile (default IX-frame config).
 ;
-; This i32 loop-carried CRC reduction MISCOMPILES at -O1 with -z80-unreserve-iy in
-; the DEFAULT (IX-frame) configuration: crc_one(0xFF) returns 0x0044 instead of the
-; correct 0x...EF8D (verified in the emulator via test-runner test_168). With
-; -mattr=+static-stack the same source is CORRECT.
+; This i32 loop-carried CRC reduction used to MISCOMPILE at -O1 with
+; -z80-unreserve-iy in the DEFAULT (IX-frame) configuration: crc_one(0xFF)
+; returned 0x...0044 instead of the correct 0x...EF8D (witnessed at runtime by
+; z80-utils/test-runner test_171_iy_crc_default_config; the +static-stack form
+; in test_168 stayed value-correct but paid a push/pop density penalty).
 ;
-; Root cause: GR16's allocation order includes IY, so the byte-decomposed i32 half
-; (lshr/select/xor -> sub_lo/sub_hi accesses) is allocated to IY. IY has no 8-bit
-; ops, so each access becomes a push iy / pop rr shuttle. In the default config the
-; spill slots are addressed SP-relatively (ld hl,N; add hl,sp), and the push/pop
-; shuttle perturbs SP underneath that addressing -> a slot lands at the wrong
-; address -> the loop-carried i32 corrupts. (+static-stack uses fixed BSS addresses,
-; so no collision -> correct there; that face is a density regression only.)
+; Root cause: the byte-decomposed i32 halves are correctly created in GR16NoIR
+; (= GR16 minus IX/IY) by instruction selection, because IX/IY have no
+; documented 8-bit sub-register ops.  But Z80RegisterInfo::getLargestLegalSuperClass
+; -- the "grow" step used by recomputeRegClass during coalescing and by greedy's
+; live-range splitting -- widened GR16NoIR back to GR16, making the value
+; IX/IY-eligible again.  The allocator/spiller then parked it in IY; every byte
+; access became a `push iy; pop rr` shuttle, and in the default config that
+; push/pop perturbs SP underneath the SP-relative spill-slot addressing
+; (ld hl,N; add hl,sp) -> a slot lands at the wrong depth -> the loop-carried
+; i32 corrupts.
 ;
-; Fix: keep byte-decomposed i32 halves out of IX/IY by constraining the affected
-; operands to the GR16NoIR register class at instruction selection (register classes
-; express legality; CostPerUse/CopyCost only express preference). After the fix the
-; i32 half is no longer shuttled through IY, so the corrupting pattern cannot form.
-; Drop the XFAIL line when GR16NoIR lands.
+; Fix: getLargestLegalSuperClass no longer re-widens GR16NoIR to GR16, so the
+; IY-exclusion survives allocation and the corrupting shuttle cannot form.
 
 define dso_local i32 @crc_one(i32 noundef %crc) local_unnamed_addr {
 entry:

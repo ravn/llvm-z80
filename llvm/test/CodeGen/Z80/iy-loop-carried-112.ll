@@ -1,14 +1,21 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -z80-unreserve-iy < %s | FileCheck %s
 
-; ravn/llvm-z80#112 / #14: a loop-carried i32 value whose high half is allocated
-; to IY must keep its per-iteration update.  The Z80LateOptimization "IX/IY
-; transfer" peephole used to collapse the COPY16_PUSHPOP round-trip that writes
-; the new high word back into IY (treating IY as dead scratch), silently
-; dropping the loop-carried update so the loop hung / returned garbage.
+; ravn/llvm-z80#112 / #14 / #189.  This function (a loop-carried i32 popcount)
+; used to allocate the i32 high half to IY and update it each iteration via a
+; `pop iy` inside the loop -- the #14 Z80LateOptimization peephole-liveness guard
+; was added so that update would not be dropped.
 ;
-; The fix added a liveness guard: the peephole only fires when IX/IY is dead
-; after the closing copy.  Here IY is live-out via the back-edge, so the update
-; (a `pop iy` inside the loop body) must survive.
+; After the #189 / #112 work (getLargestLegalSuperClass no longer re-widens
+; GR16NoIR to GR16 under -z80-unreserve-iy, plus the Z80NarrowNoIndex pre-RA
+; pass), the byte-decomposed i32 halves are kept in GR16NoIR and no longer
+; routed through IY at all -- so this function is now IY-free and the old
+; `pop iy`-in-loop shuttle (and the undocumented `xor iyh` it had regressed into)
+; are gone.  Lock that in.
+;
+; NOTE: the #14 peephole-liveness guard in Z80LateOptimization is still live code
+; but is no longer exercised by this function; it needs a dedicated witness that
+; still lands a loop-carried value in IY via push/pop.  Tracked in
+; tasks/issue112-189-iy-leak-taxonomy-2026-05-25.md.
 
 ; popcount via shift loop: while (v) { count += v & 1; v >>= 1; }
 define dso_local zeroext i8 @popcount32(i32 noundef %0) {
@@ -30,7 +37,6 @@ define dso_local zeroext i8 @popcount32(i32 noundef %0) {
   ret i8 %12
 }
 
-; The loop-carried high word lives in IY and must be rewritten each iteration.
-; CHECK-LABEL: .LBB0_2:
-; CHECK: pop iy
-; CHECK: .LBB0_2
+; The loop-carried i32 must no longer be shuttled through IX/IY.
+; CHECK-LABEL: popcount32:
+; CHECK-NOT: iy

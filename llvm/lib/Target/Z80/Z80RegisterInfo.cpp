@@ -59,10 +59,13 @@ static llvm::cl::opt<bool> Z80LogRegallocHints(
 // (2) dynamic_alloca (frame-pointer class, test_48 FATAL all opt levels);
 // (3) the AES corpus production target (C010=00).  Keep OFF until these close.
 // See session73s-issue112-iy-unreserve-scope.md.
-static llvm::cl::opt<bool> Z80UnreserveIY(
-    "z80-unreserve-iy", llvm::cl::Hidden, llvm::cl::init(false),
-    llvm::cl::desc("Make IY an allocatable 16-bit register (ravn/llvm-z80#112 "
-                   "bring-up; default off, has known residual regalloc miscompiles)"));
+// Non-static so Z80NarrowNoIndex can gate on it (declared extern there).
+namespace llvm {
+cl::opt<bool> Z80UnreserveIY(
+    "z80-unreserve-iy", cl::Hidden, cl::init(false),
+    cl::desc("Make IY an allocatable 16-bit register (ravn/llvm-z80#112 "
+             "bring-up; default off, has known residual regalloc miscompiles)"));
+} // namespace llvm
 
 #define GET_REGINFO_TARGET_DESC
 #include "Z80GenRegisterInfo.inc"
@@ -327,6 +330,27 @@ Z80RegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
                                            const MachineFunction &) const {
   if (RC->hasSuperClass(&Z80::Anyi8RegClass))
     return &Z80::Anyi8RegClass;
+  // GR16NoIR (= DE/HL/BC, GR16 minus IX/IY) deliberately excludes the index
+  // registers because its values are byte-decomposed and IX/IY have no
+  // documented 8-bit sub-register ops.  When IY is allocatable (the #112
+  // -z80-unreserve-iy bring-up path), do NOT re-widen GR16NoIR to GR16 here:
+  // getLargestLegalSuperClass is the grow step in recomputeRegClass and in
+  // greedy's live-range splitting, and widening a GR16NoIR spill/split temp to
+  // GR16 lets the allocator park a byte-decomposed value back in IY (the
+  // push/pop shuttle this exclusion exists to prevent -- a density regression
+  // under +static-stack and a miscompile in the default config; ravn/llvm-z80
+  // #189 / #27).  Spilling still works: SPILL_GR16/RELOAD_GR16 accept GR16 and
+  // GR16NoIR is a subclass, so no widening is needed to spill.
+  //
+  // Gate on Z80UnreserveIY: when IY is reserved (the production default), GR16
+  // and GR16NoIR have the same allocatable set {DE,HL,BC}, so widening does not
+  // change allocation -- but the CLASS distinction still affects coalescing,
+  // and refusing to widen unconditionally regresses production code (extra
+  // spill churn from reduced coalescing freedom).  Keeping the original
+  // widening when IY is reserved makes production codegen byte-identical; the
+  // exclusion only matters when IY can actually be chosen.
+  if (RC == &Z80::GR16NoIRRegClass && Z80UnreserveIY)
+    return RC;
   // Return GR16, not Anyi16.  Anyi16 includes SP which is never allocatable,
   // and the SPILL_GR16/RELOAD_GR16 pseudos only accept GR16.  Widening to
   // Anyi16 causes "Illegal virtual register" errors (#51).
