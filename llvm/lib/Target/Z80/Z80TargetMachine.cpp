@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Z80TargetMachine.h"
+#include "Z80NarrowNoIndex.h"
 #include "Z80PinAluAccumulator.h"
 #include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
@@ -77,6 +78,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80ShiftRotateChainPass(PR);
   initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PinAluAccumulatorPass(PR);
+  initializeZ80NarrowNoIndexPass(PR);
   initializeZ80PostRACompareMergePass(PR);
 }
 
@@ -365,6 +367,15 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // ravn/llvm-z80#172.
     insertPass(&llvm::MachineSchedulerID,
                createZ80PinAluAccumulatorPass());
+
+    // Keep IX/IY-incompatible GR16 values out of IX/IY (only when IY is
+    // allocatable -- gated internally on -z80-unreserve-iy).  Narrows plain
+    // GR16 vregs that are byte-decomposed (sub_lo/sub_hi) or used where
+    // GR16NoIR is required, so the allocator/spiller cannot park them in IY
+    // and emit a push/pop shuttle or an undocumented IYH/IYL op
+    // (ravn/llvm-z80#189 / #27 / #112).  Pre-RA, must precede the LiveIntervals
+    // re-run.  See tasks/issue189-27-regalloc-cost-model-drill-2026-05-25.md.
+    insertPass(&llvm::MachineSchedulerID, createZ80NarrowNoIndexPass());
 
     // Re-run Live Intervals after coalescing to renumber the contained values.
     // This can allow constant rematerialization after aggressive coalescing.

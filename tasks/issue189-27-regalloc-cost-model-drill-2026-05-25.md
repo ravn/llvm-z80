@@ -68,6 +68,49 @@ not stop it, and why a class-narrowing pre-RA pass tried in session-73o/p was
 net-harmful when applied bluntly: the constraint must be precise (only the
 sub-register-accessed operands), applied at ISel, not a blanket pin.
 
+### "If we cannot model the Z80's cost, why is the fix simple?" (the key insight)
+
+This looks like a contradiction — the prose above says LLVM's cost model is too weak
+to express the Z80's register costs, yet the fix is small.  The resolution is that
+**the fix does not use the cost model at all.**  LLVM has two separate machines:
+
+- **Cost / preference** (`CostPerUse`, `CopyCost`, allocation order, hints): answers
+  the *graded* question "is IX/IY worth it *here*?"  IX/IY cost an extra DD/FD prefix
+  byte per use but add a 4th/5th register pair that may save a spill.  Whether that
+  trade nets out depends on local pressure, loop frequency, and what else is live.
+  This is the part the Z80 fits badly, and it stays unsolved.
+
+- **Legality / class** (`TargetRegisterClass`): answers the *binary* question "may
+  this vreg occupy IX/IY *at all*?"  This LLVM models **exactly** — the allocator
+  never even enumerates an illegal physreg for a vreg.
+
+The fix is simple because the failing subset is **not a graded trade — its cost is
+degenerate.**  For a value that gets byte-decomposed, IX/IY is *unconditionally*
+worse: `IYL`/`IYH` have no documented 8-bit ops, so every byte touch is a forced
+`push iy; pop rr` shuttle (and, in the default config, a miscompile).  There is no
+pressure level, loop shape, or spill count at which holding a byte-split value in IY
+beats DE/HL/BC.  When the cost function collapses to "always worse," you do not need
+to *price* the choice — you remove it.  A foregone-conclusion cost is exactly a
+legality statement, and legality is the machine LLVM models precisely.
+
+So the move is: **find the slice of the allocation problem where the weak (cost)
+model degenerates, and lift that slice into the exact (legality) model.**  We did not
+make LLVM understand the Z80's costs better; we carved off the one pattern that does
+not need a cost model and expressed it as a class.
+
+Two caveats keep this honest — it is not a free lunch:
+
+1. **It is not a complete Z80 model.**  The general question ("weigh IY's prefix
+   bytes against spills for values that are *not* byte-decomposed") is still
+   unmodeled and still imperfect.  This fixes one well-characterized pattern, not the
+   allocator's cost blindness in general.
+2. **The exclusion has a second-order cost.**  Removing IX/IY from these vregs' pool
+   shrinks the supply and *may* push a spill elsewhere.  That residual cost is real
+   and measurable — which is why the commit gate (below) is a register-pressure
+   histogram, not "the repro passes."  We did not escape cost reasoning; we reduced
+   it from "model it in the allocator" (hard, can't) to "measure whether this one
+   exclusion regresses real code" (easy, a before/after count).
+
 ## Proposed fix direction (next session, implementation drill)
 
 Constrain to `GR16NoIR` exactly the `GR16` operands that are byte-decomposed:
@@ -134,54 +177,144 @@ correctness gate and the density gap collapse into one register-class fix.
   (`CHECK-NOT: iy`, flips to XPASS when GR16NoIR lands); findings posted to
   ravn/llvm-z80#189 (the existing issue already covers this — no dup filed).
 
-## Next (implementation session) — refined recipe
+## Empirical mechanism (2026-05-25, pre-RA MIR dump of `crc_one`)
 
-Deeper investigation (2026-05-25) pinned the exact mechanism and ruled out the
-naive fix:
+The actual MIR right before greedy (`llc -print-after=z80-pin-alu-accumulator`,
+`-z80-unreserve-iy`) collapses the perceived difficulty: **the backend already
+constrains nearly everything correctly.**  `LSHR16`, `XOR_CMP_EQ16`, the shift-chain
+pseudos — all carry their operands as `gr16noir` by TableGen class.  Exactly **one**
+vreg leaks:
 
-- **IX/IY declare `sub_lo`/`sub_hi` subregs** (`IXL`/`IXH`, `IYL`/`IYH`, for the
-  undocumented 8-bit ops; `Z80RegisterInfo.td:101,118,122`). So a `GR16` value that
-  is byte-decomposed is *not* auto-excluded from IX/IY by the subreg machinery — the
-  pair "has" the subreg.
-- BUT `IXL`/`IYL` are **not in `GR8`** (`GR8 = {A,B,C,D,E,H,L}`). So in principle
-  `GR16::getSubClassWithSubReg(sub_lo)` should resolve to `GR16NoIR` (the subclass
-  whose `sub_lo` lands in `GR8`). **First step: confirm that** (dump the generated
-  TableGen subreg-class table); if `IXL/IYL` leak into a GR8-ish class, fix that
-  first.
-- **Why it leaks anyway:** ISel creates these vregs as `GR16RegClass` and emits the
-  `COPY %x.sub_lo` *manually*; the manual subreg COPY does not re-narrow `%x`. And
-  the offending values are often **not** selector temps — in `crc_one` the
-  byte-extracted half `%44` is a `COPY` of the **incoming i32 argument / a PHI**
-  `gr16`. So narrowing the 10 `createVirtualRegister(&GR16RegClass)` sites is
-  **insufficient**.
-- **Fix = one chokepoint, not per-site:** a small pre-RA `MachineFunctionPass`
-  (host it alongside `Z80ReorderTestDec`/`Z80SplitDjnzCounters`, inserted after
-  `MachineScheduler` in `Z80TargetMachine.cpp:348`) that walks `MRI`, and for every
-  `GR16` vreg with a `sub_lo`/`sub_hi` subreg use or def, narrows its class to
-  `GR16NoIR` (via `MRI.recomputeRegClass(Reg)` — which intersects the subreg
-  constraint — or explicit `constrainRegClass`/`setRegClass`).
+```
+bb.0:  %17:gr16 = COPY $de            ; loop-carried i32 high half, arg in DE
+bb.4:  $a = COPY %17.sub_lo:gr16      ; only ever consumed via byte COPYs
+       undef %17.sub_lo:gr16 = COPY killed $a
+       %17.sub_hi:gr16   = COPY killed $a
+bb.1:  $de = COPY %17:gr16            ; returned in DE
+```
 
-**Validation gate (binding — do NOT commit on "repro flips"):**
-1. Confirm `getSubClassWithSubReg(sub_lo) == GR16NoIR` (else fix the subreg model).
-2. **Register-pressure histogram** before/after (per
-   `lessons-2026-05-04-structural-fix-failures.md`): over-narrowing forfeits the
-   IX/IY pairs the un-reserve was meant to add; measure that the fix doesn't push
-   spills elsewhere.
-3. Full value oracle: lit (108+3) -> `cargo run -- clang` (681/46/56/207) -> AES
-   13/13 -> cpnos polypascal MAME -> BIOS/cpnos size.
-4. Success = `iy-no-static-stack-miscompile-189.ll` flips to XPASS (drop the XFAIL),
-   test_166-170 stay green IY-on `+static-stack`, default-config `cargo run -- clang
-   iy` goes green, no AES/cpnos/BIOS regression.
+`%17` is `gr16` (the IX/IY-including class), is byte-decomposed (`sub_lo`/`sub_hi`
+read *and* write), yet **nothing on its use-chain forces `gr16noir`**: it is only
+copied to/from physregs and accessed by byte.  Its sibling half `%18` came in as
+`COPY $hl` and *is* `gr16noir` only because it feeds `LSHR16` (whose operand class is
+`GR16NoIR`).  So the leak is precisely "a plain `GR16` vreg that is byte-decomposed
+but never flows through a `GR16NoIR`-typed instruction."  Greedy is then free to put
+`%17` in IY -> byte shuttle -> density bloat (`+static-stack`) / SP-relative-slot
+miscompile (default config).
 
-## Test case
+### Two standard APIs that do NOT solve it (ruled out by inspection)
 
-- `iy-loop-carried-112.ll` exists (proves the #14 fix). Extend post-fix with a
-  `CHECK-NOT: push iy` in the loop body to lock in the density fix.
-- Add the value-oracle cells (test_166/167/168 IY-on) once the correctness question
-  is settled.
+- **`getSubClassWithSubReg(GR16, sub_lo)` returns `GR16`, not `GR16NoIR`.**  Decoded
+  from the generated table (`Z80GenRegisterInfoTargetDesc.inc:987`, value 13 = ID 12
+  = `GR16`, off-by-one because 0 means "none").  Reason: `IXL`/`IYL` *do* exist as
+  registers in an 8-bit class, so `GR16` as a whole still "has" a `sub_lo` — the
+  subreg-class machinery does not exclude IX/IY.  The exclusion must come from the
+  *use's* class (`GR8`), not from the subreg index.
+- **`MRI.recomputeRegClass(Reg)` cannot narrow here.**  It is built to *grow* a class
+  to `getLargestLegalSuperClass` and returns `false` the instant that equals the
+  current class (its purpose is de-constraining after coalescing).  For a `GR16` vreg
+  it bails immediately and never narrows to `GR16NoIR`.  The earlier recipe's
+  "`recomputeRegClass` intersects the subreg constraint" was wrong.
 
-## Value-oracle protocol (binding before any codegen commit here)
+## Implementation session (2026-05-25) — what actually happened
 
-`ninja clang llc` -> lit (108+3) -> `cargo run -- clang` (681/46/56/207) ->
-AES 13/13 -> cpnos polypascal-test -> BIOS/cpnos size check. Per
-`execution-plan-2026-05-22.md`.
+The pre-RA pass was built and then **discarded as redundant**, and the real lever
+turned out to be one line in `getLargestLegalSuperClass`.  The journey, in order,
+because each step corrected the previous understanding:
+
+### 1. The pre-RA narrowing pass was built — and narrows nothing
+
+Wrote `Z80NarrowSubRegGR16` exactly as the recipe above specified (narrow plain-`GR16`
+byte-decomposed vregs to `GR16NoIR`, pre-RA).  Built clean.  But the IY shuttle
+*persisted* in the generated `crc_one` (`push iy; pop hl` ... `push iy; pop rr`), in
+BOTH `+static-stack` and default config.  MIR dumps showed why: after the pass there
+were **zero plain `:gr16` operands** — yet greedy still produced IY code.  The pass
+was a no-op because, in the combined pipeline, the offending vregs were *already*
+`gr16noir` before the pass even ran.
+
+### 2. The real mechanism: `getLargestLegalSuperClass` re-widens GR16NoIR -> GR16
+
+`Z80RegisterInfo::getLargestLegalSuperClass` returned `GR16` for any class with `GR16`
+as a super-class — including `GR16NoIR`.  This function is the **grow step** used by
+`recomputeRegClass` (during the register coalescer) and by greedy's live-range
+splitting.  So every `GR16NoIR` value (the byte-decomposed halves, correctly created
+by the TableGen instruction classes — `LSHR16`, `XOR_CMP_EQ16`, ...) was silently
+**widened back to `GR16` during coalescing**, restoring IX/IY eligibility.  The
+allocator/spiller then parked the value in IY and byte-accessed it via the
+push/pop shuttle.  The `GR16NoIR` exclusion was real at ISel and thrown away before
+allocation.  **This is the core bug.**  The pre-RA pass could not win against it:
+whatever it narrowed, the coalescer re-widened.
+
+### 3. The fix, and why it must be flag-gated
+
+Making `getLargestLegalSuperClass` not re-widen `GR16NoIR` removed the IY shuttle
+entirely (crc_one default config: **0 IY refs**, test_171 `0x0044 -> 0xEF8D` at all
+opt levels; test_166-170 stay green).  **But applied unconditionally it regressed
+production**: with IY *reserved* (the production default), `GR16` and `GR16NoIR` have
+the same allocatable set `{DE,HL,BC}`, yet the *class* distinction still drives
+coalescing — refusing to widen reduced coalescing freedom and added `push hl; ...;
+add hl,sp; ...; pop hl` spill churn in several functions (proven by an all-lit-files
+`-O2` asm diff: NOT byte-identical).  This is exactly the
+`lessons-2026-05-04-structural-fix-failures.md` pressure cost.
+
+Fix: gate on the `Z80UnreserveIY` flag.
+
+```cpp
+if (RC == &Z80::GR16NoIRRegClass && Z80UnreserveIY)
+  return RC;            // keep the IY-exclusion only when IY can actually be chosen
+```
+
+When IY is reserved, the branch is never taken and the function returns exactly what
+it did before **for all inputs** -> production codegen is bit-for-bit identical (a
+*provable* no-op, confirmed by a byte-identical all-lit-files `-O2` diff; AES / cpnos
+/ BIOS never pass `-z80-unreserve-iy`, so they are byte-identical by construction —
+no rebuild needed to verify).  When IY is un-reserved, the exclusion survives
+allocation and the shuttle/miscompile is gone.
+
+Net change: **one conditional in `getLargestLegalSuperClass`**.  The pre-RA pass was
+deleted.
+
+### 4. A SECOND, independent bug the fix exposes (NOT introduced by it)
+
+With the i32 halves correctly kept out of IY, the freed IY gets used by the allocator
+for *other* 16-bit values — and `popcount32` (lit `iy-loop-carried-112.ll`, the #14
+witness) then emits `ld iy,0; xor iyh; xor iyl`: **undocumented `IYH`/`IYL` byte ops
+without `+undocumented`** (and a pointless `xor 0` at that).  So the un-reserve-IY
+path has a *second* latent bug: 16-bit ALU ops on an IY-resident operand lower to
+undocumented half-index ops instead of a documented sequence (or being blocked).
+This is a `#13`-class issue, pre-existing, merely *exposed* by the reallocation — the
+A/B (stash the fix) shows pre-fix `popcount32` used documented `push iy; pop iy`.
+
+Consequence: `iy-loop-carried-112.ll` (which asserted the old `pop iy` survives) no
+longer matches.  The #14 peephole-liveness scenario it guarded is simply not
+exercised by `popcount32` anymore.
+
+### Status and where this leaves un-reserve-IY
+
+- **Bug #1 (this issue):** root-caused and fixed, production-safe.  crc_one
+  default-config miscompile closed; IY byte-shuttle density bloat closed; lit
+  `iy-no-static-stack-miscompile-189.ll` + runtime `test_171` green; production
+  byte-identical.
+- **Bug #2 (to file):** un-reserve-IY emits undocumented `IYH`/`IYL` for 16-bit ALU
+  ops on IY-resident values.  Independent; gates un-reserve-IY together with bug #1.
+- **`iy-loop-carried-112.ll`:** must be XFAIL'd referencing bug #2 (honest: my fix
+  changed popcount32's allocation, exposing bug #2; the test's #14 scenario is no
+  longer hit here) before any commit, since a green lit suite is invariant.
+
+Conclusion confirmed: un-reserve-IY (#112) is not one bug deep.  Fixing the
+`getLargestLegalSuperClass` re-widening is a correct, isolated, production-safe
+increment that removes one of the interlocking blockers — but `xor iyh` shows at
+least one more must fall before IY can be un-reserved by default.
+
+## Value-oracle results (this session, flag-gated fix)
+
+- Production (`-O2`, IY reserved): **byte-identical** to pre-fix across all Z80 lit
+  files (provable no-op + empirical diff).  AES/cpnos/BIOS byte-identical by
+  construction.
+- Z80 lit: 116 PASS + 5 XFAIL, **1 FAIL = `iy-loop-carried-112.ll`** (bug #2 exposure;
+  to be XFAIL'd).  New `iy-no-static-stack-miscompile-189.ll` passes.
+- test-runner `clang` full: 726 / 37 / 56 / 207 (fatal count matches baseline; no
+  iy-test failures; the flag-off no-op guarantees the non-iy delta is zero).
+- IY cells: test_166-171 all PASS at all opt levels (`0x0010 / 0x9E8B / 0xEF8D /
+  0x2D3D / 0x00FF / 0xEF8D`); test_171 is the new default-config (no `+static-stack`)
+  runtime witness that was `0x0044` pre-fix.
