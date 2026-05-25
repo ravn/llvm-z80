@@ -4442,11 +4442,52 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return true;
     };
 
+    // A +static-stack slot whose base symbol is materialized into a register
+    // (e.g. `LD HL, __sfrend_main`) can be accessed INDIRECTLY via pointer
+    // arithmetic (array element, &local).  The direct-load orphan scan below
+    // only recognizes direct `LD A,(nn)` accesses, so it cannot see such
+    // reads -- converting the store+reload to PUSH/POP would drop a store
+    // whose slot is still read through the pointer.  Collect every symbol/
+    // global that appears in an instruction OTHER than a direct BSS load/store
+    // (i.e. used as an immediate address, not a memory operand) and refuse the
+    // conversion for those slots.  ravn/llvm-z80#195/test_27: a volatile
+    // m[3][3] sum dropped m[0][0]'s store-back because its slot was read only
+    // indirectly via `LD HL,__sfrend_main` + offset.
+    auto isDirectBssAccessOpc = [](unsigned O) {
+      return O == Z80::LD_A_nnind  || O == Z80::LD_HL_nnind ||
+             O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind ||
+             O == Z80::LD_nnind_A  || O == Z80::LD_nnind_HL ||
+             O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
+    };
+    SmallPtrSet<const void *, 4> AddrTakenSyms;
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (isDirectBssAccessOpc(MI.getOpcode()))
+          continue;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isMCSymbol())
+            AddrTakenSyms.insert(MO.getMCSymbol());
+          else if (MO.isGlobal())
+            AddrTakenSyms.insert(MO.getGlobal());
+        }
+      }
+    }
+
     for (MachineBasicBlock &MBB : MF) {
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         const SpillInfo *SI = getSpillInfo(MII->getOpcode());
         if (!SI) continue;
         if (!isSfrendSymbol(MII->getOperand(0))) continue;
+        // Skip slots whose frame symbol is address-taken (see above).
+        {
+          const MachineOperand &A = MII->getOperand(0);
+          const void *Key = A.isMCSymbol()
+                                ? (const void *)A.getMCSymbol()
+                                : (A.isGlobal() ? (const void *)A.getGlobal()
+                                                : nullptr);
+          if (Key && AddrTakenSyms.count(Key))
+            continue;
+        }
 
         // Found a BSS spill store.  Scan forward for CALLs and matching loads.
         // Count how many loads reference this same address after the store.
