@@ -22,6 +22,42 @@ clang.ram` PASS 11 516 046 ts; Z80 lit 111 PASS + 5 XFAIL). Production byte-iden
      of IY values (40+ sub-register sites). Tried a `G_UNMERGE_VALUES` constraint, reverted
      (folds bypass it). Writeup: `session73s-issue112-iy-unreserve-scope.md`.
 
+## UPDATE 2026-05-25 (later): full oracle run with IY default-ON -> NOT clean
+
+User asked to flip `-z80-unreserve-iy` default to ON and run the full oracle.
+Result: **default-on is NOT shippable** -- it introduces correctness regressions
+beyond the loop-carried bug already fixed.  Reverted default to OFF (production
+restored byte-identical: AES C010=01/C021=01, 11516046 ts, 3715 B; lit 112+5).
+
+Full oracle (IY default-ON):
+- **AES production target: MISCOMPILE** (deterministic C010=00, was 01).  Hard blocker.
+- test-runner clang: 694/37-38/57-58 vs IY-off 696/37/56 (net -2 pass; rest of the
+  FATAL/FAIL list is the known test_90/91 `edge_*` noise, #136).  Real regressions:
+  test_48_dynamic_alloca FATAL at ALL opt levels, test_40_hash_crc, test_38_sort_search.
+- Z80 lit: 109 PASS + 3 FAIL (codegen shifts): `add16-acc` (`add iy,de` vs `add hl,de`),
+  `ldir-aftermath` (reorder), `issue-156-bss-spill-loop-header-pop` (`push hl` reappears).
+
+Dig-in (the AES/test-runner regressions are a regalloc CLASS, not one peephole):
+- Isolated reliable repros (test-runner oracle): **test_167_iy_crc32** (FATAL O2 / FAIL O3)
+  and **test_168_iy_crc_inner** (FAIL O1/Os, DE=0x0044 vs 0xEF8D).  crc reduction loops:
+  i32 carried, `crc >>= 1` per iter.
+- `-print-after-all` on crc_one O1: the z80-late-opt copy removals here are **LEGAL**
+  (they drop a redundant `iy=hl; hl=iy` round-trip where IY is provably dead, redefined
+  right after without a read).  So NOT my peephole.
+- Root: the allocator **uses IY to hold pieces of a split 32-bit value** then shuffles it
+  through expensive `push iy`/`pop hl` round-trips and corrupts the dataflow (wrong value,
+  not a crash; stack balanced).  This is the "Phase-3 regalloc cost-model work" the
+  original #112 framing gated IY-unreserve on -- needs a cost model that keeps IY for
+  clean 16-bit pointer-like values and OFF multi-pair/sub-register-accessed values.
+  The earlier "(B) documented-only constraint" attempt aimed at this and was net-harmful;
+  a proper fix is a cost-model change, not a class-narrowing pass.
+- `dynamic_alloca` (test_48) is a SEPARATE class (frame-pointer interaction).
+
+Status: the loop-carried peephole fix (below) stays shipped -- it cleared the dominant
+#14 crash.  IY-unreserve default-on remains gated on the i32-split regalloc cost model
+(+ dynamic_alloca).  New repros test_166/167/168 + lit `iy-loop-carried-112.ll` are the
+guards/vehicles for that work.  Consider filing a ravn/llvm-z80 issue with test_168.
+
 ## UPDATE 2026-05-25: #112/#14 loop-carried residual ROOT-CAUSED + FIXED
 
 Commit `dfa073a23e99`.  The loop-carried-value-in-IY hang was NOT a coalescer

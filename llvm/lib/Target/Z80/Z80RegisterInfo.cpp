@@ -47,18 +47,22 @@ static llvm::cl::opt<bool> Z80LogRegallocHints(
     "z80-log-regalloc-hints", llvm::cl::Hidden, llvm::cl::init(false),
     llvm::cl::desc("Log every getRegAllocationHints query (Z80 #115/#27 S1)"));
 
-// #112 bring-up: un-reserve IY so it becomes an allocatable 4th 16-bit pair.
-// Default OFF -- IY stays reserved.  Session 73s: the encoder opcode-0 crash
-// is fixed (GR16NoIR/GR16_BCDE discipline) and the dominant runtime miscompile
-// (LEA_IX_FI missing IY case -> silent no-op in Release) is fixed below, but a
-// residual remains (i32 decomposition emits undocumented IYH/IYL half-ops when
-// IY holds part of a 32-bit value).  Flip on only for #112 bring-up work; do
-// NOT enable in production until the i32 path is guarded and the full oracle
-// (test-runner + MAME) is clean.  See session73s-issue112-iy-unreserve-scope.md.
+// #112: un-reserve IY so it becomes an allocatable 4th 16-bit pair.
+// Default OFF.  Three blockers are now resolved -- the encoder opcode-0 crash
+// (GR16NoIR/GR16_BCDE discipline), the LEA_IX_FI missing-IY silent no-op (fixed
+// below), and the #14 loop-carried-IY miscompile (Z80LateOptimization IX/IY
+// transfer peephole dropping the back-edge IY update; fixed with a liveness
+// guard) -- but the full oracle (session 73s) still shows IY-on miscompiles:
+// (1) the i32-split-through-IY regalloc class (test_167/168: crc reduction
+//     loops; allocator shuffles a split 32-bit value through expensive push/pop
+//     IY round-trips and corrupts it -- needs cost-model work, NOT a peephole);
+// (2) dynamic_alloca (frame-pointer class, test_48 FATAL all opt levels);
+// (3) the AES corpus production target (C010=00).  Keep OFF until these close.
+// See session73s-issue112-iy-unreserve-scope.md.
 static llvm::cl::opt<bool> Z80UnreserveIY(
     "z80-unreserve-iy", llvm::cl::Hidden, llvm::cl::init(false),
     llvm::cl::desc("Make IY an allocatable 16-bit register (ravn/llvm-z80#112 "
-                   "bring-up; default off, has known residual i32 miscompile)"));
+                   "bring-up; default off, has known residual regalloc miscompiles)"));
 
 #define GET_REGINFO_TARGET_DESC
 #include "Z80GenRegisterInfo.inc"
