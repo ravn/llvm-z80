@@ -6,9 +6,10 @@ Read by Claude Code, GitHub Copilot, Cursor, and other agentic tools.
 like any AI tool to operate, independent of any one codebase. Only add to it when a
 genuinely cross-project rule emerges — then propagate the same edit everywhere.
 
-**Project-specific setup, constraints, build commands, and status live in
-`PROJECT.md`** in this repo. (Claude Code additionally reads `CLAUDE.md`, which holds
-the fullest live detail for this project.)
+**Project-specific setup, constraints, build commands, and status — when the project
+has them — live in a `PROJECT.md` alongside this file** (and in `CLAUDE.md`, which
+Claude Code reads for the fullest live detail). If neither is present, this file is
+the whole brief.
 
 ---
 
