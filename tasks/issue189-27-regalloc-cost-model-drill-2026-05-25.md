@@ -129,8 +129,19 @@ correctness gate and the density gap collapse into one register-class fix.
   via per-test `EXTRA-FLAGS` (36/36 PASS, all opt levels).
 - Default-config miscompile (deterministic): from `z80-utils/test-runner`,
   `cargo run -- clang iy` (no `-static-stack`) -> test_168 `_O1`/`_Os` FAIL
-  `0x0044`, test_167 `_O2`/`_O3` FATAL hang. **TODO (next step):** reduce to a
-  minimal `llc` lit XFAIL and file as a ravn/llvm-z80 issue (the real upstream gate).
+  `0x0044`, test_167 `_O2`/`_O3` FATAL hang.
+- **DONE:** minimal `llc` lit XFAIL `llvm/test/CodeGen/Z80/iy-no-static-stack-miscompile-189.ll`
+  (`CHECK-NOT: iy`, flips to XPASS when GR16NoIR lands); findings posted to
+  ravn/llvm-z80#189 (the existing issue already covers this — no dup filed).
+
+## Next (implementation session)
+
+Implement the `GR16NoIR`-at-ISel constraint: locate where the byte-decomposed
+`GR16` operands acquire their class (ISel pattern operand class vs RegBankSelect vs
+legalizer), constrain the minimal set, validate with a register-pressure histogram
+(over-constrain wastes the extra pairs; under-constrain leaves the shuttle), then run
+the full value oracle. Success flips `iy-no-static-stack-miscompile-189.ll` to XPASS
+(drop the XFAIL) and lets test_166-170 keep passing IY-on `+static-stack`.
 
 ## Test case
 
