@@ -94,24 +94,49 @@ neither fix tracks (whole-pair at definition, byte-accessed only after a COPY
 chain — not visible as a `sub_lo`/`sub_hi` operand or a `GR16NoIR`-typed use on
 the IY-resident vreg itself).
 
-## Where the invariant should ultimately live (the chokepoint)
+## Create-time chokepoint: INVESTIGATED and REFUTED (2026-05-26)
 
-To *fully* enforce it (and recover the Class-C density), the structural fix is to
-make a 16-bit value `GR16NoIR` **at creation** whenever it can be byte-accessed,
-rather than narrowing reactively pre-RA.  Candidate chokepoints, in order of
-preference:
-- **Legalizer / RegBankSelect:** when a 16-bit value is produced/consumed by any
-  byte-wise operation (the legalizer already splits i16 logic into i8 lanes via
-  UNMERGE/MERGE), give the merged/PHI/REG_SEQUENCE result `GR16NoIR`, so GR16
-  (IX/IY-eligible) is reserved for values provably always whole-pair (pointers,
-  ADD16 accumulators, whole-pair copies).
-- Failing that, a **rematerialization/spill guard**: never remat or spill a
-  value into IX/IY when any use constrains it to `GR16NoIR` (closes the Class-C
-  origins the pre-RA pass misses).
+The earlier hypothesis was: fully enforce the invariant (and "recover Class-C
+density") by making a 16-bit value `GR16NoIR` at creation whenever it can be
+byte-accessed.  A 30-minute drill before implementing it (per
+`feedback_dig_deeper_before_parking`, applied to a structural *change*) refuted
+the premise:
 
-The alternative is the Phase-3 cost-model conclusion: keep IX/IY out of the
-general 16-bit pool and make them opt-in only where measured-beneficial (close to
-the status quo of reserving them).
+**Class C is not byte-decompose leakage.**  Classifying every IY shuttle in
+`i128-support` (the heaviest case, ~92 shuttles): all are **whole-pair** uses —
+16-bit `add/adc/sbc hl,rr` (36), 16-bit store via `(HL)` (`ld (hl),e; inc hl;
+ld (hl),d`, 11), and pointer manipulation (`inc hl`, `ld (hl),e`).  **Zero**
+byte-arithmetic decompose.  So the byte-decompose invariant is *already fully
+enforced* by the landed fix; there is nothing left for a create-time chokepoint
+to catch.
+
+**Class C is the genuine IX/IY cost-model tradeoff (#38), and it is mixed —
+forcing values out of IY would HARM code.**  `.text` size, `+static-stack -O2`,
+reserved-IY vs `-z80-unreserve-iy` (post-fix):
+
+| file | reserved | unreserve | delta |
+|------|---------:|----------:|------:|
+| i128-support   | 7166 | 7046 | **-120** |
+| overflow-arith |  220 |  207 |  -13 |
+| arith-i32      |  112 |  104 |   -8 |
+| mul-overflow   |  152 |  145 |   -7 |
+| i64-support    |  651 |  648 |   -3 |
+| cmp-eq-regpressure | 62 | 68 |  +6 |
+| fcmp           |  673 |  689 |  +16 |
+| fixed-point    |  511 |  532 |  +21 |
+
+IY-as-extra-register is a real **win** for wide-integer code (i128 -1.7%: a 2-byte
+`push iy; pop hl` shuttle beats the 3-byte `ld hl,(addr)` spill it replaces) and a
+**loss** for float/fixed-point (the value is shuttled often enough that the cost
+exceeds the avoided spill).  A blanket create-time `GR16NoIR` chokepoint would
+forfeit the i128 win to fix the fixed-point loss — backwards.
+
+**Conclusion:** the chokepoint is the wrong fix.  The remaining work is a genuine
+**per-value cost model** (#38 / Phase 3): decide when IY's shuttle cost beats the
+spill it avoids (net-positive for wide ints, net-negative for float/fixed-point).
+That is a different, larger undertaking than enforcing a class invariant, and the
+existing `CostPerUse=2` nudge is known too coarse to make this call (it is a
+static per-use price, swamped by loop frequency and blind to "shuttle vs spill").
 
 ## Status / recommendation
 
@@ -127,5 +152,10 @@ the status quo of reserving them).
 - The two fixes are **production-safe** (gated; production byte-identical) and a
   correct, isolated increment.  They are worth landing on their own merits and
   worth presenting to @zlfn as the concrete first step of un-reserving IX/IY,
-  with this taxonomy as the map of what remains (Class C density + the
-  create-time `GR16NoIR` chokepoint).
+  with this taxonomy as the map of what remains.
+- **What remains is NOT a chokepoint** (refuted above) but the per-value IX/IY
+  **cost model** (#38 / Phase 3).  The landed fixes correctly enforce the
+  byte-decompose invariant; the open question is purely "is IY-as-extra-register
+  worth the shuttle here?", which is net-positive for wide-integer code and
+  net-negative for float/fixed-point.  Closing it needs a cost-aware
+  IY-vs-spill decision in the allocator, not a class change.
