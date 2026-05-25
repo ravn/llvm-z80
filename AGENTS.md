@@ -57,7 +57,8 @@ the fullest live detail for this project.)
   and plausibility; confirm setup steps actually ran. A suspiciously fast pass is a
   red flag.
 - **Never open a PR unless explicitly asked in the current turn.** Commit/push only
-  when asked; branch off the default branch before committing.
+  when asked; branch off the default branch before committing, and **delete the
+  branch once it's merged** (so stale branches don't accumulate).
 
 ## Debugging method
 
