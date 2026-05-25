@@ -114,3 +114,24 @@ This test passes today (the late-opt peephole catches it), so it doesn't demonst
 3. Add lit test in `llvm/test/CodeGen/Z80/xor-ff-to-cpl.ll` exercising both the simple case and the flag-consumer case (where XOR_n must remain).
 4. Verify zero regressions on full lit + test-runner suite.
 5. Either delete the late-opt peephole (if all sites covered) or document its remaining purpose (bit-7 toggle paths).
+
+## COMPLETED 2026-05-26 (session-73ab)
+
+Migration finished and the peephole retired.  The C1 migration had landed the
+standalone `G_XOR x, 0xFF -> CPL` ISel emit, but the post-RA peephole was found
+**still live** for a second emitter: the i16 `== -1` / `!= -1` comparison
+fallback (`Z80InstructionSelector.cpp` CVal>=0 byte-XOR path) emitted `XOR_n
+0xFF` on the byte inversions and relied on the peephole to fold them.  Removing
+the peephole without addressing that regressed `issue-149-i16-ne-minus-one.ll`
+`ne_minus_one_multi` (cpl 1B -> xor 255 2B, 3 lit sites).
+
+Fix: the comparison fallback now emits `CPL` directly when a byte immediate is
+0xFF (intermediate flags are dead -- only the final `OR` is consumed -- so CPL's
+flag difference is irrelevant).  With both emitters CPL-direct, the peephole is
+dead and was removed (~22 LOC incl. comment).
+
+Validation: codegen **byte-identical** across the Z80 lit suite at -O2 and -Oz
+(diff against the pre-change fingerprint = empty); lit 117 PASS + 5 XFAIL;
+test-runner clang Fail/Fatal unchanged from baseline (37/56).  Value-preserving
+by construction (CPL and XOR 0xFF yield the same A; only the dead intermediate
+flags differ).  One of #180's 16 "stand-in" peepholes retired.

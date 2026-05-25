@@ -1287,17 +1287,25 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         if (CVal >= 0) {
           uint8_t Lo = CVal & 0xFF;
           uint8_t Hi = (CVal >> 8) & 0xFF;
-          // High byte: LD A, lhs_hi; XOR #Hi
+          // High byte: LD A, lhs_hi; XOR #Hi.  For Hi==0xFF emit CPL (1 B vs
+          // 2 B) -- the intermediate flags are dead here (only the final OR is
+          // consumed), so CPL's different flag effect is irrelevant.  Doing it
+          // in ISel (rather than leaving it to the post-RA XOR_n 0xFF -> CPL
+          // peephole) lets that peephole retire (ravn/llvm-z80#180, #149).
           BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
               .addReg(LHS, RegState{}, Z80::sub_hi);
-          if (Hi)
+          if (Hi == 0xFF)
+            BuildMI(MBB, MI, DL, TII.get(Z80::CPL));
+          else if (Hi)
             BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(Hi);
           BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), TmpReg)
               .addReg(Z80::A);
-          // Low byte: LD A, lhs_lo; XOR #Lo; OR tmp
+          // Low byte: LD A, lhs_lo; XOR #Lo (or CPL for 0xFF); OR tmp
           BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
               .addReg(LHS, RegState{}, Z80::sub_lo);
-          if (Lo)
+          if (Lo == 0xFF)
+            BuildMI(MBB, MI, DL, TII.get(Z80::CPL));
+          else if (Lo)
             BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(Lo);
           BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(TmpReg);
         } else {
