@@ -805,25 +805,18 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
-    // --- Peephole: XOR #0xFF → CPL ---
-    // CPL (1 byte) is equivalent to XOR #0xFF (2 bytes) for the A register
-    // value, but sets flags differently (CPL: H=1,N=1, others unchanged;
-    // XOR: S,Z,P from result, H=1,N=0,C=0). Safe only when FLAGS is dead.
-    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
-         MII != MIE;) {
-      MachineInstr &MI = *MII;
-      if (MI.getOpcode() == Z80::XOR_n && MI.getOperand(0).getImm() == 0xFF) {
-        auto After = std::next(MII);
-        if (isRegDeadAfter(After, MBB, TRI, Z80::FLAGS)) {
-          LLVM_DEBUG(dbgs() << "  XOR #0xFF → CPL: " << MI);
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(Z80::CPL));
-          MII = MBB.erase(MII);
-          Changed = true;
-          continue;
-        }
-      }
-      ++MII;
-    }
+    // --- Peephole RETIRED (#180, fully migrated to ISel): XOR #0xFF -> CPL ---
+    // Both emitters of a flags-dead XOR_n 0xFF now produce CPL directly in the
+    // instruction selector:
+    //   * standalone `~x` (G_XOR x, 0xFF), all widths -- session-73q C1;
+    //   * the i16 `== -1` / `!= -1` comparison fallback's byte inversions
+    //     (Z80InstructionSelector.cpp, the CVal>=0 byte-XOR path) -- this
+    //     change, ravn/llvm-z80#180/#149.
+    // No flags-dead XOR_n 0xFF reaches post-RA anymore (verified: codegen
+    // byte-identical across the Z80 lit suite at -O2/-Oz with this peephole
+    // removed and the ISel CPL emit in place).  Flags-LIVE XOR_n 0xFF must keep
+    // XOR (CPL doesn't set S/Z/P), which this peephole's FLAGS-dead guard
+    // already refused -- so nothing is lost.
 
     // --- Peephole: LD A,#0 → XOR A ---
     // XOR A (1 byte) sets A to 0 just like LD A,#0 (2 bytes), but also
