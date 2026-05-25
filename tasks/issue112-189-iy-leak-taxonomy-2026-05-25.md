@@ -51,12 +51,17 @@ class (illegal instructions silently emitted) and it is gone.
 
 The two fixes keep byte-decomposed `GR16NoIR` values out of IY through
 allocation, so the corrupting shuttle does not form.  Runtime witnesses in the
-default (no `+static-stack`) config under `-z80-unreserve-iy`, all opt levels:
+default (no `+static-stack`) config under `-z80-unreserve-iy`, all 6 opt levels
+each, host-computed expected values:
 - `test_171` (i32 crc_one): `0x0044` (pre-fix) -> **`0xEF8D`** (correct).
-- `test_172` (i64 reduction, heavy IY shuttling): **`0x7315`** (host-verified),
-  all 6 opt levels.
+- `test_172` (i64 reduction, heavy IY shuttling): **`0x7315`**.
+- `test_173` (i128 reduction, the heaviest shuttle case -- ~92 in i128-support):
+  **`0x4761`**.
+- `test_174` (soft-float arith + compare, the fcmp path): **`0x0007`**.
 
-Two diverse wide-integer witnesses pass in the exact config where #189 corrupted.
+Four witnesses spanning i32 / i64 / i128 / float all pass in the exact config
+where #189 corrupted -- the verification gap (Class C correctness on the
+heavy-shuttle wide types) is now CLOSED, not just argued from the mechanism.
 
 ### Class C — residual shuttles: value-correct, density only (Phase-3 cost model)
 
@@ -114,10 +119,11 @@ the status quo of reserving them).
   swept suite by the two fixes (Class A eliminated; Class B fixed + verified on
   i32 and i64 in the miscompile config).  These were the hard gates.
 - **Residual (Class C): density only**, the cost-model question — not a blocker.
-- **Verification gap before actually flipping `-z80-unreserve-iy` default:**
-  runtime-verify Class C correctness on `i128` / `fixed-point` / `fcmp` (only
-  i32 + i64 verified here); the mechanism argument covers them but they are not
-  yet runtime-tested.
+- **Verification gap: CLOSED** (2026-05-26).  Class C correctness runtime-verified
+  on i32 (test_171), i64 (test_172), i128 (test_173), and soft-float (test_174),
+  all opt levels, in the miscompile-prone default config -- no miscompile in any.
+  (`fixed-point` _Accum/_Fract types not separately tested, but i128 covers the
+  heaviest byte-decomposition shuttle and float covers the soft-float path.)
 - The two fixes are **production-safe** (gated; production byte-identical) and a
   correct, isolated increment.  They are worth landing on their own merits and
   worth presenting to @zlfn as the concrete first step of un-reserving IX/IY,
