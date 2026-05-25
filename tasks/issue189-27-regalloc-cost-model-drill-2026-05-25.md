@@ -134,14 +134,44 @@ correctness gate and the density gap collapse into one register-class fix.
   (`CHECK-NOT: iy`, flips to XPASS when GR16NoIR lands); findings posted to
   ravn/llvm-z80#189 (the existing issue already covers this — no dup filed).
 
-## Next (implementation session)
+## Next (implementation session) — refined recipe
 
-Implement the `GR16NoIR`-at-ISel constraint: locate where the byte-decomposed
-`GR16` operands acquire their class (ISel pattern operand class vs RegBankSelect vs
-legalizer), constrain the minimal set, validate with a register-pressure histogram
-(over-constrain wastes the extra pairs; under-constrain leaves the shuttle), then run
-the full value oracle. Success flips `iy-no-static-stack-miscompile-189.ll` to XPASS
-(drop the XFAIL) and lets test_166-170 keep passing IY-on `+static-stack`.
+Deeper investigation (2026-05-25) pinned the exact mechanism and ruled out the
+naive fix:
+
+- **IX/IY declare `sub_lo`/`sub_hi` subregs** (`IXL`/`IXH`, `IYL`/`IYH`, for the
+  undocumented 8-bit ops; `Z80RegisterInfo.td:101,118,122`). So a `GR16` value that
+  is byte-decomposed is *not* auto-excluded from IX/IY by the subreg machinery — the
+  pair "has" the subreg.
+- BUT `IXL`/`IYL` are **not in `GR8`** (`GR8 = {A,B,C,D,E,H,L}`). So in principle
+  `GR16::getSubClassWithSubReg(sub_lo)` should resolve to `GR16NoIR` (the subclass
+  whose `sub_lo` lands in `GR8`). **First step: confirm that** (dump the generated
+  TableGen subreg-class table); if `IXL/IYL` leak into a GR8-ish class, fix that
+  first.
+- **Why it leaks anyway:** ISel creates these vregs as `GR16RegClass` and emits the
+  `COPY %x.sub_lo` *manually*; the manual subreg COPY does not re-narrow `%x`. And
+  the offending values are often **not** selector temps — in `crc_one` the
+  byte-extracted half `%44` is a `COPY` of the **incoming i32 argument / a PHI**
+  `gr16`. So narrowing the 10 `createVirtualRegister(&GR16RegClass)` sites is
+  **insufficient**.
+- **Fix = one chokepoint, not per-site:** a small pre-RA `MachineFunctionPass`
+  (host it alongside `Z80ReorderTestDec`/`Z80SplitDjnzCounters`, inserted after
+  `MachineScheduler` in `Z80TargetMachine.cpp:348`) that walks `MRI`, and for every
+  `GR16` vreg with a `sub_lo`/`sub_hi` subreg use or def, narrows its class to
+  `GR16NoIR` (via `MRI.recomputeRegClass(Reg)` — which intersects the subreg
+  constraint — or explicit `constrainRegClass`/`setRegClass`).
+
+**Validation gate (binding — do NOT commit on "repro flips"):**
+1. Confirm `getSubClassWithSubReg(sub_lo) == GR16NoIR` (else fix the subreg model).
+2. **Register-pressure histogram** before/after (per
+   `lessons-2026-05-04-structural-fix-failures.md`): over-narrowing forfeits the
+   IX/IY pairs the un-reserve was meant to add; measure that the fix doesn't push
+   spills elsewhere.
+3. Full value oracle: lit (108+3) -> `cargo run -- clang` (681/46/56/207) -> AES
+   13/13 -> cpnos polypascal MAME -> BIOS/cpnos size.
+4. Success = `iy-no-static-stack-miscompile-189.ll` flips to XPASS (drop the XFAIL),
+   test_166-170 stay green IY-on `+static-stack`, default-config `cargo run -- clang
+   iy` goes green, no AES/cpnos/BIOS regression.
 
 ## Test case
 
