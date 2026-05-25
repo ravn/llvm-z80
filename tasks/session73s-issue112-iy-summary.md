@@ -94,12 +94,24 @@ compare2 compute `(flag1==0)=NOT(flag1)`, and the i32-== AND becomes
 as #189: a late-opt transform moving an instruction without a liveness guard on the
 destination register.  (CMP_Z16-const-fold's `LD_B_D` only changes surface form.)
 
-Fix direction (posted on #192): the BSS store-to-load forwarding peephole must not
-relocate the forwarded value's `LD r,A` write across an instruction that READS `r`
-(verify r dead in the skipped interval).  Production-config peephole -> needs full
-oracle (test-runner default + -static-stack + AES 13 + lit + MAME) before commit.
-Deferred as a focused fresh effort; NOT attempted at session end to avoid a rushed
-production miscompile.
+**FIXED** (commit `25656201a41d`).  The exact culprit (via asserts-build
+`-debug-only=z80-late-opt`) was the **#173 peephole** ("bare BSS store + 4-instr
+A-preserving reload -> LD r,A; PUSH/POP rr"): it relocated flag1's `LD D,A` write
+to the store site and bracketed with PUSH/POP DE to preserve D AFTER the region,
+but never checked that D is READ in the region (compare2 reads D as its zero input).
+Fix: track 8-bit regs READ in the [store, reload) interval (mirroring DefinedRegs)
+and bail if the dest register is read.  Same family as #189 (late-opt move without
+a liveness guard).
+
+Oracle (full): test_167/168 -static-stack now PASS all opt levels; AES corpus
+byte-identical (C010=01, 11516046 ts, 3715 B); cpnos PROM1 byte-identical (2028 B)
+-> MAME boot unaffected; Z80 lit 113+5; test-runner default 720/37/56 (no
+regression -- #173 is +static-stack-only).  Lit guard `static-stack-i32-select-192.ll`.
+
+Separate finding while validating: a PRE-EXISTING `Z80LateOptimization` **segfault**
+on test_40's `xorshift16` +static-stack (the "BSS spill->PUSH/POP" peephole on a
+16-bit DE spill), confirmed via the assertions build (predates this fix).  Filed as
+**ravn/llvm-z80#193**.
 
 ## Test-runner additions
 test_166 (popcount), test_167 (crc32), test_168 (crc_inner), test_169 (uncond
