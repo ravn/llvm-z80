@@ -49,6 +49,14 @@ the whole brief.
   resemblance. Reserve "confirmed" / "root-caused" / "it is X" for a check that would
   have *failed* if the claim were false. Same discipline in commits, issues, and docs,
   not just chat — and if you overclaimed, go back and correct it.
+  - **A filed bug report is where this bites hardest: the root cause is a hypothesis
+    until a check confirms it.** Separate the *symptom* (observed, verified) from the
+    *cause* (usually a guess at filing time) and label the cause unverified — write
+    "suspected cause: Y (not yet confirmed)", never a bare "caused by Y" you haven't
+    proven. A confident wrong diagnosis in an issue is worse than none: it sends the
+    fixer (often future-you) down the wrong path. (#202 was filed with a stated
+    "accumulator-aliasing" cause that the actual fix refuted — the real cause was a
+    dropped store-back in a peephole; the wrong framing would have wasted the fix.)
 - **Faithful reporting.** If tests fail, say so with the output. If a step was
   skipped, say it. State "done" only when verified.
 - Use ASCII `->` rather than Unicode arrows (terminal rendering).
