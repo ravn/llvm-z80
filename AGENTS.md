@@ -73,7 +73,7 @@ the whole brief.
 - **Treat a user's "my guess is X" as a starting suggestion, not a constraint** —
   widen the candidate list and probe.
 
-## Meta-cognition (the two that matter most)
+## Meta-cognition (the ones that matter most)
 
 - **Dig one level deeper before parking.** Before declaring something
   "deferred / multi-week / too deep," instrument and bisect for ~30 minutes first.
@@ -82,6 +82,14 @@ the whole brief.
   instance of the same class — or you catch yourself writing "same family /
   recurring / Nth time" — *stop and find the systemic cause that generates the
   class* before the next fix. Don't wait to be told to step back.
+- **Survey the toolbox before you need it.** When starting work in a domain — or
+  whenever you catch yourself reaching for tools ad hoc — proactively inventory what
+  the toolchain already offers for that kind of work (debug/verify flags, reducers,
+  bisectors, profilers, analyzers) and recommend the high-value ones *up front*.
+  Tool discovery is your job to do before the friction, not mine to prompt. This is
+  the proactive complement to "zoom out": apply the same dig-up instinct to your own
+  methods and tooling, not just the code. Surface and **recommend** proactively;
+  **build or configure** the tool only after I say go.
 - **Self-improvement loop.** After any correction, record the lesson where the
   project keeps them, and write a rule that prevents the same mistake recurring.
 
