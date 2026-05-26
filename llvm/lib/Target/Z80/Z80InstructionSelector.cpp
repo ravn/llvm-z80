@@ -1475,9 +1475,9 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           JumpOpc = BranchOnGE ? Z80::JP_NC_nn : Z80::JP_C_nn;
         }
       } else {
-        // Standard CMP16_FLAGS path.
-        if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
-            !RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+        // Standard CMP16_FLAGS path.  #201: CMP16_FLAGS operands are GR16NoIR.
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR16NoIRRegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR16NoIRRegClass, MRI))
           return false;
         BuildMI(MBB, MI, DL, TII.get(Z80::CMP16_FLAGS))
             .addReg(LHS)
@@ -1500,10 +1500,14 @@ bool Z80InstructionSelector::emit32CompareFlags(
     CmpInst::Predicate &NormalizedPred, bool FusedBranch) {
 
   if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_NE) {
-    if (!RBI.constrainGenericRegister(LhsLo, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsHi, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsLo, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsHi, Z80::GR16RegClass, MRI))
+    // #201 create-time GR16NoIR chokepoint: these halves feed XOR_CMP_{EQ,Z}16
+    // (GR16NoIR operands), so constrain to GR16NoIR (not GR16) for verifier-clean
+    // post-ISel MIR.  Density-neutral in default config (gr16 and GR16NoIR share
+    // {DE,HL,BC}); under -z80-unreserve-iy it enforces the IX/IY exclusion.
+    if (!RBI.constrainGenericRegister(LhsLo, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsHi, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsLo, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsHi, Z80::GR16NoIRRegClass, MRI))
       return false;
 
     if (FusedBranch) {
@@ -1623,10 +1627,12 @@ bool Z80InstructionSelector::emit32CompareFlags(
     // Signed is now unsigned after XOR 0x80.
     Pred = (Pred == CmpInst::ICMP_SLT) ? CmpInst::ICMP_ULT : CmpInst::ICMP_UGE;
   } else {
-    if (!RBI.constrainGenericRegister(LhsLo, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsHi, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsLo, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsHi, Z80::GR16RegClass, MRI))
+    // #201: LhsHi/RhsHi feed CMP16_SBC_FLAGS (GR16NoIR); low halves go to HL/BCDE
+    // (both subsets of GR16NoIR), so GR16NoIR is safe for all four.
+    if (!RBI.constrainGenericRegister(LhsLo, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsHi, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsLo, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsHi, Z80::GR16NoIRRegClass, MRI))
       return false;
   }
 
@@ -1636,9 +1642,14 @@ bool Z80InstructionSelector::emit32CompareFlags(
   BuildMI(MBB, InsertPt, DL, TII.get(TargetOpcode::COPY), Z80::HL)
       .addReg(LhsLo);
   BuildMI(MBB, InsertPt, DL, TII.get(Z80::SUB_HL_rr)).addReg(RhsLo);
-  BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
-      .addReg(LhsHi)
-      .addReg(RhsHi);
+  {
+      MachineInstr *Sbc =
+          BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
+              .addReg(LhsHi)
+              .addReg(RhsHi);
+      // #201: CMP16_SBC_FLAGS operands are GR16NoIR (covers the signed-flip path too).
+      constrainSelectedInstRegOperands(*Sbc, TII, TRI, RBI);
+    }
 
   NormalizedPred = Pred;
   return true;
@@ -1652,14 +1663,15 @@ bool Z80InstructionSelector::emit64CompareFlags(
     CmpInst::Predicate &NormalizedPred, bool FusedBranch) {
 
   if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_NE) {
-    if (!RBI.constrainGenericRegister(LhsW0, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsW1, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsW2, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsW3, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW0, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW1, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW2, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW3, Z80::GR16RegClass, MRI))
+    // #201 create-time GR16NoIR chokepoint (see emit32CompareFlags).
+    if (!RBI.constrainGenericRegister(LhsW0, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsW1, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsW2, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsW3, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW0, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW1, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW2, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW3, Z80::GR16NoIRRegClass, MRI))
       return false;
 
     if (FusedBranch) {
@@ -1815,14 +1827,15 @@ bool Z80InstructionSelector::emit64CompareFlags(
     RhsW3 = NewRhsW3;
     Pred = (Pred == CmpInst::ICMP_SLT) ? CmpInst::ICMP_ULT : CmpInst::ICMP_UGE;
   } else {
-    if (!RBI.constrainGenericRegister(LhsW0, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsW1, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsW2, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(LhsW3, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW0, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW1, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW2, Z80::GR16RegClass, MRI) ||
-        !RBI.constrainGenericRegister(RhsW3, Z80::GR16RegClass, MRI))
+    // #201: W1/W2/W3 feed CMP16_SBC_FLAGS (GR16NoIR); W0 -> HL/BCDE (subsets).
+    if (!RBI.constrainGenericRegister(LhsW0, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsW1, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsW2, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(LhsW3, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW0, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW1, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW2, Z80::GR16NoIRRegClass, MRI) ||
+        !RBI.constrainGenericRegister(RhsW3, Z80::GR16NoIRRegClass, MRI))
       return false;
   }
 
@@ -1832,15 +1845,30 @@ bool Z80InstructionSelector::emit64CompareFlags(
   BuildMI(MBB, InsertPt, DL, TII.get(TargetOpcode::COPY), Z80::HL)
       .addReg(LhsW0);
   BuildMI(MBB, InsertPt, DL, TII.get(Z80::SUB_HL_rr)).addReg(RhsW0);
-  BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
-      .addReg(LhsW1)
-      .addReg(RhsW1);
-  BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
-      .addReg(LhsW2)
-      .addReg(RhsW2);
-  BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
-      .addReg(LhsW3)
-      .addReg(RhsW3);
+  {
+      MachineInstr *Sbc =
+          BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
+              .addReg(LhsW1)
+              .addReg(RhsW1);
+      // #201: CMP16_SBC_FLAGS operands are GR16NoIR (covers the signed-flip path too).
+      constrainSelectedInstRegOperands(*Sbc, TII, TRI, RBI);
+    }
+  {
+      MachineInstr *Sbc =
+          BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
+              .addReg(LhsW2)
+              .addReg(RhsW2);
+      // #201: CMP16_SBC_FLAGS operands are GR16NoIR (covers the signed-flip path too).
+      constrainSelectedInstRegOperands(*Sbc, TII, TRI, RBI);
+    }
+  {
+      MachineInstr *Sbc =
+          BuildMI(MBB, InsertPt, DL, TII.get(Z80::CMP16_SBC_FLAGS))
+              .addReg(LhsW3)
+              .addReg(RhsW3);
+      // #201: CMP16_SBC_FLAGS operands are GR16NoIR (covers the signed-flip path too).
+      constrainSelectedInstRegOperands(*Sbc, TII, TRI, RBI);
+    }
 
   NormalizedPred = Pred;
   return true;
@@ -3895,7 +3923,10 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           Register Next = (i == ShiftAmt - 1)
                               ? DstReg
                               : MRI.createVirtualRegister(&Z80::GR16RegClass);
-          BuildMI(MBB, MI, DL, TII.get(Z80::LSHR16), Next).addReg(Prev);
+          MachineInstr *Sh = BuildMI(MBB, MI, DL, TII.get(Z80::LSHR16), Next)
+                                 .addReg(Prev);
+          // #201: LSHR16 operands are GR16NoIR; constrain to its declared classes.
+          constrainSelectedInstRegOperands(*Sh, TII, TRI, RBI);
           Prev = Next;
         }
       } else {
@@ -4025,7 +4056,10 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           Register Next = (i == ShiftAmt - 1)
                               ? DstReg
                               : MRI.createVirtualRegister(&Z80::GR16RegClass);
-          BuildMI(MBB, MI, DL, TII.get(Z80::ASHR16), Next).addReg(Prev);
+          MachineInstr *Sh = BuildMI(MBB, MI, DL, TII.get(Z80::ASHR16), Next)
+                                 .addReg(Prev);
+          // #201: ASHR16 operands are GR16NoIR; constrain to its declared classes.
+          constrainSelectedInstRegOperands(*Sh, TII, TRI, RBI);
           Prev = Next;
         }
       } else {
@@ -4343,8 +4377,9 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       if (Pred == CmpInst::ICMP_EQ || Pred == CmpInst::ICMP_NE) {
         // EQ/NE: XOR_CMP pseudo avoids SBC HL,DE (which clobbers HL).
         // Expanded post-RA to byte-level XOR with known physical regs.
-        if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
-            !RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+        // #201 create-time GR16NoIR chokepoint (XOR_CMP_{EQ,NE}16 = GR16NoIR ops).
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR16NoIRRegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR16NoIRRegClass, MRI))
           return false;
         unsigned PseudoOpc =
             (Pred == CmpInst::ICMP_EQ) ? Z80::XOR_CMP_EQ16 : Z80::XOR_CMP_NE16;
@@ -4458,8 +4493,9 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           break;
         }
 
-        if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
-            !RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+        // #201: CMP16_FLAGS operands are GR16NoIR.
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR16NoIRRegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR16NoIRRegClass, MRI))
           return false;
         BuildMI(MBB, MI, DL, TII.get(Z80::CMP16_FLAGS)).addReg(LHS).addReg(RHS);
 
@@ -4583,8 +4619,9 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
               .addReg(RHS);
         }
       } else {
-        if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI) ||
-            !RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+        // #201: CMP16_FLAGS operands are GR16NoIR.
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR16NoIRRegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR16NoIRRegClass, MRI))
           return false;
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CMP16_FLAGS))
             .addReg(LHS)
