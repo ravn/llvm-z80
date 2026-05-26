@@ -90,6 +90,9 @@ Clang-specific:
   -verify              Add -mllvm -verify-machineinstrs (fail on invalid MIR;
                        catches the peephole-liveness family, e.g. #199).
                        Use BUILD_DIR=<assertions build> to add internal asserts.
+  -diff-opt            Cross-opt-level differential: flag any test whose value
+                       differs across opt levels (a miscompile regardless of the
+                       `expect` directive). Strongest with -full. Caught #202.
 
 Environment:
   BUILD_DIR            Build directory (default: ../build)"
@@ -153,6 +156,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     let mut omit_fp = false;
     let mut static_stack = false;
     let mut verify = false;
+    let mut diff_opt = false;
     let mut pattern = None;
 
     let mut i = 0;
@@ -169,6 +173,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
             "-omit-frame-pointer" => omit_fp = true,
             "-static-stack" => static_stack = true,
             "-verify" => verify = true,
+            "-diff-opt" => diff_opt = true,
             s if !s.starts_with('-') => pattern = Some(s.to_string()),
             _ => {}
         }
@@ -186,6 +191,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
         inline_runtime: false,
         static_stack,
         verify,
+        diff_opt,
         pattern,
     };
 
@@ -203,6 +209,9 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     }
     if verify {
         println!("Flags:  -verify-machineinstrs");
+    }
+    if diff_opt {
+        println!("Flags:  -diff-opt (cross-opt-level differential)");
     }
     println!();
 
