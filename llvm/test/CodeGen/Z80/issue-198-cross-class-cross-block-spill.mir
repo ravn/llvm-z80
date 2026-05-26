@@ -1,0 +1,64 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80#198: the same-class BSS-spill->PUSH/POP peephole must NOT
+# convert a store + in-block matching reload to PUSH/POP when the SAME slot
+# is read in ANOTHER block by a DIFFERENT register class.
+#
+# The old cross-block guard only matched the spilled pair's own load/store
+# opcode (SI->LoadOpc / SI->StoreOpc), so a cross-class reader (LD_DE_nnind
+# of a slot spilled as BC) in another block slipped through.  Converting the
+# bb.0 store to PUSH_BC then left bb.1 reading a slot PUSH never writes ->
+# garbage.  Root-caused from AES rj_sb_inv under MachineCSE; the in-block
+# orphan guard was already class-agnostic, the cross-block one was not.
+#
+# Expected after the pass: the bb.0 store stays LD_nnind_BC (the conversion
+# is refused), because bb.1 reads the same slot as DE.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+
+  @__sframe_foo = global i8 0
+  @__sfrend_foo = global i8 0
+
+  ; CHECK-LABEL: name: foo
+  ; The spill store must NOT be converted to PUSH_BC: bb.1 reads the same
+  ; slot cross-class (as DE), which the PUSH would orphan.
+  ; CHECK:     LD_nnind_BC
+  ; CHECK-NOT: PUSH_BC
+  ; CHECK:     LD_DE_nnind
+
+  define void @foo() {
+  entry:
+    br label %use
+  use:
+    ret void
+  }
+
+...
+---
+name:            foo
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$bc' }
+body:             |
+  bb.0.entry:
+    successors: %bb.1
+    liveins: $bc
+
+    ; STORE bc to the BSS slot, then reload it in-block (the pair the
+    ; peephole would normally collapse to PUSH_BC / POP_BC).
+    LD_nnind_BC <mcsymbol __sframe_foo>, implicit $bc
+    LD_BC_nnind <mcsymbol __sframe_foo>, implicit-def $bc
+
+  bb.1.use:
+    liveins: $bc
+
+    ; Cross-class, cross-block read of the SAME slot.  This is what the
+    ; widened guard must detect to refuse the conversion above.
+    LD_DE_nnind <mcsymbol __sframe_foo>, implicit-def $de
+    RET implicit $de
+
+...
