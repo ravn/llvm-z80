@@ -225,6 +225,16 @@ public:
     // Disable globally pending #177 (Z80 TTI) which would let us
     // gate this on per-function optsize/minsize attributes for a
     // proper opt-level-sensitive decision.
+    //
+    // #177 Task 3 (2026-05-26) measured whether this should be gated by
+    // opt-level (keep LICM/CSE at -O2 for speed).  It should NOT.  With
+    // the disable lifted and LICM/CSE on, AES-256 measured:
+    //   -Oz: +34 B .text, +144 B bin, +0.22% tstates -- pessimizes, PASS.
+    //   -O2: MachineCSE MISCOMPILES (verifier FAIL, isolated to CSE; LICM
+    //        alone PASSes).  So the disable is also a CORRECTNESS guard,
+    //        not merely a size knob.  Tracked: ravn/llvm-z80#198.
+    // There is no opt level where enabling these helps Z80, so the disable
+    // stays UNCONDITIONAL (no gate).  Data: aes256-corpus/task3_licm_ab.sh.
     disablePass(&EarlyMachineLICMID);
     disablePass(&MachineLICMID);
     disablePass(&MachineCSELegacyID);

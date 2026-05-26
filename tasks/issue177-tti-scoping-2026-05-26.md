@@ -57,6 +57,74 @@ The three `-mllvm -disable-*` flags the issue cites are no longer uniform:
 Used in: `cpnos-in-c/Makefile:111-113`, `autoload-in-c/Makefile:178`,
 `rcbios-in-c/clang/Makefile:40`, AES `09_Oz_prod_like`.
 
+## RESOLUTION (2026-05-26 finish session) — Tasks 1+2 landed, Task 3 fork surfaced
+
+**Task 1 LANDED** (rc700 branch `session-177-task1-cleanup`, commit `8bfec2b`).
+`-disable-machine-licm` / `-disable-machine-cse` removed from `cpnos-in-c/Makefile`.
+Re-verified byte-identical the rigorous way (the earlier "byte-identical" was vs a
+stale committed bin): built with vs without the two flags **back-to-back**, then
+compared the *uncompressed* layer — `payload.bin` bit-for-bit identical, `init.bin`
+differs in exactly one byte (a build-timestamp minute digit `'7'`/`'6'`).  The
+1422-byte diff on the *compressed* PROM image was a ZX0 cascade from that one
+timestamp byte, NOT codegen.  PROM1 line program 2027/2048 B both ways.
+
+**Task 2 COMPLETE** — `-disable-lsr` measured on all three production targets
+(A/B, BIOS A/B/A-confirmed):
+
+| target | with `-disable-lsr` | without | Δ removing flag | verdict |
+|---|---|---|---|---|
+| cpnos PROM1 (compressed) | 2027 B | +2 B | raw payload byte-identical; +2 B is ZX0 artifact | keep (2 KB cap) |
+| autoload PROM | 1904 B raw / 1473 comp | 1918 / 1486 | +14 B raw / +13 comp | keep |
+| rcbios BIOS | 5919 B | 5929 B | +10 B | keep |
+
+LSR *pessimizes every production target* — opposite of AES (disabling LSR there is
++333 B because AES is tight u8 arithmetic; RC700 firmware is control-flow/IO-heavy).
+So `-disable-lsr` is correct on all production builds and stays.  No flag removed
+by Task 2.
+
+**Task 3 FINDING — the gate's premise is unmeasured (degenerate AES configs).**
+The global `disablePass(EarlyMachineLICM/MachineLICM/MachineCSE)` (#128) overrides
+the `-disable-machine-licm/-cse` flags *everywhere*, including the 7 AES-corpus
+files that use those flags to toggle LICM/CSE on vs off (`flag_sweep.sh`,
+`measure_aes09.sh`, `clang-flag-sweep*.md`, `FLAG_RECIPES.md`, `findings.md`).
+Those "LICM-on" configs have silently been measuring LICM-OFF.  Consequence: the
+hypothesis behind a per-opt-level gate — *"keep LICM/CSE at -O2 where the speed
+gain beats the spill cost"* — **has never actually been measured on Z80**, and is
+questionable a priori (a BSS spill+reload across a loop is both bigger AND slower
+than recomputing a cheap value on the 3-pair register file, so LICM may hurt
+*speed* at -O2 too, not just size).
+
+**Task 3 RESOLVED 2026-05-26 — gate REFUTED, unconditional disable VALIDATED.**
+Ran the measurement (`aes256-corpus/task3_licm_ab.sh`): commented out the three
+`disablePass` lines, rebuilt clang, A/B'd LICM/CSE on-vs-off at -Oz and -O2 with
+all other flags fixed at production values.
+
+| config | aes_text | bin | tstates | verify |
+|---|---|---|---|---|
+| -Oz LICM/CSE off | 2238 | 2598 | 10,743,671 | PASS |
+| -Oz LICM/CSE on  | 2272 (+34) | 2742 (+144) | 10,767,362 (+0.22%) | PASS |
+| -O2 LICM/CSE off | 4473 | 5662 | 10,713,500 | PASS |
+| -O2 LICM/CSE on  | 4362 (-111) | 5548 | 10,730,766 (+0.16%) | **FAIL** |
+
+Two independent reasons NOT to gate:
+1. **-Oz**: LICM/CSE-on is bigger AND slower -> disable is correct (re-confirms #128).
+2. **-O2**: LICM/CSE-on is smaller but *slower AND miscompiles*.  Isolated
+   (repeated, deterministic): **MachineCSE** is the miscompiler (CSE-on -> FAIL
+   regardless of LICM; CSE-off -> PASS regardless of LICM; LICM alone is correct).
+   Filed **ravn/llvm-z80#198**.  So the disable is a CORRECTNESS guard at -O2, not
+   only a size knob.
+
+Conclusion: there is no opt level where enabling LICM/CSE helps Z80.  The
+unconditional `disablePass` STAYS (no gate).  `Z80TargetMachine.cpp` comment
+updated to record this with the #198 cross-ref.  Codegen-identical to baseline
+(comment-only change; AES prod config re-verified aes_text=2238 PASS).
+
+This was the last open decision in #177.  Net #177 status: TTI built (10 hooks);
+Tasks 1 (LICM/CSE flag cleanup, committed) + 2 (LSR validated on all 3 production
+targets) + 3 (this) DONE.  Task 4 (#184 i16 width cost) HELD.  Task 5 (speculative
+hooks) not pursued.  Spun-off trackers: #198 (CSE -O2 miscompile), #184 (i16 cost),
+#38 (MIR/regalloc cost model = the real IX/IY density lever, independent of TTI).
+
 ## The actual remaining #177 work (next session) — concrete, mostly non-gated
 
 **Task 1 — remove the redundant LICM/CSE flags (cleanup, low-risk).**
