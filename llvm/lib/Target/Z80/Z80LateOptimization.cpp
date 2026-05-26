@@ -411,6 +411,37 @@ static bool z80SlotReadBeforeStoreInBlock(MachineBasicBlock &MBB,
   return false;
 }
 
+// Address-taken guard (shared by all spill->PUSH/POP peepholes, #195/#204):
+// collect every frame symbol/global that appears as an *immediate address*
+// (i.e. in an instruction that is NOT a direct BSS load/store -- e.g.
+// `LD HL, __sfrend_main` to take &local).  A slot whose base symbol is in this
+// set may be read/written INDIRECTLY through a pointer the direct-access scans
+// can't see, so its store must NOT be converted to PUSH/POP (the indirect read
+// would get a never-written slot).  #195/test_27 (volatile m[3][3]) and #204
+// (double-pointer swap: `&x` stored into `px`, x read via `*px` in a callee).
+static void z80CollectAddrTakenFrameSyms(MachineFunction &MF,
+                                         SmallPtrSetImpl<const void *> &Out) {
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &MI : MBB) {
+      if (z80IsAnyBssAccess(MI.getOpcode()))
+        continue; // a direct memory operand is not "address taken"
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isMCSymbol())
+          Out.insert(MO.getMCSymbol());
+        else if (MO.isGlobal())
+          Out.insert(MO.getGlobal());
+      }
+    }
+}
+// True iff StoreMI's slot (operand 0) has an address-taken base symbol.
+static bool z80SlotAddrTaken(const MachineInstr &StoreMI,
+                             const SmallPtrSetImpl<const void *> &Set) {
+  const MachineOperand &A = StoreMI.getOperand(0);
+  const void *Key = A.isMCSymbol() ? (const void *)A.getMCSymbol()
+                    : (A.isGlobal() ? (const void *)A.getGlobal() : nullptr);
+  return Key && Set.count(Key);
+}
+
 bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -4492,41 +4523,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // conversion for those slots.  ravn/llvm-z80#195/test_27: a volatile
     // m[3][3] sum dropped m[0][0]'s store-back because its slot was read only
     // indirectly via `LD HL,__sfrend_main` + offset.
-    auto isDirectBssAccessOpc = [](unsigned O) {
-      return O == Z80::LD_A_nnind  || O == Z80::LD_HL_nnind ||
-             O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind ||
-             O == Z80::LD_nnind_A  || O == Z80::LD_nnind_HL ||
-             O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
-    };
     SmallPtrSet<const void *, 4> AddrTakenSyms;
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        if (isDirectBssAccessOpc(MI.getOpcode()))
-          continue;
-        for (const MachineOperand &MO : MI.operands()) {
-          if (MO.isMCSymbol())
-            AddrTakenSyms.insert(MO.getMCSymbol());
-          else if (MO.isGlobal())
-            AddrTakenSyms.insert(MO.getGlobal());
-        }
-      }
-    }
+    z80CollectAddrTakenFrameSyms(MF, AddrTakenSyms);
 
     for (MachineBasicBlock &MBB : MF) {
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         const SpillInfo *SI = getSpillInfo(MII->getOpcode());
         if (!SI) continue;
         if (!isSfrendSymbol(MII->getOperand(0))) continue;
-        // Skip slots whose frame symbol is address-taken (see above).
-        {
-          const MachineOperand &A = MII->getOperand(0);
-          const void *Key = A.isMCSymbol()
-                                ? (const void *)A.getMCSymbol()
-                                : (A.isGlobal() ? (const void *)A.getGlobal()
-                                                : nullptr);
-          if (Key && AddrTakenSyms.count(Key))
-            continue;
-        }
+        // Skip slots whose frame symbol is address-taken (shared guard).
+        if (z80SlotAddrTaken(*MII, AddrTakenSyms))
+          continue;
 
         // Found a BSS spill store.  Scan forward for CALLs and matching loads.
         // Count how many loads reference this same address after the store.
@@ -4832,11 +4839,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return true;
     };
 
+    SmallPtrSet<const void *, 4> AddrTakenSyms;
+    z80CollectAddrTakenFrameSyms(MF, AddrTakenSyms);
     for (MachineBasicBlock &MBB : MF) {
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
         const StoreClass *SC = getStoreInfo(MII->getOpcode());
         if (!SC) continue;
         if (!isSfrendSymbol(MII->getOperand(0))) continue;
+        // Address-taken guard, shared so it can't drift (#195/#204): a slot read
+        // indirectly via a pointer (its `&` is taken) must keep its memory store.
+        if (z80SlotAddrTaken(*MII, AddrTakenSyms))
+          continue;
         // Loop-carried guard, shared with the other spill->PUSH/POP peepholes
         // so it can't drift (#202/#203): bail if the slot is read before this
         // store in the block (back-edge reload signature -- dropping the store
@@ -5019,6 +5032,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // MBB_C; an MBB we created ourselves earlier this iteration is not
     // an unrelated path and must not block us.
     SmallPtrSet<MachineBasicBlock *, 4> OurNewMBBs;
+    SmallPtrSet<const void *, 4> AddrTakenSyms;
+    z80CollectAddrTakenFrameSyms(MF, AddrTakenSyms);
     // Per ravn/llvm-z80#155: relax the `UsedElsewhere` gate to allow
     // external slot accesses that DOMINATE MBB_A (their stores/loads
     // execute strictly before MBB_A's STORE, so MBB_A's rewrite leaves
@@ -5052,6 +5067,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           // was exactly the #202 bug.  The forward scan below only covers
           // accesses AFTER the store, so this backward check is needed too.
           if (z80SlotReadBeforeStoreInBlock(MBB_A, MII))
+            continue;
+          // Address-taken guard (shared, #195/#204): a slot read indirectly via
+          // a pointer must keep its memory store -- don't convert to PUSH/POP.
+          if (z80SlotAddrTaken(*MII, AddrTakenSyms))
             continue;
 
           // Scan forward in MBB_A.  Must NOT find any other access to the
@@ -5424,6 +5443,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return s || l;
     };
 
+    SmallPtrSet<const void *, 4> AddrTakenSyms;
+    z80CollectAddrTakenFrameSyms(MF, AddrTakenSyms);
     for (MachineBasicBlock &MBB : MF) {
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
         // Match bare store: LD_nnind_A on sfrend.  Skip if preceded by
@@ -5436,6 +5457,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // in the block (back-edge reload signature).  (Manual-increment loop:
         // must advance MII on the bail.)
         if (z80SlotReadBeforeStoreInBlock(MBB, MII)) { ++MII; continue; }
+        // Address-taken guard (shared, #195/#204): slot read indirectly via a
+        // pointer must keep its memory store.
+        if (z80SlotAddrTaken(*MII, AddrTakenSyms)) { ++MII; continue; }
         if (MII != MBB.begin()) {
           auto Prev = std::prev(MII);
           unsigned PO = Prev->getOpcode();
