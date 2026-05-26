@@ -1172,13 +1172,17 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Tmp)
             .addReg(MinusOneVar);
         // INC rr — for GR16 vreg, emit INC16 pseudo (handles HL/DE/BC).
-        BuildMI(MBB, MI, DL, TII.get(Z80::INC16), Tmp).addReg(Tmp);
+        // INC16 is tied ($dst = $src); in SSA the def must be a DISTINCT vreg
+        // (the two-address pass ties them back), else `%t = INC16 %t` is a
+        // multiple-def SSA-verifier error (test_01/test_34).  Byte-identical.
+        Register Inc = MRI.createVirtualRegister(&Z80::GR16RegClass);
+        BuildMI(MBB, MI, DL, TII.get(Z80::INC16), Inc).addReg(Tmp);
         // LD A, tmp_lo; OR tmp_hi — sets Z=1 iff tmp == 0 iff r was 0xFFFF.
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
-            .addReg(Tmp, RegState{}, Z80::sub_lo);
+            .addReg(Inc, RegState{}, Z80::sub_lo);
         Register HiReg = MRI.createVirtualRegister(&Z80::GR8RegClass);
         BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiReg)
-            .addReg(Tmp, RegState{}, Z80::sub_hi);
+            .addReg(Inc, RegState{}, Z80::sub_hi);
         BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(HiReg);
         BuildMI(MBB, MI, DL, TII.get(JumpOpc)).addMBB(TargetMBB);
         MI.eraseFromParent();
