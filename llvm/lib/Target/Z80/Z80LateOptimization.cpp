@@ -4520,6 +4520,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
                  Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
         };
+        // Any-register-class BSS store, for the cross-block orphan check.
+        auto isAnyBssStore = [](unsigned Opc) {
+          return Opc == Z80::LD_nnind_A  || Opc == Z80::LD_nnind_HL ||
+                 Opc == Z80::LD_nnind_DE || Opc == Z80::LD_nnind_BC;
+        };
 
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
@@ -4579,14 +4584,22 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
 
         // Check that no other basic block references the same BSS address.
         // The PUSH/POP conversion is local to this block — if another block
-        // loads from the same slot, it expects the value to be in BSS.
+        // accesses the same slot, it expects the value to be in BSS.
+        // ravn/llvm-z80#198: this must match ANY register-class BSS access
+        // (isAnyBssLoad/isAnyBssStore), not just SI->LoadOpc/StoreOpc (the
+        // spilled pair's class).  rj_sb_inv spilled BC to a slot in bb.0 and
+        // read it back as DE (`LD_DE_nnind`) in bb.1 — a cross-class reload
+        // the old same-class-only check did not see, so the store→PUSH
+        // conversion orphaned bb.1's read of a slot that PUSH never writes.
+        // (The in-block orphan guard above is already class-agnostic; the
+        // cross-block guard must be too — matching the sibling peephole.)
         {
           bool UsedElsewhere = false;
           for (MachineBasicBlock &OtherMBB : MF) {
             if (&OtherMBB == &MBB) continue;
             for (MachineInstr &OtherMI : OtherMBB) {
-              if ((OtherMI.getOpcode() == SI->LoadOpc ||
-                   OtherMI.getOpcode() == SI->StoreOpc) &&
+              unsigned OOpc = OtherMI.getOpcode();
+              if ((isAnyBssLoad(OOpc) || isAnyBssStore(OOpc)) &&
                   sameAddress(*MII, OtherMI)) {
                 UsedElsewhere = true;
                 break;
