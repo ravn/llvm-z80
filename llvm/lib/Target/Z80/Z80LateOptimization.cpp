@@ -365,6 +365,52 @@ static bool isRegDeadAfter(MachineBasicBlock::iterator After,
   return true;
 }
 
+// --- Shared predicates for the BSS-spill -> PUSH/POP peepholes -------------
+// There are two such peepholes (the single-block one and the cross-MBB one);
+// both must apply the SAME safety conditions before converting a frame-slot
+// store + matching reload to PUSH/POP, because both drop the memory store.
+// These predicates were previously duplicated as per-peephole lambdas and
+// drifted -- e.g. the loop-carried "read before store" guard lived in the
+// single-block peephole (#195) but was missing from the cross-block one,
+// causing #202.  Defining them once here is the single source of truth so a
+// guard cannot exist in one peephole and be absent from the other (#203).
+static bool z80IsAnyBssLoad(unsigned O) {
+  return O == Z80::LD_A_nnind || O == Z80::LD_HL_nnind ||
+         O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind;
+}
+static bool z80IsAnyBssStore(unsigned O) {
+  return O == Z80::LD_nnind_A || O == Z80::LD_nnind_HL ||
+         O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
+}
+static bool z80IsAnyBssAccess(unsigned O) {
+  return z80IsAnyBssLoad(O) || z80IsAnyBssStore(O);
+}
+// Same frame slot: operand 0 of two BSS load/store MIs, symbol AND offset
+// (MO_MCSymbol::isIdenticalTo ignores the offset, so compare it explicitly --
+// distinguishes e.g. __sfrend-10 from __sfrend-16).
+static bool z80SameBssAddr(const MachineInstr &A, const MachineInstr &B) {
+  const MachineOperand &MA = A.getOperand(0);
+  const MachineOperand &MB = B.getOperand(0);
+  if (!MA.isIdenticalTo(MB))
+    return false;
+  if (MA.isMCSymbol())
+    return MA.getOffset() == MB.getOffset();
+  return true;
+}
+// Loop-carried guard: is the same slot accessed in MBB BEFORE the store at
+// StoreIt?  Such a read is the signature of a loop-carried value whose home is
+// this slot (read at the loop top via the back-edge, written here at the
+// bottom); converting the store + reload to PUSH/POP drops the store, so the
+// back-edge read sees a stale slot every iteration (#195 single-block,
+// #202 cross-block).  Both peepholes must bail when this is true.
+static bool z80SlotReadBeforeStoreInBlock(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator StoreIt) {
+  for (auto P = MBB.begin(); P != StoreIt; ++P)
+    if (z80IsAnyBssAccess(P->getOpcode()) && z80SameBssAddr(*StoreIt, *P))
+      return true;
+  return false;
+}
+
 bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -4633,23 +4679,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // #195/test_166: a popcount i32 loop hung because `LD (slot),BC` was
         // converted to PUSH/POP while the loop top still read it via
         // `LD HL,(slot)`.
-        {
-          auto isAnyBssAccessOpc = [](unsigned O) {
-            return O == Z80::LD_A_nnind  || O == Z80::LD_HL_nnind ||
-                   O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind ||
-                   O == Z80::LD_nnind_A  || O == Z80::LD_nnind_HL ||
-                   O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
-          };
-          bool ReadBeforeStore = false;
-          for (auto Prev = MBB.begin(); Prev != MII; ++Prev) {
-            if (isAnyBssAccessOpc(Prev->getOpcode()) &&
-                sameAddress(*MII, *Prev)) {
-              ReadBeforeStore = true;
-              break;
-            }
-          }
-          if (ReadBeforeStore) continue;
-        }
+        // Shared loop-carried guard (z80SlotReadBeforeStoreInBlock) -- the same
+        // check the cross-block peephole uses, so the two can't drift (#203).
+        if (z80SlotReadBeforeStoreInBlock(MBB, MII))
+          continue;
 
         // Cost: PUSH (1B) + N*POP (N B) + (N-1)*re-PUSH ((N-1) B) = 2N B.
         // Original: store (S B) + N*load (N*L B).
@@ -4804,6 +4837,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         const StoreClass *SC = getStoreInfo(MII->getOpcode());
         if (!SC) continue;
         if (!isSfrendSymbol(MII->getOperand(0))) continue;
+        // Loop-carried guard, shared with the other spill->PUSH/POP peepholes
+        // so it can't drift (#202/#203): bail if the slot is read before this
+        // store in the block (back-edge reload signature -- dropping the store
+        // would leave the loop top reading a stale slot).
+        if (z80SlotReadBeforeStoreInBlock(MBB, MII))
+          continue;
 
         // Scan forward for exactly ONE load from the same slot, with
         // no other accesses to the slot, and stack balanced.
@@ -5001,30 +5040,19 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (!isSfr(MII->getOperand(0)))
             continue;
 
-          // Loop-carried guard (mirror of the single-block peephole's #195
-          // check at the "ReadBeforeStore" comment).  If the slot is accessed
-          // earlier in MBB_A, BEFORE this store, the store is the bottom of a
-          // loop-carried value whose home is this slot: it is read at the loop
-          // top via the back-edge and written here at the bottom.  Converting
-          // this store + the successor-block reload to PUSH/POP drops the
-          // memory store, so the back-edge read sees a stale slot every
-          // iteration.  ravn/llvm-z80#202: a `do { v >>= 1; } while (v > 0)`
-          // loop never updated v (returned 0x0080 vs the correct value at
-          // -O0 +static-stack).  The forward scan below only covers accesses
-          // AFTER the store, so this backward check is needed too.
-          {
-            bool ReadBeforeStore = false;
-            for (auto Prev = MBB_A.begin(); Prev != MII; ++Prev) {
-              if ((isAnyBssLoad(Prev->getOpcode()) ||
-                   isAnyBssStore(Prev->getOpcode())) &&
-                  sameAddr(*MII, *Prev)) {
-                ReadBeforeStore = true;
-                break;
-              }
-            }
-            if (ReadBeforeStore)
-              continue;
-          }
+          // Loop-carried guard: if the slot is accessed earlier in MBB_A,
+          // BEFORE this store, the store is the bottom of a loop-carried value
+          // whose home is this slot (read at the loop top via the back-edge,
+          // written here).  Converting this store + the successor-block reload
+          // to PUSH/POP drops the memory store, so the back-edge read sees a
+          // stale slot every iteration (#202: `do { v >>= 1; } while (v > 0)`
+          // never updated v at -O0 +static-stack).  Shared with the
+          // single-block peephole via z80SlotReadBeforeStoreInBlock so the two
+          // can't drift (#203) -- this guard living in one but not the other
+          // was exactly the #202 bug.  The forward scan below only covers
+          // accesses AFTER the store, so this backward check is needed too.
+          if (z80SlotReadBeforeStoreInBlock(MBB_A, MII))
+            continue;
 
           // Scan forward in MBB_A.  Must NOT find any other access to the
           // same slot (in-MBB matches are handled by the prior peepholes).
@@ -5403,6 +5431,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // the in-MBB peephole above when present).
         if (MII->getOpcode() != Z80::LD_nnind_A) { ++MII; continue; }
         if (!isSfr(MII->getOperand(0))) { ++MII; continue; }
+        // Loop-carried guard, shared across the spill->PUSH/POP peepholes so it
+        // can't drift (#202/#203): bail if the slot is read before this store
+        // in the block (back-edge reload signature).  (Manual-increment loop:
+        // must advance MII on the bail.)
+        if (z80SlotReadBeforeStoreInBlock(MBB, MII)) { ++MII; continue; }
         if (MII != MBB.begin()) {
           auto Prev = std::prev(MII);
           unsigned PO = Prev->getOpcode();
