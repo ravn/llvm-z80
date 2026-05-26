@@ -5001,6 +5001,31 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (!isSfr(MII->getOperand(0)))
             continue;
 
+          // Loop-carried guard (mirror of the single-block peephole's #195
+          // check at the "ReadBeforeStore" comment).  If the slot is accessed
+          // earlier in MBB_A, BEFORE this store, the store is the bottom of a
+          // loop-carried value whose home is this slot: it is read at the loop
+          // top via the back-edge and written here at the bottom.  Converting
+          // this store + the successor-block reload to PUSH/POP drops the
+          // memory store, so the back-edge read sees a stale slot every
+          // iteration.  ravn/llvm-z80#202: a `do { v >>= 1; } while (v > 0)`
+          // loop never updated v (returned 0x0080 vs the correct value at
+          // -O0 +static-stack).  The forward scan below only covers accesses
+          // AFTER the store, so this backward check is needed too.
+          {
+            bool ReadBeforeStore = false;
+            for (auto Prev = MBB_A.begin(); Prev != MII; ++Prev) {
+              if ((isAnyBssLoad(Prev->getOpcode()) ||
+                   isAnyBssStore(Prev->getOpcode())) &&
+                  sameAddr(*MII, *Prev)) {
+                ReadBeforeStore = true;
+                break;
+              }
+            }
+            if (ReadBeforeStore)
+              continue;
+          }
+
           // Scan forward in MBB_A.  Must NOT find any other access to the
           // same slot (in-MBB matches are handled by the prior peepholes).
           // Track PUSH/POP balance; require StackDepth == 0 at terminator.
