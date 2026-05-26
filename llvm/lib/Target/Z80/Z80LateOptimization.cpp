@@ -4553,6 +4553,19 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             if (StackDepth < 0) { Conflict = true; break; }
           }
 
+          // An EXPLICIT SP write (e.g. LD SP,HL for call-arg cleanup) between
+          // our store and reload relocates the stack frame, so a PUSH/POP
+          // bracket spanning it would POP from the wrong slot.  PUSH/POP are
+          // handled by StackDepth above, and a CALL is net-SP-neutral (return
+          // addr pushed then RET-popped); any OTHER def of SP is unsafe.
+          // (Surfaced converting a spill whose bracket spanned the i64-divide
+          // arg cleanup under -z80-unreserve-iy; same family as #198.)
+          if (!isAnyPush(SOpc) && !isAnyPop(SOpc) && !Scan->isCall() &&
+              Scan->modifiesRegister(Z80::SP, TRI)) {
+            Conflict = true;
+            break;
+          }
+
           if (SOpc == Z80::CALL_nn)
             HasCall = true;
 
@@ -4812,6 +4825,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           if (isAnyPop(SOpc)) {
             --StackDepth;
             if (StackDepth < 0) { Conflict = true; break; }
+          }
+
+          // Explicit SP write (LD SP,HL etc.) relocates the frame -> a PUSH/POP
+          // bracket spanning it pops the wrong slot.  PUSH/POP tracked above;
+          // CALL is net-SP-neutral; any other SP def is unsafe.  (#198 family.)
+          if (!isAnyPush(SOpc) && !isAnyPop(SOpc) && !Scan->isCall() &&
+              Scan->modifiesRegister(Z80::SP, TRI)) {
+            Conflict = true; break;
           }
 
           // Load from our slot?

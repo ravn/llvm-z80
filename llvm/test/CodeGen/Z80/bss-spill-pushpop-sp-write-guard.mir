@@ -1,0 +1,50 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80: the BSS-spill->PUSH/POP peephole must NOT convert a spill
+# store+reload to PUSH/POP when an EXPLICIT SP write (e.g. LD_SP_HL, the
+# call-arg-cleanup `ld sp,hl`) sits between them.  PUSH writes the value at
+# SP-2; an intervening `ld sp,hl` relocates the frame, so the matching POP
+# reads the wrong slot -> garbage.  The peephole's StackDepth guard only
+# tracks PUSH/POP, not direct SP defs.
+#
+# Surfaced via test_58_fixed_point under -z80-unreserve-iy (a spill whose
+# bracket spanned the i64-divide arg cleanup); also a latent +static-stack
+# -O0 miscompile (test_58_O0_ss). Same family as #198.
+#
+# Expected: the store stays LD_nnind_BC (conversion refused); no PUSH_BC.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  @__sframe_foo = global i8 0
+  @__sfrend_foo = global i8 0
+
+  ; CHECK-LABEL: name: foo
+  ; CHECK:     LD_nnind_BC
+  ; CHECK-NOT: PUSH_BC
+  ; CHECK:     LD_SP_HL
+  ; CHECK:     LD_BC_nnind
+
+  define void @foo() { ret void }
+
+...
+---
+name:            foo
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$bc' }
+  - { reg: '$hl' }
+body:             |
+  bb.0:
+    liveins: $bc, $hl
+
+    ; Spill store, then an explicit SP relocation, then the reload.  The
+    ; SP write between store and reload must block the PUSH/POP conversion.
+    LD_nnind_BC <mcsymbol __sframe_foo>, implicit $bc
+    LD_SP_HL implicit-def $sp, implicit $hl
+    LD_BC_nnind <mcsymbol __sframe_foo>, implicit-def $bc
+    RET implicit $bc
+
+...
