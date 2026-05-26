@@ -98,6 +98,15 @@ the whole brief.
   instance of the same class — or you catch yourself writing "same family /
   recurring / Nth time" — *stop and find the systemic cause that generates the
   class* before the next fix. Don't wait to be told to step back.
+- **A bug found by luck is a bug in your oracle.** The sibling of zoom-out: apply
+  it to the *detector*, not just the cause. When a bug was found by accident, was
+  sitting unexamined in an accepted-failures / noise-floor bucket, or is the Nth of
+  a class that still needed a hand-written test *after* discovery — stop and ask
+  "what oracle would have caught this on purpose?" The bug's signature is usually
+  already in the data as an exploitable *invariant* (e.g. "all opt levels of one
+  program must return the same value" → a cross-opt-level differential check that
+  needs no per-test expected value). Design that detector instead of just fixing
+  the instance. Don't wait to be asked whether the detection is good enough.
 - **Survey the toolbox before you need it.** When starting work in a domain — or
   whenever you catch yourself reaching for tools ad hoc — proactively inventory what
   the toolchain already offers for that kind of work (debug/verify flags, reducers,
