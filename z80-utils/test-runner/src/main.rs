@@ -86,6 +86,10 @@ Suite options:
 Clang-specific:
   -fast-math           Enable -ffast-math
   -omit-frame-pointer  Enable -fomit-frame-pointer
+  -static-stack        Enable +static-stack (BSS locals)
+  -verify              Add -mllvm -verify-machineinstrs (fail on invalid MIR;
+                       catches the peephole-liveness family, e.g. #199).
+                       Use BUILD_DIR=<assertions build> to add internal asserts.
 
 Environment:
   BUILD_DIR            Build directory (default: ../build)"
@@ -148,6 +152,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     let mut fast_math = false;
     let mut omit_fp = false;
     let mut static_stack = false;
+    let mut verify = false;
     let mut pattern = None;
 
     let mut i = 0;
@@ -163,6 +168,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
             "-fast-math" => fast_math = true,
             "-omit-frame-pointer" => omit_fp = true,
             "-static-stack" => static_stack = true,
+            "-verify" => verify = true,
             s if !s.starts_with('-') => pattern = Some(s.to_string()),
             _ => {}
         }
@@ -179,6 +185,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
         omit_fp,
         inline_runtime: false,
         static_stack,
+        verify,
         pattern,
     };
 
@@ -193,6 +200,9 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     }
     if omit_fp {
         println!("Flags:  -fomit-frame-pointer");
+    }
+    if verify {
+        println!("Flags:  -verify-machineinstrs");
     }
     println!();
 
