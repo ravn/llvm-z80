@@ -65,6 +65,17 @@ cl::opt<bool> Z80UnreserveIY(
     "z80-unreserve-iy", cl::Hidden, cl::init(false),
     cl::desc("Make IY an allocatable 16-bit register (ravn/llvm-z80#112 "
              "bring-up; default off, has known residual regalloc miscompiles)"));
+
+// #38/#112: IY is allocatable as a 4th 16-bit pair when the bring-up flag forces
+// it, OR when this function is compiled for SIZE (-Os/-Oz) AND +static-stack is
+// active.  Un-reserving IY is a measured size win (BIOS -23 B, autoload -11,
+// cpnos -10, AES -145 B) at a small speed cost (~+0.1% tstates: an IY-held value
+// is read via push iy; pop hl), so it is gated to size-opt and kept reserved for
+// speed (-O2/-O3).  +static-stack is required for correctness (the byte-decompose
+// legality fixes #112/#189/#201 are verified only under +static-stack).  Threaded
+// through getReservedRegs, getLargestLegalSuperClass, and Z80NarrowNoIndex so all
+// the leak-prevention engages together.
+bool z80IsIYAllocatable(const MachineFunction &MF);
 } // namespace llvm
 
 #define GET_REGINFO_TARGET_DESC
@@ -263,6 +274,13 @@ Z80RegisterInfo::getCallPreservedMask(const MachineFunction &MF,
   return Z80_CSR_RegMask;
 }
 
+bool llvm::z80IsIYAllocatable(const MachineFunction &MF) {
+  if (Z80UnreserveIY)
+    return true;
+  return MF.getFunction().hasOptSize() &&
+         MF.getSubtarget<Z80Subtarget>().staticStack();
+}
+
 BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
@@ -284,7 +302,7 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // design (single-register-class GR16NoIR exclusion on the affected
   // tied operands).  IY/IX stay reserved until #112 lands.
   Reserved.set(Z80::IX);
-  if (!Z80UnreserveIY)  // #112 bring-up flag; default reserves IY
+  if (!z80IsIYAllocatable(MF))  // #38/#112: allocatable under size-opt + static-stack
     Reserved.set(Z80::IY);
   if (STI.hasSM83()) {
     Reserved.set(Z80::IX);
@@ -327,7 +345,7 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
 
 const TargetRegisterClass *
 Z80RegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
-                                           const MachineFunction &) const {
+                                           const MachineFunction &MF) const {
   if (RC->hasSuperClass(&Z80::Anyi8RegClass))
     return &Z80::Anyi8RegClass;
   // GR16NoIR (= DE/HL/BC, GR16 minus IX/IY) deliberately excludes the index
@@ -349,7 +367,7 @@ Z80RegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
   // spill churn from reduced coalescing freedom).  Keeping the original
   // widening when IY is reserved makes production codegen byte-identical; the
   // exclusion only matters when IY can actually be chosen.
-  if (RC == &Z80::GR16NoIRRegClass && Z80UnreserveIY)
+  if (RC == &Z80::GR16NoIRRegClass && z80IsIYAllocatable(MF))
     return RC;
   // Return GR16, not Anyi16.  Anyi16 includes SP which is never allocatable,
   // and the SPILL_GR16/RELOAD_GR16 pseudos only accept GR16.  Widening to
