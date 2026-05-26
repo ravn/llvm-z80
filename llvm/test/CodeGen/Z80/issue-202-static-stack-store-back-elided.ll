@@ -1,10 +1,12 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O0 < %s | FileCheck %s
-; XFAIL: *
 ;
-; ravn/llvm-z80#202: at -O0 with +static-stack, a store to a frame (BSS) slot in
-; one block is dropped when the stored value is forwarded (via push/pop) to a
-; load in a *successor* block while the same slot is reloaded across a loop
-; back-edge.  The back-edge reload then reads the stale initial value.
+; ravn/llvm-z80#202 (FIXED): at -O0 with +static-stack, a store to a frame (BSS)
+; slot in one block was dropped when the stored value is forwarded (via
+; push/pop) to a load in a *successor* block while the same slot is reloaded
+; across a loop back-edge.  The back-edge reload then read the stale initial
+; value.  Fix: the cross-block spill->PUSH/POP peephole now bails when the slot
+; is accessed earlier in the store's block (the loop-carried back-edge
+; signature), mirroring the single-block peephole's #195 guard.
 ;
 ; Concretely this miscompiles `do { v >>= 1; } while (v > 0)` over a memory-
 ; resident `v`: the shift result is computed (`srl`/`rr`), pushed for the
@@ -19,7 +21,7 @@
 ; with a back-edge is the trigger.
 ;
 ; The store-back below MUST reach v's frame slot before the back-edge reloads
-; it.  Currently it is elided, so this CHECK fails -> XFAIL until fixed.
+; it (the conversion to PUSH/POP must be refused for this loop-carried slot).
 
 define i8 @f() {
 entry:
@@ -32,7 +34,7 @@ entry:
 body:
   %0 = load i16, ptr %v
   %s = lshr i16 %0, 1
-  store i16 %s, ptr %v          ; writeback that the backend drops
+  store i16 %s, ptr %v          ; writeback (was dropped before the #202 fix)
   %b = load i8, ptr %bits
   %b1 = add i8 %b, 1
   store i8 %b1, ptr %bits
