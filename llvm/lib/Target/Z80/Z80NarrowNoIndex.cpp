@@ -71,6 +71,7 @@ STATISTIC(NumNarrowed, "Number of GR16 vregs narrowed to GR16NoIR (kept out of I
 // Defined in Z80RegisterInfo.cpp: the #112 IY bring-up flag.
 namespace llvm {
 extern cl::opt<bool> Z80UnreserveIY;
+bool z80IsIYAllocatable(const MachineFunction &MF);
 }
 
 namespace {
@@ -127,7 +128,7 @@ bool Z80NarrowNoIndex::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   // IX/IY are Z80-only, and there is nothing to keep out of them when IY is
   // reserved -- running then would only perturb production coalescing.
-  if (!STI.hasZ80() || !Z80UnreserveIY)
+  if (!STI.hasZ80() || !z80IsIYAllocatable(MF))  // #38: flag OR size-opt+static-stack
     return false;
 
   MachineRegisterInfo &MRI = MF.getRegInfo();
