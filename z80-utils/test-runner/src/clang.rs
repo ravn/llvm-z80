@@ -22,6 +22,14 @@ pub struct ClangConfig {
     /// the shipped build never verifies. Works on the Release build; point
     /// BUILD_DIR at an assertions build to add the internal assert() layer.
     pub verify: bool,
+    /// Cross-opt-level differential oracle: a correct program returns the SAME
+    /// value at every optimization level, so any disagreement among O0..Oz for
+    /// the same test is a miscompile -- independent of the hardcoded `expect`
+    /// directive (which may itself be wrong/stale). Emits a `<name>_DIFFOPT`
+    /// failure naming the disagreeing levels. Would have caught #202 (test_54:
+    /// O0_ss=0x0080 vs O1+_ss=0x00FF) with no hand-written test. Strongest with
+    /// `-full` (all opt levels).
+    pub diff_opt: bool,
     pub pattern: Option<String>,
 }
 
@@ -115,6 +123,10 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
         // Parse per-test EXTRA-FLAGS from source comments.
         let per_test_flags = parse_extra_flags_c(&source);
 
+        // For the cross-opt-level differential oracle: the observed value at
+        // each opt level (only Pass/Fail carry a value; Fatal/Skip don't).
+        let mut opt_values: Vec<(OptLevel, String)> = Vec::new();
+
         for &opt in &config.opt_levels {
             let tag = format!("{name}_{opt}{suffix}");
 
@@ -140,11 +152,47 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
                 &source,
                 &elf_rt,
             );
+            // Record the observed value for the differential check.
+            match &r.outcome {
+                TestOutcome::Pass { reg_value } => opt_values.push((opt, normalize_hex(reg_value))),
+                TestOutcome::Fail { got, .. } => opt_values.push((opt, normalize_hex(got))),
+                _ => {}
+            }
             result.add(r, on_result, reg_name);
+        }
+
+        // Cross-opt-level differential: every opt level of the same program
+        // must return the same value (optimization is semantics-preserving).
+        // A disagreement is a miscompile regardless of the `expect` directive.
+        if config.diff_opt && opt_values.len() >= 2 {
+            let first = &opt_values[0].1;
+            if opt_values.iter().any(|(_, v)| v != first) {
+                let detail = opt_values
+                    .iter()
+                    .map(|(o, v)| format!("{o}=0x{v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let tag = format!("{name}_DIFFOPT{suffix}");
+                result.add(
+                    TestResult::fail(tag, detail, "all opt levels agree"),
+                    on_result,
+                    reg_name,
+                );
+            }
         }
     }
 
     result
+}
+
+/// Normalize a "0x..." value string for cross-opt-level comparison: drop the
+/// "0x" prefix, leading zeros, and case (the Pass path formats the raw value
+/// while the Fail path zero-pads to the expected width, so the strings must be
+/// canonicalized before comparing). All-zero canonicalizes to "0".
+fn normalize_hex(s: &str) -> String {
+    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    let t = t.trim_start_matches('0').to_lowercase();
+    if t.is_empty() { "0".to_string() } else { t }
 }
 
 fn run_single(
