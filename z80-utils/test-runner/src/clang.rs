@@ -15,6 +15,13 @@ pub struct ClangConfig {
     pub omit_fp: bool,
     pub inline_runtime: bool,
     pub static_stack: bool,
+    /// Append `-mllvm -verify-machineinstrs`: run the MachineVerifier after
+    /// every pass and fail the compile on invalid MIR (undefined physreg,
+    /// stale liveins, bad reg classes). Catches the peephole-liveness bug
+    /// family (e.g. ravn/llvm-z80#199) that otherwise stays latent because
+    /// the shipped build never verifies. Works on the Release build; point
+    /// BUILD_DIR at an assertions build to add the internal assert() layer.
+    pub verify: bool,
     pub pattern: Option<String>,
 }
 
@@ -38,6 +45,10 @@ impl ClangConfig {
             flags.push("-target-feature");
             flags.push("-Xclang");
             flags.push("+static-stack");
+        }
+        if self.verify {
+            flags.push("-mllvm");
+            flags.push("-verify-machineinstrs");
         }
         flags
     }
