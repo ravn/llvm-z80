@@ -56,6 +56,7 @@ the whole brief.
 ## Verification & commit discipline
 
 - **Test before fix.** Write the failing test first, then make it pass.
+- **Baseline before you change.** Capture the control measurement on the *unmodified* system -- test-runner fail-set, binary sizes, timings -- *before* you touch anything. A delta needs both endpoints; reconstructing the "before" after the fact (stash, rebuild, rerun) is slower and error-prone, and you may not be able to get back to a clean baseline at all. If you find yourself measuring only the "after," stop and go capture the "before" first.
 - **Verify before "done."** Prove it works — run the tests, check the logs, diff
   behavior between the baseline and your change. Never mark complete on assumption.
 - **Building is not behaving.** A clean compile / smaller binary is not proof of
