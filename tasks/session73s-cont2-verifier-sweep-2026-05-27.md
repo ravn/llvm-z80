@@ -74,8 +74,22 @@ aes256.c` still fails (verifier aborts at first function):
     HL undef at the PUSH, so either the guard **over-saves** (saves HL when it
     is actually dead -> reads undef; fixing it = elide the PUSH = a size win)
     or the block live-ins are **stale**.
-  - **UPDATE 2026-05-27 (cont-2, attempted): root cause REFINED — it is a
-    processing-order cascade, NOT an `isRegLiveAt` accuracy bug.**  Tried two
+  - **UPDATE 2026-05-27 (cont-2, FULL fix designed): #210 is TWO root causes;
+    the complete fix is specified on the issue.**  Cause A (cascade
+    over-report) is fixable by sound per-unit liveness + PUSH/POP bracket
+    transparency in `isRegLiveAt` (prototyped: removed 8/48 unnecessary borrow
+    PUSH_HLs in `aes_mixColumns`, oracle-clean, cpnos byte-identical; reverted
+    as insufficient alone).  **Cause B is the real blocker: a partial-undef-pair
+    borrow** — the surviving `PUSH_HL` is a *correct* save (`$h` live across it)
+    but reads the whole pair while `$l` is undef.  Fix B: insert
+    `$<deadhalf> = IMPLICIT_DEF` (zero code) before the borrow PUSH for any dead
+    half, relying on Cause-A's sound per-unit liveness to identify it (an
+    IMPLICIT_DEF on a *live* half would corrupt it → the soundness hinge).
+    Complete fix = A + B, full oracle + MAME, focused session.  Also clears the
+    bench `PUSH_AF` (`$a`-dead/flags-live) analogue.  Three reverted attempts
+    this session proved the partial fixes sound-but-insufficient; the issue now
+    carries the full implementable design.  See #210.
+  - (earlier framing, superseded:)  Tried two
     sound, oracle-clean (799/0), production-byte-identical `isRegLiveAt`
     refinements (sub-register-redef-aware successor fallback; then full per-unit
     forward liveness keeping ADJCALLSTACK handling) — BOTH insufficient; reverted.
