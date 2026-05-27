@@ -250,7 +250,19 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
       SrcDead = (LQR == MachineBasicBlock::LQR_Dead);
     }
     if (SrcDead) {
-      BuildMI(MBB, I, DL, get(Z80::EX_DE_HL));
+      MachineInstr *MI = BuildMI(MBB, I, DL, get(Z80::EX_DE_HL)).getInstr();
+      // EX DE,HL swaps both pairs.  As a one-way copy SrcReg -> DestReg it
+      // moves DestReg's OLD value into SrcReg, which is dead here and
+      // discarded.  A copy overwrites its destination, so DestReg's incoming
+      // value is a don't-care; mark the implicit use of DestReg undef.
+      // Otherwise, when DestReg's old value is itself undefined (e.g. a fresh
+      // pair used only as the copy target), -verify-machineinstrs flags the EX
+      // with "Using an undefined physical register" (#209-class don't-care
+      // read; AES rj_sb_inv).  The SrcReg use stays real (it is the value
+      // being copied).
+      for (MachineOperand &MO : MI->operands())
+        if (MO.isReg() && MO.isUse() && MO.getReg() == DestReg)
+          MO.setIsUndef(true);
       return;
     }
   }

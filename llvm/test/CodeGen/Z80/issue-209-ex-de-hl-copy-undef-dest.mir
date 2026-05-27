@@ -1,0 +1,44 @@
+# RUN: llc -mtriple=z80 -run-pass=postrapseudos \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80 #209 (don't-care-read family, verifier surface #197):
+# Z80InstrInfo::copyPhysReg lowers a 16-bit DE<->HL copy to EX DE,HL when the
+# source is dead (1 byte vs two LDs).  EX DE,HL swaps BOTH pairs, so as a
+# one-way copy Src->Dest it moves Dest's OLD value into the (dead) Src and
+# discards it.  A copy overwrites its destination, so Dest's incoming value is
+# a don't-care; the lowering marks the implicit use of DestReg undef.  Without
+# it, a copy into a pair whose old value is undefined (e.g. AES rj_sb_inv's
+# `EX DE,HL` after computing the index in HL, with DE never set) made
+# -verify-machineinstrs report "Using an undefined physical register".
+#
+# The DestReg use is undef; the SrcReg use stays real (it is the copied value).
+
+--- |
+  target triple = "z80"
+  define void @copy_hl_to_de() { ret void }
+  define void @copy_de_to_hl() { ret void }
+...
+---
+name:            copy_hl_to_de
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $hl
+    ; $de is not live-in: its old value is a don't-care.
+    ; CHECK-LABEL: name: copy_hl_to_de
+    ; CHECK: EX_DE_HL implicit-def $de, implicit-def $hl, implicit undef $de, implicit $hl
+    renamable $de = COPY killed renamable $hl
+    RET implicit $de
+...
+---
+name:            copy_de_to_hl
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $de
+    ; $hl is not live-in: its old value is a don't-care.
+    ; CHECK-LABEL: name: copy_de_to_hl
+    ; CHECK: EX_DE_HL implicit-def $de, implicit-def $hl, implicit $de, implicit undef $hl
+    renamable $hl = COPY killed renamable $de
+    RET implicit $hl
+...
