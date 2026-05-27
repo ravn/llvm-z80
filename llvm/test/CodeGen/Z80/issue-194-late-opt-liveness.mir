@@ -1,0 +1,111 @@
+# RUN: llc -mtriple=z80 -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80 #194: -verify-machineinstrs passed before Z80LateOptimization
+# and failed after it ("Using an undefined physical register" at a reader of
+# $a), because two late-opt peepholes rewrote $a without maintaining liveness
+# metadata.  Both are value-correct; only the metadata was stale.  This test
+# runs the pass under -verify-machineinstrs (so it FAILS if either metadata bug
+# regresses) and checks the rewritten code.
+
+# Case 1 (from AES gf_log): cross-block redundant "LD A,r" removal (issue #60).
+# bb.1 exits with A == E (LD_A_E; CP_L doesn't touch A), so bb.2's leading
+# LD_A_E is redundant and removed.  But $a then flows into bb.2 from bb.1 and
+# is read by ADD_A_A, so $a must be added to bb.2's live-ins.
+--- |
+  target triple = "z80"
+  define void @gf_log() { ret void }
+  define void @gf_mulinv() { ret void }
+  declare void @gf_alog()
+...
+---
+name:            gf_log
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1
+    liveins: $hl
+    dead $hl = KILL killed renamable $hl, implicit-def $l
+    LD_D_n 0, implicit-def $d
+    LD_E_n 1, implicit-def $e
+
+  bb.1:
+    successors: %bb.6, %bb.2
+    liveins: $d, $e, $l
+    LD_A_E implicit-def $a, implicit $e
+    CP_L implicit-def $flags, implicit $a, implicit $l
+    JR_Z_e %bb.6, implicit $flags
+
+  ; The redundant LD_A_E is gone and $a is now a live-in of bb.2.
+  ; CHECK:      bb.2:
+  ; CHECK:        liveins: {{.*}}$a
+  ; CHECK:        ADD_A_A
+  bb.2:
+    successors: %bb.4, %bb.3
+    liveins: $d, $e, $l
+    LD_A_E implicit-def $a, implicit $e
+    ADD_A_A implicit-def $a, implicit-def $flags, implicit $a
+    JR_NC_e %bb.4, implicit $flags
+
+  bb.3:
+    successors: %bb.4
+    liveins: $a, $d, $e, $l
+    XOR_n 27, implicit-def $a, implicit-def $flags, implicit $a
+
+  bb.4:
+    successors: %bb.5, %bb.1
+    liveins: $a, $d, $e, $l
+    XOR_E implicit-def $a, implicit-def $flags, implicit $a, implicit $e
+    LD_E_A implicit-def $e, implicit $a
+    LD_A_D implicit-def $a, implicit $d
+    ADD_A_n 1, implicit-def $a, implicit-def $flags, implicit $a
+    LD_D_A implicit-def $d, implicit $a
+    SBC_A_A implicit-def $a, implicit-def $flags, implicit $a, implicit $flags
+    AND_n 1, implicit-def $a, implicit-def $flags, implicit $a
+    XOR_n 1, implicit-def $a, implicit-def $flags, implicit $a
+    AND_n 1, implicit-def $a, implicit-def $flags, implicit $a
+    OR_A implicit-def dead $a, implicit-def $flags, implicit $a
+    JR_NZ_e %bb.1, implicit $flags
+
+  bb.5:
+    successors: %bb.6
+    LD_D_n 0, implicit-def $d
+
+  bb.6:
+    liveins: $d
+    LD_A_D implicit-def $a, implicit $d
+    RET implicit $a
+...
+
+# Case 2 (from AES gf_mulinv): "LD A,#0" -> "XOR A" with A dead.  bb.1 is a
+# `return 0;` block; A is not live-in there.  XOR A zeroes A independent of its
+# prior value, so the rewrite must mark the implicit $a read undef, else the
+# verifier flags it.
+---
+name:            gf_mulinv
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $hl
+    LD_H_n 0, implicit-def $h
+    dead $hl = KILL renamable $hl, implicit-def $l
+    LD_A_L implicit-def $a, implicit $l
+    OR_A implicit-def $a, implicit-def $flags, implicit $a
+    JR_NZ_e %bb.2, implicit $flags
+
+  ; CHECK:      bb.1:
+  ; CHECK:        XOR_A implicit-def $a, implicit-def $flags, implicit undef $a
+  bb.1:
+    LD_A_n 0, implicit-def $a
+    RET implicit $a
+
+  bb.2:
+    liveins: $hl:0x000000000000000C
+    CALL_nn @gf_log, z80_csr, implicit-def $a, implicit-def dead $bc, implicit-def dead $de, implicit-def dead $hl, implicit-def $iy, implicit-def $flags, implicit $hl
+    CPL implicit-def $a, implicit-def $flags, implicit $a
+    LD_L_A implicit-def $l, implicit $a
+    LD_H_n 0, implicit-def $h
+    CALL_nn @gf_alog, z80_csr, implicit-def $a, implicit-def dead $bc, implicit-def dead $de, implicit-def dead $hl, implicit-def $iy, implicit-def $flags, implicit $hl
+    RET implicit $a
+...

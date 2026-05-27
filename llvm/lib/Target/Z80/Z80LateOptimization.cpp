@@ -960,7 +960,17 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         auto After = std::next(MII);
         if (isRegDeadAfter(After, MBB, TRI, Z80::FLAGS)) {
           LLVM_DEBUG(dbgs() << "  LD A,#0 → XOR A: " << MI);
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(Z80::XOR_A));
+          MachineInstr *NewMI =
+              BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(Z80::XOR_A));
+          // XOR A sets A to 0 regardless of A's prior value, so its implicit
+          // read of A is a don't-care.  LD A,#0 only *defined* A; A may be dead
+          // here (e.g. a `return 0;` block whose predecessor's A is not live in
+          // this block).  Mark the use undef so the read does not require A to
+          // be live, otherwise -verify-machineinstrs reports "Using an
+          // undefined physical register" at the XOR A (#194).
+          for (MachineOperand &MO : NewMI->operands())
+            if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
+              MO.setIsUndef(true);
           MII = MBB.erase(MII);
           Changed = true;
           continue;
@@ -4181,6 +4191,39 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
         K = Next;
       }
+    }
+    // Erasing a redundant LD A,r does not update block live-ins.  When the
+    // removed LD was the reaching definition of $a for later uses in its block
+    // -- i.e. $a flows in from the predecessors (EntryAK[MBB] == Reg(r), which
+    // means every predecessor exits with A == r, so $a is live-out of them) --
+    // $a becomes live-in to the block and the live-in list must say so, or
+    // -verify-machineinstrs reports "Using an undefined physical register" at
+    // the first $a reader (e.g. gf_log's ADD_A_A, #194).  For each block, walk
+    // to the first event among {erased LD A,r, surviving $a-def}: if the erased
+    // LD comes first, no surviving definition provides $a in-block, so $a is
+    // live-in -- add it.
+    auto defsPhysA = [&](const MachineInstr &MI) {
+      for (const MachineOperand &MO : MI.operands())
+        if (MO.isReg() && MO.isDef() && MO.getReg().isPhysical() &&
+            TRI->regsOverlap(MO.getReg(), Z80::A))
+          return true;
+      for (MCPhysReg D : MI.getDesc().implicit_defs())
+        if (TRI->regsOverlap(D, Z80::A))
+          return true;
+      return false;
+    };
+    for (auto &MBB : MF) {
+      bool NeedALiveIn = false;
+      for (auto &MI : MBB) {
+        if (llvm::is_contained(ToErase60x, &MI)) {
+          NeedALiveIn = true; // erased LD A,r reached before any surviving A-def
+          break;
+        }
+        if (defsPhysA(MI))
+          break; // $a is provided in-block before any erased LD A,r
+      }
+      if (NeedALiveIn && !MBB.isLiveIn(Z80::A))
+        MBB.addLiveIn(Z80::A);
     }
     for (auto *MI : ToErase60x) {
       MI->eraseFromParent();
