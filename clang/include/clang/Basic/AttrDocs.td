@@ -6741,6 +6741,34 @@ undefined behavior.
 This is a Z80-specific attribute and is rejected on other targets.}];
 }
 
+def Z80CriticalDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "clang::z80_critical";
+  let Content = [{
+The ``z80_critical`` attribute marks a Z80 function as a critical section:
+the backend emits ``DI`` (disable interrupts) at function entry and ``EI``
+(enable interrupts) immediately before the return, so the entire body runs
+with interrupts disabled.  This is the clang/LLVM analog of SDCC's
+``__critical`` function specifier.
+
+Example:
+
+.. code-block:: c
+
+  /* The body runs uninterrupted: DI on entry, EI before ret. */
+  __attribute__((z80_critical))
+  void atomic_update(void) {
+      shared_counter++;
+      shared_flag = 1;
+  }
+
+On a function that is also an interrupt handler (``__attribute__((interrupt))``)
+the entry ``DI`` is omitted -- Z80 hardware already disables interrupts on
+interrupt entry -- while the handler's own ``EI; RETI`` epilogue is unchanged.
+
+This is a Z80-specific attribute and is rejected on other targets.}];
+}
+
 def PreferredNameDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{

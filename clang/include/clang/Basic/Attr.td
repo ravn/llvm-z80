@@ -3603,6 +3603,12 @@ def Z80PreservesRegs : InheritableAttr, TargetSpecificAttr<TargetZ80> {
   let Documentation = [Z80PreservesRegsDocs];
 }
 
+def Z80Critical : InheritableAttr, TargetSpecificAttr<TargetZ80> {
+  let Spellings = [Clang<"z80_critical">];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [Z80CriticalDocs];
+}
+
 def Target : InheritableAttr {
   let Spellings = [GCC<"target">];
   let Args = [StringArgument<"featuresStr">];
