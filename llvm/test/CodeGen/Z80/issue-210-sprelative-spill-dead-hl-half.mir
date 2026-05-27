@@ -1,0 +1,54 @@
+# RUN: llc -mtriple=z80 -run-pass=prologepilog -verify-machineinstrs %s -o - \
+# RUN:   | FileCheck %s
+#
+# ravn/llvm-z80 #210: in the default config (no +static-stack, no frame
+# pointer) eliminateFrameIndex reaches a stack slot SP-relative by borrowing
+# HL (PUSH_HL; LD HL,nn; ADD HL,SP; LD r,(HL); POP_HL).  The borrow used to be
+# gated by `NeedSaveHL = isRegLiveAt(HL)` (and forced true for GR8 spills/
+# reloads of a half).  Two over-saves emitted a PUSH_HL that reads an undefined
+# $hl, which -verify-machineinstrs rejects:
+#   1. isRegLiveAt(HL) over-reported HL live when its two halves are redefined
+#      by *separate* later defs (it never saw a single full HL def and fell
+#      back to the successor live-ins of the *new* halves).  Fixed by tracking
+#      liveness per register *unit*.
+#   2. SPILL_GR8/RELOAD_GR8 of $h/$l forced the save unconditionally; it now
+#      saves HL only when the *other* half is live (and IMPLICIT_DEFs a dead
+#      destination half if the pair must still be saved).
+#
+# Here HL is fully dead at the reload (only $a is live in, $l is never used),
+# so no borrow PUSH_HL is needed.  The test passes iff -verify-machineinstrs is
+# clean AND no PUSH_HL/POP_HL pair is emitted for the dead pair.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  define dso_local void @f() { ret void }
+...
+---
+name:            f
+alignment:       1
+legalized:       true
+regBankSelected:  true
+selected:        true
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:    1
+  framePointerPolicy: none
+stack:
+  - { id: 0, type: spill-slot, offset: 0, size: 1, alignment: 1 }
+  - { id: 1, type: spill-slot, offset: 0, size: 1, alignment: 1 }
+body:             |
+  bb.0:
+    liveins: $a
+    ; Reload H from a stack slot.  The old H and all of L are dead here, so the
+    ; SP-relative address borrow must NOT save HL (it would read an undef pair).
+    renamable $h = RELOAD_GR8 %stack.0, 0 :: (load (s8) from %stack.0)
+    SPILL_GR8 renamable $h, %stack.1, 0 :: (store (s8) into %stack.1)
+    RET implicit $a
+
+# CHECK-LABEL: name: f
+# The reload/store reach the slot SP-relative without borrowing the dead pair.
+# CHECK: ADD_HL_SP
+# CHECK-NOT: PUSH_HL
+# CHECK-NOT: POP_HL

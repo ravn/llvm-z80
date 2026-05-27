@@ -523,6 +523,24 @@ static bool adjCallStackUpClobbersReg(const MachineInstr &MI, Register Reg,
 static bool isRegLiveAt(Register Reg, MachineBasicBlock &MBB,
                         MachineBasicBlock::iterator MI,
                         const TargetRegisterInfo *TRI) {
+  // Track the *register units* of Reg that are still "pending" — neither used
+  // nor redefined yet on the forward scan from MI.  A def retires the units it
+  // covers; a use of any still-pending unit means Reg is live.  If every unit
+  // is redefined (without an intervening use) before the block end, Reg is
+  // dead.  Otherwise the still-pending units fall back to the successor
+  // live-ins.
+  //
+  // Per-unit tracking (rather than a single "full def covers Reg" test) is
+  // required for 16-bit registers whose two halves are redefined by *separate*
+  // defs, e.g. `$h = COPY ...` then `$l = COPY ...`.  A whole-register full-def
+  // check never fires for that shape, so the stale pair was misreported live
+  // via the successor live-ins of the *new* halves, emitting a borrow PUSH_HL
+  // that reads an undefined $hl (ravn/llvm-z80#210).  Retiring units one at a
+  // time lets both halves resolve to dead before the live-out fallback.
+  SmallSet<MCRegUnit, 4> Pending;
+  for (MCRegUnit U : TRI->regunits(Reg.asMCReg()))
+    Pending.insert(U);
+
   for (auto I = MI, E = MBB.end(); I != E; ++I) {
     // ADJCALLSTACKDOWN is always erased without emitting any code.
     if (I->getOpcode() == Z80::ADJCALLSTACKDOWN)
@@ -535,36 +553,32 @@ static bool isRegLiveAt(Register Reg, MachineBasicBlock &MBB,
         !adjCallStackUpClobbersReg(*I, Reg, TRI))
       continue;
 
-    bool HasUse = false;
-    bool HasFullDef = false;
+    // A use of any pending unit means Reg is live (uses are checked before
+    // defs so a read-modify-write instruction counts as a use).
     for (const MachineOperand &MO : I->operands()) {
-      if (!MO.isReg() || !MO.getReg().isValid())
+      if (!MO.isReg() || !MO.getReg().isValid() || !MO.isUse())
         continue;
-      if (!TRI->regsOverlap(MO.getReg(), Reg))
+      for (MCRegUnit U : TRI->regunits(MO.getReg().asMCReg()))
+        if (Pending.contains(U))
+          return true;
+    }
+    // Defs retire the units they cover (their old value is now dead).
+    for (const MachineOperand &MO : I->operands()) {
+      if (!MO.isReg() || !MO.getReg().isValid() || !MO.isDef())
         continue;
-      if (MO.isUse())
-        HasUse = true;
-      if (MO.isDef()) {
-        // Only count as a full kill if the def covers all of Reg.
-        // e.g., def $h does NOT kill $hl (L may still be live).
-        // def $hl DOES kill $hl and $h and $l.
-        if (MO.getReg() == Reg || TRI->isSuperRegister(Reg, MO.getReg()))
-          HasFullDef = true;
-      }
+      for (MCRegUnit U : TRI->regunits(MO.getReg().asMCReg()))
+        Pending.erase(U);
     }
-    if (HasUse)
-      return true; // Register is used by this instruction — it's live
-    if (HasFullDef)
-      return false; // Register is fully defined without use — it's dead
+    if (Pending.empty())
+      return false; // every unit redefined without use — dead
   }
-  // No use/def found in remaining instructions — check live-out.
-  // At O1+, values may be live across BB boundaries.
-  for (const MachineBasicBlock *Succ : MBB.successors()) {
-    for (const auto &LI : Succ->liveins()) {
-      if (TRI->regsOverlap(LI.PhysReg, Reg))
-        return true;
-    }
-  }
+  // No surviving use in the block — the still-pending units fall back to the
+  // successor live-ins.  At O1+, values may be live across BB boundaries.
+  for (const MachineBasicBlock *Succ : MBB.successors())
+    for (const auto &LI : Succ->liveins())
+      for (MCRegUnit U : TRI->regunits(LI.PhysReg))
+        if (Pending.contains(U))
+          return true;
   return false;
 }
 
@@ -904,21 +918,47 @@ static void expandReloadGR16LargeOffset(MachineBasicBlock &MBB,
 // SM83 optimization: uses LDHL SP,e (0xF8) when the adjusted offset fits
 // in a signed 8-bit range (-128..+127). This replaces the 2-instruction
 // sequence (LD HL,nn + ADD HL,SP) with a single instruction.
+// Emit a PUSH_AF that preserves only the flags across ADD_HL_SP.  A is not
+// modified inside the PUSH_AF/POP_AF bracket, so when A is dead at this point
+// its pushed value is don't-care; mark the $a read undef to satisfy
+// -verify-machineinstrs (the live $flags read keeps the pair from being
+// DCE'd).  When A is live we keep the real read so no pass propagates undef
+// into the live value (ravn/llvm-z80#209 family).
+static void emitFlagPreservingPushAF(MachineBasicBlock &MBB,
+                                     MachineBasicBlock::iterator InsertBefore,
+                                     const DebugLoc &DL,
+                                     const TargetInstrInfo &TII, bool ADead) {
+  MachineInstr *MI = BuildMI(MBB, InsertBefore, DL, TII.get(Z80::PUSH_AF));
+  if (ADead)
+    for (MachineOperand &MO : MI->operands())
+      if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
+        MO.setIsUndef(true);
+}
+
 static void emitSPRelativeAddr(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator InsertBefore,
                                const DebugLoc &DL, const TargetInstrInfo &TII,
                                int64_t Offset, int SPDelta,
-                               bool PreserveFlags) {
+                               bool PreserveFlags,
+                               const TargetRegisterInfo *TRI) {
   int AdjOffset = Offset + SPDelta;
   if (PreserveFlags)
     AdjOffset += 2; // PUSH AF will shift SP by 2
+
+  // A is not clobbered between the PUSH_AF and POP_AF below; the save exists
+  // solely to carry FLAGS across ADD_HL_SP.  Determine whether A is dead here
+  // so the don't-care $a read can be marked undef (see
+  // emitFlagPreservingPushAF).
+  bool ADead =
+      PreserveFlags && TRI &&
+      !isRegLiveAt(Z80::A, MBB, std::next(InsertBefore), TRI);
 
   // SM83: use LDHL SP,e if adjusted offset fits in signed 8-bit.
   // This replaces 2-instruction LD HL,nn + ADD HL,SP with a single LDHL SP,e.
   const auto &STI = MBB.getParent()->getSubtarget<Z80Subtarget>();
   if (STI.hasSM83() && AdjOffset >= -128 && AdjOffset <= 127) {
     if (PreserveFlags)
-      BuildMI(MBB, InsertBefore, DL, TII.get(Z80::PUSH_AF));
+      emitFlagPreservingPushAF(MBB, InsertBefore, DL, TII, ADead);
     BuildMI(MBB, InsertBefore, DL, TII.get(Z80::LDHL_SP_e))
         .addImm(AdjOffset & 0xFF);
     if (PreserveFlags)
@@ -931,7 +971,7 @@ static void emitSPRelativeAddr(MachineBasicBlock &MBB,
   BuildMI(MBB, InsertBefore, DL, TII.get(Z80::LD_HL_nn))
       .addImm(AdjOffset & 0xFFFF);
   if (PreserveFlags)
-    BuildMI(MBB, InsertBefore, DL, TII.get(Z80::PUSH_AF));
+    emitFlagPreservingPushAF(MBB, InsertBefore, DL, TII, ADead);
   BuildMI(MBB, InsertBefore, DL, TII.get(Z80::ADD_HL_SP));
   if (PreserveFlags)
     BuildMI(MBB, InsertBefore, DL, TII.get(Z80::POP_AF));
@@ -958,13 +998,34 @@ static void expandSpillGR8SPRelative(MachineBasicBlock &MBB,
   if (SrcIsHL)
     BuildMI(MBB, MI, DL, TII.get(getCopyToAOpcode(SrcReg)));
 
-  bool NeedSaveHL = SrcIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
-  if (NeedSaveHL) {
-    BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
-    SPDelta += 2;
+  bool NeedSaveHL;
+  if (SrcIsHL) {
+    // Spilling one half of HL: the source half has already been copied to A,
+    // so the address borrow only needs to preserve the OTHER half — and only
+    // if it (or the source half's register value) is live past the spill.
+    // Forcing the save unconditionally made PUSH_HL read an undefined half
+    // when the other half was dead (ravn/llvm-z80#210).
+    Register Other = (SrcReg == Z80::H) ? Z80::L : Z80::H;
+    bool OtherLive = isRegLiveAt(Other, MBB, NextIt, TRI);
+    bool SrcLive = isRegLiveAt(SrcReg, MBB, NextIt, TRI);
+    NeedSaveHL = OtherLive || SrcLive;
+    if (NeedSaveHL) {
+      // The source half still holds the (defined) spilled value; a dead other
+      // half must be made defined so the pair PUSH doesn't read undef.
+      if (!OtherLive)
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Other);
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+      SPDelta += 2;
+    }
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+    if (NeedSaveHL) {
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+      SPDelta += 2;
+    }
   }
 
-  emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+  emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
   if (SrcIsHL)
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_A));
@@ -995,13 +1056,29 @@ static void expandReloadGR8SPRelative(MachineBasicBlock &MBB,
     SPDelta += 2;
   }
 
-  bool NeedSaveHL = DstIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
-  if (NeedSaveHL) {
-    BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
-    SPDelta += 2;
+  bool NeedSaveHL;
+  if (DstIsHL) {
+    // Reloading into one half of HL: the address borrow clobbers the whole
+    // pair, so only the OTHER half needs preserving, and only if it is live
+    // past the reload.  The destination half's old value is dead (it is about
+    // to be overwritten), so IMPLICIT_DEF it to keep the pair PUSH from
+    // reading an undefined register (ravn/llvm-z80#210).
+    Register Other = (DstReg == Z80::H) ? Z80::L : Z80::H;
+    NeedSaveHL = isRegLiveAt(Other, MBB, NextIt, TRI);
+    if (NeedSaveHL) {
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), DstReg);
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+      SPDelta += 2;
+    }
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+    if (NeedSaveHL) {
+      BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+      SPDelta += 2;
+    }
   }
 
-  emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+  emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
   if (DstIsHL) {
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_HLind));
@@ -1059,7 +1136,7 @@ static void expandSpillGR16SPRelative(MachineBasicBlock &MBB,
     Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
     Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
 
-    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempLo)));
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
@@ -1090,7 +1167,7 @@ static void expandSpillGR16SPRelative(MachineBasicBlock &MBB,
     BuildMI(MBB, MI, DL, TII.get(CopyLo));
     BuildMI(MBB, MI, DL, TII.get(CopyHi));
 
-    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempLo)));
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
@@ -1117,7 +1194,7 @@ static void expandSpillGR16SPRelative(MachineBasicBlock &MBB,
       SPDelta += 2;
     }
 
-    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(SrcLo)));
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
@@ -1160,7 +1237,7 @@ static void expandReloadGR16SPRelative(MachineBasicBlock &MBB,
       SPDelta += 2;
     }
 
-    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
     Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
     Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
@@ -1193,7 +1270,7 @@ static void expandReloadGR16SPRelative(MachineBasicBlock &MBB,
       SPDelta += 2;
     }
 
-    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
     Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
     Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
@@ -1218,7 +1295,7 @@ static void expandReloadGR16SPRelative(MachineBasicBlock &MBB,
       SPDelta += 2;
     }
 
-    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+    emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
 
     Register DstLo = TRI->getSubReg(DstReg, Z80::sub_lo);
     Register DstHi = TRI->getSubReg(DstReg, Z80::sub_hi);
@@ -1247,6 +1324,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   const auto &STI2 = MF.getSubtarget<Z80Subtarget>();
   const TargetFrameLowering *TFI = getFrameLowering(MF);
+  const TargetRegisterInfo *TRI = this;
 
   int Idx = MI->getOperand(FIOperandNum).getIndex();
   int64_t Offset = MFI.getObjectOffset(Idx);
@@ -1521,14 +1599,14 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       int SPDelta = 0;
 
       if (DstReg == Z80::HL) {
-        emitSPRelativeAddr(MBB, MI, DL, TII, Offset, 0, PreserveFlags);
+        emitSPRelativeAddr(MBB, MI, DL, TII, Offset, 0, PreserveFlags, TRI);
       } else {
         bool NeedSaveHL = isRegLiveAt(Z80::HL, MBB, std::next(MI), this);
         if (NeedSaveHL) {
           BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
           SPDelta += 2;
         }
-        emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+        emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
         if (DstReg == Z80::DE) {
           const auto &STI = MF.getSubtarget<Z80Subtarget>();
           if (STI.hasSM83()) {
@@ -1657,7 +1735,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
         BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
         SPDelta += 2;
       }
-      emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags);
+      emitSPRelativeAddr(MBB, MI, DL, TII, Offset, SPDelta, PreserveFlags, TRI);
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n)).addImm(Val & 0xFF);
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));

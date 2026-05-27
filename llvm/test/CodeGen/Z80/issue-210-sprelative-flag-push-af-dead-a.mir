@@ -1,0 +1,50 @@
+# RUN: llc -mtriple=z80 -run-pass=prologepilog -verify-machineinstrs %s -o - \
+# RUN:   | FileCheck %s
+#
+# ravn/llvm-z80 #210 (#209 don't-care-read family): when an SP-relative frame
+# access must preserve live FLAGS across ADD_HL_SP, emitSPRelativeAddr brackets
+# it with PUSH_AF/POP_AF.  A is not modified inside that bracket, so when A is
+# dead its pushed value is don't-care -- but the PUSH_AF still read $a, which
+# -verify-machineinstrs rejected as undefined.  The fix marks the $a read undef
+# when A is dead (the live $flags read keeps the pair from being DCE'd).
+#
+# Here flags are live across a BC spill (used by the conditional branch) while A
+# is dead, so the flag-preserving PUSH_AF must read $a as undef.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  define dso_local void @f() { ret void }
+...
+---
+name:            f
+alignment:       1
+legalized:       true
+regBankSelected:  true
+selected:        true
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:    1
+  framePointerPolicy: none
+stack:
+  - { id: 0, type: spill-slot, offset: 0, size: 2, alignment: 1 }
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $bc, $flags
+    ; Spill BC SP-relative while FLAGS are live (consumed by the branch below)
+    ; and A is dead: the flag-preserving PUSH_AF must read $a as undef.
+    SPILL_GR16 renamable $bc, %stack.0, 0 :: (store (s16) into %stack.0, align 1)
+    JR_C_e %bb.2, implicit $flags
+
+  bb.1:
+    RET
+
+  bb.2:
+    RET
+
+# CHECK-LABEL: name: f
+# CHECK: PUSH_AF implicit undef $a, implicit $flags
+# CHECK: ADD_HL_SP
+# CHECK: POP_AF
