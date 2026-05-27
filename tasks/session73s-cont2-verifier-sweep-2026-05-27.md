@@ -39,24 +39,45 @@ The #197 red surface is **two families**, not isolated bugs:
 After the 4 fixes, `clang -O2 -ffreestanding -mllvm -verify-machineinstrs -c
 aes256.c` still fails (verifier aborts at first function):
 
-- **`aes_mixColumns` bb.4/bb.8: `PUSH_HL implicit $hl` reads undef `$hl`.**
-  This is a THIRD family, *not* a clean don't-care read: the
-  `PUSH_HL; LD HL,nn; ADD HL,SP; ...; POP_HL` frame-index SP-relative
-  address-computation bracket saves HL guarded by
-  `NeedSaveHL = isRegLiveAt(Z80::HL, ...)`.  The guard decided HL needed
-  saving (so we must keep the PUSH — can't blanket-undef it), but the
-  verifier sees HL undef at that point.  So this is a **liveness
-  reconciliation** issue (stale block live-ins, or `isRegLiveAt`/
-  `computeRegisterLiveness` returning conservative/`Unknown`), in the
-  frame-index lowering scratch-management helpers in `Z80RegisterInfo.cpp`
-  (~10 PUSH_HL sites, lines 602-1000; the SP-relative ones around
-  `emitLargeOffsetAddr` @905 + callers).
-  - First drill: dump `aes_mixColumns` MIR before PEI; find whether HL is
-    genuinely live across the bracket (then the bug is missing block
-    live-ins) or genuinely dead (then `NeedSaveHL` is over-conservative and
-    the PUSH should be elided, also a size win).
+- **`aes_mixColumns`: `PUSH_HL implicit $hl` reads undef `$hl`.**  THIRD
+  family, *not* a clean don't-care read.  Drilled this session (2026-05-27,
+  cont-2) but **deliberately NOT fixed** — frame expansion is the highest-risk
+  area and I could not pin a confident single emission site fast enough to
+  fix safely.  Findings:
+  - It is an **SP-relative frame-access bracket** that borrows HL for the
+    address: `PUSH_HL; LD HL,nn; ADD HL,SP; LD (HL),r; [INC HL; LD (HL),r;]
+    POP_HL` (the dump shows e.g. spilling `$e` at SP+7).  `aes_mixColumns` has
+    `framePointerPolicy: none` and is NOT `+static-stack`, so every frame slot
+    is reached SP-relative, borrowing HL.
+  - The bracket appears **after ExpandPostRAPseudos** (`-print-after=postrapseudos`
+    shows the PUSH_HL; `-stop-after=prologepilog` still shows the unexpanded
+    `SPILL_GR8/16`).  So the emission is in `Z80InstrInfo::expandPostRAPseudo`
+    (or a helper it calls) for the no-FP SP-relative case — NOT the
+    `eliminateFrameIndex` SP-relative helpers in `Z80RegisterInfo.cpp` I first
+    suspected.  (Caveat: the SPILL_GR8 case I read at Z80InstrInfo.cpp:950
+    emits `LD (IX+d),r`, which doesn't match the observed SP-relative PUSH_HL
+    bracket — so the exact path is still unconfirmed; reconcile the pass
+    boundary first.)
+  - Root mechanism: the PUSH_HL saves HL purely to borrow it as the
+    address-scratch register, guarded by a liveness check.  The verifier sees
+    HL undef at the PUSH, so either the guard **over-saves** (saves HL when it
+    is actually dead -> reads undef; fixing it = elide the PUSH = a size win)
+    or the block live-ins are **stale**.
+  - **Next-session first drill:** trace ONE `SPILL_GR8 $e, <off>` in
+    `aes_mixColumns` through FinalizeISel -> ExpandPostRAPseudos -> z80-scavenging
+    with `-print-after-all` to pin the exact BuildMI(PUSH_HL) site; then decide
+    (a) tighten the HL-save guard to skip when HL is fully dead (codegen change
+    -> FULL value oracle incl. MAME boot, since cpnos/AES bytes may move) vs
+    (b) reconcile the block live-ins.  Gate exactly like the EX DE,HL fix.
 - Whatever surfaces after that (the verifier aborts at the first function, so
   the full remaining count is unknown until `aes_mixColumns` clears).
+
+## Production-target check (this session, safe measurements)
+- **BIOS clang = 5897 B — UNCHANGED** (was 5897).  The 4 fixes are byte-neutral
+  for the BIOS (no EX DE,HL DCE opportunity there); no regression, no re-boot
+  needed (byte-identical to last-verified).
+- **cpnos PROM1 = 2022 B** (was 2028; -6 B from the EX DE,HL fix), polypascal PASS.
+- **AES** enc/dec PASS, size + ts unchanged.
 
 Plus the known **#112/#189** illegal-vreg class (GR16NoIR) — the first of the
 three #197 classes named in #200's text — is gated separately (IY-unreserve
