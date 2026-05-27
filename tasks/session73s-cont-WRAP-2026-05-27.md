@@ -53,7 +53,9 @@ removal of `EndIsPseudo`; not worth a build cycle on its own.
 Per `issue-closeout-plan-2026-05-27.md`, clusters 1/4 DONE, 2 substantially done.
 Remaining:
 1. **#203 forward-scan restructure** (finish Cluster 2) — the one delicate piece above.
-2. **Cluster 3** (verifier/#197): #200, #194, #125, #190 — clears the `-verify` CI gate.
+2. **Cluster 3** (verifier/#197): test_48 build FIXED + #200 root-caused (2026-05-27);
+   remaining: #200 fix (option A expand-at-PEI / B variadic-decl), #194 (stale liveness,
+   delicate), #125 (-O0 +shadow-regs crash), #190 deep part (IY-unreserve).
 3. **Cluster 5** (memmove/fill): #126, #127, #205, #50.
 4. **Cluster 6** (tooling): #124, #137, #70.
 5. Cluster-4 follow-ups: #207 (advisory warning), #208 (SM83 gating), + the rcbios
