@@ -8045,6 +8045,9 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
   case ParsedAttr::AT_Z80PreservesRegs:
     handleZ80PreservesRegsAttr(S, D, AL);
     break;
+  case ParsedAttr::AT_Z80Critical:
+    handleSimpleAttribute<Z80CriticalAttr>(S, D, AL);
+    break;
   case ParsedAttr::AT_DeviceKernel:
     handleDeviceKernelAttr(S, D, AL);
     break;

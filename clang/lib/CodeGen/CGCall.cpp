@@ -2561,6 +2561,12 @@ void CodeGenModule::ConstructAttributeList(StringRef Name,
       FuncAttrs.addAttribute("z80-preserves-regs", llvm::join(Regs, ","));
     }
 
+    // Z80: emit the "z80_critical" function attribute so the backend's
+    // Z80FrameLowering wraps the body with DI (entry) and EI (before ret).
+    // The clang analog of SDCC's __critical.  See ravn/llvm-z80#4.
+    if (TargetDecl->hasAttr<Z80CriticalAttr>())
+      FuncAttrs.addAttribute("z80_critical");
+
     if (const FunctionDecl *Fn = dyn_cast<FunctionDecl>(TargetDecl)) {
       AddAttributesFromFunctionProtoType(
           getContext(), FuncAttrs, Fn->getType()->getAs<FunctionProtoType>());
