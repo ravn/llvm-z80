@@ -76,19 +76,19 @@ Cluster-1 result (2026-05-27): **3 closed** (#18 fixed + #151/#152 verify-close)
 Remainder (#117, #122, #146, #173) are marginal/narrow/medium — not clean small
 wins.  #173 is the only one with real (AES) value; promote it to a focused drill.
 
-## Cluster 2 — #132 SPILL-FAMILY CLOSEOUT (#188) — ~½ day, coordinated
+## Cluster 2 — #132 SPILL-FAMILY CLOSEOUT (#188) — SUBSTANTIALLY DONE 2026-05-27
 
-Already coordinated under #188.  The two drifted guards (loop-carried, address-taken)
-are unified; remaining:
-- **#203** unify the rest (orphan / UsedElsewhere / SP-write / stack-depth) into
-  shared helpers.  Behavior-sensitive -> gate on byte-identical + oracles.
-- **#155** UsedElsewhere over-conservative — **fold into #203** (same guard).
-- **#143** multi-fire edge-split conflict (CFG reasoning, ~2 h).
-- **#139** diagnostic loose end (~30 min investigate-and-close).
-- **#140** add .mir lit coverage (mechanical).
-- (#20 multi-value = defer; real design extension.)
+- **#155, #143, #140**: ✅ already CLOSED (found via verify-first).
+- **#139**: ✅ CLOSED (verify) — stale cpnos-rom diagnostic, source removed.
+- **#203**: PARTIAL (3 behavior-preserving steps landed: predicates `f3282df`,
+  UsedElsewhere `f009ab4`, SP-write `4bdeea1`; −80 net lines, oracles 0/0, cpnos
+  byte-identical).  **Remaining: forward-scan orphan/stack-depth restructure** —
+  the one delicate piece, interleaved with per-peephole load-collection; deferred
+  to a focused session (gate on byte-identical + oracles + lit).
+- **#20**: deferred (multi-value design extension).
+- **#188** (meta): drift surface eliminated; stays open until #203 fully closes.
 
-Expected: **4 closed** (#203, #155, #139, #140; #143 if time).
+Result: **4 closed this session** (#139 + the 3 already-closed); #203 advanced.
 
 ## Cluster 3 — VERIFIER / CORRECTNESS CLOSEOUT (#197) — ~1 session
 
