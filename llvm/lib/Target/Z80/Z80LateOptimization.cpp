@@ -385,6 +385,17 @@ static bool z80IsAnyBssStore(unsigned O) {
 static bool z80IsAnyBssAccess(unsigned O) {
   return z80IsAnyBssLoad(O) || z80IsAnyBssStore(O);
 }
+// PUSH/POP of any register pair (#203: shared by the spill->PUSH/POP peepholes
+// for stack-depth tracking; single source of truth so the opcode set can't
+// drift between the four peepholes).
+static bool z80IsAnyPush(unsigned O) {
+  return O == Z80::PUSH_AF || O == Z80::PUSH_BC || O == Z80::PUSH_DE ||
+         O == Z80::PUSH_HL || O == Z80::PUSH_IX || O == Z80::PUSH_IY;
+}
+static bool z80IsAnyPop(unsigned O) {
+  return O == Z80::POP_AF || O == Z80::POP_BC || O == Z80::POP_DE ||
+         O == Z80::POP_HL || O == Z80::POP_IX || O == Z80::POP_IY;
+}
 // Same frame slot: operand 0 of two BSS load/store MIs, symbol AND offset
 // (MO_MCSymbol::isIdenticalTo ignores the offset, so compare it explicitly --
 // distinguishes e.g. __sfrend-10 from __sfrend-16).
@@ -4498,19 +4509,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return true;
     };
 
-    auto sameAddress = [](const MachineInstr &A, const MachineInstr &B) -> bool {
-      // Compare the address operand (operand 0 for both store and load).
-      // MO_MCSymbol::isIdenticalTo only compares the symbol pointer, NOT
-      // the offset.  We must also compare offsets to distinguish e.g.
-      // __sfrend-10 from __sfrend-16.
-      const MachineOperand &MOA = A.getOperand(0);
-      const MachineOperand &MOB = B.getOperand(0);
-      if (!MOA.isIdenticalTo(MOB))
-        return false;
-      if (MOA.isMCSymbol())
-        return MOA.getOffset() == MOB.getOffset();
-      return true;
-    };
+    // #203: shared slot-address predicate (see z80SameBssAddr).
+    auto sameAddress = z80SameBssAddr;
 
     // A +static-stack slot whose base symbol is materialized into a register
     // (e.g. `LD HL, __sfrend_main`) can be accessed INDIRECTLY via pointer
@@ -4552,16 +4552,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // at each of our matching loads.
         int StackDepth = 0;
 
-        auto isAnyPush = [](unsigned Opc) {
-          return Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
-                 Opc == Z80::PUSH_HL || Opc == Z80::PUSH_AF ||
-                 Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY;
-        };
-        auto isAnyPop = [](unsigned Opc) {
-          return Opc == Z80::POP_BC || Opc == Z80::POP_DE ||
-                 Opc == Z80::POP_HL || Opc == Z80::POP_AF ||
-                 Opc == Z80::POP_IX || Opc == Z80::POP_IY;
-        };
+        // #203: shared predicates (single source of truth, no drift).
+        auto isAnyPush = z80IsAnyPush;
+        auto isAnyPop = z80IsAnyPop;
 
         // All BSS load opcodes — used to detect orphan loads from the
         // same slot to a register pair other than the spilled one.
@@ -4569,15 +4562,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // while leaving such an orphan read from BSS produces a stale
         // load (the slot is never written since PUSH/POP went to the
         // stack, not the slot).  Bail when seen.
-        auto isAnyBssLoad = [](unsigned Opc) {
-          return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
-                 Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
-        };
+        auto isAnyBssLoad = z80IsAnyBssLoad;
         // Any-register-class BSS store, for the cross-block orphan check.
-        auto isAnyBssStore = [](unsigned Opc) {
-          return Opc == Z80::LD_nnind_A  || Opc == Z80::LD_nnind_HL ||
-                 Opc == Z80::LD_nnind_DE || Opc == Z80::LD_nnind_BC;
-        };
+        auto isAnyBssStore = z80IsAnyBssStore;
 
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
@@ -4806,24 +4793,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return nullptr;
     };
 
-    auto isAnyBssLoad = [](unsigned Opc) {
-      return Opc == Z80::LD_A_nnind  || Opc == Z80::LD_HL_nnind ||
-             Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
-    };
-    auto isAnyBssStore = [](unsigned Opc) {
-      return Opc == Z80::LD_nnind_A  || Opc == Z80::LD_nnind_HL ||
-             Opc == Z80::LD_nnind_DE || Opc == Z80::LD_nnind_BC;
-    };
-    auto isAnyPush = [](unsigned Opc) {
-      return Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
-             Opc == Z80::PUSH_HL || Opc == Z80::PUSH_AF ||
-             Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY;
-    };
-    auto isAnyPop = [](unsigned Opc) {
-      return Opc == Z80::POP_BC || Opc == Z80::POP_DE ||
-             Opc == Z80::POP_HL || Opc == Z80::POP_AF ||
-             Opc == Z80::POP_IX || Opc == Z80::POP_IY;
-    };
+    // #203: shared predicates (single source of truth, no drift).
+    auto isAnyBssLoad = z80IsAnyBssLoad;
+    auto isAnyBssStore = z80IsAnyBssStore;
+    auto isAnyPush = z80IsAnyPush;
+    auto isAnyPop = z80IsAnyPop;
 
     auto isSfrendSymbol = [](const MachineOperand &MO) -> bool {
       if (!MO.isMCSymbol()) return false;
@@ -4831,13 +4805,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       return Name.starts_with("__sfrend") || Name.starts_with("__sframe");
     };
 
-    auto sameAddress = [](const MachineInstr &A, const MachineInstr &B) -> bool {
-      const MachineOperand &MOA = A.getOperand(0);
-      const MachineOperand &MOB = B.getOperand(0);
-      if (!MOA.isIdenticalTo(MOB)) return false;
-      if (MOA.isMCSymbol()) return MOA.getOffset() == MOB.getOffset();
-      return true;
-    };
+    // #203: shared slot-address predicate (see z80SameBssAddr).
+    auto sameAddress = z80SameBssAddr;
 
     SmallPtrSet<const void *, 4> AddrTakenSyms;
     z80CollectAddrTakenFrameSyms(MF, AddrTakenSyms);
@@ -5008,22 +4977,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         return MA.getOffset() == MB.getOffset();
       return true;
     };
-    auto isAnyBssLoad = [](unsigned O) {
-      return O == Z80::LD_A_nnind || O == Z80::LD_HL_nnind ||
-             O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind;
-    };
-    auto isAnyBssStore = [](unsigned O) {
-      return O == Z80::LD_nnind_A || O == Z80::LD_nnind_HL ||
-             O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC;
-    };
-    auto isAnyPush = [](unsigned O) {
-      return O == Z80::PUSH_AF || O == Z80::PUSH_BC || O == Z80::PUSH_DE ||
-             O == Z80::PUSH_HL || O == Z80::PUSH_IX || O == Z80::PUSH_IY;
-    };
-    auto isAnyPop = [](unsigned O) {
-      return O == Z80::POP_AF || O == Z80::POP_BC || O == Z80::POP_DE ||
-             O == Z80::POP_HL || O == Z80::POP_IX || O == Z80::POP_IY;
-    };
+    // #203: shared predicates (single source of truth, no drift).
+    auto isAnyBssLoad = z80IsAnyBssLoad;
+    auto isAnyBssStore = z80IsAnyBssStore;
+    auto isAnyPush = z80IsAnyPush;
+    auto isAnyPop = z80IsAnyPop;
 
     // Per ravn/llvm-z80#143: track the NewMBBs we create via edge-split
     // compensation so subsequent fires can recognize them and bypass the
