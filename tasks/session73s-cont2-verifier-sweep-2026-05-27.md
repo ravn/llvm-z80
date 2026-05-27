@@ -74,12 +74,22 @@ aes256.c` still fails (verifier aborts at first function):
     HL undef at the PUSH, so either the guard **over-saves** (saves HL when it
     is actually dead -> reads undef; fixing it = elide the PUSH = a size win)
     or the block live-ins are **stale**.
-  - **Next-session first drill:** trace ONE `SPILL_GR8 $e, <off>` in
-    `aes_mixColumns` through FinalizeISel -> ExpandPostRAPseudos -> z80-scavenging
-    with `-print-after-all` to pin the exact BuildMI(PUSH_HL) site; then decide
-    (a) tighten the HL-save guard to skip when HL is fully dead (codegen change
-    -> FULL value oracle incl. MAME boot, since cpnos/AES bytes may move) vs
-    (b) reconcile the block live-ins.  Gate exactly like the EX DE,HL fix.
+  - **UPDATE 2026-05-27 (cont-2, attempted): root cause REFINED — it is a
+    processing-order cascade, NOT an `isRegLiveAt` accuracy bug.**  Tried two
+    sound, oracle-clean (799/0), production-byte-identical `isRegLiveAt`
+    refinements (sub-register-redef-aware successor fallback; then full per-unit
+    forward liveness keeping ADJCALLSTACK handling) — BOTH insufficient; reverted.
+    Why: PEI `replaceFrameIndices` walks the block **backward**, so a spill's
+    later siblings are already expanded into SP-relative borrow brackets
+    (`PUSH_HL; LD HL,nn; ADD HL,SP; LD r,(HL); POP_HL`) when the earlier spill
+    queries liveness.  The borrow `PUSH_HL` is a **genuine `$hl` use** (before
+    its in-bracket `LD HL,nn` redef), so any forward scan correctly sees HL
+    "used" → save → its own borrow PUSH → cascade.  Fixing `isRegLiveAt` can't
+    help.  **Real fix:** make the borrow bracket liveness-transparent — mark the
+    borrow `PUSH_HL`'s `$hl` use `undef` at emission (guarded for the genuinely-
+    HL-live case to avoid DCE dropping HL's def), or precompute HL liveness over
+    the pre-expansion stream.  Full root cause on #210.  Needs the full value
+    oracle + MAME; non-production (`+static-stack` never hits this path).
 - Whatever surfaces after that (the verifier aborts at the first function, so
   the full remaining count is unknown until `aes_mixColumns` clears).
 
