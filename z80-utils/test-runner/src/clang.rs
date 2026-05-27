@@ -30,6 +30,16 @@ pub struct ClangConfig {
     /// O0_ss=0x0080 vs O1+_ss=0x00FF) with no hand-written test. Strongest with
     /// `-full` (all opt levels).
     pub diff_opt: bool,
+    /// Native-reference differential oracle: compile + run each test with the
+    /// host C compiler (env CC, else cc/clang/gcc) and compare its return value
+    /// to the Z80 result. Unlike -diff-opt (which only finds opt-level
+    /// disagreement), this catches values that are *consistently* wrong on Z80 -
+    /// and unlike the `expect` directive, the reference is computed, not
+    /// hand-written (so a wrong `expect` can't hide a bug). Emits a
+    /// `<name>_NATIVE` failure when any opt level disagrees with the host.
+    /// Caveat: host `int` is 32-bit vs Z80's 16-bit, so tests relying on 16-bit
+    /// `int` wraparound can legitimately differ - triage such hits.
+    pub native_oracle: bool,
     pub pattern: Option<String>,
 }
 
@@ -161,6 +171,29 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
             result.add(r, on_result, reg_name);
         }
 
+        // Native-reference differential: compare the Z80 results to the value
+        // the host C compiler computes for the same source.  Catches
+        // consistently-wrong Z80 values (which -diff-opt misses) and does not
+        // trust the hand-written `expect`.
+        if config.native_oracle && !opt_values.is_empty()
+            && !source.contains("NATIVE-SKIP")
+        {
+            if let Some(reference) = native_reference(test_file) {
+                if opt_values.iter().any(|(_, v)| *v != reference) {
+                    let detail = std::iter::once(format!("host=0x{reference}"))
+                        .chain(opt_values.iter().map(|(o, v)| format!("{o}=0x{v}")))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let tag = format!("{name}_NATIVE{suffix}");
+                    result.add(
+                        TestResult::fail(tag, detail, "Z80 matches host C compiler"),
+                        on_result,
+                        reg_name,
+                    );
+                }
+            }
+        }
+
         // Cross-opt-level differential: every opt level of the same program
         // must return the same value (optimization is semantics-preserving).
         // A disagreement is a miscompile regardless of the `expect` directive.
@@ -193,6 +226,41 @@ fn normalize_hex(s: &str) -> String {
     let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
     let t = t.trim_start_matches('0').to_lowercase();
     if t.is_empty() { "0".to_string() } else { t }
+}
+
+/// Compute the reference value of a test by compiling + running it with the
+/// HOST C compiler (env CC, else cc/clang/gcc) and reading `main()`'s return.
+/// Returns the masked-to-16-bit, normalized hex value, or None if the host
+/// toolchain is unavailable or the test does not build/run on the host (e.g.
+/// target-only constructs).  The test's own stdout (CHECK prints) is ignored;
+/// only the harness's `RESULT=` line is parsed.
+fn native_reference(test_file: &std::path::Path) -> Option<String> {
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let abs = std::fs::canonicalize(test_file).ok()?;
+    let dir = std::env::temp_dir().join(format!("z80_native_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let wrapper = dir.join("wrapper.c");
+    let bin = dir.join("nativeref");
+    // #define main away so the test's main becomes a callable function, then a
+    // real main() prints its 16-bit return behind a sentinel.
+    let src = format!(
+        "#include <stdio.h>\n#include <stdlib.h>\n#define main __z80_user_main\n#include \"{}\"\n#undef main\nint main(void) {{ printf(\"\\nZ80REF=%04x\\n\", (unsigned)(__z80_user_main()) & 0xFFFFu); return 0; }}\n",
+        abs.display()
+    );
+    std::fs::write(&wrapper, &src).ok()?;
+    let compiled = Command::new(&cc)
+        .args(["-w", "-O0", "-o"])
+        .arg(&bin)
+        .arg(&wrapper)
+        .output()
+        .ok()?;
+    if !compiled.status.success() {
+        return None; // target-only test, or host compiler missing
+    }
+    let run = Command::new(&bin).output().ok()?;
+    let out = String::from_utf8_lossy(&run.stdout);
+    let val = out.lines().rev().find_map(|l| l.trim().strip_prefix("Z80REF="))?;
+    Some(normalize_hex(val))
 }
 
 fn run_single(
