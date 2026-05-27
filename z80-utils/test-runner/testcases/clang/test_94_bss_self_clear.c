@@ -14,6 +14,12 @@
  * and don't overlap the zeroed region.  The test is kept for
  * regression detection when +static-stack is the default. */
 
+/* NATIVE-SKIP: this test relies on `memcpy(p+1, p, n-1)` (overlapping memcpy,
+ * which is UB) behaving as a forward byte-by-byte zero-fill -- true for Z80's
+ * LDIR-based memcpy but NOT for the host's memcpy (SIMD/backward), so the host
+ * reference legitimately differs (bit 1).  Excluded from -native-oracle; the
+ * Z80 behavior is the intended one for this regression. */
+
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 

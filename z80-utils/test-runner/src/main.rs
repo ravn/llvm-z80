@@ -93,6 +93,10 @@ Clang-specific:
   -diff-opt            Cross-opt-level differential: flag any test whose value
                        differs across opt levels (a miscompile regardless of the
                        `expect` directive). Strongest with -full. Caught #202.
+  -native-oracle       Differential vs the host C compiler (env CC, else
+                       cc/clang/gcc): flag any test whose Z80 result disagrees
+                       with the host's computed value (catches consistently-wrong
+                       values; reference is computed, not a hand-written expect).
 
 Environment:
   BUILD_DIR            Build directory (default: ../build)"
@@ -157,6 +161,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     let mut static_stack = false;
     let mut verify = false;
     let mut diff_opt = false;
+    let mut native_oracle = false;
     let mut pattern = None;
 
     let mut i = 0;
@@ -174,6 +179,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
             "-static-stack" => static_stack = true,
             "-verify" => verify = true,
             "-diff-opt" => diff_opt = true,
+            "-native-oracle" => native_oracle = true,
             s if !s.starts_with('-') => pattern = Some(s.to_string()),
             _ => {}
         }
@@ -192,6 +198,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
         static_stack,
         verify,
         diff_opt,
+        native_oracle,
         pattern,
     };
 
@@ -212,6 +219,9 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     }
     if diff_opt {
         println!("Flags:  -diff-opt (cross-opt-level differential)");
+    }
+    if native_oracle {
+        println!("Flags:  -native-oracle (host C reference differential)");
     }
     println!();
 
