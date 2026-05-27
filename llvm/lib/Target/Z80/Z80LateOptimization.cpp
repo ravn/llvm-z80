@@ -5661,6 +5661,78 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole #18: `LD r, n` → `LD r, A` when A already holds constant n ---
+  // After `XOR A` / `SUB A` (A=0) or `LD A, n`, a subsequent immediate load of
+  // the SAME constant into another 8-bit register is 1 B shorter as a copy from
+  // A (`LD r,A` = 1 B vs `LD r,n` = 2 B).  `LD r,A` only READS A, so A's value
+  // and the flags are preserved — the tracked constant stays valid for further
+  // fires (e.g. `xor a; ld l,0; ld h,0` → `xor a; ld l,a; ld h,a`, −2 B).
+  // Tracking is strictly within one basic block (reset at entry); any def of A
+  // (including a CALL's RegMask clobber) invalidates the known value.
+  // ravn/llvm-z80#18.
+  {
+    auto ldNtoLdA = [](unsigned Opc) -> unsigned {
+      switch (Opc) {
+      case Z80::LD_B_n: return Z80::LD_B_A;
+      case Z80::LD_C_n: return Z80::LD_C_A;
+      case Z80::LD_D_n: return Z80::LD_D_A;
+      case Z80::LD_E_n: return Z80::LD_E_A;
+      case Z80::LD_H_n: return Z80::LD_H_A;
+      case Z80::LD_L_n: return Z80::LD_L_A;
+      default:          return 0;
+      }
+    };
+    for (MachineBasicBlock &MBB : MF) {
+      bool AKnown = false;
+      int64_t AVal = 0;
+      for (auto MII = MBB.begin(); MII != MBB.end();) {
+        MachineInstr &MI = *MII;
+        unsigned Opc = MI.getOpcode();
+
+        // Fire on an immediate load of the value A already holds.
+        if (unsigned NewOpc = ldNtoLdA(Opc)) {
+          if (AKnown && MI.getNumOperands() >= 1 && MI.getOperand(0).isImm() &&
+              (MI.getOperand(0).getImm() & 0xFF) == (AVal & 0xFF)) {
+            BuildMI(MBB, MII, MI.getDebugLoc(), TII->get(NewOpc));
+            MII = MBB.erase(MII);
+            Changed = true;
+            continue; // A and its tracked value are unchanged by LD r,A
+          }
+          // `LD r,n` (r != A) never defines A — tracked value stays valid.
+          ++MII;
+          continue;
+        }
+
+        // Maintain the A-known state.
+        if (Opc == Z80::XOR_A || Opc == Z80::SUB_A) {
+          AKnown = true;
+          AVal = 0;
+        } else if (Opc == Z80::LD_A_n && MI.getNumOperands() >= 1 &&
+                   MI.getOperand(0).isImm()) {
+          AKnown = true;
+          AVal = MI.getOperand(0).getImm();
+        } else {
+          bool ADefd = MI.isCall();
+          if (!ADefd)
+            for (const MachineOperand &MO : MI.operands()) {
+              if (MO.isRegMask() && MO.clobbersPhysReg(Z80::A)) {
+                ADefd = true;
+                break;
+              }
+              if (MO.isReg() && MO.getReg().isValid() && MO.isDef() &&
+                  TRI->regsOverlap(MO.getReg(), Z80::A)) {
+                ADefd = true;
+                break;
+              }
+            }
+          if (ADefd)
+            AKnown = false;
+        }
+        ++MII;
+      }
+    }
+  }
+
   // --- Peephole: `mem |= 1<<N` / `mem &= ~(1<<N)` → SET/RES n,(HL) ---
   // Three-instruction sequence:
   //   LD_A_nnind <Sym>        (3 B)
