@@ -452,6 +452,39 @@ static bool z80SlotAddrTaken(const MachineInstr &StoreMI,
                     : (A.isGlobal() ? (const void *)A.getGlobal() : nullptr);
   return Key && Set.count(Key);
 }
+// "Is StoreMI's frame slot accessed by some OTHER instruction that would
+// observe StoreMI's value?" -- the cross-region orphan guard shared by all
+// four spill->PUSH/POP peepholes (#203, replacing four hand-mirrored copies).
+// The peepholes differ only in what they exclude and whether they apply the
+// #155 relaxation; those are explicit parameters so the one implementation
+// cannot drift:
+//   SkipBlocks : whole MBBs to skip (single-block peepholes handle same-block
+//                conflicts via their own forward scan; the cross-MBB peephole
+//                skips MBB_A and MBB_B).
+//   SkipMIs    : specific instructions to skip (e.g. the store + its reload).
+//   MDT/StoreMBB : when MDT is non-null, an access in a block that DOMINATES
+//                StoreMBB is from a strictly-earlier, slot-coalesced lifetime
+//                and is allowed (#155) -- it executes before StoreMBB's store.
+static bool z80SlotUsedElsewhere(MachineFunction &MF,
+                                 const MachineInstr &StoreMI,
+                                 ArrayRef<const MachineBasicBlock *> SkipBlocks,
+                                 ArrayRef<const MachineInstr *> SkipMIs,
+                                 const MachineDominatorTree *MDT,
+                                 const MachineBasicBlock *StoreMBB) {
+  for (MachineBasicBlock &Other : MF) {
+    if (llvm::is_contained(SkipBlocks, &Other))
+      continue;
+    bool DomSafe = MDT && StoreMBB && MDT->dominates(&Other, StoreMBB);
+    for (MachineInstr &OI : Other) {
+      if (llvm::is_contained(SkipMIs, &OI))
+        continue;
+      if (z80IsAnyBssAccess(OI.getOpcode()) && z80SameBssAddr(StoreMI, OI) &&
+          !DomSafe)
+        return true;
+    }
+  }
+  return false;
+}
 
 bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
@@ -4563,8 +4596,6 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // load (the slot is never written since PUSH/POP went to the
         // stack, not the slot).  Bail when seen.
         auto isAnyBssLoad = z80IsAnyBssLoad;
-        // Any-register-class BSS store, for the cross-block orphan check.
-        auto isAnyBssStore = z80IsAnyBssStore;
 
         for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
           unsigned SOpc = Scan->getOpcode();
@@ -4646,22 +4677,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // conversion orphaned bb.1's read of a slot that PUSH never writes.
         // (The in-block orphan guard above is already class-agnostic; the
         // cross-block guard must be too — matching the sibling peephole.)
-        {
-          bool UsedElsewhere = false;
-          for (MachineBasicBlock &OtherMBB : MF) {
-            if (&OtherMBB == &MBB) continue;
-            for (MachineInstr &OtherMI : OtherMBB) {
-              unsigned OOpc = OtherMI.getOpcode();
-              if ((isAnyBssLoad(OOpc) || isAnyBssStore(OOpc)) &&
-                  sameAddress(*MII, OtherMI)) {
-                UsedElsewhere = true;
-                break;
-              }
-            }
-            if (UsedElsewhere) break;
-          }
-          if (UsedElsewhere) continue;
-        }
+        // #203: shared orphan guard.  Single-block: skip the store block --
+        // same-block conflicts are caught by the forward scan above.
+        if (z80SlotUsedElsewhere(MF, *MII, {&MBB}, {}, nullptr, nullptr))
+          continue;
 
         // Also bail if the slot is accessed (any register class) earlier in
         // THIS block, BEFORE the matched store.  The forward orphan scan only
@@ -4889,20 +4908,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         unsigned BssBytes = SC->Bytes + LC->Bytes;
         if (PushPopBytes >= BssBytes) continue;
 
-        // Slot must not be used in any other BB.
-        bool UsedElsewhere = false;
-        for (MachineBasicBlock &OtherMBB : MF) {
-          if (&OtherMBB == &MBB) continue;
-          for (MachineInstr &OtherMI : OtherMBB) {
-            unsigned OOpc = OtherMI.getOpcode();
-            if ((isAnyBssLoad(OOpc) || isAnyBssStore(OOpc)) &&
-                sameAddress(*MII, OtherMI)) {
-              UsedElsewhere = true; break;
-            }
-          }
-          if (UsedElsewhere) break;
-        }
-        if (UsedElsewhere) continue;
+        // #203: shared orphan guard (skip the store block).
+        if (z80SlotUsedElsewhere(MF, *MII, {&MBB}, {}, nullptr, nullptr))
+          continue;
 
         LLVM_DEBUG(dbgs() << "  BSS spill cross-class→PUSH/POP: "
                           << *MII << "  → "
@@ -4968,15 +4976,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       StringRef N = MO.getMCSymbol()->getName();
       return N.starts_with("__sfrend") || N.starts_with("__sframe");
     };
-    auto sameAddr = [](const MachineInstr &A, const MachineInstr &B) {
-      const MachineOperand &MA = A.getOperand(0);
-      const MachineOperand &MB = B.getOperand(0);
-      if (!MA.isIdenticalTo(MB))
-        return false;
-      if (MA.isMCSymbol())
-        return MA.getOffset() == MB.getOffset();
-      return true;
-    };
+    // #203: shared slot-address predicate (see z80SameBssAddr).
+    auto sameAddr = z80SameBssAddr;
     // #203: shared predicates (single source of truth, no drift).
     auto isAnyBssLoad = z80IsAnyBssLoad;
     auto isAnyBssStore = z80IsAnyBssStore;
@@ -5195,27 +5196,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           // belong to a different lifetime (slot-coalesced by regalloc)
           // and execute before MBB_A's STORE, leaving the slot
           // undisturbed by our rewrite (#155).
-          bool UsedElsewhere = false;
-          for (MachineBasicBlock &Other : MF) {
-            if (&Other == &MBB_A || &Other == MBB_B)
-              continue;
-            bool OtherDominatesMBB_A = MDT->dominates(&Other, &MBB_A);
-            for (MachineInstr &OI : Other) {
-              unsigned O = OI.getOpcode();
-              if ((isAnyBssLoad(O) || isAnyBssStore(O)) &&
-                  sameAddr(*MII, OI)) {
-                if (!OtherDominatesMBB_A) {
-                  UsedElsewhere = true;
-                  break;
-                }
-                // Dominator-safe: access lives in a strictly-earlier
-                // lifetime.  Allow.
-              }
-            }
-            if (UsedElsewhere)
-              break;
-          }
-          if (UsedElsewhere)
+          // #203: shared orphan guard with the #155 dominator relaxation --
+          // skip MBB_A + MBB_B; allow accesses in blocks that dominate MBB_A
+          // (a strictly-earlier slot-coalesced lifetime).
+          if (z80SlotUsedElsewhere(MF, *MII, {&MBB_A, MBB_B}, {}, MDT.get(),
+                                   &MBB_A))
             continue;
 
           // POP AF: FLAGS must be dead after the LOAD position.
@@ -5385,21 +5370,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       StringRef N = MO.getMCSymbol()->getName();
       return N.starts_with("__sfrend") || N.starts_with("__sframe");
     };
-    auto sameAddr = [](const MachineInstr &A, const MachineInstr &B) {
-      const MachineOperand &MA = A.getOperand(0);
-      const MachineOperand &MB = B.getOperand(0);
-      if (!MA.isIdenticalTo(MB)) return false;
-      if (MA.isMCSymbol()) return MA.getOffset() == MB.getOffset();
-      return true;
-    };
-    auto isAnyBssAccess = [](unsigned O, bool *isStore = nullptr) {
-      bool s = (O == Z80::LD_nnind_A || O == Z80::LD_nnind_HL ||
-                O == Z80::LD_nnind_DE || O == Z80::LD_nnind_BC);
-      bool l = (O == Z80::LD_A_nnind || O == Z80::LD_HL_nnind ||
-                O == Z80::LD_DE_nnind || O == Z80::LD_BC_nnind);
-      if (isStore) *isStore = s;
-      return s || l;
-    };
+    // #203: shared predicates (single source of truth, no drift).  The old
+    // local isAnyBssAccess had an isStore out-param that no call site used.
+    auto sameAddr = z80SameBssAddr;
+    auto isAnyBssAccess = z80IsAnyBssAccess;
 
     SmallPtrSet<const void *, 4> AddrTakenSyms;
     z80CollectAddrTakenFrameSyms(MF, AddrTakenSyms);
@@ -5583,19 +5557,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // instead of its original contents (ravn/llvm-z80#192).
         if (ReadRegs.count(V->Reg8)) { ++MII; continue; }
 
-        // Slot must not be used anywhere else in the function.
-        bool UsedElsewhere = false;
-        for (MachineBasicBlock &Other : MF) {
-          for (MachineInstr &OMI : Other) {
-            if (&OMI == &*Store || &OMI == &*R1) continue;
-            unsigned OO = OMI.getOpcode();
-            if (isAnyBssAccess(OO) && sameAddr(*Store, OMI)) {
-              UsedElsewhere = true; break;
-            }
-          }
-          if (UsedElsewhere) break;
-        }
-        if (UsedElsewhere) { ++MII; continue; }
+        // #203: shared orphan guard (skip the store + reload MIs; scan all
+        // blocks, including this one).
+        if (z80SlotUsedElsewhere(MF, *Store, {}, {&*Store, &*R1}, nullptr,
+                                 nullptr)) { ++MII; continue; }
 
         LLVM_DEBUG(dbgs() << "  #173 bare-store + 4-instr-reload → "
                           << "LD r,A; PUSH/POP " << TRI->getName(V->PairReg)
