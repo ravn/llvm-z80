@@ -102,14 +102,17 @@ Clearing these flips the `-verify` test-runner flag to a blocking CI lane (close
   so it builds (test-setup); deeper FP-interaction part can defer.
 Expected: **2–4 closed** + #197 unblocked.
 
-## Cluster 4 — PRIVILEGED INTRINSICS + ATOMIC — ~1 session, self-contained, low risk
+## Cluster 4 — PRIVILEGED INTRINSICS + ATOMIC — ✅ DONE 2026-05-27 (3 closed)
 
-No codegen-pipeline risk; pure feature addition.
-- **#42** `__builtin_*` for DI, EI, HALT, IM 2, LD I,A.
-- **#4** `__critical` DI/EI function wrapper (builds on #42).
-- **#133** honor `z80_preserves_regs` on definitions (callee-side save/restore) — adjacent
-  ABI/attribute work; group if doing attribute plumbing.
-Expected: **2–3 closed**.
+- **#42** ✅ CLOSED (main `81b46fe`).  Compiler ships `<intrinsic.h>` +
+  `__builtin_z80_di/ei/halt/nop/im2/set_i`; rcbios adopts it (same source clang+SDCC,
+  no ifdef).  BIOS 5922 -> 5897 B, MAME boot OK.
+- **#4** ✅ CLOSED (main `736f83f`).  `__attribute__((z80_critical))` -> DI/EI;
+  rcbios `__critical` now real (was a no-op).  MAME boot OK.
+- **#133** ✅ CLOSED (verify): callee-side `z80_preserves_regs` save/restore already
+  implemented + tested.  Closed on substance; Part B (advisory warning) -> **#207**.
+- Follow-ups filed: **#207** (Part B advisory warning), **#208** (gate im2/set_i off SM83).
+- Outcome: **3 closed** (target was 2-3).  See `session73s-cluster4-intrinsics-2026-05-27.md`.
 
 ## Cluster 5 — MEMCPY / MEMMOVE / FILL — ~1 session, shared mechanism
 

@@ -73,3 +73,18 @@ miscompile guard to a marginal cost-advisory.
   Layer 1 present.  The work was the missing clang frontend, not new codegen.
 - chased a cpnos +1 B "regression" to an embedded build-timestamp (state-certainty),
   not codegen — the compiled payload was byte-identical throughout.
+- TESTED the di/ei memory-barrier hypothesis instead of assuming: a protected
+  store between `intrinsic_di()`/`intrinsic_ei()` is NOT eliminated by a later
+  overwriting store (`IntrHasSideEffects` fences in practice despite `IntrNoMem`).
+  No bug; did not file a false barrier claim.
+
+## Follow-ups raised
+- **#207** — #133 Part B: the `z80_preserves_regs` callee-body violation warning
+  (advisory now that Layer 1 makes a clobber correct rather than a miscompile).
+- **#208** — gate the z80-only builtins (`im2`, `set_i`) off SM83 at the frontend
+  (today they reach a backend "cannot select" on `-triple sm83` instead of a
+  clean diagnostic).
+- **Task (rcbios, not filed):** replace the `set_i_reg` asm shim in
+  `clang/bios_shims.s` with `__builtin_z80_set_i` now that it exists (the inline
+  `ld i,a` mis-fire that forced the shim is exactly what the builtin handles).
+  Needs a clang BIOS rebuild + MAME boot; deferred to a focused rcbios pass.
