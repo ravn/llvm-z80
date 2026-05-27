@@ -1,4 +1,10 @@
 /* Test 36: Stack pressure - large arrays, many locals, recursive chain */
+/* SKIP-IF: +static-stack */
+/* The chain_a/b/c mutual recursion (bit 2) is undefined under +static-stack,
+ * which is non-reentrant (function locals live in fixed BSS, so a recursive
+ * call clobbers the caller's locals).  The differential oracles correctly flag
+ * the resulting opt-/host-divergence; skip the whole test under +static-stack
+ * (the non-recursive bits are covered by the default-config run). */
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 

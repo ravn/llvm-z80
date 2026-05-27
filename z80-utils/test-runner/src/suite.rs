@@ -195,7 +195,10 @@ pub fn check_skip_c(
                     }
                     continue;
                 }
-                if token.starts_with('-') {
+                // `-flag` and `+feature` (e.g. +static-stack) both name a
+                // compiler flag matched against active_flags; anything else is
+                // a target triple filter.
+                if token.starts_with('-') || token.starts_with('+') {
                     flag = Some(*token);
                 } else {
                     target_filter = Some(*token);
