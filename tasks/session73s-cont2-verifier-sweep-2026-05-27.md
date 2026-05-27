@@ -130,3 +130,41 @@ cost model).
 don't-care reads) cleared.  #197 (flip `-verify` to a blocking CI lane) still
 gated on: the `aes_mixColumns` PUSH_HL liveness-reconciliation class above +
 #112/#189.  Once those clear, wire `-verify-machineinstrs` into a CI lane.
+
+---
+
+## #210 RESOLVED 2026-05-27 (cont-3) — root cause was MISDIAGNOSED above
+
+The "backward-PEI cascade" theory in the #210 section above is **WRONG**.
+Z80 sets `eliminateFrameIndicesBackwards() = false` (Z80RegisterInfo.h:55), so
+PEI eliminates frame indices **FORWARD** — when a spill is expanded, the
+instructions after it are still pristine pseudos (no borrow brackets exist
+ahead of the `isRegLiveAt` forward scan).  There is no cascade.  Reading the
+actual post-PEI MIR of `aes_mixColumns`/`aes_mc_inv` showed three real defects:
+
+1. **`isRegLiveAt(HL)` over-reported.**  It concluded "dead" only on a single
+   *full* HL def; when HL's halves are redefined by *separate* later defs
+   (`$h = ...`; `$l = ...`) it never saw a full def and fell through to the
+   successor live-ins of the *new* halves → reported the stale pair live.
+   Fix: track liveness per register **unit** (a def retires the units it
+   covers; only still-pending units fall back to successor live-ins).
+2. **GR8 half spill/reload forced the HL save** (`NeedSaveHL = SrcIsHL || …`).
+   Fix: save HL only when the *other* half is live; IMPLICIT_DEF a dead
+   destination half when the pair must still be saved.
+3. **`emitSPRelativeAddr` flag-preserving `PUSH_AF`** (#209 family): A is not
+   modified in the PUSH_AF/POP_AF bracket (the save carries FLAGS over
+   ADD_HL_SP), so when A is dead its read is don't-care → mark `$a` undef
+   (the live `$flags` read keeps the pair from DCE).
+
+Commit `4feddfec517e` (llvm-z80 main).  Default-config-only; production
+`+static-stack` byte-identical.  aes256.c verify 0 errors (was ~24); `-verify
+-full` suite A/B 757→753 fatal (−4, no new failures); diff-oracle default
+799/0/50/207 + `+static-stack` 793/0/50/213 (exact baselines, 0 divergences);
+AES 13/13 PASS; cpnos PROM1 2022 B + polypascal PASS 50.97 s; lit 127+5 → 129+5
+(two new MIR tests).  **Methodology note:** the verifier-only A/B and reading
+MIR (not trusting the filed theory) was what corrected the diagnosis —
+`feedback_state_certainty` + `feedback_audit_oracle_not_just_fix`.
+
+**#197 still open:** the broad O0 `ADD_HL_HL`/`DJNZ`/`PUSH` undef surface across
+many functions remains (753 fatal under `-verify -full`); this session cleared
+only the aes frame-spill class.
