@@ -83,6 +83,13 @@ aes256.c` still fails (verifier aborts at first function):
 - Whatever surfaces after that (the verifier aborts at the first function, so
   the full remaining count is unknown until `aes_mixColumns` clears).
 
+## Also closed (Cluster 6 tooling, zero codegen risk)
+- **#124** CLOSED — `set(LLVM_INCLUDE_BENCHMARKS OFF CACHE BOOL "")` in
+  `clang/cmake/caches/Z80.cmake`.  The `third-party/benchmark`
+  HAVE_PTHREAD_AFFINITY probe fails on macOS and cmake 4.2 (CLion) treats it as
+  fatal, breaking fresh configures / bisect-walks; baked in the proven
+  workaround.  Verified: fresh configure with cmake 4.2.2 exits 0.
+
 ## Production-target check (this session, safe measurements)
 - **BIOS clang = 5897 B — UNCHANGED** (was 5897).  The 4 fixes are byte-neutral
   for the BIOS (no EX DE,HL DCE opportunity there); no regression, no re-boot

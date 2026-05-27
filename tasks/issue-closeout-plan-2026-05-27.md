@@ -140,7 +140,11 @@ Expected: **2–3 closed**.
 
 ## Cluster 6 — TOOLING / INFRA — ~½ day, low risk, momentum
 
-- **#124** cmake 4.2 + benchmark HAVE_PTHREAD_AFFINITY fatal (workspace build fix).
+- **#124** ✅ CLOSED 2026-05-27 (cont-2).  Added `set(LLVM_INCLUDE_BENCHMARKS
+  OFF CACHE BOOL "")` to `clang/cmake/caches/Z80.cmake` (option 2) — bakes the
+  proven workaround into the cache so a fresh configure / bisect-walk no longer
+  trips the macOS cmake-4.2 HAVE_PTHREAD_AFFINITY fatal.  Verified: fresh
+  configure with cmake 4.2.2 exits 0.  Build-config only.
 - **#137** test-runner capture port-1 stdout (or first-failing-line mode) for fixture
   diagnosis (I have a working ad-hoc version this session).
 - **#70** `-fverbose-asm` source annotations (AsmPrinter comment plumbing).
