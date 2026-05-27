@@ -214,15 +214,26 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
   LLVM_DEBUG(dbgs() << "z80-loop-idiom-fill: matched K=" << K << " N=" << N
                     << " in " << Header->getParent()->getName() << "\n");
 
+  // ravn/llvm-z80#136: emit the seed + memcpy(base+K, base, K*(N-1)), but mark
+  // the memcpy VOLATILE.  The non-volatile form was correct at every opt level
+  // EXCEPT -O1: there a generic InstCombine widens/inlines the small,
+  // *overlapping* memcpy (dst = base+K, src = base, len = K*(N-1) > K when
+  // N > 2 -- an overlap that is UB for memcpy) into a wide load+store
+  // (load-all-then-store) that does NOT do the forward byte propagation the
+  // LDIR lowering provides; it reads the not-yet-written source bytes and
+  // miscompiles the fill.  InstCombine does not touch a volatile mem-transfer,
+  // so the memcpy always reaches the backend and is lowered as LDIR (the
+  // forward-propagating copy this idiom requires).  Only the volatile bit
+  // changes vs. the working code, so -O0/-O2/-O3/-Os/-Oz codegen is identical
+  // (production stays byte-for-byte identical) and only the broken -O1 path is
+  // corrected.
   IRBuilder<> Builder(Preheader->getTerminator());
   Type *I8 = Type::getInt8Ty(Header->getContext());
   Type *I16 = Type::getInt16Ty(Header->getContext());
 
   Value *I8Base = Base;
 
-  // Emit one seed store per slot, preserving original value type.  The
-  // backend will lower wider integer stores into byte writes when
-  // needed; that cost is the same we'd otherwise pay inside the loop.
+  // Emit one seed store per slot, preserving original value type.
   for (const Slot &S : Slots) {
     Value *Addr = I8Base;
     if (S.Offset != 0)
@@ -232,13 +243,14 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
                                S.SI->getAlign(), S.SI->isVolatile());
   }
 
-  // Emit memcpy(base + K, base, K*(N-1)).
+  // Emit volatile memcpy(base + K, base, K*(N-1)) -- volatile so InstCombine
+  // never inlines it to the load-all-then-store form that breaks #136.
   uint64_t CopyLen = (uint64_t)K * (N - 1);
   if (CopyLen > 0) {
     Value *DstAddr = Builder.CreateInBoundsGEP(
         I8, I8Base, ConstantInt::get(I16, K), "z80.fill.dst");
     Builder.CreateMemCpy(DstAddr, MaybeAlign(1), I8Base, MaybeAlign(1),
-                         ConstantInt::get(I16, CopyLen));
+                         ConstantInt::get(I16, CopyLen), /*isVolatile=*/true);
   }
 
   // Erase the original stores.  deleteDeadLoop will remove the empty
