@@ -40,10 +40,21 @@ After the 4 fixes, `clang -O2 -ffreestanding -mllvm -verify-machineinstrs -c
 aes256.c` still fails (verifier aborts at first function):
 
 - **`aes_mixColumns`: `PUSH_HL implicit $hl` reads undef `$hl`.**  THIRD
-  family, *not* a clean don't-care read.  Drilled this session (2026-05-27,
-  cont-2) but **deliberately NOT fixed** — frame expansion is the highest-risk
-  area and I could not pin a confident single emission site fast enough to
-  fix safely.  Findings:
+  family, *not* a clean don't-care read.  **ROOT-CAUSED + filed as #210**;
+  deliberately NOT fixed (non-trivial + high-risk frame-lowering, non-production
+  codepath).  **Confirmed root cause:** SP-relative frame spill borrows HL
+  (`PUSH_HL; LD HL,nn; ADD HL,SP; LD (HL),r; POP_HL`) gated by
+  `NeedSaveHL = isRegLiveAt(Z80::HL, ...)`; that forward scan **over-reports HL
+  live** — it hits the next SP-relative access (which references HL but
+  *redefines* it before use) and concludes HL is live, cascading so every spill
+  saves a dead HL and reads it undef.  Confirmed in bb.8 (`liveins: $a`, HL
+  killed by a preceding `LOAD8_IND` then read by `PUSH_HL`).  **Verifier-metadata
+  only / runtime-correct** (diff-oracle green; AES byte-correct).  **Does NOT
+  affect production** — cpnos/BIOS/autoload all `+static-stack` (BSS direct
+  addressing, no SP-relative HL borrow).  Fix needs robust HL-liveness (precompute
+  per-position over the original block, or a provably-dead scratch) + full MAME
+  oracle; a wrong HL-dead call skips a needed save -> miscompile.  Earlier
+  findings (kept for context):
   - It is an **SP-relative frame-access bracket** that borrows HL for the
     address: `PUSH_HL; LD HL,nn; ADD HL,SP; LD (HL),r; [INC HL; LD (HL),r;]
     POP_HL` (the dump shows e.g. spilling `$e` at SP+7).  `aes_mixColumns` has
