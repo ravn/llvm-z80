@@ -485,6 +485,17 @@ static bool z80SlotUsedElsewhere(MachineFunction &MF,
   }
   return false;
 }
+// An explicit SP write (e.g. LD SP,HL for call-arg cleanup) between a spill
+// store and its reload relocates the frame, so a PUSH/POP bracket spanning it
+// would pop the wrong slot.  PUSH/POP are tracked separately via stack-depth;
+// a CALL is net-SP-neutral (return addr pushed, then popped by RET); any OTHER
+// def of SP is unsafe.  Shared by the spill->PUSH/POP peepholes (#203/#198).
+static bool z80IsExplicitSPWrite(const MachineInstr &MI,
+                                 const TargetRegisterInfo *TRI) {
+  unsigned O = MI.getOpcode();
+  return !z80IsAnyPush(O) && !z80IsAnyPop(O) && !MI.isCall() &&
+         MI.modifiesRegister(Z80::SP, TRI);
+}
 
 bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
@@ -4624,15 +4635,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             if (StackDepth < 0) { Conflict = true; break; }
           }
 
-          // An EXPLICIT SP write (e.g. LD SP,HL for call-arg cleanup) between
-          // our store and reload relocates the stack frame, so a PUSH/POP
-          // bracket spanning it would POP from the wrong slot.  PUSH/POP are
-          // handled by StackDepth above, and a CALL is net-SP-neutral (return
-          // addr pushed then RET-popped); any OTHER def of SP is unsafe.
-          // (Surfaced converting a spill whose bracket spanned the i64-divide
-          // arg cleanup under -z80-unreserve-iy; same family as #198.)
-          if (!isAnyPush(SOpc) && !isAnyPop(SOpc) && !Scan->isCall() &&
-              Scan->modifiesRegister(Z80::SP, TRI)) {
+          // #203: shared explicit-SP-write guard (see z80IsExplicitSPWrite).
+          if (z80IsExplicitSPWrite(*Scan, TRI)) {
             Conflict = true;
             break;
           }
@@ -4867,11 +4871,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
             if (StackDepth < 0) { Conflict = true; break; }
           }
 
-          // Explicit SP write (LD SP,HL etc.) relocates the frame -> a PUSH/POP
-          // bracket spanning it pops the wrong slot.  PUSH/POP tracked above;
-          // CALL is net-SP-neutral; any other SP def is unsafe.  (#198 family.)
-          if (!isAnyPush(SOpc) && !isAnyPop(SOpc) && !Scan->isCall() &&
-              Scan->modifiesRegister(Z80::SP, TRI)) {
+          // #203: shared explicit-SP-write guard (see z80IsExplicitSPWrite).
+          if (z80IsExplicitSPWrite(*Scan, TRI)) {
             Conflict = true; break;
           }
 
