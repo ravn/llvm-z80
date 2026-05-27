@@ -1786,6 +1786,27 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     }
 
     MI->getOperand(FIOperandNum).ChangeToImmediate(Offset);
+
+    // The frame-index displacement operand ($offset, at FIOperandNum+1) was
+    // folded into the resolved offset and removed above (see the
+    // "FIOperandNum + 1 ... removeOperand" block).  The SPILL/RELOAD FI
+    // pseudos that survive to expandPostRAPseudo are declared *with* that
+    // $offset operand (Z80InstrInfo.td), so dropping it leaves a 2-operand
+    // instruction against a 3-operand MCInstrDesc and -verify-machineinstrs
+    // reports "Too few operands" after PEI (#200).  Restore it as a 0
+    // placeholder — its value is already folded into operand 1, and
+    // expandPostRAPseudo reads only operand 1 — so this is codegen-neutral.
+    switch (Opc) {
+    case Z80::SPILL_GR16:
+    case Z80::RELOAD_GR16:
+    case Z80::SPILL_GR8:
+    case Z80::RELOAD_GR8:
+    case Z80::SPILL_IMM8:
+      MI->addOperand(MachineOperand::CreateImm(0));
+      break;
+    default:
+      break;
+    }
     return false;
   }
 

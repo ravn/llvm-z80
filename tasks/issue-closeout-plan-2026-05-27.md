@@ -93,7 +93,15 @@ Result: **4 closed this session** (#139 + the 3 already-closed); #203 advanced.
 ## Cluster 3 — VERIFIER / CORRECTNESS CLOSEOUT (#197) — ~1 session
 
 Clearing these flips the `-verify` test-runner flag to a blocking CI lane (closes #197).
-- **#200** SPILL_GR16 2-vs-3 operand count (cosmetic, frame-lowering) — bounded.
+- **#200** ✅ CLOSED 2026-05-27.  Root cause: `eliminateFrameIndex` folds the
+  `$offset` displacement into the resolved frame offset and `removeOperand`s it,
+  leaving SPILL/RELOAD FI pseudos (declared with 3 ops) in a 2-op form that
+  `-verify-machineinstrs` rejects after PEI.  Fix: in the small-offset survivor
+  path, re-append the consumed `$offset` as a `0` placeholder (value already
+  folded into operand 1; `expandPostRAPseudo` reads only operand 1) for all five
+  `$offset`-bearing pseudos (SPILL/RELOAD_GR16, SPILL/RELOAD_GR8, SPILL_IMM8).
+  Codegen-neutral: lit 124+5 (new `issue-200-...mir`), diff-oracles 0/0 (default
+  + static-stack, Fail 0), cpnos PROM1 payload byte-identical (2028 B).
 - **#194** undefined-$a stale liveins after late-opt — delicate (blanket recompute
   rejected +2 B; needs path-limited recompute).  Medium-hard.
 - **#125** Z80LateOpt crash at -O0 +static-stack +shadow-regs — a crash; isolate +
