@@ -357,7 +357,13 @@ fn run_single(
             match emulator::check_result(&got, &expected) {
                 Ok(()) => TestResult::pass(tag, format!("0x{got}")),
                 Err((got_padded, exp_padded)) => {
+                    // ravn/llvm-z80#137: re-run capturing port-1 console output
+                    // so multi-CHECK fixtures (test_90/91_edge_*) reveal WHICH
+                    // sub-check failed (`FAIL @<line> got=.. exp=..`), not just
+                    // the aggregate DE count.  Best-effort; only on failure.
+                    let note = emulator::capture_port_output(&bin, target, &halt_addr, 1);
                     TestResult::fail(tag, format!("0x{got_padded}"), format!("0x{exp_padded}"))
+                        .with_note(note)
                 }
             }
         }

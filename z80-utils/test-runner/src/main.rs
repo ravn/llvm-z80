@@ -56,7 +56,7 @@ fn main() -> ExitCode {
 /// Create a callback that prints each test result immediately to stdout.
 fn print_callback() -> OnResult {
     Box::new(|result, reg_name| {
-        display::print_test_result(&result.outcome, &result.tag, reg_name);
+        display::print_test_result(&result.outcome, &result.tag, reg_name, result.note.as_deref());
     })
 }
 

@@ -16,6 +16,11 @@ pub enum TestOutcome {
 pub struct TestResult {
     pub tag: String,
     pub outcome: TestOutcome,
+    /// Optional diagnostic text printed under the result line (e.g. the
+    /// captured port-1 `FAIL @<line>` strings for a failing multi-CHECK
+    /// fixture — ravn/llvm-z80#137).  Sibling to `outcome` so existing
+    /// `match &outcome` sites are unaffected.
+    pub note: Option<String>,
 }
 
 impl TestResult {
@@ -23,6 +28,7 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Pass { reg_value: reg_value.into() },
+            note: None,
         }
     }
 
@@ -30,6 +36,7 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Fail { got: got.into(), expected: expected.into() },
+            note: None,
         }
     }
 
@@ -37,6 +44,7 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Fatal { reason: reason.into() },
+            note: None,
         }
     }
 
@@ -44,7 +52,14 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Skip { reason: reason.into() },
+            note: None,
         }
+    }
+
+    /// Attach diagnostic text rendered under the result line.
+    pub fn with_note(mut self, note: Option<String>) -> Self {
+        self.note = note;
+        self
     }
 
     pub fn is_pass(&self) -> bool {
