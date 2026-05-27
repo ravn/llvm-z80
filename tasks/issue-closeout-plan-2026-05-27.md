@@ -102,8 +102,15 @@ Clearing these flips the `-verify` test-runner flag to a blocking CI lane (close
   `$offset`-bearing pseudos (SPILL/RELOAD_GR16, SPILL/RELOAD_GR8, SPILL_IMM8).
   Codegen-neutral: lit 124+5 (new `issue-200-...mir`), diff-oracles 0/0 (default
   + static-stack, Fail 0), cpnos PROM1 payload byte-identical (2028 B).
-- **#194** undefined-$a stale liveins after late-opt — delicate (blanket recompute
-  rejected +2 B; needs path-limited recompute).  Medium-hard.
+- **#194** ✅ FIXED 2026-05-27 (`46fbafb`).  Two Z80LateOptimization peepholes
+  left stale `$a` liveness: cross-block `LD A,r` removal (-> addLiveIn when the
+  removed LD was the reaching def) and `LD A,#0`->`XOR A` (-> mark the don't-care
+  `$a` read undef).  Both metadata-only / byte-neutral; oracles 0/0, cpnos
+  byte-identical.  Lit `issue-194-late-opt-liveness.mir`.
+- **#209** (filed this session) — don't-care-read family: stack-reservation
+  `PUSH AF` (frame lowering, `99ee190`, neutral) + `EX DE,HL` one-way copy
+  (`copyPhysReg`, `8ff4208`, cpnos -6 B, polypascal+AES verified).  Two more
+  classes off the `-verify` surface.
 - **#125** Z80LateOpt crash at -O0 +static-stack +shadow-regs — a crash; isolate +
   guard (may share root with the liveness class).
 - **#190** IY-unreserve alloca FATAL — quick part: fix `test_48`'s missing `alloca.h`
