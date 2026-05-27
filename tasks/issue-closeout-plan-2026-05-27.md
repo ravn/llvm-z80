@@ -48,22 +48,33 @@ Self-contained post-RA / ISel peepholes in `Z80LateOptimization.cpp` /
 `Z80InstructionSelector.cpp`, each with a clear repro and a few-LOC fix; all share
 the lit + differential-oracle test loop.
 
-- **#146** epilog `pop bc; inc sp; inc sp; push bc; ret` -> `pop hl; ex (sp),hl; ret`
-  (-2 B/epilog).  Clear repro+fix in the issue. (verified the pattern exists in
-  stack-arg functions this session.)
-- **#18** known-value reg copy: `LD r,A` after `XOR A`/`OR A` instead of `LD r,#0`.
-- **#117** i16 EQ/NE peephole: handle "neither operand in HL" (~1 B/fire).
-- **#122** i16 ULT/UGE small-const RHS + provably-high-zero -> 8-bit `CP n` fast path
-  (sibling of #117; same emitFusedCompareAndBranch area — do together).
-- **#151** remove redundant `and 1; rrca; sbc a,a` after icmp already set A=0xFF/0.
-- **#152** SET/RES on memory through intervening `LD A,(HL)` readers (#147 follow-up).
-- **#173** 8-bit BSS spill via A (`push af; ld a,r; ld (nn),a; pop af` = 6 B) ->
-  PUSH/POP rr (2 B) — bigger win (AES driver), medium not small, but same peephole area.
+- **#18** ✅ CLOSED 2026-05-27 (main `bfce0fff25db`).  New per-MBB peephole:
+  `LD r,n` -> `LD r,A` when A holds the constant.  Oracles clean, cpnos −2 B,
+  polypascal PASS.  Lit `issue-18-ld-r-a-known-const.ll`.
+- **#151** ✅ CLOSED 2026-05-27 (verify-only — already fixed; clean
+  `sub 1; sbc a,a` lowering, no `and 1; rrca` residual).
+- **#152** ✅ CLOSED 2026-05-27 (verify-only — already implemented + lit-tested;
+  SET/RES through intervening A-readers via the `LD A,(HL)` form).
+- **#146** ⚠ RECLASSIFIED (not a small win).  The `ex (sp),hl` rewrite clobbers
+  HL, which is LIVE at the epilog of value-returning functions (that's why
+  codegen uses `pop bc` there).  Safe only for void/non-HL-return + one stack
+  word + HL-dead — needs a liveness guard, 1 B, and **zero production impact**
+  (`+static-stack` has no stack-arg functions).  Drill comment on the issue.
+- **#117** i16 EQ/NE peephole: handle "neither operand in HL" (~1 B/fire).  LIVE
+  but marginal; risky `emitFusedCompareAndBranch` lowering area.
+- **#122** i16 ULT/UGE small-const RHS -> 8-bit `CP n` fast path.  LIVE but
+  marginal: the 8-bit LOAD already happens; only the 16-bit subtract tail is
+  suboptimal.  (Ruled out a suspected `and 254` miscompile — it's value-preserving
+  demanded-bits folding.)  Same risky compare-lowering area.
+- **#173** 8-bit BSS spill via A — bigger win (AES driver), MEDIUM not small.
+  NOTE: the obvious repro (`u8 t=x+1; use(); return t+s`) did NOT produce the
+  `push af; ld a,r; ld (nn),a; pop af` shape — it produced the already-optimal
+  `push af; call; ...; pop af`.  Needs fresh investigation to reproduce the
+  actual pattern before fixing.
 
-Group as: (a) compare-peepholes {#117, #122}, (b) A/flag-peepholes {#18, #151, #152},
-(c) epilog {#146}, (d) spill {#173}.  Expected: **4–6 closed**.  Risk: low (each
-guarded by oracles + lit; #150 is the cautionary precedent — a similar refinement
-broke cpnos pio, so run the cpnos polypascal oracle too).
+Cluster-1 result (2026-05-27): **3 closed** (#18 fixed + #151/#152 verify-close).
+Remainder (#117, #122, #146, #173) are marginal/narrow/medium — not clean small
+wins.  #173 is the only one with real (AES) value; promote it to a focused drill.
 
 ## Cluster 2 — #132 SPILL-FAMILY CLOSEOUT (#188) — ~½ day, coordinated
 
