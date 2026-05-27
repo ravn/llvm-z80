@@ -40,6 +40,23 @@
 
 using namespace llvm;
 
+// Emit a PUSH AF used purely to reserve 2 bytes of stack space.  PUSH AF reads
+// $a and $flags, but for stack reservation their values are irrelevant — only
+// SP moves, and PUSH does not modify them, so any live A/FLAGS survives.  Mark
+// the implicit uses undef so -verify-machineinstrs does not report "Using an
+// undefined physical register" when A/FLAGS are dead at the prologue (e.g. a
+// function whose argument arrives in HL, not A).  Without this the -verify
+// surface stays red on such functions (ravn/llvm-z80 #197 / #209).
+static void emitStackReservePushAF(MachineBasicBlock &MBB,
+                                   MachineBasicBlock::iterator MBBI,
+                                   const DebugLoc &DL,
+                                   const TargetInstrInfo &TII) {
+  MachineInstr *MI = BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_AF));
+  for (MachineOperand &MO : MI->operands())
+    if (MO.isReg() && MO.isUse())
+      MO.setIsUndef(true);
+}
+
 Z80FrameLowering::Z80FrameLowering()
     : TargetFrameLowering(StackGrowsDown, /*StackAlignment=*/Align(1),
                           /*LocalAreaOffset=*/-2) {}
@@ -206,7 +223,7 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
       unsigned PushCount = StackSize / 2;
       if (PushCount <= 4) {
         for (unsigned i = 0; i < PushCount; ++i)
-          BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_AF));
+          emitStackReservePushAF(MBB, MBBI, DL, TII);
         if (StackSize % 2)
           BuildMI(MBB, MBBI, DL, TII.get(Z80::DEC_SP));
       } else {
@@ -255,7 +272,7 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
       if (HLLive || PushCount <= 12) {
         // Use PUSH AF (1 byte per 2 bytes, doesn't clobber any registers).
         for (unsigned i = 0; i < PushCount; ++i)
-          BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_AF));
+          emitStackReservePushAF(MBB, MBBI, DL, TII);
         if (LocalSize % 2)
           BuildMI(MBB, MBBI, DL, TII.get(Z80::DEC_SP));
       } else {
