@@ -287,3 +287,58 @@ inventory is complete.
   miscompile-fixes-shipped count as a coherence metric.
 - **The map is index, not analysis.**  Detail belongs in the
   per-issue investigation docs (`tasks/issue<n>-*.md`).
+
+---
+
+# 2026-05-28 REFRESH (triage of the live 47 open issues)
+
+The body of this file is the 2026-05-22 snapshot (65 issues).  Now 47 open.
+This section is the current delta; the per-issue investigation docs remain the
+detail of record.
+
+## Closed since 2026-05-22
+#136, #169, #170, #171 (NarrowIV trio + O1 noise), #182 (ScalarEvolution/
+deleteDeadLoop crash — ROOT-FIXED in generic `LoopUtils.cpp`), #185 (DJNZ
+B-clobber guard), #168/#163/#165 (already closed), #156428 work landed this
+session (LiveVariables).
+
+## A. U-LLVM fixes ALREADY in the fork — prime upstream-PR/issue candidates
+These live in generic `llvm/lib/...` (not Target/Z80) and are correctness/logic
+fixes (strong upstream candidates, not tuning):
+
+| Underlying bug | Generic file | Fork state | Submission writeup |
+|---|---|---|---|
+| #156428 LiveVariables spurious super-reg implicit-def | `lib/CodeGen/LiveVariables.cpp` | LANDED main `a32c4f33` | `tasks/upstream-156428-livevariables-submission.md` (DONE) |
+| #182 deleteDeadLoop exit-block-phi crash | `lib/Transforms/Utils/LoopUtils.cpp` | FIXED `6dc359f0` | `tasks/session73q-issue182-fix.md` — needs submission-shaping |
+| #158 TruncInstCombine bails on Argument leaf | `lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp` | FIXED on branch `fix-158-truncinstcombine-narrow-through-args` | needs merge + submission writeup |
+| #164 P1 TruncInstCombine TTI cost-gate | `lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp` | LANDED `3d296f43` | infra piece PR-able; P2 byte-budget still design |
+| #168 SimplifyCFG foldTwoEntryPHINode cost gate | `lib/Transforms/Utils/SimplifyCFG.cpp` | CLOSED `cd2a2ace` | submission-shaped |
+| #163/#165 TruncInstCombine and-mask / icmp non-const roots | `lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp` | CLOSED | submission-shaped |
+
+**These are the "create upstream issues for the underlying issues" wins: each is
+a generic-code correctness/logic fix with a fork patch + test.  Per project
+policy (file in ravn/* forks, never upstream directly) the agent does NOT PR
+them; they are packaged for a human to submit.**
+
+## B. Workaround-only — underlying U-LLVM bug still unwritten (weaker, tuning)
+- **#128** MachineLICM/MachineCSE pessimize tiny register files — fork ships
+  `disablePass()` only.  Upstream framing is a target-aware cost gate; this is a
+  *tuning* argument (register-pressure estimate), so a weaker upstream candidate
+  than list A.  No real fix written.
+- **#179** MachineScheduler doesn't reorder reload-after-test — fork ships the
+  `Z80ReorderTestDec` MIR pass only.  Same: scheduler-heuristic tuning.
+- **#164 P2** real zext re-insertion byte-cost model — design-needed.
+
+## C. Open correctness bugs (crash/miscompile) needing root-cause → tractable first
+- **#150** miscompile — direct `sub_lo` extraction breaks cpnos pio-irq
+  polypascal-test; narrow repro, HL-materialising path masks it.  MOST tractable.
+- **#125** crash — Z80LateOptimization at -O0/optnone +static-stack; minimal
+  XFAIL lit repro exists.  Tractable.
+- **#195 / test_166_iy_shiftloop** miscompile at production opt under
+  +static-stack; clean single-main repro.  Tractable.
+- **#190** IY-unreserve dynamic-alloca FATAL; gated on IY work, less tractable.
+
+## Net
+Two new strong upstream artifacts since the snapshot (#182, #158) + #156428 this
+session = the generic-LLVM correctness queue is the upstream story.  #128/#179
+remain the only workaround-only items (weaker tuning candidates).
