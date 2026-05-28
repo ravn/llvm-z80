@@ -448,7 +448,8 @@ static void emitLargeOffsetAddr(MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator InsertBefore,
                                 const DebugLoc &DL, const TargetInstrInfo &TII,
                                 int64_t Offset, Register TempReg,
-                                bool PreserveFlags) {
+                                bool PreserveFlags,
+                                const TargetRegisterInfo *TRI) {
   assert((TempReg == Z80::BC || TempReg == Z80::DE) &&
          "Address computation temp must be BC or DE");
 
@@ -459,8 +460,18 @@ static void emitLargeOffsetAddr(MachineBasicBlock &MBB,
   unsigned AddOpc = (TempReg == Z80::BC) ? Z80::ADD_HL_BC : Z80::ADD_HL_DE;
 
   BuildMI(MBB, InsertBefore, DL, TII.get(LdOpc)).addImm(Offset & 0xFFFF);
-  if (PreserveFlags)
-    BuildMI(MBB, InsertBefore, DL, TII.get(Z80::PUSH_AF));
+  if (PreserveFlags) {
+    // A is not modified between this PUSH_AF and the POP_AF (only ADD HL,rr
+    // runs); the save carries FLAGS across the ADD.  When A is dead its $a read
+    // is don't-care -> mark it undef so the save does not trip
+    // -verify-machineinstrs (ravn/llvm-z80#197; same as emitSPRelativeAddr).
+    bool ADead = TRI && !isRegLiveAt(Z80::A, MBB, std::next(InsertBefore), TRI);
+    MachineInstr *PushAF = BuildMI(MBB, InsertBefore, DL, TII.get(Z80::PUSH_AF));
+    if (ADead)
+      for (MachineOperand &MO : PushAF->operands())
+        if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
+          MO.setIsUndef(true);
+  }
   BuildMI(MBB, InsertBefore, DL, TII.get(AddOpc));
   if (PreserveFlags)
     BuildMI(MBB, InsertBefore, DL, TII.get(Z80::POP_AF));
@@ -617,7 +628,7 @@ static void expandSpillGR8LargeOffset(MachineBasicBlock &MBB,
   if (NeedSaveTemp)
     BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
-  emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+  emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
   if (SrcIsHL)
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_A));
@@ -659,7 +670,7 @@ static void expandReloadGR8LargeOffset(MachineBasicBlock &MBB,
   if (NeedSaveTemp)
     BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
-  emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+  emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
   if (DstIsHL) {
     // Can't load directly into H/L (HL holds the address).
@@ -707,7 +718,7 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
       BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
     BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL)); // push data
 
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
     // Pop original HL value into TempReg.
     BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
@@ -742,7 +753,7 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(SrcLo)));
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
@@ -786,7 +797,7 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
     // PUSH IX; POP HL pair, so the IX/IY value is still on top of
     // the stack when we POP it into the temp pair.
     BuildMI(MBB, MI, DL, TII.get(PushSrc));
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
     BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
 
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempLo)));
@@ -827,7 +838,7 @@ static void expandReloadGR16LargeOffset(MachineBasicBlock &MBB,
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
     Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
     Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
@@ -850,7 +861,7 @@ static void expandReloadGR16LargeOffset(MachineBasicBlock &MBB,
     if (NeedSaveHL)
       BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
 
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, DstReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, DstReg, PreserveFlags, TRI);
 
     Register DstLo = (DstReg == Z80::BC) ? Z80::C : Z80::E;
     Register DstHi = (DstReg == Z80::BC) ? Z80::B : Z80::D;
@@ -885,7 +896,7 @@ static void expandReloadGR16LargeOffset(MachineBasicBlock &MBB,
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
     Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
     Register TempHi = (TempReg == Z80::BC) ? Z80::B : Z80::D;
@@ -1668,7 +1679,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
       if (NeedSaveTemp)
         BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
-      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
       if (NeedSaveTemp)
         BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
     } else if (DstReg == Z80::DE) {
@@ -1677,7 +1688,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
-      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, Z80::DE, PreserveFlags);
+      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, Z80::DE, PreserveFlags, TRI);
       BuildMI(MBB, MI, DL, TII.get(Z80::EX_DE_HL));
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
@@ -1687,7 +1698,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
-      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, Z80::BC, PreserveFlags);
+      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, Z80::BC, PreserveFlags, TRI);
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_B_H));
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_C_L));
       if (NeedSaveHL)
@@ -1707,7 +1718,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
         BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
       if (NeedSaveTemp)
         BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
-      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+      emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
       BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
       BuildMI(MBB, MI, DL,
               TII.get(DstReg == Z80::IX ? Z80::POP_IX : Z80::POP_IY));
@@ -1902,7 +1913,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
       BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n)).addImm(Val & 0xFF);
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
@@ -1982,7 +1993,7 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
 
     // Compute address: HL = IX + Offset (clobbers HL)
-    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags);
+    emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg, PreserveFlags, TRI);
 
     // Load from (HL) into TempReg
     Register TempLo = (TempReg == Z80::BC) ? Z80::C : Z80::E;
