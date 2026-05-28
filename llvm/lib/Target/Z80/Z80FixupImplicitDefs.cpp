@@ -49,6 +49,8 @@
 #include "Z80FixupImplicitDefs.h"
 #include "Z80.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -159,6 +161,22 @@ bool Z80FixupImplicitDefs::runOnMachineFunction(MachineFunction &MF) {
       }
     }
   }
+
+  // After removing the spurious super-register implicit-defs above, recompute
+  // block live-ins for the whole function.  LiveVariables (#156428) also leaves
+  // *inconsistent block live-ins* for independent register-pair halves -- a
+  // half can be over-claimed live-in (so a dead value's later read is reported
+  // undef) or under-provided by a predecessor (so a live value's read is
+  // reported undef).  LivePhysRegs is sub-register/reg-unit accurate, so a
+  // fixpoint recompute (now that the implicit-defs are correct) yields
+  // consistent live-ins.  This clears the residual -verify-machineinstrs
+  // "undefined physical register" reads (AND A / SRL H / spilled counter /
+  // IX-frame stores) and feeds correct liveness to the SP-relative spill
+  // expander in PEI.  Metadata-only; runs before PEI.
+  SmallVector<MachineBasicBlock *> Blocks;
+  for (MachineBasicBlock &MBB : MF)
+    Blocks.push_back(&MBB);
+  fullyRecomputeLiveIns(Blocks);
 
   return Changed;
 }
