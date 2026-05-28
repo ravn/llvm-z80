@@ -14,4 +14,4 @@ define dso_local i32 @s32(i32 %a, i32 %b) {
 }
 
 ; CHECK-LABEL: _s32:
-; CHECK: sbc a, a
+; CHECK: sbc a,a
