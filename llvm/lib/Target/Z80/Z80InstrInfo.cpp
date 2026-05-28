@@ -910,7 +910,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         BuildMI(MBB, MI, DL, get(Z80::LD_L_A));
       // RLCA; SBC A,A → A = sign extension byte
       BuildMI(MBB, MI, DL, get(Z80::RLCA));
-      BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+      { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
       // LD H,A (high byte = sign extension)
       BuildMI(MBB, MI, DL, get(Z80::LD_H_A));
       // Transfer HL → IX/IY
@@ -944,7 +944,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // RLCA rotates bit 7 into carry
     BuildMI(MBB, MI, DL, get(Z80::RLCA));
     // SBC A,A: A = 0xFF if carry (negative), 0x00 if not
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     // Copy A (sign extension) to high byte
     if (HiReg != Z80::A) {
       unsigned CopyToHi = Z80::getLD8RegOpcode(HiReg, Z80::A);
@@ -1268,7 +1268,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     BuildMI(MBB, MI, DL, get(getSBCOpcode(RhsHi)));
 
     if (MI.getOpcode() == Z80::CMP16_ULT) {
-      BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+      { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
       BuildMI(MBB, MI, DL, get(Z80::AND_n)).addImm(1);
     }
 
@@ -1333,7 +1333,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       // A=0 (equal) → ADD 0xFF no carry → SBC A,A → 0 → AND 1 → 0
       BuildMI(MBB, MI, DL, get(Z80::ADD_A_n)).addImm(0xFF);
     }
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     BuildMI(MBB, MI, DL, get(Z80::AND_n)).addImm(1);
 
     MI.eraseFromParent();
@@ -1511,7 +1511,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     else
       llvm_unreachable("ADD_HL_rr_CO: unexpected register");
     BuildMI(MBB, MI, DL, get(AddOpc));
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     BuildMI(MBB, MI, DL, get(Z80::AND_n)).addImm(1);
     MI.eraseFromParent();
     return true;
@@ -1540,7 +1540,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       BuildMI(MBB, MI, DL, get(SbcOpc));
     }
     // Capture borrow out: SBC A,A; AND 1
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     BuildMI(MBB, MI, DL, get(Z80::AND_n)).addImm(1);
     MI.eraseFromParent();
     return true;
@@ -1573,7 +1573,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       BuildMI(MBB, MI, DL, get(AdcOpc));
     }
     // Capture carry out: SBC A,A; AND 1
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     BuildMI(MBB, MI, DL, get(Z80::AND_n)).addImm(1);
     MI.eraseFromParent();
     return true;
@@ -1606,7 +1606,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       BuildMI(MBB, MI, DL, get(SbcOpc));
     }
     // Capture borrow out: SBC A,A; AND 1
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     BuildMI(MBB, MI, DL, get(Z80::AND_n)).addImm(1);
     MI.eraseFromParent();
     return true;
@@ -1909,7 +1909,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
 
       // Step 2: ADD A,A; SBC A,A — compute sign extension byte
       BuildMI(MBB, MI, DL, get(Z80::ADD_A_A));
-      BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+      { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
 
       // Step 3: Write A to both bytes of destination.
       if (DstIsIR) {
@@ -1942,7 +1942,7 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     // ADD A,A - shift sign bit into carry
     BuildMI(MBB, MI, DL, get(Z80::ADD_A_A));
     // SBC A,A - A = 0xFF if carry (negative), 0x00 if no carry (positive)
-    BuildMI(MBB, MI, DL, get(Z80::SBC_A_A));
+    { auto SbcAA = BuildMI(MBB, MI, DL, get(Z80::SBC_A_A)); markAReadUndef(SbcAA); }
     // LD dst_lo, A; LD dst_hi, A
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(DstLo, Z80::A)));
     BuildMI(MBB, MI, DL, get(Z80::getLD8RegOpcode(DstHi, Z80::A)));
