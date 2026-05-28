@@ -266,4 +266,15 @@ void Z80ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
   // Disable PHI node folding to keep if-else as branches.
   CC1Args.push_back("-mllvm");
   CC1Args.push_back("-two-entry-phi-node-folding-threshold=0");
+
+  // Z80/SM83 are bare-metal targets where address 0 is real, addressable
+  // memory (CP/M zero page, RST vectors, hardware registers) -- not a trap.
+  // The default "null is undefined" assumption lets the optimizer treat a
+  // store to / through address 0 as UB and delete it, which silently removed
+  // entire functions doing zero-page init (ravn/rc700-gensmedet#49: a
+  // __builtin_memcpy((void*)0, ...) wiped resident_entry's whole body).  Treat
+  // the null pointer as valid by default; an explicit user setting still wins.
+  if (!DriverArgs.hasArg(options::OPT_fdelete_null_pointer_checks,
+                         options::OPT_fno_delete_null_pointer_checks))
+    CC1Args.push_back("-fno-delete-null-pointer-checks");
 }
