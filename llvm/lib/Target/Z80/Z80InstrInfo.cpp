@@ -695,6 +695,28 @@ int Z80InstrInfo::getSPAdjust(const MachineInstr &MI) const {
   }
 }
 
+// True when A's incoming value is dead at MI (no value flows in).  Used to
+// decide whether a flag-only `AND A` / `SBC A,A` emitted by the expansion of
+// MI reads a don't-care A: when A is dead the $a read must be marked undef to
+// satisfy -verify-machineinstrs (ravn/llvm-z80 #197); when A is live we keep
+// the real read so no pass propagates undef into the live value.
+static bool aIsDeadInto(const MachineInstr &MI, const TargetRegisterInfo *TRI) {
+  const MachineBasicBlock &MBB = *MI.getParent();
+  LivePhysRegs LiveRegs(*TRI);
+  LiveRegs.addLiveOuts(MBB);
+  for (auto I = MBB.rbegin(); &*I != &MI; ++I)
+    LiveRegs.stepBackward(*I);
+  LiveRegs.stepBackward(MI); // live-in to MI
+  return !LiveRegs.contains(Z80::A);
+}
+
+// Mark the $a *use* of a just-built flag-only A op (AND A / SBC A,A) undef.
+static void markAReadUndef(MachineInstrBuilder &MIB) {
+  for (MachineOperand &MO : MIB->operands())
+    if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
+      MO.setIsUndef(true);
+}
+
 bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   MachineBasicBlock &MBB = *MI.getParent();
   const TargetRegisterInfo *TRI = STI->getRegisterInfo();
@@ -1442,7 +1464,10 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     } else {
       // Z80: AND A; SBC HL,rr — atomic to prevent FLAGS clobbering.
       unsigned SbcOpc = (RHS == Z80::BC) ? Z80::SBC_HL_BC : Z80::SBC_HL_DE;
-      BuildMI(MBB, MI, DL, get(Z80::AND_A));
+      bool ADead = aIsDeadInto(MI, TRI);
+      auto AndA = BuildMI(MBB, MI, DL, get(Z80::AND_A));
+      if (ADead)
+        markAReadUndef(AndA); // AND A only clears carry; A value don't-care
       BuildMI(MBB, MI, DL, get(SbcOpc));
     }
     MI.eraseFromParent();
@@ -1465,7 +1490,10 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     } else {
       // Z80: AND A; ADC HL,rr — sets P/V for overflow detection.
       unsigned AdcOpc = (RHS == Z80::BC) ? Z80::ADC_HL_BC : Z80::ADC_HL_DE;
-      BuildMI(MBB, MI, DL, get(Z80::AND_A));
+      bool ADead = aIsDeadInto(MI, TRI);
+      auto AndA = BuildMI(MBB, MI, DL, get(Z80::AND_A));
+      if (ADead)
+        markAReadUndef(AndA); // AND A only clears carry; A value don't-care
       BuildMI(MBB, MI, DL, get(AdcOpc));
     }
     MI.eraseFromParent();
@@ -1505,7 +1533,10 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     } else {
       // Z80: AND A; SBC HL,rr
       unsigned SbcOpc = (RHS == Z80::BC) ? Z80::SBC_HL_BC : Z80::SBC_HL_DE;
-      BuildMI(MBB, MI, DL, get(Z80::AND_A));
+      bool ADead = aIsDeadInto(MI, TRI);
+      auto AndA = BuildMI(MBB, MI, DL, get(Z80::AND_A));
+      if (ADead)
+        markAReadUndef(AndA); // AND A only clears carry; A value don't-care
       BuildMI(MBB, MI, DL, get(SbcOpc));
     }
     // Capture borrow out: SBC A,A; AND 1
