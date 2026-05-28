@@ -29,6 +29,12 @@ public:
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
 
+  bool initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
+                      StringRef CPU,
+                      const std::vector<std::string> &FeaturesVec) const override;
+
+  bool hasFeature(StringRef Feature) const override;
+
   SmallVector<Builtin::InfosShard> getTargetBuiltins() const override;
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
