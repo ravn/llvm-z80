@@ -1,10 +1,7 @@
 /* expect 0x0001 */
 /* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
-/* SKIP-IF: O0 */
-/* O0 crashes Z80LateOptimization::runOnMachineFunction; passes O1..Oz.
- * The crash is independent of this test's intent (BSS-spill peephole
- * value-oracle coverage); skipping O0 keeps the test live where the
- * peephole actually fires.  Tracked as ravn/llvm-z80#125. */
+/* O0 guard dropped 2026-05-28: the Z80LateOptimization crash (ravn/llvm-z80#125)
+ * was fixed by the #210/#197 frame-lowering hardening; O0..Oz all pass now. */
 /*
  * BSS-spill peephole coverage #3: multiple spill/reload pairs in the
  * same basic block (LIFO collect-and-reverse-apply territory).
