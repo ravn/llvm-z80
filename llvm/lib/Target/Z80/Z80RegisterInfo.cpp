@@ -565,9 +565,13 @@ static bool isRegLiveAt(Register Reg, MachineBasicBlock &MBB,
       continue;
 
     // A use of any pending unit means Reg is live (uses are checked before
-    // defs so a read-modify-write instruction counts as a use).
+    // defs so a read-modify-write instruction counts as a use).  An `undef`
+    // use is a don't-care read (e.g. a call's `implicit undef $hl`, or a
+    // restored-then-dead borrow value) and must NOT keep Reg live -- counting
+    // it made the SP-relative spill expander emit an unnecessary borrow
+    // PUSH_HL that itself read an undefined $hl (ravn/llvm-z80#197).
     for (const MachineOperand &MO : I->operands()) {
-      if (!MO.isReg() || !MO.getReg().isValid() || !MO.isUse())
+      if (!MO.isReg() || !MO.getReg().isValid() || !MO.isUse() || MO.isUndef())
         continue;
       for (MCRegUnit U : TRI->regunits(MO.getReg().asMCReg()))
         if (Pending.contains(U))
