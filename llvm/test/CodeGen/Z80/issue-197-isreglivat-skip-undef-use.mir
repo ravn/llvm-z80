@@ -1,0 +1,46 @@
+# RUN: llc -mtriple=z80 -run-pass=prologepilog -verify-machineinstrs %s -o - \
+# RUN:   | FileCheck %s
+#
+# ravn/llvm-z80 #197: the SP-relative spill expander borrows HL as address
+# scratch only when isRegLiveAt(HL) says HL is live past the spill.  isRegLiveAt
+# counted an `undef` use (e.g. a call's `implicit undef $hl`, where HL is a
+# dead caller-clobbered value) as a real use, so it reported HL live and emitted
+# an unnecessary borrow PUSH_HL -- which itself read an undefined $hl and failed
+# -verify-machineinstrs (seen in test_48_dynamic_alloca's main).  An undef use
+# is a don't-care read and must not keep a register live; isRegLiveAt now skips
+# undef uses.
+#
+# Here HL's only read after the DE spill is the RET's `implicit undef $hl`, so
+# HL is dead and no borrow PUSH_HL/POP_HL must be emitted.  The test passes iff
+# -verify-machineinstrs is clean AND no PUSH_HL is emitted.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  define dso_local void @f() { ret void }
+...
+---
+name:            f
+alignment:       1
+legalized:       true
+regBankSelected:  true
+selected:        true
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:    1
+  framePointerPolicy: none
+stack:
+  - { id: 0, type: spill-slot, offset: 0, size: 2, alignment: 1 }
+body:             |
+  bb.0:
+    liveins: $de
+    ; Spill DE to a frame slot SP-relative.  HL's only later read is the RET's
+    ; don't-care undef use, so HL is dead -> the address borrow must not save it.
+    SPILL_GR16 renamable $de, %stack.0, 0 :: (store (s16) into %stack.0, align 1)
+    RET implicit undef $hl
+
+# CHECK-LABEL: name: f
+# CHECK: ADD_HL_SP
+# CHECK-NOT: PUSH_HL
+# CHECK-NOT: POP_HL
