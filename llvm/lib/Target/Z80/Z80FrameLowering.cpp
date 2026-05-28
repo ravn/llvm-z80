@@ -228,8 +228,18 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
           BuildMI(MBB, MBBI, DL, TII.get(Z80::DEC_SP));
       } else {
         // Large frame: PUSH HL; LD HL,-(size-2); ADD HL,SP; LD SP,HL;
-        // restore HL from IX-based save location.
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_HL));
+        // restore HL from IX-based save location.  The PUSH_HL preserves HL
+        // across the SP adjustment; when HL is not a live-in argument its
+        // saved value is don't-care, so mark the $hl read undef to satisfy
+        // -verify-machineinstrs (ravn/llvm-z80#210/#197).  Mirrors the
+        // HL-liveness check on the no-FP large-frame path below.
+        bool HLLiveIn = MBB.isLiveIn(Z80::HL) || MBB.isLiveIn(Z80::H) ||
+                        MBB.isLiveIn(Z80::L);
+        MachineInstr *PushHL = BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_HL));
+        if (!HLLiveIn)
+          for (MachineOperand &MO : PushHL->operands())
+            if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::HL)
+              MO.setIsUndef(true);
         BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_HL_nn))
             .addImm(-(int64_t)(StackSize - 2) & 0xFFFF);
         BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_HL_SP));
