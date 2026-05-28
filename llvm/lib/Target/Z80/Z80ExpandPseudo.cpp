@@ -21,6 +21,7 @@
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -169,6 +170,20 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  if (Modified) {
+    // The block-splitting expansions above create new MBBs (loop / skip / add
+    // / tail bodies) for the loop-carried 8/16-bit mul, div, shift, saturating
+    // and guarded-block sequences, but do not set their live-ins.  That left
+    // every loop-body instruction reading an undefined physical register under
+    // -verify-machineinstrs (ravn/llvm-z80 #197).  Recompute live-ins for the
+    // whole function to fixpoint now that the CFG is final.  Metadata-only:
+    // emitted code is unchanged.
+    SmallVector<MachineBasicBlock *> Blocks;
+    for (MachineBasicBlock &MBB : MF)
+      Blocks.push_back(&MBB);
+    fullyRecomputeLiveIns(Blocks);
+  }
+
   return Modified;
 }
 
@@ -285,11 +300,13 @@ bool Z80ExpandPseudo::expandMul8(MachineBasicBlock &MBB, MachineInstr &MI,
   DebugLoc DL = MI.getDebugLoc();
 
   MachineBasicBlock *LoopMBB = MF->CreateMachineBasicBlock();
+  MachineBasicBlock *AddMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *SkipMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *TailMBB = MF->CreateMachineBasicBlock();
 
   MachineFunction::iterator InsertPos = std::next(MBB.getIterator());
   MF->insert(InsertPos, LoopMBB);
+  MF->insert(InsertPos, AddMBB);
   MF->insert(InsertPos, SkipMBB);
   MF->insert(InsertPos, TailMBB);
 
@@ -304,13 +321,21 @@ bool Z80ExpandPseudo::expandMul8(MachineBasicBlock &MBB, MachineInstr &MI,
   BuildMI(&MBB, DL, TII.get(Z80::LD_B_n)).addImm(8); // B = 8
   MBB.addSuccessor(LoopMBB);
 
-  // LoopMBB: shift and conditionally add
+  // LoopMBB: shift, then conditionally skip the add.  The JR NC is the block
+  // terminator; the conditional ADD A,E lives in its own AddMBB so the CFG is
+  // well-formed (two distinct successors) -- emitting ADD A,E inline here with
+  // SkipMBB added twice produced a duplicate successor entry (ravn/llvm-z80
+  // #197) and let branch-folding drop SkipMBB's label.  Byte-neutral: the
+  // instruction stream (and SkipMBB fall-through) is unchanged.
   BuildMI(LoopMBB, DL, TII.get(Z80::ADD_A_A)); // A <<= 1
   BuildMI(LoopMBB, DL, TII.get(Z80::RL_D));    // D <<= 1, MSB -> carry
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_NC_e)).addMBB(SkipMBB);
-  BuildMI(LoopMBB, DL, TII.get(Z80::ADD_A_E)); // A += multiplicand
   LoopMBB->addSuccessor(SkipMBB);              // jr nc taken
-  LoopMBB->addSuccessor(SkipMBB);              // fall through (after add)
+  LoopMBB->addSuccessor(AddMBB);               // fall through
+
+  // AddMBB: conditional addition, then fall through to SkipMBB.
+  BuildMI(AddMBB, DL, TII.get(Z80::ADD_A_E));  // A += multiplicand
+  AddMBB->addSuccessor(SkipMBB);
 
   // SkipMBB: loop back
   if (STI.hasSM83()) {
@@ -353,11 +378,13 @@ bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   DebugLoc DL = MI.getDebugLoc();
 
   MachineBasicBlock *LoopMBB = MF->CreateMachineBasicBlock();
+  MachineBasicBlock *SubMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *SkipMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *TailMBB = MF->CreateMachineBasicBlock();
 
   MachineFunction::iterator InsertPos = std::next(MBB.getIterator());
   MF->insert(InsertPos, LoopMBB);
+  MF->insert(InsertPos, SubMBB);
   MF->insert(InsertPos, SkipMBB);
   MF->insert(InsertPos, TailMBB);
 
@@ -371,15 +398,22 @@ bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   BuildMI(&MBB, DL, TII.get(Z80::LD_B_n)).addImm(8);
   MBB.addSuccessor(LoopMBB);
 
-  // LoopMBB: restoring division step
+  // LoopMBB: restoring division step.  JR C is the terminator; the SUB E/INC D
+  // restore step lives in its own SubMBB so the CFG is well-formed (two
+  // distinct successors) -- emitting it inline with SkipMBB added twice gave a
+  // duplicate successor entry (ravn/llvm-z80 #197) and let branch-folding drop
+  // SkipMBB's label.  Byte-neutral: the instruction stream is unchanged.
   BuildMI(LoopMBB, DL, TII.get(Z80::SLA_D)); // shift dividend, MSB->carry
   BuildMI(LoopMBB, DL, TII.get(Z80::RLA));   // remainder = remainder*2 + carry
   BuildMI(LoopMBB, DL, TII.get(Z80::CP_E));  // compare remainder vs divisor
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_C_e)).addMBB(SkipMBB);
-  BuildMI(LoopMBB, DL, TII.get(Z80::SUB_E)); // remainder -= divisor
-  BuildMI(LoopMBB, DL, TII.get(Z80::INC_D)); // set quotient bit
   LoopMBB->addSuccessor(SkipMBB);            // jr c taken
-  LoopMBB->addSuccessor(SkipMBB);            // fall through
+  LoopMBB->addSuccessor(SubMBB);             // fall through
+
+  // SubMBB: subtract divisor + set quotient bit, then fall through to SkipMBB.
+  BuildMI(SubMBB, DL, TII.get(Z80::SUB_E)); // remainder -= divisor
+  BuildMI(SubMBB, DL, TII.get(Z80::INC_D)); // set quotient bit
+  SubMBB->addSuccessor(SkipMBB);
 
   // SkipMBB: loop back
   if (STI.hasSM83()) {
