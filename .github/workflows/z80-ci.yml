@@ -36,9 +36,14 @@ jobs:
     name: Build clang/llc + Z80 lit suite
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # Force JS actions onto Node 24 -- Node 20 is deprecated on GHA runners
+    # (removed Sept 2026).  Covers ccache-action@v1.2 (no Node-24 release yet);
+    # actions/checkout is bumped to v5 (native Node 24) below.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
