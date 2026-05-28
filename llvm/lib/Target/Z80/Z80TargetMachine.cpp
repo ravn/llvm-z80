@@ -13,6 +13,7 @@
 #include "Z80TargetMachine.h"
 #include "Z80NarrowNoIndex.h"
 #include "Z80PinAluAccumulator.h"
+#include "Z80PruneCallFrameDefs.h"
 #include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
 
@@ -74,6 +75,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80AutoStaticStackPass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
+  initializeZ80PruneCallFrameDefsPass(PR);
   initializeZ80ReorderTestDecPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
   initializeZ80SplitDjnzCountersPass(PR);
@@ -258,6 +260,7 @@ public:
   // allocation.
   void addFastRegAlloc() override { addOptimizedRegAlloc(); }
   void addOptimizedRegAlloc() override;
+  void addPreRegAlloc() override;
 
   void addPostRewrite() override;
   void addPreSched2() override;
@@ -342,6 +345,16 @@ void Z80PassConfig::addPreGlobalInstructionSelect() {
 bool Z80PassConfig::addGlobalInstructionSelect() {
   addPass(new InstructionSelect());
   return false;
+}
+
+void Z80PassConfig::addPreRegAlloc() {
+  // Prune each ADJCALLSTACKUP's worst-case implicit-def $hl/$a down to what its
+  // own AdjAmount actually clobbers.  Must run BEFORE the regalloc sequence's
+  // first liveness computation (LiveVariables/LiveIntervals), otherwise the
+  // conservative defs cause a float call's DE:HL result $hl to be marked dead
+  // and the consuming COPY reads undef once the (AdjAmount==0) ADJCALLSTACKUP
+  // is erased -- the dominant -verify-machineinstrs failure (ravn/llvm-z80#197).
+  addPass(createZ80PruneCallFrameDefsPass());
 }
 
 void Z80PassConfig::addOptimizedRegAlloc() {

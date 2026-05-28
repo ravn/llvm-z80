@@ -74,10 +74,13 @@ store_path:
 define i8 @cp_chain_three() {
 ; CHECK-LABEL: _cp_chain_three:
 ; CHECK:       call _compute
-; CHECK:       ld   {{[bcdehl]}},a
-; ravn/llvm-z80#148 collapses the `cp #1` to `dec a` (A dead after; FLAGS
-; dead after the branch because subsequent `cp #2` redefines them).
-; CHECK:       {{(dec	a|cp   #1)}}
+; After ravn/llvm-z80#197 (ADJCALLSTACKUP no longer falsely clobbers A), the
+; compute() result stays live in A across the whole CP chain -- there is no
+; save to a register at all, which subsumes #60's redundant-reload removal.
+; A is live to the final store, so #148's `cp #1`->`dec a` collapse no longer
+; applies (dec a would clobber the live A).
+; CHECK-NOT:   ld   {{[bcdehl]}},a
+; CHECK:       cp   #1
 ; CHECK-NOT:   ld   a,{{[bcdehl]}}
 ; CHECK:       cp   #2
 ; CHECK-NOT:   ld   a,{{[bcdehl]}}
