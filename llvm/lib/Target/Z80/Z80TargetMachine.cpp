@@ -32,6 +32,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/IndVarSimplify.h"
@@ -57,6 +58,21 @@
 #include "Z80TargetTransformInfo.h"
 
 using namespace llvm;
+
+// ravn/llvm-z80 #156428: the Z80FixupImplicitDefs mitigation removes spurious
+// super-register implicit-defs that LiveVariables added.  The LiveVariables
+// root-cause fix (LiveVariables::HandlePhysRegUse, only claim a super-register
+// defined when every leaf sub-register is defined) prevents those defs being
+// added at all, so the mitigation's removal loop is subsumed.  CONFIRMED: with
+// this flag set, the full differential oracle stays clean in both configs
+// (default 799/0/50/207, +static-stack 793/0/50/213, zero divergences), so the
+// MCP miscompile the mitigation guards no longer occurs.  The pass is kept on
+// by default because its fullyRecomputeLiveIns tail still clears 2 verifier
+// errors (test_11, test_37); this hidden flag lets a future focused session
+// remove the now-redundant removal loop with proof in hand.
+static cl::opt<bool> DisableFixupImplicitDefs(
+    "z80-disable-fixup-implicit-defs", cl::Hidden, cl::init(false),
+    cl::desc("Disable the Z80FixupImplicitDefs #156428 mitigation pass"));
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   // Register both Z80 and SM83 targets.
@@ -412,7 +428,8 @@ void Z80PassConfig::addPostRewrite() {
   // Remove spurious super-register implicit-defs added by LiveVariables.
   // Must run before MachineCopyPropagation to prevent incorrect dead-copy
   // elimination.  See Z80FixupImplicitDefs.cpp for full explanation.
-  addPass(createZ80FixupImplicitDefsPass());
+  if (!DisableFixupImplicitDefs)
+    addPass(createZ80FixupImplicitDefsPass());
 }
 
 void Z80PassConfig::addPreSched2() {

@@ -252,8 +252,28 @@ void LiveVariables::HandlePhysRegUse(Register Reg, MachineInstr &MI) {
     MachineInstr *LastPartialDef = FindLastPartialDef(Reg);
     // If LastPartialDef is NULL, it must be using a livein register.
     if (LastPartialDef) {
-      LastPartialDef->addOperand(
-          MachineOperand::CreateReg(Reg, /*IsDef=*/true, /*IsImp=*/true));
+      // Only treat the partial def as implicitly defining the full
+      // super-register if EVERY leaf sub-register has actually been defined.
+      // The comment above asserts this ("All of the sub-registers must have
+      // been defined") but the original code never verified it.  On targets
+      // with independent sub-registers -- e.g. Z80 register-pair halves, where
+      // writing L does not modify H -- a single sub-register def does NOT
+      // define the super-register; adding a spurious implicit-def corrupts
+      // later liveness and copy propagation
+      // (https://github.com/llvm/llvm-project/issues/156428).
+      bool AllSubRegsDefined = true;
+      for (MCPhysReg SubReg : TRI->subregs(Reg)) {
+        // Only require leaf sub-registers (those with no further
+        // sub-registers) to be defined.
+        if (TRI->subregs(SubReg).begin() == TRI->subregs(SubReg).end() &&
+            !PhysRegDef[SubReg]) {
+          AllSubRegsDefined = false;
+          break;
+        }
+      }
+      if (AllSubRegsDefined)
+        LastPartialDef->addOperand(
+            MachineOperand::CreateReg(Reg, /*IsDef=*/true, /*IsImp=*/true));
     }
   } else if (LastDef && !PhysRegUse[Reg.id()] &&
              !LastDef->findRegisterDefOperand(Reg, /*TRI=*/nullptr))
