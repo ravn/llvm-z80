@@ -80,14 +80,16 @@ define void @memmove_noop(ptr %p) {
 ; CHECK:      ret
 
 
-; --- runtime pointers, unknown direction → libcall (regression lock) -
+; --- runtime pointers, unknown direction → register-CC __memmove_rt (#126) -
+; dst/src already in HL/DE, size in BC -> just `ld bc,16; jp ___memmove_rt`
+; (tail call), not the heavy stack-ABI _memmove libcall.
 define void @memmove_runtime(ptr %dst, ptr %src) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
 }
 ; CHECK-LABEL: _memmove_runtime:
-; CHECK:      call _memmove
-; CHECK:      ret
+; CHECK:      ld bc,16
+; CHECK:      jp ___memmove_rt
 
 
 declare void @llvm.memmove.p0.p0.i16(ptr, ptr, i16, i1 immarg)

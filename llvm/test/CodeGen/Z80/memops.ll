@@ -17,10 +17,11 @@ define void @test_memcpy(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; Test: memmove lowers to runtime call with correct args
+; Test: runtime-unknown-direction memmove lowers to the register-CC helper
+; __memmove_rt (z80_allreg), not the heavy stack-ABI _memmove (ravn/llvm-z80#126).
 define void @test_memmove(ptr %dst, ptr %src, i16 %n) {
 ; CHECK-LABEL: _test_memmove:
-; CHECK:       call _memmove
+; CHECK:       call ___memmove_rt
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %n, i1 false)
   ret void
 }
