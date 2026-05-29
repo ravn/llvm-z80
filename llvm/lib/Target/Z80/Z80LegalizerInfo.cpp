@@ -20,10 +20,13 @@
 #include "Z80MachineFunctionInfo.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/IR/CallingConv.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
@@ -1178,8 +1181,31 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return true;
     }
     if (Dir == Direction::Unknown) {
-      auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
-      if (Result != LegalizerHelper::Legalized)
+      // Runtime-unknown direction: call the register-CC helper __memmove_rt
+      // (z80_allreg: dst=HL, src=DE, size=BC) instead of the heavy stack-ABI
+      // _memmove libcall -- no stack arg / IX frame / callee-cleanup, ~7x
+      // smaller (ravn/llvm-z80#126).  The public string.h memmove ABI is
+      // untouched (this is a dedicated internal helper symbol).
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      auto &Ctx = MIRBuilder.getMF().getFunction().getContext();
+      SmallVector<CallLowering::ArgInfo, 3> Args;
+      Args.push_back(
+          {DstPtr, PointerType::get(Ctx, MRI.getType(DstPtr).getAddressSpace()),
+           0});
+      Args.push_back(
+          {SrcPtr, PointerType::get(Ctx, MRI.getType(SrcPtr).getAddressSpace()),
+           0});
+      Args.push_back(
+          {Size, IntegerType::get(Ctx, MRI.getType(Size).getSizeInBits()), 0});
+
+      CallLowering::CallLoweringInfo Info;
+      Info.CallConv = CallingConv::Z80_AllReg;
+      Info.Callee = MachineOperand::CreateES("__memmove_rt");
+      Info.OrigRet = CallLowering::ArgInfo({0}, Type::getVoidTy(Ctx), 0);
+      llvm::append_range(Info.OrigArgs, Args);
+
+      const auto &CLI = *MIRBuilder.getMF().getSubtarget().getCallLowering();
+      if (!CLI.lowerCall(MIRBuilder, Info))
         return false;
       MI.eraseFromParent();
       return true;
