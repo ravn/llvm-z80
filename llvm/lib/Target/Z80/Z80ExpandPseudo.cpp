@@ -31,6 +31,38 @@
 
 using namespace llvm;
 
+// #27: pick the `LD <dst>,(IX/IY+d)` opcode for an allocated GR8 dst and an
+// index base (IX or IY).  GR8 = {A,B,C,D,E,H,L}; every member has both an IXd
+// and an IYd indexed-load form.
+static unsigned getIdx8LoadOpcode(Register Dst, Register Base) {
+  bool IY = (Base == Z80::IY);
+  switch (Dst.id()) {
+  case Z80::A: return IY ? Z80::LD_A_IYd : Z80::LD_A_IXd;
+  case Z80::B: return IY ? Z80::LD_B_IYd : Z80::LD_B_IXd;
+  case Z80::C: return IY ? Z80::LD_C_IYd : Z80::LD_C_IXd;
+  case Z80::D: return IY ? Z80::LD_D_IYd : Z80::LD_D_IXd;
+  case Z80::E: return IY ? Z80::LD_E_IYd : Z80::LD_E_IXd;
+  case Z80::H: return IY ? Z80::LD_H_IYd : Z80::LD_H_IXd;
+  case Z80::L: return IY ? Z80::LD_L_IYd : Z80::LD_L_IXd;
+  default:     return 0;
+  }
+}
+
+// #27: pick the `LD (IX/IY+d),<src>` opcode for an allocated GR8 src.
+static unsigned getIdx8StoreOpcode(Register Src, Register Base) {
+  bool IY = (Base == Z80::IY);
+  switch (Src.id()) {
+  case Z80::A: return IY ? Z80::LD_IYd_A : Z80::LD_IXd_A;
+  case Z80::B: return IY ? Z80::LD_IYd_B : Z80::LD_IXd_B;
+  case Z80::C: return IY ? Z80::LD_IYd_C : Z80::LD_IXd_C;
+  case Z80::D: return IY ? Z80::LD_IYd_D : Z80::LD_IXd_D;
+  case Z80::E: return IY ? Z80::LD_IYd_E : Z80::LD_IXd_E;
+  case Z80::H: return IY ? Z80::LD_IYd_H : Z80::LD_IXd_H;
+  case Z80::L: return IY ? Z80::LD_IYd_L : Z80::LD_IXd_L;
+  default:     return 0;
+  }
+}
+
 namespace {
 
 class Z80ExpandPseudo : public MachineFunctionPass {
@@ -160,6 +192,42 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
         DebugLoc DL = Inst.getDebugLoc();
         BuildMI(MBB, Inst, DL, TII.get(Z80::getPushOpcode(Src)));
         BuildMI(MBB, Inst, DL, TII.get(Z80::getPopOpcode(Dst)));
+        Inst.eraseFromParent();
+        Modified = true;
+        break;
+      }
+      case Z80::LOAD_IDX8: {
+        // #27: base is guaranteed in IX/IY (IR16 class).  Emit
+        // LD <dst>,(IX/IY+disp).  The indexed-load defs do NOT model the
+        // index-reg read, so add Base as an explicit implicit use; the
+        // post-pass fullyRecomputeLiveIns then propagates IX/IY liveness.
+        Register Dst = Inst.getOperand(0).getReg();
+        Register Base = Inst.getOperand(1).getReg();
+        int64_t Disp = Inst.getOperand(2).getImm();
+        DebugLoc DL = Inst.getDebugLoc();
+        unsigned Opc = getIdx8LoadOpcode(Dst, Base);
+        assert(Opc && "LOAD_IDX8: no indexed-load opcode for dst/base");
+        BuildMI(MBB, Inst, DL, TII.get(Opc))
+            .addImm(Disp)
+            .addReg(Dst, RegState::ImplicitDefine)
+            .addReg(Base, RegState::Implicit);
+        Inst.eraseFromParent();
+        Modified = true;
+        break;
+      }
+      case Z80::STORE_IDX8: {
+        // #27: emit LD (IX/IY+disp),<src>.  Add Src and Base as explicit
+        // implicit uses so liveness is correct after fullyRecomputeLiveIns.
+        Register Src = Inst.getOperand(0).getReg();
+        Register Base = Inst.getOperand(1).getReg();
+        int64_t Disp = Inst.getOperand(2).getImm();
+        DebugLoc DL = Inst.getDebugLoc();
+        unsigned Opc = getIdx8StoreOpcode(Src, Base);
+        assert(Opc && "STORE_IDX8: no indexed-store opcode for src/base");
+        BuildMI(MBB, Inst, DL, TII.get(Opc))
+            .addImm(Disp)
+            .addReg(Src, RegState::Implicit)
+            .addReg(Base, RegState::Implicit);
         Inst.eraseFromParent();
         Modified = true;
         break;

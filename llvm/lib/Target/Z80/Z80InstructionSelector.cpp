@@ -55,6 +55,36 @@ static cl::opt<bool> EnableAdd16Acc(
              "(ravn/llvm-z80#178; correct but currently a size regression "
              "-- revisit after #112)."));
 
+static cl::opt<bool> EnableIdxAddr(
+    "z80-idx-addr", cl::init(false), cl::Hidden,
+    cl::desc("Emit IX/IY-displacement loads for register-held pointers "
+             "dereferenced at a constant offset (ravn/llvm-z80#27).  Constrains "
+             "the base to IR16 so it lands in IX/IY.  Default off pending "
+             "measurement."));
+
+// #27: count the distinct in-range constant-offset G_PTR_ADD sites on Base.
+// The IX/IY-indexed transform pays only when the one-time `push hl; pop iy`
+// base setup amortises across >=2 access sites; a single site is larger under
+// the flag.  Counting SITES (not their load/store users) is stable during
+// selection: a G_PTR_ADD persists while its load/store users are selected and
+// erased one by one, so the count does not depend on selection order.
+static unsigned countIndexedSites(Register Base,
+                                  const MachineRegisterInfo &MRI) {
+  unsigned N = 0;
+  for (const MachineInstr &U : MRI.use_nodbg_instructions(Base)) {
+    if (U.getOpcode() != TargetOpcode::G_PTR_ADD ||
+        U.getOperand(1).getReg() != Base)
+      continue;
+    const MachineInstr *OffDef = MRI.getVRegDef(U.getOperand(2).getReg());
+    if (OffDef && OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+      int64_t D = OffDef->getOperand(1).getCImm()->getSExtValue();
+      if (D >= -128 && D <= 127)
+        ++N;
+    }
+  }
+  return N;
+}
+
 namespace {
 
 class Z80InstructionSelector : public InstructionSelector {
@@ -63,10 +93,26 @@ public:
                          Z80RegisterBankInfo &RBI);
 
   bool select(MachineInstr &MI) override;
-  void setupGeneratedPerFunctionState(MachineFunction &MF) override {}
+  void setupGeneratedPerFunctionState(MachineFunction &MF) override {
+    // #27: cache whether this function contains any call.  IY is caller-saved
+    // (only IX is callee-saved, Z80_CSR), so an IR16-constrained base forced
+    // into IY would not survive a call.  The IX/IY-indexed-load transform only
+    // fires in call-free functions (see EnableIdxAddr emission).
+    FnHasCalls = false;
+    for (const MachineBasicBlock &MBB : MF)
+      for (const MachineInstr &MI : MBB)
+        if (MI.isCall()) {
+          FnHasCalls = true;
+          return;
+        }
+  }
   static const char *getName() { return DEBUG_TYPE; }
 
 private:
+  // #27: set by setupGeneratedPerFunctionState; true if the current function
+  // contains any call (gates the IX/IY-indexed-load transform — see above).
+  bool FnHasCalls = false;
+
   bool selectRuntimeLibCall16(MachineInstr &MI, const char *FuncName);
   bool selectInline16(MachineInstr &MI, unsigned PseudoOpc);
   bool selectMul8(MachineInstr &MI);
@@ -2517,6 +2563,26 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           return true;
         }
       }
+
+      // #27: general pointer base + constant offset -> deferred IX/IY-indexed
+      // 8-bit load.  Constraining the base to IR16 forces regalloc to place it
+      // in IX/IY; Z80ExpandPseudo then emits LD r,(IX/IY+disp), avoiding the
+      // IX/IY->HL copy + add + (hl) sequence.  Skip the frame-pointer COPY $ix
+      // base and frame-index bases (handled above, they own their lowering).
+      if (EnableIdxAddr && !FnHasCalls && IsConstOffset && !IsIXBase &&
+          !IsFrameBase && BaseReg.isVirtual() && DstTy.getSizeInBits() <= 8 &&
+          Disp >= -128 && Disp <= 127 &&
+          countIndexedSites(BaseReg, MRI) >= 2) {
+        if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
+          return false;
+        if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(Z80::LOAD_IDX8), DstReg)
+            .addReg(BaseReg)
+            .addImm(Disp);
+        MI.eraseFromParent();
+        return true;
+      }
     }
 
     // Try IX-indexed addressing from G_FRAME_INDEX (no extra offset)
@@ -2774,6 +2840,42 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
               .addImm(ExtraOffset);
           MI.eraseFromParent();
           return true;
+        }
+      }
+    }
+
+    // #27: general pointer base + constant offset -> deferred IX/IY-indexed
+    // 8-bit store.  Mirrors the load path; together they let read-modify-write
+    // (buf[i] = f(buf[i])) drop the IX/IY->HL copy + add entirely.  Call-free
+    // only (IY is caller-saved) and not for frame-index / COPY $ix bases.
+    if (EnableIdxAddr && !FnHasCalls && SrcTy.getSizeInBits() <= 8) {
+      MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
+      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_PTR_ADD) {
+        Register BaseReg = AddrDef->getOperand(1).getReg();
+        Register OffReg = AddrDef->getOperand(2).getReg();
+        MachineInstr *BaseDef = MRI.getVRegDef(BaseReg);
+        MachineInstr *OffDef = MRI.getVRegDef(OffReg);
+        bool BaseIsIX = BaseDef && BaseDef->getOpcode() == TargetOpcode::COPY &&
+                        BaseDef->getOperand(1).isReg() &&
+                        BaseDef->getOperand(1).getReg() == Z80::IX;
+        bool BaseIsFI =
+            BaseDef && BaseDef->getOpcode() == TargetOpcode::G_FRAME_INDEX;
+        if (!BaseIsIX && !BaseIsFI && BaseReg.isVirtual() && OffDef &&
+            OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          int64_t Disp = OffDef->getOperand(1).getCImm()->getSExtValue();
+          if (Disp >= -128 && Disp <= 127 &&
+              countIndexedSites(BaseReg, MRI) >= 2) {
+            if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+              return false;
+            if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
+              return false;
+            BuildMI(MBB, MI, DL, TII.get(Z80::STORE_IDX8))
+                .addReg(SrcReg)
+                .addReg(BaseReg)
+                .addImm(Disp);
+            MI.eraseFromParent();
+            return true;
+          }
         }
       }
     }
