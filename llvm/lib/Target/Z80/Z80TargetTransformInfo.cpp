@@ -129,27 +129,24 @@ bool Z80TTIImpl::isLegalAddImmediate(int64_t Imm) const {
   return Imm >= -3 && Imm <= 3;
 }
 
-// ravn/llvm-z80#177 Phase B (post-B1 bisect): only the clean cases
-// ship.  See `tasks/issue177-phase-b1-finding.md` and
-// `tasks/issue177-phase-b2-bisect.md`.
-//
-// Case held back (correctness-safe post #184 + #185 fixes, but
-// production-target cost > savings):
-//   getArithmeticInstrCost: i16 = 2 / i32 = 4 / i64+ = expensive.
-//   With both #184 (peephole #148 fall-through MBB check) and
-//   #185 (DJNZ peephole B-clobber safety) fixed, AES corpus
-//   13/13 PASS with i16=2 applied.  But production targets:
-//     - cpnos PROM1: 2028 -> 2037 B (+9 B; eats into 2 KB hard cap)
-//     - autoload PROM: 1652 -> 1668 B (+16 B)
-//     - AES `09_Oz_prod_like`: 2562 -> 2606 B (+44 B)
-//     - BIOS: 5922 -> 5916 B (-6 B)
-//   Net: production cost outweighs benefits.  The i16/i32 width charge
-//   cannot be CostKind-isolated either: the consumer that benefits
-//   (IndVarSimplify IV-widening) queries getArithmeticInstrCost(Add) at
-//   TCK_RecipThroughput -- the same bucket as any speed gain -- so a
-//   per-CostKind split does not separate the win from the regression.
-//   Held until the +static-stack miscompile behind #184 is root-caused
-//   separately (a MIR/BSS-lowering issue, not a cost-model one).
+// DO NOT add an i16=2 / i32=4 integer-arithmetic width charge here.  That is
+// ravn/llvm-z80#184, closed WONT-FIX.  Full mechanism + evidence:
+// `tasks/issue184-wontfix-mechanism-2026-05-30.md`.  In short:
+//   * It is correctness-safe (the original "infinite loop" was peephole bugs
+//     #148/#185, since fixed) but it is an *inaccurate* cost.  On Z80 a 16-bit
+//     add is ~1 byte (`inc bc` / `add hl,rr`) -- the SAME as an 8-bit add -- so
+//     the accurate cost is ~1, i.e. the BasicTTIImpl baseline.
+//   * Its only benefit (AES, where IVs are genuinely 8-bit) comes from the
+//     inaccuracy: it makes IndVarSimplify stop widening 8-bit IVs.  The same
+//     overcharge REGRESSES production: e.g. cpnos `_netboot_mpm` has an i8
+//     counter that SHOULD widen to a pair (`inc bc`); i16=2 suppresses that and
+//     the 8-bit counter is shuttled through A + a BSS slot (78->84 insns,
+//     cpnos PROM1 2022->2033 B, into the 2 KB cap).
+//   * Not fixable by a better number: the real cost is the post-regalloc,
+//     register-pressure-dominated allocation outcome, but the decision is made
+//     pre-regalloc and the cost API is a per-(opcode,type) scalar with no slot
+//     for "in a pair vs spilled."  A proper fix is an allocation-aware Z80
+//     narrowing pass (a smarter Z80NarrowIV), not a cost edit.
 InstructionCost Z80TTIImpl::getArithmeticInstrCost(
     unsigned Opcode, Type *Ty, TargetTransformInfo::TargetCostKind CostKind,
     TargetTransformInfo::OperandValueInfo Op1Info,
