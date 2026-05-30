@@ -2820,6 +2820,41 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    // #27: general pointer base + constant offset -> deferred IX/IY-indexed
+    // 8-bit store.  Mirrors the load path; together they let read-modify-write
+    // (buf[i] = f(buf[i])) drop the IX/IY->HL copy + add entirely.  Call-free
+    // only (IY is caller-saved) and not for frame-index / COPY $ix bases.
+    if (EnableIdxAddr && !FnHasCalls && SrcTy.getSizeInBits() <= 8) {
+      MachineInstr *AddrDef = MRI.getVRegDef(AddrReg);
+      if (AddrDef && AddrDef->getOpcode() == TargetOpcode::G_PTR_ADD) {
+        Register BaseReg = AddrDef->getOperand(1).getReg();
+        Register OffReg = AddrDef->getOperand(2).getReg();
+        MachineInstr *BaseDef = MRI.getVRegDef(BaseReg);
+        MachineInstr *OffDef = MRI.getVRegDef(OffReg);
+        bool BaseIsIX = BaseDef && BaseDef->getOpcode() == TargetOpcode::COPY &&
+                        BaseDef->getOperand(1).isReg() &&
+                        BaseDef->getOperand(1).getReg() == Z80::IX;
+        bool BaseIsFI =
+            BaseDef && BaseDef->getOpcode() == TargetOpcode::G_FRAME_INDEX;
+        if (!BaseIsIX && !BaseIsFI && BaseReg.isVirtual() && OffDef &&
+            OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+          int64_t Disp = OffDef->getOperand(1).getCImm()->getSExtValue();
+          if (Disp >= -128 && Disp <= 127) {
+            if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+              return false;
+            if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
+              return false;
+            BuildMI(MBB, MI, DL, TII.get(Z80::STORE_IDX8))
+                .addReg(SrcReg)
+                .addReg(BaseReg)
+                .addImm(Disp);
+            MI.eraseFromParent();
+            return true;
+          }
+        }
+      }
+    }
+
     // Direct addressing for global variable stores (Z80 only).
     // G_STORE(val, G_GLOBAL_VALUE @sym) → LD (sym),A or LD (sym),HL
     // G_STORE(val, G_PTR_ADD(G_GLOBAL_VALUE @sym, G_CONSTANT off)) →
