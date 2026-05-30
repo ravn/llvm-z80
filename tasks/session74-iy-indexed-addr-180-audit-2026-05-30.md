@@ -67,8 +67,35 @@ info (physreg/FLAGS liveness).  Findings:
 Net: the "~2300 LOC stand-in" alarm is largely resolved; realistic remaining
 migration ≈ 600 LOC / ~3–5 focused sessions, gated on #177/#178/#179.
 
+## 5. Continuation (same session) — exhausted the remaining levers
+
+After merging #27 and re-auditing #180, drilled the two candidate next-levers to
+honest negative/marginal conclusions:
+
+- **#211 (#8 `A-via-(HL)` migration) — NOT worth building.**  Investigated:
+  zero codegen win (peephole #8 already captures every winnable A-dead case; the
+  A-live case can't be improved), plus ISA-split (`LD r,(BC/DE)` doesn't exist)
+  + clobber-tension.  Commented WONTFIX-ish on #211; deprioritised the #180
+  genuine migrations generally (cleanliness-only).
+- **Production-density regalloc — TAPPED OUT.**  Built BIOS (5897 B, beats SDCC
+  6091) + cpnos; instrumented.  Dominant waste is ISA-fundamental: 324 BSS-via-A
+  (8-bit memory is A-only), ~245 A-shuttle moves (irreducible #172 class), ~65
+  pair-copies; **zero IX-stash** in BIOS; cpnos near-optimal; ~0 recoverable
+  redundancy (the 11 "redundant reloads" are A-shuttle restores).  #178 remat
+  targets IX-stash/spill-across-CALL which the production targets don't have
+  (it's an AES lever).  Commented #178; full note
+  `tasks/production-density-regalloc-drill-2026-05-30.md`.
+
+**Strategic upshot:** clang beats SDCC on all production targets; the cheap and
+the regalloc levers are exhausted.  The only high-value remaining engineering is
+**upstream-submission packaging** (both Tier A gates #180/#181 now resolved).
+U-LLVM queue tracked in #186; Z80-backend packaging per `tasks/execution-plan-2026-05-22.md`.
+
 ## State at session end
-- `ravn/llvm-z80` main: `94d83af`, CI green, clean.
+- `ravn/llvm-z80` main: `ab1065c`, CI green, clean working tree.
 - Branches: `z80-27-iy-indexed-addr` (merged), `z80-loop-carrier-areg-pin`
-  (#172 negative result, unmerged).
-- No production size change (cpnos PROM1 2022 B unchanged; BIOS untouched).
+  (#172 negative result, unmerged); `z80-178-remat-drill` merged (docs) + deleted.
+- No production size change (cpnos PROM1 2022 B unchanged; BIOS 5897 B untouched).
+- GitHub: #211 filed+commented (WONTFIX-ish); #27/#180/#178 commented.
+- Entry point for next session: `tasks/NEXT-SESSION-2026-05-30.md` (top lever:
+  upstream packaging; production-density marked tapped-out).
