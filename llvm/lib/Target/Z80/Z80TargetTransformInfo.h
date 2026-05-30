@@ -61,6 +61,8 @@ public:
 
   bool prefersVectorizedAddressing() const override;
 
+  bool isLegalAddImmediate(int64_t Imm) const override;
+
   InstructionCost getArithmeticInstrCost(
       unsigned Opcode, Type *Ty, TargetTransformInfo::TargetCostKind CostKind,
       TargetTransformInfo::OperandValueInfo Op1Info = {

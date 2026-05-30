@@ -89,6 +89,31 @@ bool Z80TTIImpl::areInlineCompatible(const Function *Caller,
 // addressing as cheap.  On Z80 it would just be dead-code paths.
 bool Z80TTIImpl::prefersVectorizedAddressing() const { return false; }
 
+// "Legal add immediate" means the target can add this constant to a register
+// WITHOUT first materializing it into another register.  Z80 has no
+// `ADD HL,nn` / `ADD rr,nn`: a 16-bit constant add costs `LD rr,nn` (3 B) +
+// `ADD HL,rr` (1 B) = 4 B, the value materialized first.  The only
+// no-materialize option is a chain of `INC/DEC rr` (1 B each), strictly
+// cheaper than materialize-and-add only for |Imm| <= 3 (3 B vs 4 B; |Imm|==4
+// breaks even).  The TargetLoweringBase default returns true for EVERY
+// immediate -- inaccurate for Z80.
+//
+// Effect (measured, not assumed): LSR consults this when scoring formulas.
+// With the default, for a loop touching several arrays at fixed offsets from
+// one base (the aes_done key-zeroing shape; see the lit test), LSR keeps a
+// single base IV + folded member offsets -- a shape that does not fit Z80's 3
+// register pairs, so the backend spills a pointer pair into the loop.
+// Reporting the truth changes LSR's formula/IV choice so the pointers stay in
+// registers and the in-loop spill disappears.  NB: the corrected model does
+// NOT eliminate large-immediate adds (the strength-reduced code still has
+// `ld de,nn; add hl,de` steps); the win is reduced register pressure, net
+// fewer instructions.  Measured on the AES corpus: -8..-124 B and faster on
+// every LSR-active config; production configs (-disable-lsr) byte-identical,
+// so this cannot regress the production targets.  (ravn/llvm-z80#177.)
+bool Z80TTIImpl::isLegalAddImmediate(int64_t Imm) const {
+  return Imm >= -3 && Imm <= 3;
+}
+
 // ravn/llvm-z80#177 Phase B (post-B1 bisect): only the clean cases
 // ship.  See `tasks/issue177-phase-b1-finding.md` and
 // `tasks/issue177-phase-b2-bisect.md`.
