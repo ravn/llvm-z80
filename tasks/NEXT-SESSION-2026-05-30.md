@@ -16,26 +16,29 @@ session 73s/73ab; `Z80ISelLowering` is live GISel `TargetLowering`).  Of the old
 "infra gates", **#177 (TTI) and #179 CLOSED**; **#178 (remat) still OPEN**.
 Production-density regalloc issues **#110 / #115 / #100 OPEN**.  **#184 CLOSED**.
 
-## Pick one to start (ranked)
+## Pick one to start (ranked) — updated after the 2026-05-30 #211 investigation
 
-1. **#211 — migrate #8 `LD A,(HL); LD r,A → LD r,(HL)`** (the sub-task I filed).
-   Build a load-into-GR8 pseudo (`LOAD_HL8`) + ISel emission + post-RA expansion
-   to `LD <phys>,(HL)` — **reuse the #27 `LOAD_IDX8` scaffolding** (`Z80InstrInfo.td`,
-   `Z80InstructionSelector.cpp` G_LOAD/G_STORE, `Z80ExpandPseudo.cpp`).  Then
-   delete peephole #8 (`Z80LateOptimization.cpp:982`); verify byte-identical
-   (no codegen win — upstream cleanliness only).  ~1 session.  Caveat: `(HL)`
-   needs the base in **HL specifically** (not IR16) — may need an HL-constrained
-   class, more involved than #27's IR16 case.  #6/#27 show the pseudo route works
-   without #178.
-
-2. **Production density (the actual project goal)** — #27 did NOT move cpnos/BIOS
+1. **Production density (the actual project goal)** — #27 did NOT move cpnos/BIOS
    (measured zero; they lack the pointer pattern).  The real gap is BSS-spill
    traffic + regalloc churn: **#110 / #115 / #100** (regalloc cost model) and
-   **#178** (remat, mechanism-blocked).  This is where cpnos's 26 B headroom and
-   BIOS density live — and the harder, higher-value work.
+   **#178** (remat, mechanism-blocked — pseudos with implicit physreg defs break
+   `isReMaterializable`).  This is where cpnos's 26 B headroom and BIOS density
+   live.  **Hard, multi-session, but the only high-value lever left.**
+   Caveat (verified 2026-05-30): the cheap levers are exhausted — #27 indexed
+   addressing = 0 on cpnos; #173 BSS-via-A is an AES driver pattern (cpnos has
+   only 7 `push af`).  cpnos is already near-optimal per CLAUDE.md; the win is in
+   regalloc, not new addressing modes.
 
-3. **Other genuine #180 migrations** (#10, #17, #19, #25) — same infra-build
-   shape as #211, all cleanliness-only (no codegen win).  Lower priority than (2).
+2. **#180 genuine migrations** (#211/#8, #10, #17, #19, #25) — **DEPRIORITISED.**
+   Investigation of #211 (see its issue comment) found these are pure
+   upstream-cleanliness with **zero codegen win**, plus ISA-split / clobber-
+   tension complexity (e.g. `LD r,(BC/DE)` doesn't exist; A-live case can't be
+   improved).  The peepholes are correct post-RA "Keep"s.  Only worth doing as
+   part of a deliberate upstream-submission cleanup pass, not for codegen.
+
+3. **Upstream submission packaging** — both Tier A gates (#180, #181) are
+   resolved; the AES codegen wins (#179 P1/P2, #128, #148, #185) + #27 could be
+   packaged into a submission writeup (cf. existing `tasks/upstream-*-submission.md`).
 
 ## Don't re-do
 - #27 Stage 3 (cross-call): ruled out — cpnos/BIOS lack the pattern (measured).
