@@ -155,7 +155,27 @@ PASS; vs −147 B ungated (≈11 B traded for single-site safety).  lit 139 + 4.
 Net state of #27 work this session: correct, tested, flag-gated (default OFF),
 AES −136 B.  Gates: call-free (correctness) + >=2 sites (profitability).
 
-## Remaining work (Stage 3+)
+## Production impact (2026-05-30) — measured ZERO, and Stage 3 won't change that
+
+Built cpnos PROM1 with the flag on: **2022 B — byte-identical to baseline.**
+The feature fires on zero cpnos functions (call-heavy → no-calls gate).
+
+Crucially, relaxing the gate would NOT help: disassembling the cpnos payload
+(`payload.elf`) shows only **6 `push ix/iy`** total (vs 64 in AES) and **0**
+existing indexed loads, and those IY uses are constant/stack manipulation, not
+the loop-invariant-pointer-dereferenced-at-many-constant-offsets pattern.
+**cpnos lacks the target pattern entirely.**  BIOS shares the same model
+(direct BSS addressing + pointer-walking, per CLAUDE.md density analysis), so
+the same conclusion applies.
+
+**Verdict:** the IX/IY-indexed transform is a correct, validated optimization
+whose benefit is intrinsic to array/crypto code (AES −136 B) where one base is
+dereferenced at many constant offsets.  The production targets (cpnos/BIOS)
+don't have that shape, so **Stage 3 (cross-call) is NOT worth building** — there
+is nothing for it to capture.  Keep the feature flag-gated for array-heavy
+workloads; do not expand it.
+
+## Remaining work (Stage 3+) — SUPERSEDED, see verdict above
 
 1. **Cross-call handling** (the production limiter).  The `!FnHasCalls` gate
    excludes cpnos/BIOS systems code (call-heavy).  To benefit them, allow the
