@@ -6,26 +6,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// ravn/llvm-z80#172 -- structural fix for the 8-bit ALU accumulator
-// shuttle.  For Z80's 8-bit ALU ops (XOR, AND, OR, ADD, SUB, ADC, SBC),
-// the destination is always A.  When a loop carries an accumulator
-// across iterations, regalloc that places it in a non-A register forces
-// `ld a, r; ALU; ld r, a` round-trips around every ALU op -- a 12-ts
-// per-iter cost that dominates the residual SDCC speed gap on AES.
+// ravn/llvm-z80#172 -- structural fix for the 8-bit ALU accumulator shuttle.
+// Z80's 8-bit ALU writes A; a loop-carried accumulator placed in a non-A
+// register forces `ld a,r; <alu>; ld r,a` round-trips every iteration.
 //
-// Hints don't move greedy regalloc on this path (verified in session
-// 73n, see comment at Z80RegisterInfo.cpp:1891 from the #99 prior
-// work).  The fix is structural: constrain the accumulator vreg to a
-// single-register class containing only A.
+// This pass runs AFTER PHI elimination (post-MachineScheduler, pre-RA), so the
+// loop carrier is NOT a PHI -- it is a multiply-defined GR8 vreg threaded
+// through A by COPYs (`$a = COPY %carrier; <A-ops>; %carrier = COPY $a`).  We
+// find the connected component of GR8 vregs that thread through A together, and
+// if that component's recurrence runs a genuine carrier ALU op (isCarrierAluOpc
+// -- ADD/SUB/AND/OR/XOR, NOT DEC/INC which a counter uses and which have cheap
+// non-A forms), we pin the whole component to the single-register AReg class so
+// it stays resident in A.
 //
-// This pass mirrors Z80SplitDjnzCounters: find the accumulator vreg in
-// a self-back-edge loop's MBB, insert a fresh `%new = COPY %old` at
-// the loop preheader with %new in the AReg single-register class,
-// then rename every in-MBB reference to %new.
-//
-// The COPY at the preheader becomes `LD A, r` (rarely necessary; A is
-// typically free at loop entry) and post-RA copy propagation deletes
-// it when the source vreg also lands in A.
+// Guards against the over-constraint that regressed earlier attempts:
+//   * a component is pinned only if no OTHER carrier component shares a block
+//     (parallel accumulators -- AES mixColumns/subBytes -- are left alone);
+//   * a component whose blocks contain a call is skipped (calls clobber A).
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,13 +32,13 @@
 #include "Z80InstrInfo.h"
 #include "Z80Subtarget.h"
 
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
-#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/InitializePasses.h"
@@ -51,36 +48,13 @@ using namespace llvm;
 
 #define DEBUG_TYPE "z80-pin-alu-accumulator"
 
-// Session 73p: scope tightened to "at most one candidate vreg per MBB".
-// The first cut (session 73o) pinned every matching GR8 vreg, which
-// segfaulted on aes_mixColumns because multiple short-lived proxies
-// around independent XOR chains were all forced to A simultaneously
-// (unsatisfiable: at most one vreg can hold A at any point).
-//
-// The new invariant: bucket candidate vregs by their unique-MBB
-// liveness; pin only buckets whose size is exactly 1.  Multi-candidate
-// blocks (the classic parallel-XOR shape in aes_mixColumns /
-// aes_subBytes) get no pinning at all -- the original segfault path
-// is gone.  Multi-block-liveness vregs are dropped (no MBB-local
-// interference reasoning available).
-//
-// Empirical result (session 73p):
-//   * Removes the 05_Oz_static_stack segfault from 73o.
-//   * Net-on-AES still a small REGRESSION (01_baseline +61 B / +0.19 %,
-//     05_static_stack +81 B / +0.36 %, 09_prod_like +24 B / +0.02 %).
-//     Root cause: pinning a proxy forces a materializing `LD A, r`
-//     that greedy was previously eliding via a non-A allocation.
-//     Single-candidate doesn't imply pin is free.
-//
-// Default stays OFF.  Real fix path: MachineLoopInfo + LiveIntervals
-// to pin the loop CARRIER (the PHI cycle) only when its full chain
-// is interference-free and no upstream materializing COPY is required.
-// That's the ~200-400 line investment session 73o flagged.
+// Default OFF until the loop-carrier pin is proven net-positive on the AES
+// corpus (see ravn/llvm-z80#172).  Flip on with
+// -mllvm -enable-z80-pin-alu-accumulator=true.
 static cl::opt<bool> EnablePinAluAccumulator(
     "enable-z80-pin-alu-accumulator", cl::init(false), cl::Hidden,
-    cl::desc("Pin 8-bit ALU accumulator vregs to A by class "
-             "(ravn/llvm-z80#172).  Default off; flip on with "
-             "-mllvm -enable-z80-pin-alu-accumulator=true."));
+    cl::desc("Pin loop-carried 8-bit ALU accumulators to A by class "
+             "(ravn/llvm-z80#172)."));
 
 namespace {
 
@@ -92,9 +66,7 @@ public:
     initializeZ80PinAluAccumulatorPass(*PassRegistry::getPassRegistry());
   }
 
-  StringRef getPassName() const override {
-    return "Z80 Pin ALU Accumulator";
-  }
+  StringRef getPassName() const override { return "Z80 Pin ALU Accumulator"; }
 
   bool runOnMachineFunction(MachineFunction &MF) override;
 };
@@ -103,83 +75,126 @@ public:
 
 char Z80PinAluAccumulator::ID = 0;
 
-INITIALIZE_PASS(Z80PinAluAccumulator, DEBUG_TYPE,
-                "Z80 Pin ALU Accumulator", false, false)
+INITIALIZE_PASS(Z80PinAluAccumulator, DEBUG_TYPE, "Z80 Pin ALU Accumulator",
+                false, false)
 
-// True iff Opc is one of the 8-bit ALU pseudos that reads A and writes A.
-static bool isAluRMWOpc(unsigned Opc) {
+// Value-producing 8-bit ALU ops that REQUIRE A and have no cheaper non-A form.
+// Their presence in a loop-carried recurrence marks a genuine accumulator.
+// DEC_A/INC_A are deliberately excluded: a counter using them has the cheap
+// `dec r` form, so it must stay out of A (freeing A for the real accumulator).
+static bool isCarrierAluOpc(unsigned Opc) {
   switch (Opc) {
-  case Z80::XOR_r: case Z80::XOR_n:
-  case Z80::AND_r: case Z80::AND_n:
-  case Z80::OR_r:  case Z80::OR_n:
+  case Z80::ADD_A_r:
+  case Z80::ADD_A_A:
+  case Z80::SUB_r:
+  case Z80::AND_r:
+  case Z80::AND_n:
+  case Z80::OR_r:
+  case Z80::OR_n:
+  case Z80::XOR_r:
+  case Z80::XOR_n:
     return true;
   default:
     return false;
   }
 }
 
-// True iff Reg is a GR8 vreg whose sole use is `$a = COPY %Reg` AND that
-// COPY is immediately followed (skipping meta) by an A-RMW ALU opcode.
-// I.e., the vreg is the "in" half of the accumulator chain.
-static bool isCopyToAFollowedByALU(Register Reg, const MachineRegisterInfo &MRI) {
-  if (!Reg.isVirtual())
-    return false;
-  if (!Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(Reg)))
-    return false;
-  for (const MachineInstr &Use : MRI.use_nodbg_instructions(Reg)) {
-    if (Use.getOpcode() != TargetOpcode::COPY)
-      return false;
-    if (!Use.getOperand(0).isReg() || Use.getOperand(0).getReg() != Z80::A)
-      return false;
-    auto J = std::next(Use.getIterator());
-    auto E = Use.getParent()->end();
-    while (J != E && J->isMetaInstruction())
-      ++J;
-    if (J == E || !isAluRMWOpc(J->getOpcode()))
-      return false;
+// Scan from an `$a = COPY %v` shuttle-in (forward) or a `%w = COPY $a`
+// shuttle-out (backward) across the A-ops, returning the matching opposite
+// shuttle's vreg if a carrier ALU op was seen in between (and setting HasAlu).
+// Returns an invalid Register if the chain doesn't match.
+static Register scanShuttle(MachineBasicBlock::iterator Start,
+                            MachineBasicBlock *Par, bool Forward, bool &HasAlu) {
+  bool SawAlu = false;
+  if (Forward) {
+    for (auto J = std::next(Start); J != Par->end(); ++J) {
+      if (J->isMetaInstruction())
+        continue;
+      if (isCarrierAluOpc(J->getOpcode())) {
+        SawAlu = true;
+        HasAlu = true;
+        continue;
+      }
+      if (J->getOpcode() == TargetOpcode::COPY && J->getOperand(1).isReg() &&
+          J->getOperand(1).getReg() == Z80::A) {
+        if (SawAlu && J->getOperand(0).isReg())
+          return J->getOperand(0).getReg();
+        return Register();
+      }
+      if (J->definesRegister(Z80::A, /*TRI=*/nullptr))
+        return Register();
+    }
+    return Register();
   }
-  return true; // every use (and there is at least one) matches the pattern
+  // Backward from a `%w = COPY $a` def.
+  for (auto J = std::next(MachineBasicBlock::reverse_iterator(Start));
+       J != Par->rend(); ++J) {
+    if (J->isMetaInstruction())
+      continue;
+    if (isCarrierAluOpc(J->getOpcode())) {
+      SawAlu = true;
+      HasAlu = true;
+      continue;
+    }
+    if (J->getOpcode() == TargetOpcode::COPY && J->getOperand(0).isReg() &&
+        J->getOperand(0).getReg() == Z80::A) {
+      if (SawAlu && J->getOperand(1).isReg())
+        return J->getOperand(1).getReg();
+      return Register();
+    }
+    if (J->definesRegister(Z80::A, /*TRI=*/nullptr))
+      return Register();
+  }
+  return Register();
 }
 
-// True iff Reg is a GR8 vreg whose sole def is `%Reg = COPY $a` AND that
-// COPY is immediately preceded (skipping meta) by an A-RMW ALU opcode.
-// I.e., the vreg is the "out" half of the accumulator chain.
-static bool isCopyFromAAfterALU(Register Reg, const MachineRegisterInfo &MRI) {
-  if (!Reg.isVirtual())
-    return false;
-  if (!Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(Reg)))
-    return false;
-  for (const MachineInstr &Def : MRI.def_instructions(Reg)) {
-    if (Def.getOpcode() != TargetOpcode::COPY)
-      return false;
-    if (!Def.getOperand(1).isReg() || Def.getOperand(1).getReg() != Z80::A)
-      return false;
-    auto J = Def.getIterator();
-    auto B = Def.getParent()->begin();
-    if (J == B)
-      return false;
-    --J;
-    while (J != B && J->isMetaInstruction())
-      --J;
-    if (!isAluRMWOpc(J->getOpcode()))
-      return false;
-  }
-  return true;
-}
+// Collect the connected component of GR8 vregs that thread through A together
+// with Seed.  Connections: plain vreg COPYs (carrier pieces) and A-shuttles
+// (`$a = COPY V; <ALU>; W = COPY $a`).  Multi-def safe (post-PHI form).
+static void collectComponent(Register Seed, MachineRegisterInfo &MRI,
+                             DenseSet<Register> &Comp,
+                             SmallPtrSetImpl<MachineBasicBlock *> &Blocks,
+                             bool &HasAlu) {
+  SmallVector<Register, 8> Work{Seed};
+  Comp.insert(Seed);
+  auto Add = [&](Register R) {
+    if (R.isVirtual() &&
+        Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(R)) &&
+        Comp.insert(R).second)
+      Work.push_back(R);
+  };
 
-// Return the unique MBB containing every def + use of Reg, or nullptr if
-// any reference is outside (so the candidate's liveness is multi-block
-// and we can't reason about it from MBB-local scope alone).
-static MachineBasicBlock *uniqueRefMBB(Register Reg,
-                                       MachineRegisterInfo &MRI) {
-  MachineBasicBlock *MBB = nullptr;
-  for (MachineInstr &MI : MRI.reg_nodbg_instructions(Reg)) {
-    if (!MBB)
-      MBB = MI.getParent();
-    else if (MI.getParent() != MBB)
-      return nullptr;
+  while (!Work.empty()) {
+    Register V = Work.pop_back_val();
+
+    for (MachineInstr &D : MRI.def_instructions(V)) {
+      Blocks.insert(D.getParent());
+      if (D.getOpcode() == TargetOpcode::COPY && D.getOperand(1).isReg()) {
+        Register Src = D.getOperand(1).getReg();
+        if (Src == Z80::A) {
+          Register X = scanShuttle(D.getIterator(), D.getParent(),
+                                   /*Forward=*/false, HasAlu);
+          Add(X);
+        } else {
+          Add(Src);
+        }
+      }
+    }
+
+    for (MachineInstr &U : MRI.use_nodbg_instructions(V)) {
+      Blocks.insert(U.getParent());
+      if (U.getOpcode() != TargetOpcode::COPY || !U.getOperand(0).isReg())
+        continue;
+      Register Dst = U.getOperand(0).getReg();
+      if (Dst == Z80::A) {
+        Register W = scanShuttle(U.getIterator(), U.getParent(),
+                                 /*Forward=*/true, HasAlu);
+        Add(W);
+      } else {
+        Add(Dst);
+      }
+    }
   }
-  return MBB;
 }
 
 bool Z80PinAluAccumulator::runOnMachineFunction(MachineFunction &MF) {
@@ -188,43 +203,69 @@ bool Z80PinAluAccumulator::runOnMachineFunction(MachineFunction &MF) {
 
   MachineRegisterInfo &MRI = MF.getRegInfo();
 
-  // Phase 1: collect all candidate vregs and bucket them by the unique
-  // MBB their liveness is confined to.  Multi-block-liveness vregs are
-  // dropped (their interference can't be settled MBB-locally).
-  DenseMap<MachineBasicBlock *, SmallVector<Register, 4>> CandidatesByMBB;
+  struct Carrier {
+    DenseSet<Register> Comp;
+    SmallPtrSet<MachineBasicBlock *, 4> Blocks;
+  };
+  SmallVector<Carrier, 4> Carriers;
+  DenseSet<Register> Visited;
 
   for (unsigned i = 0, e = MRI.getNumVirtRegs(); i != e; ++i) {
     Register VReg = Register::index2VirtReg(i);
-    if (MRI.reg_nodbg_empty(VReg))
+    if (MRI.reg_nodbg_empty(VReg) || Visited.count(VReg))
       continue;
-    if (!Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(VReg)))
-      continue;
-    if (MRI.getRegClass(VReg) == &Z80::ARegRegClass)
-      continue;
-
-    bool InMatches = isCopyToAFollowedByALU(VReg, MRI);
-    bool OutMatches = isCopyFromAAfterALU(VReg, MRI);
-    if (!InMatches && !OutMatches)
+    if (!Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(VReg)) ||
+        MRI.getRegClass(VReg) == &Z80::ARegRegClass)
       continue;
 
-    MachineBasicBlock *MBB = uniqueRefMBB(VReg, MRI);
-    if (!MBB)
-      continue;
-
-    CandidatesByMBB[MBB].push_back(VReg);
+    Carrier C;
+    bool HasAlu = false;
+    collectComponent(VReg, MRI, C.Comp, C.Blocks, HasAlu);
+    for (Register R : C.Comp)
+      Visited.insert(R);
+    if (HasAlu)
+      Carriers.push_back(std::move(C));
   }
 
-  // Phase 2: pin only the MBBs with EXACTLY one candidate vreg.  Multi-
-  // candidate blocks (parallel XOR chains in AES mixColumns / subBytes)
-  // get no pinning -- they're the ones that overconstrained A in the
-  // first cut.  The single-candidate case is what we want to land: it
-  // collapses a real shuttle without competing for A within the block.
   bool Changed = false;
-  for (auto &KV : CandidatesByMBB) {
-    if (KV.second.size() != 1)
+  for (unsigned I = 0, E = Carriers.size(); I != E; ++I) {
+    Carrier &C = Carriers[I];
+
+    // Parallel-accumulator gate: skip if another carrier shares a block.
+    bool Conflicts = false;
+    for (unsigned J = 0; J != E && !Conflicts; ++J) {
+      if (J == I)
+        continue;
+      for (MachineBasicBlock *B : Carriers[J].Blocks)
+        if (C.Blocks.count(B)) {
+          Conflicts = true;
+          break;
+        }
+    }
+    if (Conflicts)
       continue;
-    MRI.setRegClass(KV.second.front(), &Z80::ARegRegClass);
-    Changed = true;
+
+    // Call gate: calls clobber A.
+    bool HasCall = false;
+    for (MachineBasicBlock *B : C.Blocks) {
+      for (MachineInstr &MI : *B)
+        if (MI.isCall()) {
+          HasCall = true;
+          break;
+        }
+      if (HasCall)
+        break;
+    }
+    if (HasCall)
+      continue;
+
+    for (Register V : C.Comp)
+      if (V.isVirtual() &&
+          Z80::GR8RegClass.hasSubClassEq(MRI.getRegClass(V)) &&
+          MRI.getRegClass(V) != &Z80::ARegRegClass) {
+        MRI.setRegClass(V, &Z80::ARegRegClass);
+        Changed = true;
+      }
   }
 
   return Changed;
