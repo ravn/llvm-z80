@@ -70,10 +70,26 @@ public:
                          Z80RegisterBankInfo &RBI);
 
   bool select(MachineInstr &MI) override;
-  void setupGeneratedPerFunctionState(MachineFunction &MF) override {}
+  void setupGeneratedPerFunctionState(MachineFunction &MF) override {
+    // #27: cache whether this function contains any call.  IY is caller-saved
+    // (only IX is callee-saved, Z80_CSR), so an IR16-constrained base forced
+    // into IY would not survive a call.  The IX/IY-indexed-load transform only
+    // fires in call-free functions (see EnableIdxAddr emission).
+    FnHasCalls = false;
+    for (const MachineBasicBlock &MBB : MF)
+      for (const MachineInstr &MI : MBB)
+        if (MI.isCall()) {
+          FnHasCalls = true;
+          return;
+        }
+  }
   static const char *getName() { return DEBUG_TYPE; }
 
 private:
+  // #27: set by setupGeneratedPerFunctionState; true if the current function
+  // contains any call (gates the IX/IY-indexed-load transform — see above).
+  bool FnHasCalls = false;
+
   bool selectRuntimeLibCall16(MachineInstr &MI, const char *FuncName);
   bool selectInline16(MachineInstr &MI, unsigned PseudoOpc);
   bool selectMul8(MachineInstr &MI);
@@ -2530,9 +2546,9 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       // in IX/IY; Z80ExpandPseudo then emits LD r,(IX/IY+disp), avoiding the
       // IX/IY->HL copy + add + (hl) sequence.  Skip the frame-pointer COPY $ix
       // base and frame-index bases (handled above, they own their lowering).
-      if (EnableIdxAddr && IsConstOffset && !IsIXBase && !IsFrameBase &&
-          BaseReg.isVirtual() && DstTy.getSizeInBits() <= 8 && Disp >= -128 &&
-          Disp <= 127) {
+      if (EnableIdxAddr && !FnHasCalls && IsConstOffset && !IsIXBase &&
+          !IsFrameBase && BaseReg.isVirtual() && DstTy.getSizeInBits() <= 8 &&
+          Disp >= -128 && Disp <= 127) {
         if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
           return false;
         if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
