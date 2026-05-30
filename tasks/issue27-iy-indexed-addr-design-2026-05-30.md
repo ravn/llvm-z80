@@ -93,6 +93,34 @@ measured without touching production codegen.
 - cpnos PROM1 byte-delta measured + polypascal PASS; BIOS MAME boot.
 - Default the feature only after S4 measurement; behind a flag until then.
 
+## Stage-1 result (2026-05-30) — mechanism works, naive forcing does not
+
+Implemented LOAD_IDX8 + ISel emission (base→IR16) + expansion.  Flag
+`-mllvm -z80-idx-addr`, default OFF.  Build green; lit 138 PASS + 4 XFAIL.
+
+- **Correct in isolation**: `one()` → `push hl; pop iy; ld a,(iy+9)`;
+  `sum3()` shares one IY setup across three `ld r,(iy+d)`.  ✓
+- **AES prod config**: indexed loads 19→76, insns 1338→1293,
+  **t-states 10.72M→10.56M (−1.5%)** — the idea has real merit.
+- **BUT**: size **+158 B** (2190→2348) and a **semantic miscompile**
+  (test FAIL; machine verifier is CLEAN, so it's a well-formed-but-wrong
+  transform, not a liveness bug).
+
+Two root problems with the naive Stage-1 (fire on *every* 8-bit const-offset
+load + hard IR16 forcing):
+1. **Size**: forcing single-deref pointers into IX/IY adds a 3 B `push/pop`
+   copy that isn't amortised.  Needs **selectivity** — only loop-invariant
+   pointers dereferenced ≥2–3× at constant offsets; add a size guard.
+2. **Miscompile**: subtle interaction on full AES.  Prime suspects — the
+   existing Z80LateOptimization IX/IY-transfer / `PUSH IY;POP IY`-removal
+   peepholes (run BEFORE ExpandPseudo; #14 liveness-guard history) meeting the
+   new `push iy; pop hl` shapes, or a pointer that is BOTH indexed-loaded and
+   stored-through (base also lives in BC/DE for `ld (bc),a`).  Needs MIR diff
+   between OFF and ON on the first diverging function.
+
+Production unaffected (flag default OFF; OFF build byte-identical: 2190 B,
+PASS).  Committed as WIP checkpoint.
+
 ## Risks
 
 - Fallback bloat if the hint fails → net regression on fallback-heavy code.
