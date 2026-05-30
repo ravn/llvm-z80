@@ -181,16 +181,24 @@ Z80TTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
   if (Dst->isIntegerTy() && Src->isIntegerTy()) {
     unsigned DstBits = Dst->getIntegerBitWidth();
     unsigned SrcBits = Src->getIntegerBitWidth();
-    // Trunc i16 -> i8 is free on Z80: just use the low byte of the pair.
-    if (Opcode == Instruction::Trunc && SrcBits == 16 && DstBits == 8)
+    // Truncation is always free on Z80 -- the narrow value is the low bytes of
+    // the wide one; the high bytes are simply dropped.  (The base implementation
+    // charges 1 for e.g. i64->i32; correct that to 0 for all widths.)
+    if (Opcode == Instruction::Trunc && DstBits < SrcBits)
       return 0;
-    // Zext i8 -> i16 is essentially free: LD H, 0.
+    // Zero-extension clears the new high bytes (LD r, 0).  i8 -> i16 is a
+    // single LD H, 0, essentially free; wider zexts fall through to the base
+    // (~1), which is close enough.
     if (Opcode == Instruction::ZExt && SrcBits == 8 && DstBits == 16)
       return 0;
-    // Sext i8 -> i16 needs a sign-bit test sequence (~3 bytes:
-    // LD A, L; RLCA; SBC A, A; LD H, A).
-    if (Opcode == Instruction::SExt && SrcBits == 8 && DstBits == 16)
-      return 2;
+    // Sign-extension computes the sign (LD A,lo; RLCA; SBC A,A ~ 2 ops) then
+    // splats it into each new high byte.  Cost scales with the added bytes and
+    // must be monotonic in width -- the base undercharges wider sexts (it
+    // reports sext i8->i32 cheaper than sext i8->i16, which is backwards).
+    if (Opcode == Instruction::SExt && DstBits > SrcBits) {
+      unsigned ExtraBytes = (DstBits - SrcBits + 7) / 8;
+      return 1 + ExtraBytes; // i8->i16: 2; i16->i32: 3; i8->i32: 4; i32->i64: 5
+    }
   }
   return BaseT::getCastInstrCost(Opcode, Dst, Src, CCH, CostKind, I);
 }
