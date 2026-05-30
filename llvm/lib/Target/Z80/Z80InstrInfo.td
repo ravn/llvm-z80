@@ -1498,6 +1498,52 @@ def CP_r : Z80Inst<"cp_r"> {
   let Defs = [FLAGS];
 }
 
+// Tied-accumulator 8-bit ALU pseudos (ravn/llvm-z80#172, architecturally
+// correct A-residency).  Unlike the implicit-A forms above (which ISel uses to
+// hand-build physical-A scratch idioms in comparison/sign lowering), these
+// model the USER-LEVEL binary op `A = A op r` as an explicit two-address
+// instruction: $dst and the accumulator source $acc are tied and BOTH
+// constrained to the single-register AReg class.  TwoAddressInstructionPass +
+// RegisterCoalescer collapse the ties; because AReg has exactly one member (A),
+// greedy cannot escape to D/E/H/L, so a chain of these stays A-resident by
+// construction -- eliminating the `ld a,r; <alu>; ld r,a` shuttle structurally.
+// Symmetric class on $dst and $acc (vs the ADD16_tied narrower-def bug, #178):
+// the coalescer has nothing to widen into.  CP has no dst, so no tied form.
+def ADD_acc : Z80Inst<"add_acc"> {
+  let OutOperandList = (outs AReg:$dst);
+  let InOperandList  = (ins AReg:$acc, GR8:$rhs);
+  let Constraints    = "$dst = $acc";
+  let Defs           = [FLAGS];
+}
+
+def SUB_acc : Z80Inst<"sub_acc"> {
+  let OutOperandList = (outs AReg:$dst);
+  let InOperandList  = (ins AReg:$acc, GR8:$rhs);
+  let Constraints    = "$dst = $acc";
+  let Defs           = [FLAGS];
+}
+
+def AND_acc : Z80Inst<"and_acc"> {
+  let OutOperandList = (outs AReg:$dst);
+  let InOperandList  = (ins AReg:$acc, GR8:$rhs);
+  let Constraints    = "$dst = $acc";
+  let Defs           = [FLAGS];
+}
+
+def OR_acc : Z80Inst<"or_acc"> {
+  let OutOperandList = (outs AReg:$dst);
+  let InOperandList  = (ins AReg:$acc, GR8:$rhs);
+  let Constraints    = "$dst = $acc";
+  let Defs           = [FLAGS];
+}
+
+def XOR_acc : Z80Inst<"xor_acc"> {
+  let OutOperandList = (outs AReg:$dst);
+  let InOperandList  = (ins AReg:$acc, GR8:$rhs);
+  let Constraints    = "$dst = $acc";
+  let Defs           = [FLAGS];
+}
+
 } // isPseudo, isCodeGenOnly
 
 // CAPTURE_PV: Read the P/V flag (bit 2 of F register) into A as 0 or 1.

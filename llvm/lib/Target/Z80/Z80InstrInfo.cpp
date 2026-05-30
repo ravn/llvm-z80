@@ -1617,9 +1617,22 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   case Z80::AND_r:
   case Z80::OR_r:
   case Z80::XOR_r:
-  case Z80::CP_r: {
+  case Z80::CP_r:
+  case Z80::ADD_acc:
+  case Z80::SUB_acc:
+  case Z80::AND_acc:
+  case Z80::OR_acc:
+  case Z80::XOR_acc: {
     // 8-bit ALU pseudo: select concrete opcode based on allocated register.
-    Register RHS = MI.getOperand(0).getReg();
+    // Implicit-A forms (*_r) carry $rhs at operand 0.  Tied forms (*_acc,
+    // #172) carry (outs $dst), (ins $acc, $rhs) -- $rhs is operand 2, and
+    // $dst==$acc==A is guaranteed by the AReg tie, so only $rhs matters here.
+    bool IsTied = MI.getOpcode() == Z80::ADD_acc ||
+                  MI.getOpcode() == Z80::SUB_acc ||
+                  MI.getOpcode() == Z80::AND_acc ||
+                  MI.getOpcode() == Z80::OR_acc ||
+                  MI.getOpcode() == Z80::XOR_acc;
+    Register RHS = MI.getOperand(IsTied ? 2 : 0).getReg();
     static const unsigned AluOpcodes[][7] = {
         // A,       B,       C,       D,       E,       H,       L
         {Z80::ADD_A_A, Z80::ADD_A_B, Z80::ADD_A_C, Z80::ADD_A_D, Z80::ADD_A_E,
@@ -1654,6 +1667,21 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       break;
     case Z80::CP_r:
       TableIdx = 5;
+      break;
+    case Z80::ADD_acc:
+      TableIdx = 0;
+      break;
+    case Z80::SUB_acc:
+      TableIdx = 1;
+      break;
+    case Z80::AND_acc:
+      TableIdx = 2;
+      break;
+    case Z80::OR_acc:
+      TableIdx = 3;
+      break;
+    case Z80::XOR_acc:
+      TableIdx = 4;
       break;
     default:
       llvm_unreachable("unexpected 8-bit ALU pseudo");
