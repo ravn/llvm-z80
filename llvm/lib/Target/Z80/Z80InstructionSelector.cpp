@@ -1269,28 +1269,42 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         LLVM_DEBUG(dbgs() << "  Small-const EQ/NE: VarReg=" << VarReg
                           << " ConstVal=" << ConstVal
                           << " HighByteZero=" << HighByteZero << "\n");
-        // Force VarReg into HL so we can extract A from L.  When
-        // HighByteZero we still emit the HL COPY (which materialises
-        // VarReg's pair) — a pure sub_lo extraction here breaks
-        // cpnos-rom polypascal-test on the pio-irq transport via some
-        // regalloc-level interaction the lit cases don't expose
-        // (ravn/llvm-z80#150 to investigate).  The OR_H is still saved
-        // via the HighByteZero branch below, giving the bulk of the
-        // saving (cp n vs sub n + or h).  ravn/llvm-z80#142.
-        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
-            .addReg(VarReg);
-        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
-            .addReg(Z80::L);
+        // ravn/llvm-z80#150 (resolved): when the high byte is provably zero,
+        // extract A directly from VarReg's low half (sub_lo) instead of
+        // materialising the whole pair into HL.  Saves the high-byte
+        // materialisation -- ~8 B of resident RAM on cpnos's SNIOS recv checks,
+        // and shrinks AES across all configs.
+        //
+        // The historical pio-irq polypascal miscompile (a sub-register-liveness
+        // interaction: the high half was dead and the allocator mishandled
+        // overlapping live ranges) was fixed by #156428 (LiveVariables spurious
+        // super-reg implicit-def) + #210 (per-register-unit liveness).  sub_lo
+        // now passes pio-irq cpnos polypascal end-to-end.  (sio polypascal is
+        // pre-existing-broken on clang -- fails identically with/without this
+        // change -- and is unrelated.)
+        //
+        // Caveat (benign, traced via -debug-only=regalloc): in a few
+        // register-pressure-bound functions (e.g. BIOS _bg_clear_from) dropping
+        // the forced COPY-into-HL lets greedy *inline-spill* a 16-bit pair to
+        // BSS that it would otherwise keep resident (+4 B).  Greedy's register
+        // ASSIGNMENTS are unchanged; only one extra spill.  Net across the
+        // project is favourable (cpnos RAM + AES shrink; BIOS +4 B on an
+        // uncapped target).  The non-HighByteZero case needs H, so it keeps the
+        // HL+L path.
         if (HighByteZero) {
-          // High byte proven zero: 8-bit compare suffices.
-          //   C==0: OR A (test A for zero, 1B)
-          //   C>0:  CP C (2B)
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(VarReg, RegState{}, Z80::sub_lo);
+          // High byte proven zero: 8-bit compare suffices (CP n / OR A).
           if (ConstVal != 0)
             BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(ConstVal);
           else
             BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::A);
         } else {
-          // General case: test both bytes via SUB + OR_H.
+          // General case: test both bytes via SUB + OR_H (needs the pair in HL).
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(VarReg);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(Z80::L);
           if (ConstVal != 0)
             BuildMI(MBB, MI, DL, TII.get(Z80::SUB_n)).addImm(ConstVal);
           BuildMI(MBB, MI, DL, TII.get(Z80::OR_r)).addReg(Z80::H);
