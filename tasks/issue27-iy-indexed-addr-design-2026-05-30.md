@@ -121,6 +121,39 @@ load + hard IR16 forcing):
 Production unaffected (flag default OFF; OFF build byte-identical: 2190 B,
 PASS).  Committed as WIP checkpoint.
 
+## Stage-2 result (2026-05-30) — WIN on AES, flag-gated
+
+Added STORE_IDX8 (mirror of LOAD_IDX8) + ISel store emission + expansion, and a
+`!FnHasCalls` correctness gate on BOTH (cached in
+`setupGeneratedPerFunctionState`).  Root cause of the S1 decrypt FAIL was
+confirmed: IY is caller-saved (`Z80_CSR = IX` only); `aes_expDecKey` (8 calls)
+with IX as frame pointer forced the base into IY, which didn't survive the
+calls.  The gate fixes it.
+
+With BOTH load and store indexed, read-modify-write drops the address
+computation entirely:
+- **AES prod config: aes256.c .text 2190 → 2043 B (−147 B / −6.7%)**, t-states
+  10.72M → 10.71M (−0.14%), encrypt+decrypt PASS (kr + ansi).
+- lit suite 139 PASS + 4 XFAIL (added `issue-27-iy-indexed-addr.ll`).
+- Default OFF; production codegen unchanged.
+
+Note: single-deref RMW is *bigger* under the flag (the `push hl;pop iy` setup,
+3 B, only amortises across ≥2 accesses).  AES wins because its functions do
+many accesses per pointer.
+
+## Remaining work (Stage 3+)
+
+1. **Cross-call handling** (the production limiter).  The `!FnHasCalls` gate
+   excludes cpnos/BIOS systems code (call-heavy).  To benefit them, allow the
+   base in IX (callee-saved, survives calls) when it would otherwise be live
+   across a call — or spill IY around calls.  Needs liveness, not just a
+   function-level flag.
+2. **Profitability gate** for default-on: only emit when the base is
+   dereferenced ≥2× at constant offsets (count G_PTR_ADD+load/store users of
+   the base), else single-access functions regress.
+3. **Measure cpnos PROM1 / BIOS** once (1) lands.
+4. Decide default-on vs keep flag-gated after (2)+(3).
+
 ## Risks
 
 - Fallback bloat if the hint fails → net regression on fallback-heavy code.
