@@ -130,6 +130,10 @@ Always test in MAME. The compiler is experimental and has known bugs. All 40 lit
 ### Feature Flags
 - `+static-stack` — allocate function locals in BSS instead of stack. Non-reentrant.
 - `+shadow-regs` — enable EXX shadow register infrastructure (not yet functional for spill reduction).
+- `-mllvm -z80-experimental-tti-costs` (default OFF) — enable the accurate-but-currently-inert shift-width and wider-integer cast costs (ravn/llvm-z80#177 Steps 2/3). Proven codegen-neutral on all measured workloads (AES, cpnos, BIOS, compiler-comparison-corpus, CRC/MAC microbench); kept opt-in until a workload exercises them. The `isLegalAddImmediate` cost (Step 1, a real density win) and Mul=Expensive are NOT gated.
+
+### TargetTransformInfo (cost model, ravn/llvm-z80#177)
+`Z80TargetTransformInfo.{h,cpp}` (session 75 moved bodies into the `.cpp`). Live hooks: `getNumberOfRegisters=3`, `getRegisterBitWidth=8`, `getPredictableBranchThreshold=0`, `isLSRCostLess` (register-count-first), `areInlineCompatible`, `prefersVectorizedAddressing=false`, `getArithmeticInstrCost` (Mul=Expensive; shifts width-scaled under the experimental flag), `getCastInstrCost` (i8↔i16 always; wider/monotonic under the flag), **`isLegalAddImmediate`=|Imm|≤3** (Z80 has no `ADD rr,nn`; the one density win — AES −8…−124 B + faster on LSR-active configs, production byte-identical). Vectorizer-only hooks (getMemoryOpCost/getCFInstrCost/getGEPCost/getCmpSelInstrCost) are intentionally NOT implemented (no SIMD on Z80). The i16/i32 Add-width charge stays HELD (#184: flows through IndVarSimplify at TCK_RecipThroughput, can't be CostKind-isolated). NOTE: `opt -mtriple=z80` works again (session 75 fixed a Z80AutoStaticStack pass-name/cl::opt collision that crashed it) — cost-model lit tests live in `llvm/test/Analysis/CostModel/Z80/`.
 
 ### Docker Build Image
 Use `llvm-z80-build` docker image (pre-installed cmake/ninja/clang/lld/python3) instead of installing packages every invocation. Build with:
