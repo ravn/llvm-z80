@@ -23,10 +23,25 @@
 #include "Z80TargetTransformInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "z80tti"
+
+// ravn/llvm-z80#177: the shift-width and wider-cast cost refinements (Steps 2/3)
+// are *accurate* but, on every workload measured (AES corpus, cpnos, BIOS, the
+// compiler-comparison-corpus, a CRC/MAC/bitfield microbench), they change NO
+// codegen -- the passes that consult them (LoopUnroll/SimplifyCFG/CGP/
+// TruncInstCombine) have no cheaper Z80 alternative to select.  Kept behind this
+// hidden, default-off flag so they ship as documented/tested model-accuracy
+// without touching default codegen until a workload proves them out.  The
+// isLegalAddImmediate fix (Step 1) is a real codegen win and is NOT gated.
+static cl::opt<bool> EnableExperimentalCosts(
+    "z80-experimental-tti-costs", cl::init(false), cl::Hidden,
+    cl::desc("Z80: enable the accurate-but-currently-inert shift-width and "
+             "wider-integer cast costs (ravn/llvm-z80#177 Steps 2/3).  Default "
+             "off: proven codegen-neutral on all measured workloads."));
 
 // All div, rem, and divrem ops are libcalls, so any possible combination
 // exists.
@@ -155,8 +170,9 @@ InstructionCost Z80TTIImpl::getArithmeticInstrCost(
   // 32-bit shift-by-1 is ~4 ops, not 1.  Undercharging wide shifts as 1 made
   // LoopUnroll fully unroll wide-int shift loops (e.g. a CRC inner loop blew up
   // ~3.4x at -O2).  A variable count compiles to a runtime loop -> expensive.
-  if (Opcode == Instruction::Shl || Opcode == Instruction::LShr ||
-      Opcode == Instruction::AShr) {
+  if (EnableExperimentalCosts &&
+      (Opcode == Instruction::Shl || Opcode == Instruction::LShr ||
+       Opcode == Instruction::AShr)) {
     unsigned Bytes = std::max(1u, (Ty->getScalarSizeInBits() + 7) / 8);
     const ConstantInt *AmtC = nullptr;
     if (Args.size() == 2)
@@ -185,23 +201,34 @@ Z80TTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
   if (Dst->isIntegerTy() && Src->isIntegerTy()) {
     unsigned DstBits = Dst->getIntegerBitWidth();
     unsigned SrcBits = Src->getIntegerBitWidth();
-    // Truncation is always free on Z80 -- the narrow value is the low bytes of
-    // the wide one; the high bytes are simply dropped.  (The base implementation
-    // charges 1 for e.g. i64->i32; correct that to 0 for all widths.)
-    if (Opcode == Instruction::Trunc && DstBits < SrcBits)
-      return 0;
-    // Zero-extension clears the new high bytes (LD r, 0).  i8 -> i16 is a
-    // single LD H, 0, essentially free; wider zexts fall through to the base
-    // (~1), which is close enough.
-    if (Opcode == Instruction::ZExt && SrcBits == 8 && DstBits == 16)
-      return 0;
-    // Sign-extension computes the sign (LD A,lo; RLCA; SBC A,A ~ 2 ops) then
-    // splats it into each new high byte.  Cost scales with the added bytes and
-    // must be monotonic in width -- the base undercharges wider sexts (it
-    // reports sext i8->i32 cheaper than sext i8->i16, which is backwards).
-    if (Opcode == Instruction::SExt && DstBits > SrcBits) {
-      unsigned ExtraBytes = (DstBits - SrcBits + 7) / 8;
-      return 1 + ExtraBytes; // i8->i16: 2; i16->i32: 3; i8->i32: 4; i32->i64: 5
+    if (EnableExperimentalCosts) {
+      // Step 3 (#177, default-off -- proven codegen-neutral): the accurate,
+      // width-general, monotonic cast model.
+      // Truncation is always free on Z80 -- the narrow value is the low bytes
+      // of the wide one; the high bytes are dropped.  (Base charges 1 for e.g.
+      // i64->i32; correct that to 0 for all widths.)
+      if (Opcode == Instruction::Trunc && DstBits < SrcBits)
+        return 0;
+      // Zero-extension clears the new high bytes; i8->i16 ~ free (LD H,0),
+      // wider zexts fall through to the base (~1).
+      if (Opcode == Instruction::ZExt && SrcBits == 8 && DstBits == 16)
+        return 0;
+      // Sign-extension computes the sign (LD A,lo; RLCA; SBC A,A ~ 2 ops) then
+      // splats it into each new high byte; scales with added bytes and is
+      // monotonic in width (base undercharges wider sexts, reporting
+      // sext i8->i32 cheaper than sext i8->i16, which is backwards).
+      if (Opcode == Instruction::SExt && DstBits > SrcBits) {
+        unsigned ExtraBytes = (DstBits - SrcBits + 7) / 8;
+        return 1 + ExtraBytes; // i8->i16:2 i16->i32:3 i8->i32:4 i32->i64:5
+      }
+    } else {
+      // Default: the originally-shipped i8<->i16 cases only (pre-#177-Step-3).
+      if (Opcode == Instruction::Trunc && SrcBits == 16 && DstBits == 8)
+        return 0;
+      if (Opcode == Instruction::ZExt && SrcBits == 8 && DstBits == 16)
+        return 0;
+      if (Opcode == Instruction::SExt && SrcBits == 8 && DstBits == 16)
+        return 2;
     }
   }
   return BaseT::getCastInstrCost(Opcode, Dst, Src, CCH, CostKind, I);
