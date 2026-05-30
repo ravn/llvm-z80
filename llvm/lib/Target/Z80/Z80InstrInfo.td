@@ -1208,6 +1208,15 @@ def COPY16_PUSHPOP : Z80Pseudo<(outs GR16:$dst), (ins GR16:$src)> {
   let mayLoad = true;
 }
 
+// #27: deferred IX/IY-displacement 8-bit load.  The base is constrained to the
+// index class (IR16 = {IX,IY}) at instruction selection so register allocation
+// must place the pointer in IX/IY; Z80ExpandPseudo then emits
+// `LD r,(IX/IY+disp)`.  This avoids the IX/IY->HL copy + `add hl,bc` + `ld (hl)`
+// sequence that arises because the deref form is chosen pre-RA, before the
+// IX/IY assignment exists (phase-ordering gap; see issue27 design note).
+let mayLoad = 1, mayStore = 0, hasSideEffects = 0 in
+def LOAD_IDX8 : Z80Pseudo<(outs GR8:$dst), (ins IR16:$base, i8imm:$disp)>;
+
 // Spill/Reload pseudo instructions for stack slots (frame index).
 // No static Defs: small offsets expand to IX+d (no clobbers), large offsets
 // are expanded in eliminateFrameIndex with register scavenging.

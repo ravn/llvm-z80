@@ -55,6 +55,13 @@ static cl::opt<bool> EnableAdd16Acc(
              "(ravn/llvm-z80#178; correct but currently a size regression "
              "-- revisit after #112)."));
 
+static cl::opt<bool> EnableIdxAddr(
+    "z80-idx-addr", cl::init(false), cl::Hidden,
+    cl::desc("Emit IX/IY-displacement loads for register-held pointers "
+             "dereferenced at a constant offset (ravn/llvm-z80#27).  Constrains "
+             "the base to IR16 so it lands in IX/IY.  Default off pending "
+             "measurement."));
+
 namespace {
 
 class Z80InstructionSelector : public InstructionSelector {
@@ -2516,6 +2523,25 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
           MI.eraseFromParent();
           return true;
         }
+      }
+
+      // #27: general pointer base + constant offset -> deferred IX/IY-indexed
+      // 8-bit load.  Constraining the base to IR16 forces regalloc to place it
+      // in IX/IY; Z80ExpandPseudo then emits LD r,(IX/IY+disp), avoiding the
+      // IX/IY->HL copy + add + (hl) sequence.  Skip the frame-pointer COPY $ix
+      // base and frame-index bases (handled above, they own their lowering).
+      if (EnableIdxAddr && IsConstOffset && !IsIXBase && !IsFrameBase &&
+          BaseReg.isVirtual() && DstTy.getSizeInBits() <= 8 && Disp >= -128 &&
+          Disp <= 127) {
+        if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
+          return false;
+        if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(Z80::LOAD_IDX8), DstReg)
+            .addReg(BaseReg)
+            .addImm(Disp);
+        MI.eraseFromParent();
+        return true;
       }
     }
 
