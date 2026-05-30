@@ -148,10 +148,17 @@ private:
 
 char Z80AutoStaticStack::ID = 0;
 
-INITIALIZE_PASS_BEGIN(Z80AutoStaticStack, DEBUG_TYPE,
+// NB: the pass registration name must differ from the cl::opt flag name
+// ("z80-auto-static-stack", == DEBUG_TYPE).  `opt` builds a PassNameParser
+// that registers every pass's name as a CLI literal option; if it equals an
+// existing cl::opt the CommandLine layer aborts with "registered more than
+// once" (crashes `opt -mtriple=z80` outright -- only `opt`, since llc/clang
+// don't build that parser).  Use a distinct "-pass" suffix here; DEBUG_TYPE
+// (for -debug-only) and the user-facing flag are unchanged.
+INITIALIZE_PASS_BEGIN(Z80AutoStaticStack, DEBUG_TYPE "-pass",
                       "Z80 Auto +static-stack on non-recursive", false, false)
 INITIALIZE_PASS_DEPENDENCY(CallGraphWrapperPass)
-INITIALIZE_PASS_END(Z80AutoStaticStack, DEBUG_TYPE,
+INITIALIZE_PASS_END(Z80AutoStaticStack, DEBUG_TYPE "-pass",
                     "Z80 Auto +static-stack on non-recursive", false, false)
 
 ModulePass *llvm::createZ80AutoStaticStackPass() {
