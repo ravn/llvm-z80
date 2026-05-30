@@ -141,6 +141,20 @@ Note: single-deref RMW is *bigger* under the flag (the `push hl;pop iy` setup,
 3 B, only amortises across ≥2 accesses).  AES wins because its functions do
 many accesses per pointer.
 
+## Profitability gate added (2026-05-30)
+
+`countIndexedSites(base)` — emit only when the base has >=2 distinct in-range
+constant-offset G_PTR_ADD sites (so the one-time `push hl; pop iy` setup
+amortises; a single site is larger under the flag).  Counting SITES (not their
+load/store users) is selection-order-stable: a G_PTR_ADD persists while its mem
+users are selected and erased one by one.
+
+AES prod config (flag on): **2190 -> 2054 B (-136 B / -6.2%)**, t-states −0.11%,
+PASS; vs −147 B ungated (≈11 B traded for single-site safety).  lit 139 + 4.
+
+Net state of #27 work this session: correct, tested, flag-gated (default OFF),
+AES −136 B.  Gates: call-free (correctness) + >=2 sites (profitability).
+
 ## Remaining work (Stage 3+)
 
 1. **Cross-call handling** (the production limiter).  The `!FnHasCalls` gate
