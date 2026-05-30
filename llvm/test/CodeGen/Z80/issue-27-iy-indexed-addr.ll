@@ -5,26 +5,10 @@
 ; constant offset should use IX/IY-displacement addressing (ld r,d(i?) /
 ; ld d(i?),r) instead of copying the base into HL and adding the offset.
 ; The base is constrained to the index class (IR16) so it lands in IX/IY and
-; Z80ExpandPseudo emits the indexed form.  Flag-gated, default off.
-
-; A read-modify-write at a constant offset: with the flag both the load and
-; the store use displacement addressing, so no add-to-HL is needed.
-define void @rmw(ptr %p) optsize {
-; ON-LABEL: rmw:
-; ON:       ld a,{{[0-9]+\(i[xy]\)}}
-; ON:       ld {{[0-9]+\(i[xy]\)}},a
-; ON-NOT:   add hl,
-;
-; OFF-LABEL: rmw:
-; OFF:       add hl,
-; OFF:       ld a,(hl)
-entry:
-  %a = getelementptr inbounds i8, ptr %p, i16 9
-  %v = load i8, ptr %a
-  %inc = add i8 %v, 1
-  store i8 %inc, ptr %a
-  ret void
-}
+; Z80ExpandPseudo emits the indexed form.  Flag-gated, default off, and only
+; when the base has >=2 constant-offset access sites (so the one-time
+; `push hl; pop iy` setup amortises) and the function is call-free (IY is
+; caller-saved, Z80_CSR = IX only).
 
 ; Several derefs of the same base share one IX/IY setup (the amortising case).
 define i8 @sum3(ptr %p) optsize {
@@ -32,6 +16,10 @@ define i8 @sum3(ptr %p) optsize {
 ; ON:       ld {{[a-l]}},{{[0-9]+\(i[xy]\)}}
 ; ON:       ld {{[a-l]}},{{[0-9]+\(i[xy]\)}}
 ; ON:       ld {{[a-l]}},{{[0-9]+\(i[xy]\)}}
+;
+; Without the flag the same code copies the base into HL and adds offsets.
+; OFF-LABEL: sum3:
+; OFF:       add hl,
 entry:
   %a1 = getelementptr inbounds i8, ptr %p, i16 1
   %a5 = getelementptr inbounds i8, ptr %p, i16 5
@@ -44,11 +32,47 @@ entry:
   ret i8 %t
 }
 
-; A function with a call must NOT use the transform: IY is caller-saved
-; (Z80_CSR = IX only), so a base parked in IY would not survive the call.
+; Read-modify-write at two sites: both the loads and the stores use
+; displacement addressing, so there is no add-to-HL at all.
+define void @rmw2(ptr %p) optsize {
+; ON-LABEL: rmw2:
+; ON:       ld a,{{[0-9]+\(i[xy]\)}}
+; ON:       ld {{[0-9]+\(i[xy]\)}},a
+; ON:       ld a,{{[0-9]+\(i[xy]\)}}
+; ON:       ld {{[0-9]+\(i[xy]\)}},a
+; ON-NOT:   add hl,
+entry:
+  %a2 = getelementptr inbounds i8, ptr %p, i16 2
+  %a6 = getelementptr inbounds i8, ptr %p, i16 6
+  %v2 = load i8, ptr %a2
+  %i2 = add i8 %v2, 1
+  store i8 %i2, ptr %a2
+  %v6 = load i8, ptr %a6
+  %i6 = add i8 %v6, 1
+  store i8 %i6, ptr %a6
+  ret void
+}
+
+; A single access site does NOT amortise the IX/IY setup, so the profitability
+; gate (>=2 sites) leaves it on the add-to-HL path even with the flag on.
+define void @single(ptr %p) optsize {
+; ON-LABEL: single:
+; ON:       add hl,
+; ON-NOT:   {{[0-9]+\(i[xy]\)}}
+entry:
+  %a = getelementptr inbounds i8, ptr %p, i16 9
+  %v = load i8, ptr %a
+  %i = add i8 %v, 1
+  store i8 %i, ptr %a
+  ret void
+}
+
+; A function with a call must NOT use the transform: IY is caller-saved, so a
+; base parked in IY would not survive the call.
 declare void @ext()
 define i8 @has_call(ptr %p) optsize {
 ; ON-LABEL: has_call:
+; ON:       add hl,
 ; ON-NOT:   {{[0-9]+\(i[xy]\)}}
 entry:
   call void @ext()

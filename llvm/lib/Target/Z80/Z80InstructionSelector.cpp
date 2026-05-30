@@ -62,6 +62,29 @@ static cl::opt<bool> EnableIdxAddr(
              "the base to IR16 so it lands in IX/IY.  Default off pending "
              "measurement."));
 
+// #27: count the distinct in-range constant-offset G_PTR_ADD sites on Base.
+// The IX/IY-indexed transform pays only when the one-time `push hl; pop iy`
+// base setup amortises across >=2 access sites; a single site is larger under
+// the flag.  Counting SITES (not their load/store users) is stable during
+// selection: a G_PTR_ADD persists while its load/store users are selected and
+// erased one by one, so the count does not depend on selection order.
+static unsigned countIndexedSites(Register Base,
+                                  const MachineRegisterInfo &MRI) {
+  unsigned N = 0;
+  for (const MachineInstr &U : MRI.use_nodbg_instructions(Base)) {
+    if (U.getOpcode() != TargetOpcode::G_PTR_ADD ||
+        U.getOperand(1).getReg() != Base)
+      continue;
+    const MachineInstr *OffDef = MRI.getVRegDef(U.getOperand(2).getReg());
+    if (OffDef && OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+      int64_t D = OffDef->getOperand(1).getCImm()->getSExtValue();
+      if (D >= -128 && D <= 127)
+        ++N;
+    }
+  }
+  return N;
+}
+
 namespace {
 
 class Z80InstructionSelector : public InstructionSelector {
@@ -2548,7 +2571,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       // base and frame-index bases (handled above, they own their lowering).
       if (EnableIdxAddr && !FnHasCalls && IsConstOffset && !IsIXBase &&
           !IsFrameBase && BaseReg.isVirtual() && DstTy.getSizeInBits() <= 8 &&
-          Disp >= -128 && Disp <= 127) {
+          Disp >= -128 && Disp <= 127 &&
+          countIndexedSites(BaseReg, MRI) >= 2) {
         if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
           return false;
         if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
@@ -2839,7 +2863,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         if (!BaseIsIX && !BaseIsFI && BaseReg.isVirtual() && OffDef &&
             OffDef->getOpcode() == TargetOpcode::G_CONSTANT) {
           int64_t Disp = OffDef->getOperand(1).getCImm()->getSExtValue();
-          if (Disp >= -128 && Disp <= 127) {
+          if (Disp >= -128 && Disp <= 127 &&
+              countIndexedSites(BaseReg, MRI) >= 2) {
             if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
               return false;
             if (!RBI.constrainGenericRegister(BaseReg, Z80::IR16RegClass, MRI))
