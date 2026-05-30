@@ -7,12 +7,15 @@
 ; "both bytes" path.
 ;
 ; The trigger: `isHighByteProvablyZero` recursing through G_AND, G_OR,
-; G_XOR and (post-legalizer) G_MERGE_VALUES now recognises
-; `(x & K)` as high-byte-zero when K's high byte is zero.  See
-; ravn/llvm-z80#150 for the residual `ld h, 0` materialisation that
-; the current fix preserves (a pure `sub_lo` extraction here breaks
-; cpnos-rom polypascal-test on pio-irq via a regalloc-level
-; interaction not exposed in lit).
+; G_XOR and (post-legalizer) G_MERGE_VALUES recognises `(x & K)` as
+; high-byte-zero when K's high byte is zero.
+;
+; ravn/llvm-z80#150 (resolved): the HighByteZero branch now extracts A
+; directly from VarReg's low half (sub_lo) instead of materialising the
+; whole pair into HL, so the `ld l,a; ld h,0` high-byte residual is gone.
+; The historical pio-irq polypascal miscompile that blocked this was a
+; sub-register-liveness interaction fixed by #156428 (LiveVariables) +
+; #210 (per-register-unit liveness); sub_lo now passes pio-irq AND sio.
 
 declare i16 @recv_byte_t()
 
@@ -20,15 +23,15 @@ declare i16 @recv_byte_t()
 ; Witness shape from cpnos-rom `_snios_rcvmsg_c` protocol-byte check:
 ;   if ((uint8_t)r & 0x7F != SOH) return 1;
 ;
-; The pre-#142 lowering emits:
+; The pre-#142 lowering emitted:
 ;   ld a,e; and 127; ld l,a; ld h,0; sub 1; or h; jr nz, ...
-; The fix routes via the HighByteZero branch:
-;   ld a,e; and 127; ld l,a; ld h,0; cp 1; jr nz, ...
-;   (saves the OR_H — 1 B; the `ld h, 0` residual is #150)
+; Post-#142+#150 (sub_lo, high byte not materialised into HL):
+;   ld a,e; and 127; dec a; jr nz, ...     (no `ld l,a`, no `or h`)
 ;
 ; CHECK-LABEL: check_soh_mask:
 ; CHECK:       call	_recv_byte_t
 ; CHECK:       and	127
+; CHECK-NOT:   ld	l, a
 ; CHECK:       {{(cp	1|dec	a)}}
 ; CHECK-NOT:   or	h
 ; CHECK-NOT:   sub	1
