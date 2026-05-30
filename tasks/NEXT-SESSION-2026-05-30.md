@@ -16,18 +16,22 @@ session 73s/73ab; `Z80ISelLowering` is live GISel `TargetLowering`).  Of the old
 "infra gates", **#177 (TTI) and #179 CLOSED**; **#178 (remat) still OPEN**.
 Production-density regalloc issues **#110 / #115 / #100 OPEN**.  **#184 CLOSED**.
 
-## Pick one to start (ranked) — updated after the 2026-05-30 #211 investigation
+## Pick one to start (ranked) — updated after the 2026-05-30 drills
 
-1. **Production density (the actual project goal)** — #27 did NOT move cpnos/BIOS
-   (measured zero; they lack the pointer pattern).  The real gap is BSS-spill
-   traffic + regalloc churn: **#110 / #115 / #100** (regalloc cost model) and
-   **#178** (remat, mechanism-blocked — pseudos with implicit physreg defs break
-   `isReMaterializable`).  This is where cpnos's 26 B headroom and BIOS density
-   live.  **Hard, multi-session, but the only high-value lever left.**
-   Caveat (verified 2026-05-30): the cheap levers are exhausted — #27 indexed
-   addressing = 0 on cpnos; #173 BSS-via-A is an AES driver pattern (cpnos has
-   only 7 `push af`).  cpnos is already near-optimal per CLAUDE.md; the win is in
-   regalloc, not new addressing modes.
+1. **Upstream-submission packaging** — both Tier A gates resolved (#180 re-audit,
+   #181 closed).  Package the AES codegen wins (#179 P1/P2, #128, #148, #185) +
+   #27 + the #168/#182 already-written submission notes into a coherent patch
+   series / writeup for `ravn/llvm-z80` review.  This is now the **highest-value
+   remaining lever** (see why below).  Pattern: existing `tasks/upstream-*-submission.md`.
+
+2. **Production density (regalloc) — TAPPED OUT, do NOT re-chase.**
+   Drilled 2026-05-30 (`tasks/production-density-regalloc-drill-2026-05-30.md`):
+   BIOS waste is **ISA-fundamental** — 324 BSS-via-A (8-bit memory is A-only),
+   ~245 A-shuttle moves (irreducible #172-class), ~65 pair-copies.  Zero IX-stash;
+   cpnos near-optimal; ~0 recoverable redundancy.  clang BIOS already **beats**
+   SDCC (−194 B).  #178/#110/#115/#100 yield only single-digit-to-low-tens of
+   bytes and are hard.  Revisit ONLY if a specific function regresses or a new
+   (non-BIOS/cpnos/AES) workload surfaces a different pattern.
 
 2. **#180 genuine migrations** (#211/#8, #10, #17, #19, #25) — **DEPRIORITISED.**
    Investigation of #211 (see its issue comment) found these are pure
