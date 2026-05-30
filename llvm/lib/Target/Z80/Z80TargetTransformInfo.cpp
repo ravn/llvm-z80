@@ -145,6 +145,30 @@ InstructionCost Z80TTIImpl::getArithmeticInstrCost(
   // not Mul.  Add Mul to the libcall set.
   if (Opcode == Instruction::Mul)
     return TargetTransformInfo::TCC_Expensive;
+
+  // Z80 has no barrel shifter.  Each bit of a shift is a separate single-bit
+  // shift/rotate (SLA/SRL/SRA r = 2 B/8 T; left-shift can use ADD HL,HL for
+  // i16), and a *variable* shift count compiles to a runtime loop.  The
+  // BasicTTIImpl default reports legal shifts as cost 1 -- far too cheap.
+  // Charge by the (constant) amount; treat a variable amount as expensive so
+  // the optimizer does not synthesize variable shifts thinking they are 1 op.
+  if (Opcode == Instruction::Shl || Opcode == Instruction::LShr ||
+      Opcode == Instruction::AShr) {
+    const ConstantInt *AmtC = nullptr;
+    if (Args.size() == 2)
+      AmtC = dyn_cast_or_null<ConstantInt>(Args[1]);
+    if (!AmtC && CxtI && CxtI->getNumOperands() == 2)
+      AmtC = dyn_cast_or_null<ConstantInt>(CxtI->getOperand(1));
+    if (!AmtC)
+      return TargetTransformInfo::TCC_Expensive; // variable count -> loop
+    unsigned Amt = AmtC->getValue().getZExtValue();
+    if (Amt == 0)
+      return 0;
+    // ~1 single-bit op per shifted bit; cap so wide constant shifts that the
+    // ShiftRotateChain pass open-codes are "costly" but not libcall-level.
+    return std::min(Amt, 8u);
+  }
+
   return BaseT::getArithmeticInstrCost(Opcode, Ty, CostKind, Op1Info, Op2Info,
                                        Args, CxtI);
 }

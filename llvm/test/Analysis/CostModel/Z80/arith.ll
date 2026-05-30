@@ -16,9 +16,9 @@ define void @i8(i8 %a, i8 %b) {
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %and = and i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %or = or i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %xor = xor i8 %a, %b
-; CHECK-NEXT:  Cost Model: Found costs of 1 for: %shl = shl i8 %a, %b
-; CHECK-NEXT:  Cost Model: Found costs of 1 for: %lshr = lshr i8 %a, %b
-; CHECK-NEXT:  Cost Model: Found costs of 1 for: %ashr = ashr i8 %a, %b
+; CHECK-NEXT:  Cost Model: Found costs of 4 for: %shl = shl i8 %a, %b
+; CHECK-NEXT:  Cost Model: Found costs of 4 for: %lshr = lshr i8 %a, %b
+; CHECK-NEXT:  Cost Model: Found costs of 4 for: %ashr = ashr i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:4 Lat:4 SizeLat:4 for: %udiv = udiv i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:4 Lat:4 SizeLat:4 for: %sdiv = sdiv i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: ret void
@@ -43,7 +43,7 @@ define void @i16(i16 %a, i16 %b) {
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %sub = sub i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 4 for: %mul = mul i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %and = and i16 %a, %b
-; CHECK-NEXT:  Cost Model: Found costs of 1 for: %shl = shl i16 %a, %b
+; CHECK-NEXT:  Cost Model: Found costs of 4 for: %shl = shl i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:4 Lat:4 SizeLat:4 for: %udiv = udiv i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: ret void
 ;
