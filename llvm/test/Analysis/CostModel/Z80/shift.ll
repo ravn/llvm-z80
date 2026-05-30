@@ -15,8 +15,8 @@ define void @const_amt(i8 %a, i16 %h) {
 ; CHECK-NEXT:  Cost Model: Found costs of 7 for: %s7 = shl i8 %a, 7
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %r1 = lshr i8 %a, 1
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %a1 = ashr i8 %a, 1
-; CHECK-NEXT:  Cost Model: Found costs of 1 for: %h1 = shl i16 %h, 1
-; CHECK-NEXT:  Cost Model: Found costs of 8 for: %h12 = shl i16 %h, 12
+; CHECK-NEXT:  Cost Model: Found costs of 2 for: %h1 = shl i16 %h, 1
+; CHECK-NEXT:  Cost Model: Found costs of 16 for: %h12 = shl i16 %h, 12
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: ret void
 ;
   %s1  = shl  i8  %a, 1
@@ -34,7 +34,7 @@ define void @var_amt(i8 %a, i8 %b, i16 %h, i16 %hb) {
 ; CHECK-NEXT:  Cost Model: Found costs of 4 for: %s = shl i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 4 for: %r = lshr i8 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 4 for: %t = ashr i8 %a, %b
-; CHECK-NEXT:  Cost Model: Found costs of 4 for: %v = shl i16 %h, %hb
+; CHECK-NEXT:  Cost Model: Found costs of 8 for: %v = shl i16 %h, %hb
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: ret void
 ;
   %s = shl  i8  %a, %b

@@ -43,7 +43,7 @@ define void @i16(i16 %a, i16 %b) {
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %sub = sub i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 4 for: %mul = mul i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: %and = and i16 %a, %b
-; CHECK-NEXT:  Cost Model: Found costs of 4 for: %shl = shl i16 %a, %b
+; CHECK-NEXT:  Cost Model: Found costs of 8 for: %shl = shl i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of RThru:1 CodeSize:4 Lat:4 SizeLat:4 for: %udiv = udiv i16 %a, %b
 ; CHECK-NEXT:  Cost Model: Found costs of 1 for: ret void
 ;

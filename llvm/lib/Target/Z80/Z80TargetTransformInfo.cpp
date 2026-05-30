@@ -150,23 +150,27 @@ InstructionCost Z80TTIImpl::getArithmeticInstrCost(
   // shift/rotate (SLA/SRL/SRA r = 2 B/8 T; left-shift can use ADD HL,HL for
   // i16), and a *variable* shift count compiles to a runtime loop.  The
   // BasicTTIImpl default reports legal shifts as cost 1 -- far too cheap.
-  // Charge by the (constant) amount; treat a variable amount as expensive so
-  // the optimizer does not synthesize variable shifts thinking they are 1 op.
+  // Cost scales with BOTH the shift amount AND the width in bytes: an N-byte
+  // shift moves one bit across all N limbs (RR/SLA + carry) per position, so a
+  // 32-bit shift-by-1 is ~4 ops, not 1.  Undercharging wide shifts as 1 made
+  // LoopUnroll fully unroll wide-int shift loops (e.g. a CRC inner loop blew up
+  // ~3.4x at -O2).  A variable count compiles to a runtime loop -> expensive.
   if (Opcode == Instruction::Shl || Opcode == Instruction::LShr ||
       Opcode == Instruction::AShr) {
+    unsigned Bytes = std::max(1u, (Ty->getScalarSizeInBits() + 7) / 8);
     const ConstantInt *AmtC = nullptr;
     if (Args.size() == 2)
       AmtC = dyn_cast_or_null<ConstantInt>(Args[1]);
     if (!AmtC && CxtI && CxtI->getNumOperands() == 2)
       AmtC = dyn_cast_or_null<ConstantInt>(CxtI->getOperand(1));
     if (!AmtC)
-      return TargetTransformInfo::TCC_Expensive; // variable count -> loop
+      return TargetTransformInfo::TCC_Expensive * Bytes; // variable -> loop
     unsigned Amt = AmtC->getValue().getZExtValue();
     if (Amt == 0)
       return 0;
-    // ~1 single-bit op per shifted bit; cap so wide constant shifts that the
-    // ShiftRotateChain pass open-codes are "costly" but not libcall-level.
-    return std::min(Amt, 8u);
+    // ~Bytes single-bit ops per shifted position; cap the per-position amount
+    // (the ShiftRotateChain pass open-codes wide constant shifts).
+    return std::min(Amt, 8u) * Bytes;
   }
 
   return BaseT::getArithmeticInstrCost(Opcode, Ty, CostKind, Op1Info, Op2Info,
