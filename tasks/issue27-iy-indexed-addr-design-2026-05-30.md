@@ -38,22 +38,43 @@ displacement, and expand it post-RA (in `Z80ExpandPseudo`, model =
 - else (base ∈ {HL,DE,BC}): fallback that computes base+disp in HL and
   does `(hl)`, **preserving the base** (it is reused across the loop).
 
-## The clobber tension (the hard part)
+## The clobber tension (the hard part) — resolved with RegScavenger
 
-A fixed Defs set can't be accurate for both paths: the index path touches
-only `$dst`; the fallback needs HL (+ scratch for the add).  Resolution:
+A *fixed* Defs set can't be accurate for both paths: the index path touches
+only `$dst`; the fallback needs HL + a scratch pair for the add.  Declaring
+`Defs=[HL,BC]` would pessimise the **cheap** path — and AES is exactly HL/BC-
+pressured, so that pessimism could erode/reverse the win.
 
-1. **Regalloc hint** (`getRegAllocationHints`): hint the base pointer toward
-   IY/IX when it is dereferenced ≥N times with constant offsets, so the cheap
-   path is the common case.  (Precedent: DE/BC hints for ADD HL,rr operands.)
-2. Declare the pseudo to match the **index** path (def `$dst` only); make the
-   fallback self-contained — borrow scratch via `push/pop` so it clobbers
-   nothing beyond `$dst`.  Fallback is larger than today's 7 B but is the rare
-   path once the hint biases allocation.
+**Resolution:** declare NO extra Defs (pseudo defs `$dst` only).  Expand post-RA
+with the **RegScavenger** (same mechanism `eliminateFrameIndex` uses) to obtain
+a scratch pair in the fallback only.  Cheap path (base ∈ IX/IY) needs no
+scratch.  So the cost model stays honest on the win path and the fallback is
+still correct.  The expansion pass must set `RequiresRegisterScavenging`.
 
-If the hint proves ineffective (cf. #172/73n greedy-ignores-hints, though that
-was the A-accumulator, not GR16→IX/IY), fall back to declaring Defs=[HL] and
-accepting index-path pessimism; measure both.
+Optional later: a `getRegAllocationHints` nudge toward IY/IX for pointers
+dereferenced ≥N times with constant offsets (precedent: DE/BC hints for
+ADD HL,rr), to make the cheap path the common case.
+
+## Correctness details nailed down (2026-05-30)
+
+- **Model the index-reg Use.**  `LD_{r}_I{X,Y}d` defs declare only `Defs=[r]`,
+  NOT `Uses=[IX/IY]` (the IX matcher relies on IX being the always-live frame
+  pointer).  Expansion MUST add `.addReg(Base, RegState::Implicit)` so post-RA
+  liveness knows IY/IX is read; `fullyRecomputeLiveIns` then propagates it.
+- **dst∈{H,L} aliasing in the HL-base fallback.**  If base lands in HL and the
+  load dst is H or L, naive `ld Dst,(hl)` + restore-HL clobbers the result.
+  Fallback must load via the scavenged pair or sequence the restore carefully.
+- **Opcode selection.**  Pick `LD_<dstPhys>_I{X,Y}d` by the allocated GR8
+  dst regunit (full A/B/C/D/E/H/L set exists for both IX and IY).
+- **Do NOT capture** frame-index bases (RELOAD pseudos own those) nor the
+  existing `COPY $ix` frame-pointer base (matcher at 2416 owns it).  Fire only
+  for a plain pointer vreg base with a G_CONSTANT offset in range.
+
+## Flag gating
+
+Behind `-mllvm -enable-z80-idx-addr` (default OFF) until S4 measurement clears
+the differential oracle.  Lets an incomplete fallback land safely and be
+measured without touching production codegen.
 
 ## Staging (test + oracle-gate each stage)
 
