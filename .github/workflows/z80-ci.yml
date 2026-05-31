@@ -170,6 +170,15 @@ jobs:
           cd z80-utils/test-runner
           BUILD_DIR=../../build cargo run --release -- clang
 
+      - name: Enforce -verify-machineinstrs clean at production opt levels
+        run: |
+          # -Oz/-Os/-O2 +static-stack across the clang corpus must be
+          # verifier-clean (latent stale-liveness = the #136/#205/#197 class).
+          # O0 is excluded -- it has a separate, non-production O0-coarse-liveness
+          # residual; production never ships at O0.  Memory-bounded (-P 2).
+          z80-utils/test-runner/scripts/verify-production.sh \
+            build/bin/clang z80-utils/test-runner/testcases/clang 2
+
       - name: Summary
         if: always()
         run: |
