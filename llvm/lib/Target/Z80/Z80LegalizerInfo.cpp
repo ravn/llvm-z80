@@ -634,11 +634,9 @@ bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,
       return true;
     }
 
-    // Seed store: write the K-byte pattern at dst.
-    emitSeedAt(DstPtr);
-
-    // count <= 1: the seed is the entire fill.
+    // count <= 1: the seed is the entire fill (no LDIR).
     if (CountC && *CountC <= 1) {
+      emitSeedAt(DstPtr);
       MI.eraseFromParent();
       return true;
     }
@@ -654,8 +652,16 @@ bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,
       auto Cm1 = B.buildSub(S16, Count, One);
       Len = B.buildMul(S16, Cm1, KC).getReg(0);
     }
-    B.buildCopy(Register(Z80::HL), DstPtr);
+    // Emit the LDIR-destination load (LD DE,dst) BEFORE the seed store, then
+    // the seed, then HL=src.  This matches the instruction order the previous
+    // (pre-intrinsic) memcpy lowering produced; emitting the seed first instead
+    // costs +1 byte after ZX0 on cpnos's IVT fill (the corrected #205 fill is
+    // byte-identical UNCOMPRESSED but compressed 1 B worse purely from byte
+    // adjacency).  Functionally identical -- the seed lands in memory before
+    // the LDIR reads it either way.
     B.buildCopy(Register(Z80::DE), DstPlusK);
+    emitSeedAt(DstPtr);
+    B.buildCopy(Register(Z80::HL), DstPtr);
     B.buildCopy(Register(Z80::BC), Len);
     // Unguarded LDIR when count is a known constant (BC = K*(count-1) >= K > 0
     // since count >= 2 here); guarded otherwise (BC may be 0 at runtime).
