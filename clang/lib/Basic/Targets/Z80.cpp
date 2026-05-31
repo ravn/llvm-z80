@@ -116,6 +116,35 @@ bool Z80TargetInfo::validateAsmConstraint(
   }
 }
 
+// Rewrite a bare two-letter register-pair name (hl, bc, de, af, ix, iy, sp)
+// into the braced specific-register form ({hl}, ...) for the emitted IR.
+// validateAsmConstraint accepts bare "hl", but LLVM's IR-level InlineAsm
+// parser splits a multi-letter constraint into single-register *alternatives*
+// ("hl" -> h|l), which then can't hold a 16-bit operand and fatally aborts
+// IRTranslator.  Emitting the braced form keeps it as one specific-register
+// token (the path that already works).  Braced constraints are passed through
+// verbatim so their inner letters are not re-interpreted as pair names.
+std::string Z80TargetInfo::convertConstraint(const char *&Constraint) const {
+  if (*Constraint == '{') {
+    std::string Result = "{";
+    while (*Constraint != '}' && Constraint[1]) {
+      ++Constraint;
+      Result += *Constraint;
+    }
+    // Constraint now points at '}'; the caller's loop advances past it.
+    return Result;
+  }
+  if (Constraint[0] && Constraint[1]) {
+    StringRef R(Constraint, 2);
+    if (R == "bc" || R == "de" || R == "hl" || R == "af" || R == "ix" ||
+        R == "iy" || R == "sp") {
+      ++Constraint; // consume the second char (caller advances past the first)
+      return std::string("{") + R.str() + "}";
+    }
+  }
+  return std::string(1, *Constraint);
+}
+
 static const char *const Z80GCCRegNames[] = {
     "a",  "b",  "c",  "d",  "e",  "h",  "l",  "f",
     "bc", "de", "hl", "af", "ix", "iy", "sp",
