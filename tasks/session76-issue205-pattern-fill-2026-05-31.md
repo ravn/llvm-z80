@@ -130,3 +130,37 @@ byte-half symbol-store lowering.  Tests: `issue-205-reverse-fill-seed.ll` +
 **Lesson:** on ZX0-compressed PROMs, fewer UNCOMPRESSED bytes can mean MORE
 compressed bytes -- always measure the post-compression artifact, and byte adjacency
 / repetition matters as much as instruction count.
+
+## #197 verifier red-surface (later in the same session)
+
+Swept `-verify-machineinstrs` over the clang testcases at {O2,O0}×{+static-stack,none}.
+Two classes of "Using an undefined physical register":
+
+**Class 1 — `AND_A` undef `$a` (production, FIXED).** The byte-XOR i16 EQ/NE compare
+-> `AND A; SBC HL,rr` peephole (`Z80LateOptimization.cpp`) already proves A dead after
+the branch (`isRegDeadAfter`) but built the carry-clear `AND A` without marking its
+`$a` read undef -> verifier abort (test_98 @ -O2 +static-stack; and cpnos has the same
+pattern in a loop compare).  Fix: mark the `$a` read undef.  **Production
+`-verify-machineinstrs` is now clean at every shipping opt level (-Oz/-Os/-O2
++static-stack).**  Oracle: lit 150+4 (new `issue-197-and-a-undef-loop-compare.ll`,
+distilled from test_98 walk_three_buffers), diff-opt-full 824/0/0, AES 13/13, cpnos
+polypascal boot + **byte-identical** (disasm proven identical with/without the fix),
+autoload 1658 B + BIOS 5911 B byte-identical.  Metadata-only (`setIsUndef`).
+
+**Class 2 — `PUSH_HL` undef `$hl` (O0 only, NOT fixed; documented).** Initially
+hypothesised as the IX/SP-relative spill-borrow saves; built + applied a reaching-def
+`saveBorrowHL`/`emitBorrowHLSave` to those paths -> it cleared **zero** O0 cases (0
+`IMPLICIT_DEF` fired).  Root cause: the failing `PUSH_HL` are NOT spill borrows -- they
+are pre-PEI O0 **struct-copy / address-computation borrows** (`PUSH HL; PUSH IX; POP HL;
+...; EX DE,HL`), spread across many sites, where O0's coarse liveness leaves HL undef.
+A broad, multi-source **O0-liveness-precision** problem (the liveness lists a backend
+check would trust are themselves unreliable at O0), not a single backend bug, and
+upstream-adjacent.  O0 is **not a shipping config** (production is -Oz/-Os).  Reverted
+the ineffective + production-path-touching spill-borrow change entirely.
+**Recommendation:** gate CI `-verify-machineinstrs` enforcement on production opt
+levels; treat the O0 residual as a known non-production limitation / future work.
+
+**Lesson (process):** verify the fix actually fires before declaring scope (the 0
+`IMPLICIT_DEF` count exposed that Class 2 targeted the wrong code); and bound memory on
+mass sweeps -- `xargs -P 8` x ~412 MB/clang OOM-crashed the machine, fixed with `-P 2`
++ per-process `ulimit -t`.
