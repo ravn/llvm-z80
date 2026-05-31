@@ -14,6 +14,12 @@ on:
       - 'llvm/lib/Target/Z80/**'
       - 'llvm/test/CodeGen/Z80/**'
       - 'llvm/test/MC/Z80/**'
+      # ravn/llvm-z80#158: the TruncInstCombine "narrow through Argument" fix
+      # lives in generic code; gate its regression test + the Z80 end-to-end
+      # witness so drift in either re-runs CI.
+      - 'llvm/lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp'
+      - 'llvm/test/Transforms/AggressiveInstCombine/narrow-through-argument.ll'
+      - 'clang/test/CodeGen/z80-knr-u8-rotate.c'
       - 'clang/lib/Driver/ToolChains/SDCC.cpp'
       - 'clang/lib/Driver/ToolChains/Z80.cpp'
       - 'clang/lib/Driver/ToolChains/Z80.h'
@@ -95,6 +101,17 @@ jobs:
             build/bin/llvm-lit -v llvm/test/MC/Z80/
           fi
 
+      - name: Gate the #158 TruncInstCombine narrow-through-argument fix
+        run: |
+          # The fix is in generic AggressiveInstCombine, so its regression test
+          # is an `opt -passes=aggressive-instcombine` test (llc never runs the
+          # pass), which check-llvm-codegen-z80 does not cover.  Build opt (core
+          # LLVM, the libs are already warm) and run the one target-agnostic
+          # test.  Pre-fix this would leave the function entirely at i16.
+          ninja -C build opt
+          build/bin/llvm-lit -v \
+            llvm/test/Transforms/AggressiveInstCombine/narrow-through-argument.ll
+
       - name: Summary
         if: always()
         run: |
@@ -163,7 +180,15 @@ jobs:
             -DLLVM_OPTIMIZED_TABLEGEN=ON
 
       - name: Build clang + lld + LLVM binutils the test-runner shells out to
-        run: ninja -C build clang lld llvm-objcopy llvm-nm llvm-size
+        run: ninja -C build clang lld llvm-objcopy llvm-nm llvm-size FileCheck
+
+      - name: Gate the #158 K&R-u8-rotate end-to-end Z80 codegen witness
+        run: |
+          # Full clang pipeline (this is where AggressiveInstCombine actually
+          # runs) -> the K&R u8 rotate must narrow to 8-bit ops and emit `rlca`,
+          # not a 16-bit `add hl` dance.  Needs FileCheck + the configured clang
+          # lit site config (both present from the Configure step above).
+          build/bin/llvm-lit -v clang/test/CodeGen/z80-knr-u8-rotate.c
 
       - name: Run test-runner clang suite (runtime/value oracle)
         run: |
