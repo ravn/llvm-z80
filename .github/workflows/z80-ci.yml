@@ -186,9 +186,13 @@ jobs:
         run: |
           # Full clang pipeline (this is where AggressiveInstCombine actually
           # runs) -> the K&R u8 rotate must narrow to 8-bit ops and emit `rlca`,
-          # not a 16-bit `add hl` dance.  Needs FileCheck + the configured clang
-          # lit site config (both present from the Configure step above).
-          build/bin/llvm-lit -v clang/test/CodeGen/z80-knr-u8-rotate.c
+          # not a 16-bit `add hl` dance.  Drive clang + FileCheck directly rather
+          # than via llvm-lit: lit would pull the whole clang test harness
+          # (count/not/split-file/...) which this job doesn't build.  This
+          # mirrors the test's RUN line (%clang_cc1 == `clang -cc1`).
+          build/bin/clang -cc1 -triple z80 -Oz -S -Wno-deprecated-non-prototype \
+            -o - clang/test/CodeGen/z80-knr-u8-rotate.c \
+            | build/bin/FileCheck clang/test/CodeGen/z80-knr-u8-rotate.c
 
       - name: Run test-runner clang suite (runtime/value oracle)
         run: |
