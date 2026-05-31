@@ -162,8 +162,8 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DLLVM_OPTIMIZED_TABLEGEN=ON
 
-      - name: Build clang + lld (the test-runner clang suite needs both)
-        run: ninja -C build clang lld
+      - name: Build clang + lld + LLVM binutils the test-runner shells out to
+        run: ninja -C build clang lld llvm-objcopy llvm-nm llvm-size
 
       - name: Run test-runner clang suite (runtime/value oracle)
         run: |
