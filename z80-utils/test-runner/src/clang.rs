@@ -344,6 +344,23 @@ fn run_single(
         return TestResult::fatal(tag, e);
     }
 
+    // A flat binary larger than the 64 KB Z80/SM83 address space cannot be
+    // loaded by z88dk-ticks (it rejects it with "Incorrect length", which the
+    // emulate() path would surface as a cryptic "no register value" FATAL).
+    // This is an environmental limit, not a test failure: the auto-generated
+    // test_90/91_edge_* stress fixtures compile to a ~113 KB main() at -O0 and
+    // only fit under -O1+ optimization.  Classify as SKIP so they still run
+    // (and assert) at every opt level where they fit.
+    if let Ok(meta) = std::fs::metadata(&bin) {
+        if meta.len() > 0x1_0000 {
+            remove_tmp_dir(&tmp_dir);
+            return TestResult::skip(
+                tag,
+                format!("binary {} B exceeds 64 KB address space", meta.len()),
+            );
+        }
+    }
+
     // Emulate
     let halt_addr = match emulator::halt_addr_from_elf(
         &clang.parent().unwrap().join("llvm-nm"), &elf) {

@@ -298,12 +298,12 @@ void Z80PassConfig::addIRPasses() {
   // non-atomic load/store/rmw sequences at the IR level.
   addPass(createLowerAtomicPass());
 
-  // ravn/llvm-z80#176/#40: auto-inject +static-stack on leaf functions
-  // (opt-in via -mllvm -z80-auto-static-stack=true).  Only register
-  // the pass in the pipeline when enabled -- otherwise its mere
-  // presence as a no-op pass shifts downstream behavior (#187
-  // pipeline-ordering side effect), costing ~2 B on cpnos PROM1
-  // for users who don't opt in.
+  // ravn/llvm-z80#176/#40: auto-inject +static-stack on provably-non-recursive
+  // functions (default on; global opt-out via -mllvm -z80-auto-static-stack=
+  // false).  Gate the *registration* on the flag rather than early-returning
+  // inside the pass when disabled: a registered no-op pass still shifts
+  // downstream behavior (#187 pipeline-ordering side effect, ~2 B on cpnos
+  // PROM1), so the opt-out path must omit the pass entirely.
   if (isZ80AutoStaticStackEnabled())
     addPass(createZ80AutoStaticStackPass());
 

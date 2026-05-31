@@ -1,0 +1,67 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80 #212: the "ADD IX/IY" peephole folds
+#   COPY16_PUSHPOP $hl, $iy ; ADD_HL_rr ; COPY16_PUSHPOP $iy, $hl
+# into a single ADD_IY_rr.  That is correct ONLY if $hl is dead after the
+# closing $iy <- $hl copy: the fold drops the ADD_HL_rr, which also DEFINED
+# $hl, keeping the sum only in IY.  When IY is allocatable (-Os/-Oz +
+# static-stack) the allocator can leave $hl live across the copy-add-copy
+# because the same sum is reused by a following `XOR (HL)` / `LD A,(HL)`
+# (this is the AES key-expansion shape `k[i] ^= k[i-4]` at -Os).  Folding
+# then leaves that consumer reading a stale HL -> silent miscompile.
+#
+# The closing copy READS $hl, so the register allocator marks that read
+# `killed` exactly when $hl is dead afterwards.  The fix gates the fold on
+# that precise, local flag (computeRegisterLiveness is coarser -- it returns
+# Unknown near block boundaries and would needlessly refuse safe folds,
+# perturbing unrelated code such as cpnos).
+
+--- |
+  target triple = "z80"
+  @g = external global i16
+  define void @hl_live_no_fold() { ret void }
+  define void @hl_dead_folds() { ret void }
+...
+
+# Case 1: $hl is LIVE after the closing copy (read by XOR_HLind).  The fold
+# must be REFUSED -- the copy-add-copy and ADD_HL_BC stay so XOR (HL) reads
+# the correct sum.
+# CHECK-LABEL: name: hl_live_no_fold
+# CHECK:      COPY16_PUSHPOP $iy
+# CHECK:      ADD_HL_BC
+# CHECK:      $iy = COPY16_PUSHPOP $hl
+# CHECK:      XOR_HLind
+# CHECK-NOT:  ADD_IY_BC
+---
+name:            hl_live_no_fold
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $iy, $bc, $a
+    $hl = COPY16_PUSHPOP $iy
+    ADD_HL_BC implicit-def $hl, implicit-def $flags, implicit $hl, implicit $bc
+    $iy = COPY16_PUSHPOP $hl
+    XOR_HLind implicit-def $a, implicit-def $flags, implicit $a, implicit $hl
+    RET implicit $a
+...
+
+# Case 2: the closing copy KILLS $hl (nothing reads it afterwards -- it is
+# immediately redefined by LD_HL_nnind).  $hl is dead, so the fold is safe
+# and SHOULD fire.
+# CHECK-LABEL: name: hl_dead_folds
+# CHECK:      ADD_IY_BC
+# CHECK-NOT:  ADD_HL_BC
+---
+name:            hl_dead_folds
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $iy, $bc
+    $hl = COPY16_PUSHPOP $iy
+    ADD_HL_BC implicit-def $hl, implicit-def $flags, implicit $hl, implicit $bc
+    $iy = COPY16_PUSHPOP killed $hl
+    LD_HL_nnind @g, implicit-def $hl
+    LD_nnind_HL @g, implicit $hl
+    RET
+...

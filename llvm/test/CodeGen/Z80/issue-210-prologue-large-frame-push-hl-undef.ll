@@ -1,5 +1,10 @@
-; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -verify-machineinstrs %s -o - \
-; RUN:   | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -verify-machineinstrs \
+; RUN:   -z80-auto-static-stack=false %s -o - | FileCheck %s
+;
+; -z80-auto-static-stack=false: this test exercises the dynamic IX-frame
+; prologue, which auto-static-stack (#176, default on) would bypass by routing
+; @f's locals to BSS.  The IX-frame path is still reached for opted-out / ISR /
+; address-taken / stack-arg functions, so we pin it here.
 ;
 ; ravn/llvm-z80 #210/#197: the IX-frame large-frame prologue saves HL across the
 ; SP adjustment (PUSH HL; LD HL,-size; ADD HL,SP; LD SP,HL; restore HL from the
