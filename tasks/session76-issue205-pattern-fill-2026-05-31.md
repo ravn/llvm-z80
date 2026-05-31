@@ -88,3 +88,45 @@ guard for a non-constant / out-of-range K (asserts are off in Release).
   N mapping; header comment rewritten for the intrinsic.
 - `llvm/test/CodeGen/Z80/{issue-205-pattern-fill.ll (new), loop-idiom-fill.ll}`
 - `z80-utils/test-runner/testcases/clang/test_205_fill_{byte,word,dword}.c` (new)
+
+## Follow-ups (same session)
+
+### CI: runtime-tests job (test tiers now both CI-gated)
+CI previously ran lit only; the whole `z80-utils/test-runner` suite was local-only
+(no `z88dk-ticks` on the runner).  Added a `runtime-tests` job (`.github/workflows
+/z80-ci.yml`) that builds `z88dk-ticks` (z88dk checkout incl. the `uthash` submodule
++ flex/bison) and `clang`/`lld`/`llvm-objcopy`/`llvm-nm`/`llvm-size`, then runs
+`cargo run --release -- clang`.  CI restricted to the **main branch** only.  The
+two-tier model (lit = primary CI gate; runtime fixtures = additional, now also
+CI-gated) is documented in CLAUDE.md + AGENTS.md.
+
+### ZX0 reclaim: cpnos PROM1 2031 -> 2029 B (and the +1 #205 had cost)
+**Finding (user-flagged "cpnos prom has grown"):** #205 was byte-identical
+UNCOMPRESSED (init.bin 605 B, `_init_hardware` 86 B, resident payload 2016 B) but
+cost **+1 byte after ZX0** (cpnos PROM1 2030 -> 2031; init.zx0 528 -> 529).  Cause:
+the intrinsic lowering emitted the seed store before the `LD DE,dst` LDIR-dest load,
+and that byte order compresses 1 B worse than the pre-intrinsic memcpy lowering's
+DE-first order.  (My original "#205 cpnos byte-identical" claim was wrong -- I'd
+checked only the resident payload, not the ZX0-compressed `init` region.)
+
+**Fix:** emit `LD DE,dst` before the seed (`Z80LegalizerInfo`), restoring DE-first
+order.  Functionally identical; ZX0 now compresses it better than even pre-#205 --
+**cpnos PROM1 2031 -> 2029 B** (the corrected `LD BC,$22` also compresses 1 B better
+than the old buggy `$24`).  Net session effect on cpnos: **-1 B vs pre-#205**.
+
+### Reversed (HL) fill-seed peephole (experimental, default OFF)
+`-z80-reverse-fill-seed`: rewrite a K=2 fill seed into a reversed (HL) byte store
+that lands HL on the base, folding away the separate source load (-1 B UNCOMPRESSED
+per site).  VAL may be constant or symbol; symbol support wired the long-unused
+MO_LO/MO_HI operand flags through `Z80MCInstLower` -> Addr16_Low/High relocations
+(first user; `ld.lld` resolves them, cpnos IVT links + boots).  **Default OFF,
+adopted by no target:** the reversed seed compresses WORSE under ZX0 (cpnos PROM1
+2032 -> 2033 when forced), so the uncompressed -1 B is a net +1 on compressed PROMs;
+the win only exists on uncompressed targets, none of which currently have a K=2
+fill (AES has zero LDIR fills).  Kept as correct, tested infra + the reusable
+byte-half symbol-store lowering.  Tests: `issue-205-reverse-fill-seed.ll` +
+`test_205_reverse_fill_seed.c`.
+
+**Lesson:** on ZX0-compressed PROMs, fewer UNCOMPRESSED bytes can mean MORE
+compressed bytes -- always measure the post-compression artifact, and byte adjacency
+/ repetition matters as much as instruction count.
