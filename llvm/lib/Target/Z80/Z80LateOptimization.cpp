@@ -4382,6 +4382,26 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
         if (!NewOpc) { ++MII; continue; }
 
+        // HL-liveness guard (ravn/llvm-z80#212: AES +static-stack -Os
+        // miscompile).  The fold drops the ADD_HL_rr, which ALSO defined HL,
+        // keeping the sum only in IX/IY.  That is correct only if HL is dead
+        // after the closing IX/IY<-HL copy.  When IX/IY is allocatable
+        // (-Os/-Oz + static-stack), the allocator can leave HL live across the
+        // copy-add-copy (the same sum is reused by a following `XOR (HL)` /
+        // `LD A,(HL)`); folding would then leave that consumer reading a stale
+        // HL.  The closing copy READS $hl, so the allocator marks that read
+        // `killed` exactly when HL is dead afterwards -- use that precise,
+        // local signal (computeRegisterLiveness is coarser: it returns Unknown
+        // near block boundaries, which would needlessly refuse safe folds and
+        // shift unrelated code).  The $hl use is operand 1 of the closing
+        // COPY16_PUSHPOP, or operand 0 of PUSH_HL.
+        const MachineOperand &HLUse =
+            EndIsPseudo ? I4->getOperand(1) : I4->getOperand(0);
+        if (!HLUse.isKill()) {
+          ++MII;
+          continue;
+        }
+
         LLVM_DEBUG(dbgs() << "  ADD IX/IY peephole: PUSH;POP;ADD;PUSH;POP → "
                           << TII->getName(NewOpc) << "\n");
         DebugLoc DL = I3->getDebugLoc();
