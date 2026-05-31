@@ -360,14 +360,26 @@ Z80RegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
   // #189 / #27).  Spilling still works: SPILL_GR16/RELOAD_GR16 accept GR16 and
   // GR16NoIR is a subclass, so no widening is needed to spill.
   //
-  // Gate on Z80UnreserveIY: when IY is reserved (the production default), GR16
-  // and GR16NoIR have the same allocatable set {DE,HL,BC}, so widening does not
-  // change allocation -- but the CLASS distinction still affects coalescing,
-  // and refusing to widen unconditionally regresses production code (extra
-  // spill churn from reduced coalescing freedom).  Keeping the original
-  // widening when IY is reserved makes production codegen byte-identical; the
-  // exclusion only matters when IY can actually be chosen.
-  if (RC == &Z80::GR16NoIRRegClass && z80IsIYAllocatable(MF))
+  // Gate on z80IsIYAllocatable: when IY is reserved (the production default),
+  // GR16 and the IY-excluding subclasses have the same allocatable set
+  // {DE,HL,BC}, so widening does not change allocation -- but the CLASS
+  // distinction still affects coalescing, and refusing to widen unconditionally
+  // regresses production code (extra spill churn from reduced coalescing
+  // freedom).  Keeping the original widening when IY is reserved makes
+  // production codegen byte-identical; the exclusion only matters when IY can
+  // actually be chosen.
+  //
+  // When IY IS allocatable, do NOT widen ANY IY-excluding 16-bit subclass
+  // (GR16NoIR = {DE,HL,BC}, GR16_BCDE = {DE,BC}, the single-pair classes) up
+  // to GR16, which would re-introduce IX/IY.  Those values are constrained
+  // because they are byte-decomposed (IX/IY have no documented 8-bit
+  // sub-register ops) or otherwise IY-incompatible; widening lets greedy's
+  // live-range splitting park such a value in IY and emit undocumented
+  // IYH/IYL (ravn/llvm-z80 #189; the residual leak hit test_28/39/96 at
+  // -Oz/-Os once +static-stack auto-IY made the path the default -- the
+  // GR16NoIR-only guard missed GR16_BCDE, the i16 EQ/NE compare operand class).
+  if (z80IsIYAllocatable(MF) && RC->hasSuperClass(&Z80::GR16RegClass) &&
+      !RC->contains(Z80::IY))
     return RC;
   // Return GR16, not Anyi16.  Anyi16 includes SP which is never allocatable,
   // and the SPILL_GR16/RELOAD_GR16 pseudos only accept GR16.  Widening to
