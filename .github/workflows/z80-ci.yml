@@ -5,23 +5,11 @@ name: Z80 backend CI
 # Once stable, propose for promotion to llvm-z80/llvm-z80 (engagement mode).
 
 on:
+  # Tests run on the main branch only (per maintainer direction).  Feature
+  # branches do not trigger CI; verify locally before merging.  workflow_dispatch
+  # is kept as a manual escape hatch.
   push:
-    branches: [main, "session-*", "z80-*"]
-    paths:
-      - 'llvm/lib/Target/Z80/**'
-      - 'llvm/test/CodeGen/Z80/**'
-      - 'llvm/test/MC/Z80/**'
-      - 'clang/lib/Driver/ToolChains/SDCC.cpp'
-      - 'clang/lib/Driver/ToolChains/Z80.cpp'
-      - 'clang/lib/Driver/ToolChains/Z80.h'
-      - 'clang/lib/Basic/Targets/Z80.cpp'
-      - 'clang/lib/Basic/Targets/Z80.h'
-      - 'clang/include/clang/Basic/BuiltinsZ80.td'
-      - 'clang/test/Driver/z80-*'
-      - 'clang/test/CodeGen/z80-*'
-      - 'clang/cmake/caches/Z80.cmake'
-      - '.github/workflows/z80-ci.yml'
-  pull_request:
+    branches: [main]
     paths:
       - 'llvm/lib/Target/Z80/**'
       - 'llvm/test/CodeGen/Z80/**'
@@ -114,3 +102,72 @@ jobs:
           du -sh build || true
           echo "ccache stats:"
           ccache -s || true
+
+  runtime-tests:
+    name: test-runner clang suite (z88dk-ticks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      # z88dk supplies the z88dk-ticks Z80 emulator that the test-runner shells
+      # out to.  Only the emulator is needed (the clang suite compiles with the
+      # just-built llvm-z80 clang and builds crt0 + compiler-rt on the fly), so a
+      # plain checkout + `make -C src/ticks` is enough -- no full z88dk build.
+      # Pinned to the workspace's known-good SHA so upstream drift can't redden
+      # this job independently of an llvm-z80 change.
+      - name: Checkout z88dk (z88dk-ticks emulator source)
+        uses: actions/checkout@v5
+        with:
+          repository: ravn/z88dk
+          ref: baae15ffc8bb7b56cf58f8ea2947e12478a818e0
+          path: z88dk
+          fetch-depth: 1
+
+      - name: Build z88dk-ticks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flex bison
+          make -C z88dk/src/ticks -j"$(nproc)"
+          # Put the emulator on PATH for subsequent steps.
+          echo "$GITHUB_WORKSPACE/z88dk/src/ticks" >> "$GITHUB_PATH"
+
+      - name: Verify build tools
+        run: |
+          cmake --version | head -1
+          ninja --version
+          clang --version | head -1
+          cargo --version
+          command -v z88dk-ticks   # confirm the emulator is on PATH (no exec)
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          # Share the build-and-lit cache so the clang/lld compile is warm.
+          key: z80-ci-${{ runner.os }}
+          max-size: "2G"
+
+      - name: Configure
+        run: |
+          cmake -C clang/cmake/caches/Z80.cmake -G Ninja -S llvm -B build \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLLVM_OPTIMIZED_TABLEGEN=ON
+
+      - name: Build clang + lld (the test-runner clang suite needs both)
+        run: ninja -C build clang lld
+
+      - name: Run test-runner clang suite (runtime/value oracle)
+        run: |
+          cd z80-utils/test-runner
+          BUILD_DIR=../../build cargo run --release -- clang
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "ccache stats:"; ccache -s || true
