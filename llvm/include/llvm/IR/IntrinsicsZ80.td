@@ -49,4 +49,25 @@ let TargetPrefix = "z80" in {  // All intrinsics start with "llvm.z80."
   // void @llvm.z80.set_i(i8 val)
   def int_z80_set_i : Intrinsic<[], [llvm_i8_ty], [IntrNoMem, IntrHasSideEffects]>;
 
+  // Fill memory with `count` copies of a K-byte little-endian pattern
+  // (ravn/llvm-z80#205).  Emitted by Z80LoopIdiomFill for recognised pattern
+  // -fill loops and lowered by the backend to a seed store + forward LDIR
+  // (the classic Z80 seed-and-propagate idiom).  This is a *defined* target
+  // intrinsic -- unlike the previous overlapping-memcpy representation, which
+  // was UB in IR -- and being target-specific it is opaque to generic passes
+  // (no InstCombine exploitation, no PreISelIntrinsicLowering loop-expansion).
+  // `pattern` is a little-endian integer whose low `k` bytes hold the pattern;
+  // its type is a power-of-two container (i8/i16/i32) so the backend never has
+  // to store an odd width (e.g. i24 for k==3) -- the real pattern width is the
+  // explicit `k` operand (1..4).
+  // void @llvm.z80.pattern.fill(ptr dst, iN pattern, i16 k, i16 count)
+  // `k` and `count` are passed as ordinary i16 arguments (G_CONSTANT vregs),
+  // NOT ImmArg: an ImmArg lowers to a literal MI operand (no .getReg()), which
+  // the backend reads via getIConstantVRegSExtVal -- the IR emitter always
+  // supplies constants, so a plain vreg arg is both sufficient and uniform.
+  def int_z80_pattern_fill
+      : Intrinsic<[], [llvm_ptr_ty, llvm_anyint_ty, llvm_i16_ty, llvm_i16_ty],
+                  [IntrArgMemOnly, IntrWriteMem, IntrWillReturn,
+                   NoCapture<ArgIndex<0>>, WriteOnly<ArgIndex<0>>]>;
+
 }

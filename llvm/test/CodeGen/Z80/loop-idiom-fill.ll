@@ -1,9 +1,12 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
 
-; Issue #88: pattern-fill loops with constant trip count get rewritten
-; in the IR as `seed K bytes; memcpy(base+K, base, K*(N-1))`, which the
-; backend then lowers as `seed; LDIR`.  K=1 (memset shape), K=2 (word
-; fill), K=3 (jump-table / IVT shape), K=4 are all in scope.
+; Issue #88 / #205: pattern-fill loops with constant trip count get rewritten
+; in the IR as the target intrinsic llvm.z80.pattern.fill(base, pattern, K, N),
+; which the backend lowers as `seed K bytes; LDIR` (forward overlapping copy,
+; BC=K*(N-1)).  K=1 (memset shape), K=2 (word fill), K=3 (jump-table / IVT
+; shape), K=4 are all in scope.  The seed is written with legal-width stores
+; (s16 chunks + an s8 tail), so K=3's seed is one LD (nn),HL + one LD (nn),A --
+; not three byte stores, and never an i24 store.
 
 @buf1 = external dso_local global [32 x i8]
 @buf2 = external dso_local global [16 x i16]
@@ -78,8 +81,7 @@ exit:
 }
 ; CHECK-LABEL: _fill_ivt:
 ; CHECK-NOT:  djnz
-; CHECK:      ld  (_ivt),
-; CHECK:      ld  (_ivt+1),
+; CHECK:      ld  (_ivt),hl
 ; CHECK:      ld  (_ivt+2),
 ; CHECK:      ld  bc,45
 ; CHECK-NEXT: ldir

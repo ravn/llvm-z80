@@ -7,9 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Recognise loops that fill a buffer with a fixed K-byte repeating pattern
-// (K in {1, 2, 3, 4}) for a constant trip count N, and replace them with
-// a seed (K loop-invariant byte stores) followed by a memcpy that lets
-// the Z80 backend lower it as a single LDIR (issue #88).
+// (K in {1, 2, 3, 4}) for a constant trip count N, and replace them with the
+// target intrinsic llvm.z80.pattern.fill (issue #88, #205).
 //
 // Pre-rewrite shape (the canonical for-loop form):
 //
@@ -20,22 +19,28 @@
 //     base[i*K + K-1] = v_{K-1};
 //   }
 //
-// Post-rewrite (in the loop preheader):
+// Post-rewrite (in the loop preheader), with the K seed bytes assembled into
+// one little-endian integer pattern:
 //
-//   base[0]  = v0;
-//   base[1]  = v1;
-//   ...
-//   base[K-1] = v_{K-1};
-//   memcpy(base + K, base, K * (N - 1));
+//   llvm.z80.pattern.fill(base, pattern, N);
 //
-// The Z80 backend's memcpy lowering already emits this as `LD HL,base;
-// LD DE,base+K; LD BC,K*(N-1); LDIR`.  LDIR's forward-direction copy with
-// dst = src + K propagates the K-byte seed across the whole buffer (a
-// classic Z80 trick).
+// The backend lowers the intrinsic to a seed store + forward LDIR (`LD HL,base
+// (src); LD DE,base+K (dst); LD BC,K*(N-1); LDIR`): LDIR's forward-direction
+// overlapping copy with dst = src + K propagates the K-byte seed across the
+// whole buffer (a classic Z80 trick).  Using a *target* intrinsic instead of
+// the old overlapping-memcpy representation matters: the overlapping memcpy
+// was UB in IR (it only survived via a `volatile` marker, #136), whereas the
+// intrinsic is defined and opaque to generic passes (no InstCombine
+// exploitation, no PreISelIntrinsicLowering loop-expansion).  SM83 has no LDIR
+// so the backend unrolls the intrinsic to N independent pattern stores.
 //
 // The pass is conservative: it only fires when the loop body contains
 // nothing but the K bytes worth of stores plus the IV update, the trip
-// count is a known constant >= 2, and the base pointer is loop-invariant.
+// count is a known constant >= 2, the base pointer is loop-invariant, and the
+// loop topology lets N (the store-block execution count) be derived exactly
+// from the trip count -- otherwise it leaves the loop for the generic
+// optimizer (ravn/llvm-z80#205: a raw trip count overruns a non-rotated loop
+// by one pattern).
 //
 // The pass exposes both a new-PM entry point (so clang's optimization
 // pipeline picks it up via the pipeline parsing callback) and a legacy
@@ -57,6 +62,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsZ80.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
@@ -86,13 +92,16 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
   if (Blocks.size() > 2)
     return false;
 
-  // Trip count must be a known constant >= 2.  Use the SE helper that
-  // returns the actual number of body executions regardless of whether
-  // the loop is do-while-shaped or while-shaped.
-  unsigned TripCount = SE.getSmallConstantTripCount(&L);
+  // A unique exiting block + a small constant trip count are required to size
+  // the fill.  getSmallConstantTripCount counts executions of that exiting
+  // block; the map to N (= store-block executions = patterns to fill) is done
+  // after store collection below, once we know which block holds the stores.
+  BasicBlock *Exiting = L.getExitingBlock();
+  if (!Exiting)
+    return false;
+  unsigned TripCount = SE.getSmallConstantTripCount(&L, Exiting);
   if (TripCount < 2)
     return false;
-  uint64_t N = TripCount;
 
   // Walk Body (and Header if separate) collecting StoreInsts.  Bail if
   // we see anything else with side effects, or a store with a
@@ -125,6 +134,35 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
     }
   }
   if (Stores.empty())
+    return false;
+
+  // Map the loop trip count to N = the number of times the store block runs
+  // (= patterns to fill).  getSmallConstantTripCount counts executions of the
+  // exiting block, which is NOT always the store-block count -- so a raw trip
+  // count overruns by one pattern on a non-rotated loop (ravn/llvm-z80#205: a
+  // K=2 fill wrote BC = K*N instead of K*(N-1)).  Two shapes are handled
+  // precisely; anything else bails to the generic optimizer:
+  //   * Rotated loop (the latch is the unique exiting block, incl. the merged
+  //     single-block case): every block runs once per iteration, so the store
+  //     -- in the header or the latch -- runs exactly TripCount times.
+  //   * Two-block non-rotated while/for (the header is the unique exit, store
+  //     in the latch): the header runs once more than the latch holding the
+  //     store, so the store runs TripCount-1 times.
+  // (A store in the *header* of a non-rotated loop is left to the generic
+  // optimizer -- its count depends on store-vs-exit-test order.)  All stores
+  // must share one block for this mapping to hold.
+  BasicBlock *StoreBB = Stores.front()->getParent();
+  for (StoreInst *SI : Stores)
+    if (SI->getParent() != StoreBB)
+      return false;
+  uint64_t N;
+  if (Exiting == Latch)
+    N = TripCount;            // rotated: all blocks run TripCount times
+  else if (Exiting == Header && StoreBB == Latch)
+    N = TripCount - 1;        // non-rotated while/for; store in latch
+  else
+    return false;             // unrecognised topology -- leave to generic opt
+  if (N < 2)
     return false;
 
   // Sum store sizes -> K (total pattern width in bytes).
@@ -214,44 +252,36 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
   LLVM_DEBUG(dbgs() << "z80-loop-idiom-fill: matched K=" << K << " N=" << N
                     << " in " << Header->getParent()->getName() << "\n");
 
-  // ravn/llvm-z80#136: emit the seed + memcpy(base+K, base, K*(N-1)), but mark
-  // the memcpy VOLATILE.  The non-volatile form was correct at every opt level
-  // EXCEPT -O1: there a generic InstCombine widens/inlines the small,
-  // *overlapping* memcpy (dst = base+K, src = base, len = K*(N-1) > K when
-  // N > 2 -- an overlap that is UB for memcpy) into a wide load+store
-  // (load-all-then-store) that does NOT do the forward byte propagation the
-  // LDIR lowering provides; it reads the not-yet-written source bytes and
-  // miscompiles the fill.  InstCombine does not touch a volatile mem-transfer,
-  // so the memcpy always reaches the backend and is lowered as LDIR (the
-  // forward-propagating copy this idiom requires).  Only the volatile bit
-  // changes vs. the working code, so -O0/-O2/-O3/-Os/-Oz codegen is identical
-  // (production stays byte-for-byte identical) and only the broken -O1 path is
-  // corrected.
+  // ravn/llvm-z80#205: emit the defined target intrinsic
+  // llvm.z80.pattern.fill(base, pattern, K, N).  The backend lowers it to the
+  // seed store + forward LDIR (Z80) -- the same compact idiom as before -- but
+  // because it is a target intrinsic it is opaque to generic passes: no UB (the
+  // previous representation, an *overlapping* memcpy, was UB in IR and only
+  // survived via a `volatile` marker, #136) and no PreISelIntrinsicLowering
+  // loop-expansion (which is what would happen to llvm.experimental.memset
+  // .pattern).  SM83 (no LDIR) lowers the intrinsic to unrolled stores.
   IRBuilder<> Builder(Preheader->getTerminator());
-  Type *I8 = Type::getInt8Ty(Header->getContext());
   Type *I16 = Type::getInt16Ty(Header->getContext());
 
-  Value *I8Base = Base;
-
-  // Emit one seed store per slot, preserving original value type.
+  // Assemble the K-byte pattern as a single little-endian integer.  Use a
+  // power-of-two container (i8/i16/i32) rather than an exact iK*8 width: K==3
+  // would otherwise be an i24, which the backend cannot store as a single MI.
+  // The real pattern width is passed explicitly to the intrinsic.  A slot at
+  // byte Offset (width Size) occupies pattern bits [Offset*8, Offset*8+Size*8);
+  // Z80 is little-endian, so a lower address is a less-significant byte.
+  unsigned ContBytes = K <= 1 ? 1 : K <= 2 ? 2 : 4;  // K in 1..4
+  Type *PatTy = IntegerType::get(Header->getContext(), ContBytes * 8);
+  Value *Pattern = ConstantInt::get(PatTy, 0);
   for (const Slot &S : Slots) {
-    Value *Addr = I8Base;
+    Value *V = Builder.CreateZExtOrTrunc(S.SI->getValueOperand(), PatTy);
     if (S.Offset != 0)
-      Addr = Builder.CreateInBoundsGEP(
-          I8, I8Base, ConstantInt::get(I16, S.Offset), "z80.fill.seed");
-    Builder.CreateAlignedStore(S.SI->getValueOperand(), Addr,
-                               S.SI->getAlign(), S.SI->isVolatile());
+      V = Builder.CreateShl(V, ConstantInt::get(PatTy, (uint64_t)S.Offset * 8));
+    Pattern = Builder.CreateOr(Pattern, V);
   }
 
-  // Emit volatile memcpy(base + K, base, K*(N-1)) -- volatile so InstCombine
-  // never inlines it to the load-all-then-store form that breaks #136.
-  uint64_t CopyLen = (uint64_t)K * (N - 1);
-  if (CopyLen > 0) {
-    Value *DstAddr = Builder.CreateInBoundsGEP(
-        I8, I8Base, ConstantInt::get(I16, K), "z80.fill.dst");
-    Builder.CreateMemCpy(DstAddr, MaybeAlign(1), I8Base, MaybeAlign(1),
-                         ConstantInt::get(I16, CopyLen), /*isVolatile=*/true);
-  }
+  Builder.CreateIntrinsic(
+      Intrinsic::z80_pattern_fill, {PatTy},
+      {Base, Pattern, ConstantInt::get(I16, K), ConstantInt::get(I16, N)});
 
   // Erase the original stores.  deleteDeadLoop will remove the empty
   // body+IV-update plus header CFG.

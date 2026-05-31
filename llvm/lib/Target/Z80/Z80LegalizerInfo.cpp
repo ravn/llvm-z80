@@ -553,6 +553,118 @@ bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,
   case Intrinsic::z80_set_i:
     // These intrinsics are legal and will be selected directly
     return true;
+
+  case Intrinsic::z80_pattern_fill: {
+    // ravn/llvm-z80#205: fill `count` copies of a K-byte little-endian pattern.
+    // On Z80: store the pattern once (the seed), then LDIR with HL=dst (src),
+    // DE=dst+K, BC=K*(count-1) -- the forward overlapping copy propagates the
+    // seed (the classic Z80 idiom).  The overlap is a post-IR MIR construct, so
+    // no IR optimizer can exploit it (unlike the old overlapping-memcpy form,
+    // which was UB in IR).  Operands: 0=id, 1=dst, 2=pattern, 3=count(i16).
+    MachineIRBuilder &B = Helper.MIRBuilder;
+    MachineRegisterInfo &MRI = *B.getMRI();
+    MachineFunction &MF = B.getMF();
+    Register DstPtr = MI.getOperand(1).getReg();
+    Register Pattern = MI.getOperand(2).getReg();
+    // Operands: 0=id, 1=dst, 2=pattern, 3=K (imm), 4=count(i16).  K is the real
+    // pattern width (1..4); `Pattern`'s type is a power-of-two container so the
+    // seed never needs an odd-width (i24) store.
+    auto KImm = getIConstantVRegSExtVal(MI.getOperand(3).getReg(), MRI);
+    // K must be a compile-time constant in 1..4 (the IR emitter guarantees it).
+    // Guard hard rather than assert: asserts are off in release, and a garbage
+    // K would spin the seed loop into an OOM.
+    if (!KImm || *KImm < 1 || *KImm > 4)
+      report_fatal_error("llvm.z80.pattern.fill: K must be a constant in 1..4");
+    unsigned K = (unsigned)*KImm;
+    Register Count = MI.getOperand(4).getReg();
+    LLT PtrTy = MRI.getType(DstPtr);
+    LLT S8 = LLT::scalar(8), S16 = LLT::scalar(16);
+    auto CountC = getIConstantVRegSExtVal(Count, MRI);
+
+    B.setInsertPt(*MI.getParent(), MI.getIterator());
+
+    // Store the K-byte pattern at BaseAddr using legal-width stores: 2-byte
+    // (s16) chunks plus a 1-byte (s8) tail.  Extract each chunk from the
+    // power-of-two container `Pattern` (so all truncs/shifts are legal -- no
+    // i24).  Keeps the common K==2 word-fill a single LD (nn),HL.
+    LLT PatLLT = MRI.getType(Pattern);
+    auto emitSeedAt = [&](Register BaseAddr) {
+      for (unsigned Off = 0; Off < K;) {
+        unsigned W = (K - Off >= 2) ? 2 : 1;
+        LLT VT = (W == 2) ? S16 : S8;
+        Register Shifted = Pattern;
+        if (Off != 0)
+          Shifted =
+              B.buildLShr(PatLLT, Pattern, B.buildConstant(PatLLT, Off * 8))
+                  .getReg(0);
+        // Truncate to the chunk width, but only when it is strictly narrower
+        // than the container -- a same-width G_TRUNC is degenerate and makes
+        // the artifact combiner spin (no-asserts builds OOM rather than trip
+        // an assert).  K==1 (s8 container) and K==2 (s16 container) hit this.
+        Register Chunk = (VT == PatLLT) ? Shifted : B.buildTrunc(VT, Shifted).getReg(0);
+        Register Addr = BaseAddr;
+        if (Off != 0)
+          Addr = B.buildPtrAdd(PtrTy, BaseAddr, B.buildConstant(S16, Off))
+                     .getReg(0);
+        auto *MMO = MF.getMachineMemOperand(
+            MachinePointerInfo(), MachineMemOperand::MOStore, W, Align(1));
+        B.buildStore(Chunk, Addr, *MMO);
+        Off += W;
+      }
+    };
+
+    const auto &STI = MF.getSubtarget<Z80Subtarget>();
+    if (!STI.hasZ80()) {
+      // SM83 has no LDIR; the seed-and-propagate trick is unavailable.  For a
+      // constant count, emit `count` independent pattern stores (defined, no
+      // overlap).  Z80LoopIdiomFill is the only emitter and the matcher
+      // requires a constant trip count, so the variable case is unreachable.
+      if (!CountC)
+        report_fatal_error("llvm.z80.pattern.fill: variable count "
+                           "unsupported on SM83");
+      for (int64_t I = 0; I < *CountC; ++I) {
+        Register Addr = DstPtr;
+        if (I != 0) {
+          auto Off = B.buildConstant(S16, I * (int64_t)K);
+          Addr = B.buildPtrAdd(PtrTy, DstPtr, Off).getReg(0);
+        }
+        emitSeedAt(Addr);
+      }
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Seed store: write the K-byte pattern at dst.
+    emitSeedAt(DstPtr);
+
+    // count <= 1: the seed is the entire fill.
+    if (CountC && *CountC <= 1) {
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // DE = dst + K (LDIR destination); HL = dst (source); BC = K*(count-1).
+    auto KC = B.buildConstant(S16, K);
+    Register DstPlusK = B.buildPtrAdd(PtrTy, DstPtr, KC).getReg(0);
+    Register Len;
+    if (CountC) {
+      Len = B.buildConstant(S16, (int64_t)K * (*CountC - 1)).getReg(0);
+    } else {
+      auto One = B.buildConstant(S16, 1);
+      auto Cm1 = B.buildSub(S16, Count, One);
+      Len = B.buildMul(S16, Cm1, KC).getReg(0);
+    }
+    B.buildCopy(Register(Z80::HL), DstPtr);
+    B.buildCopy(Register(Z80::DE), DstPlusK);
+    B.buildCopy(Register(Z80::BC), Len);
+    // Unguarded LDIR when count is a known constant (BC = K*(count-1) >= K > 0
+    // since count >= 2 here); guarded otherwise (BC may be 0 at runtime).
+    B.buildInstr(CountC ? Z80::LDIR : Z80::LDIR_GUARDED);
+
+    MI.eraseFromParent();
+    return true;
+  }
+
   default:
     return false;
   }
