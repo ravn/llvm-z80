@@ -15,14 +15,18 @@
 //   AND not in their own SCC's self-edge.  No recursion cycle reachable
 //   from F to itself.
 //
-// Safety caveat (applies to both levels): a function F is unsafe under
-// static-stack iff F is called CONCURRENTLY with itself (e.g. from
-// both main flow and an ISR).  This pass does NOT check that
-// condition -- the typical Z80 firmware shape has ISRs calling only
-// ISR-specific helpers, not arbitrary user functions.  If a user's
-// ISR shares a function with main flow, they must opt out explicitly
-// via "target-features"="+no-static-stack" at the source level (not
-// implemented yet -- needs feature-parser additions).
+// Safety gate (applies to both levels): a function F is unsafe under
+// static-stack iff F is called CONCURRENTLY with itself (e.g. a helper
+// shared between main flow and a preemptive ISR re-enters and clobbers
+// its own fixed BSS slots).  runOnModule builds an "unsafe" taint set --
+// everything reachable from an "interrupt"-attributed function, plus every
+// address-taken function (an opaque indirect-call / runtime-vector target) --
+// and processFunction refuses +static-stack on it.
+//
+// Per-function opt-out: a user disables static-stack on one function with
+// __attribute__((target("no-static-stack"))), which clang lowers to
+// "target-features"="...,-static-stack"; the substring check below skips it,
+// and the feature parser clears the bit even if +static-stack were present.
 //
 // Per ravn/llvm-z80#176/#40.  Opt-in via -mllvm -z80-auto-static-stack=true.
 // Default off until a broader empirical validation lands.
@@ -32,6 +36,7 @@
 #include "Z80AutoStaticStack.h"
 #include "Z80.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
@@ -91,9 +96,47 @@ public:
       NonRecursive.insert(F);
     }
 
+    // ISR-concurrency / opaque-target safety gate (ravn/llvm-z80#176).
+    // +static-stack puts locals in FIXED BSS slots, so a function that can run
+    // CONCURRENTLY WITH ITSELF (it is executing when an interrupt fires and the
+    // ISR path re-enters the same function, or a helper shared by main flow and
+    // an ISR) would clobber its own slots.  Conservatively refuse +static-stack
+    // on two ORed predicates (kept separate so the address-taken half can be
+    // relaxed later via a main-reachability analysis without touching the ISR
+    // half):
+    //
+    //   (1) reachable from any "interrupt"-attributed function (transitively,
+    //       over direct CallGraph edges) -- a shared helper may re-enter; and
+    //   (2) address-taken -- an opaque indirect call (CallsExternalNode) or a
+    //       runtime-installed interrupt vector could dispatch to it, neither of
+    //       which the CallGraph can resolve.
+    //
+    // Seeding the address-taken set directly covers the opaque-edge case: the
+    // set of functions an opaque call can reach is exactly the address-taken
+    // set, so a null callee on a tainted node's edge needs no special handling.
+    SmallPtrSet<const Function *, 16> Unsafe;
+    SmallVector<const Function *, 8> Work;
+    for (Function &F : M)
+      if (F.hasFnAttribute("interrupt") || F.hasAddressTaken())
+        if (Unsafe.insert(&F).second)
+          Work.push_back(&F);
+    while (!Work.empty()) {
+      const Function *F = Work.pop_back_val();
+      const CallGraphNode *N = CG[F];
+      if (!N)
+        continue;
+      for (const auto &Edge : *N) {
+        const Function *Callee = Edge.second->getFunction();
+        if (!Callee) // CallsExternalNode: opaque target, covered by (2).
+          continue;
+        if (Unsafe.insert(Callee).second)
+          Work.push_back(Callee);
+      }
+    }
+
     bool Changed = false;
     for (Function &F : M)
-      Changed |= processFunction(F, NonRecursive);
+      Changed |= processFunction(F, NonRecursive, Unsafe);
     return Changed;
   }
 
@@ -103,7 +146,8 @@ public:
 
 private:
   bool processFunction(Function &F,
-                       const SmallPtrSetImpl<const Function *> &NonRecursive) {
+                       const SmallPtrSetImpl<const Function *> &NonRecursive,
+                       const SmallPtrSetImpl<const Function *> &Unsafe) {
     // Definition only.
     if (F.empty())
       return false;
@@ -112,7 +156,13 @@ private:
     if (F.hasFnAttribute("target-features"))
       Existing = F.getFnAttribute("target-features").getValueAsString();
     if (Existing.contains("static-stack"))
-      return false; // already set (or explicitly disabled via +no-static-stack).
+      return false; // already set (or explicitly disabled via -static-stack).
+
+    // ISR-concurrency / opaque-target safety gate (see runOnModule).  Refuse
+    // BEFORE the leaf scan: even a leaf ISR helper can run concurrently with
+    // itself, so being a leaf does not make it safe.
+    if (Unsafe.contains(&F))
+      return false;
 
     // Level 1: leaf (no CALL / INVOKE).
     bool IsLeaf = true;
