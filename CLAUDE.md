@@ -53,6 +53,27 @@ Test cases live in `z80-utils/test-runner/testcases/{clang,llc,sdcc,custom}/`. T
 
 The `BUILD_DIR` env var overrides the default build directory (`../build`).
 
+### What CI gates (lit + runtime suite)
+`.github/workflows/z80-ci.yml` has two jobs:
+- **`build-and-lit`** — builds clang/llc/lld and runs the lit suites (`CodeGen/Z80`,
+  `MC/Z80`; cost-model `Analysis/CostModel/Z80` runs via the codegen target deps).
+- **`runtime-tests`** — builds `z88dk-ticks` (from a `z88dk/z88dk` checkout) + the
+  Z80 runtime, then runs `cargo run -- clang` (the runtime/value oracle).
+
+**Discipline for compiler changes:**
+- The CI-gated proof of any behavior change is a **lit test** that pins the generated
+  instruction sequence (FileCheck) — add one even when the bug is most naturally shown
+  at runtime. lit is the fast, deterministic, always-on gate.
+- A **test-runner runtime fixture** (`testcases/clang/*.c` with `/* expect 0xNNNN */`)
+  is the right *additional* proof when correctness is only observable at runtime
+  (e.g. an over-run sentinel). These are auto-discovered (glob, no manifest) and now
+  CI-gated by `runtime-tests` — but they are slower and emulator-dependent, so they
+  complement, never replace, the lit test.
+- Net rule: **every compiler change ships with a lit test; runtime correctness that a
+  lit test can't express also ships with a runtime fixture.** (ravn/llvm-z80#205 is the
+  worked example: lit pins the `seed + ldir`/`bc,K*(N-1)` lowering; the fixtures catch
+  a one-pattern over-run via in-array sentinels.)
+
 ## Design Goal: Z80 Instruction-Driven Code Generation
 
 The primary optimization goal is to **work backwards from Z80's unique instructions** to shape register allocation and code generation, rather than generating generic code and hoping late peepholes catch it.

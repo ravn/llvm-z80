@@ -76,6 +76,13 @@ the whole brief.
 - **Never open a PR unless explicitly asked in the current turn.** Commit/push only
   when asked; branch off the default branch before committing, and **delete the
   branch once it's merged** (so stale branches don't accumulate).
+- **Know which tier CI gates.** A test only protects against regressions if CI runs
+  it. Here CI runs both the lit suite (`build-and-lit`) and the test-runner runtime
+  oracle (`runtime-tests`); the lit test is the primary, deterministic gate, so every
+  compiler change ships with one (pin the codegen with FileCheck). Add a runtime
+  fixture too when correctness is only observable at runtime. See CLAUDE.md for the
+  full rule. Generally: before relying on a new test, confirm a CI job actually
+  executes it.
 
 ## Debugging method
 
