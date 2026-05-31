@@ -1,5 +1,9 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s --check-prefix=FP
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-auto-static-stack=false < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-auto-static-stack=false < %s | FileCheck %s --check-prefix=FP
+;
+; -z80-auto-static-stack=false: these functions exercise the dynamic IX-frame
+; and SP-relative addressing paths, which auto-static-stack (#176, default on)
+; would bypass by routing their locals to BSS.  Pin the dynamic-frame path.
 
 ; Test: large frame with FP uses IX + large-offset HL-indirect sequence
 define i8 @large_frame_i8(i8 %val) "frame-pointer"="all" {

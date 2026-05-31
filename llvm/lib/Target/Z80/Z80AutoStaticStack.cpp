@@ -28,8 +28,8 @@
 // "target-features"="...,-static-stack"; the substring check below skips it,
 // and the feature parser clears the bit even if +static-stack were present.
 //
-// Per ravn/llvm-z80#176/#40.  Opt-in via -mllvm -z80-auto-static-stack=true.
-// Default off until a broader empirical validation lands.
+// Per ravn/llvm-z80#176/#40.  Default on; global opt-out via
+// -mllvm -z80-auto-static-stack=false.
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,11 +50,12 @@ using namespace llvm;
 #define DEBUG_TYPE "z80-auto-static-stack"
 
 static cl::opt<bool> EnableAutoStaticStack(
-    "z80-auto-static-stack", cl::init(false), cl::Hidden,
+    "z80-auto-static-stack", cl::init(true), cl::Hidden,
     cl::desc("Z80: auto-inject +static-stack on provably-non-recursive "
-             "functions (default off; opt-in via "
-             "-mllvm -z80-auto-static-stack=true).  Includes leaves (Level 1) "
-             "and CallGraph-SCC-non-recursive functions (Level 2)."));
+             "functions (default on; global opt-out via "
+             "-mllvm -z80-auto-static-stack=false).  Includes leaves (Level 1) "
+             "and CallGraph-SCC-non-recursive functions (Level 2), minus the "
+             "ISR-concurrency / address-taken safety gate."));
 
 namespace {
 
