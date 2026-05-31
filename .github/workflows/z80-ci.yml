@@ -128,6 +128,9 @@ jobs:
           ref: baae15ffc8bb7b56cf58f8ea2947e12478a818e0
           path: z88dk
           fetch-depth: 1
+          # ext/uthash is a git submodule (z88dk/uthash) that ticks.h needs
+          # (`-I ext/uthash/src`); checkout does not fetch submodules by default.
+          submodules: true
 
       - name: Build z88dk-ticks
         run: |
