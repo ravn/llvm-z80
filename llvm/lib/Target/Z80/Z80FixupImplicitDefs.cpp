@@ -162,6 +162,58 @@ bool Z80FixupImplicitDefs::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // Sub-register liveness repair for KILL pseudos (test_12 popcount16).
+  // The rewriter can emit `dead $pair = KILL $pair, implicit-def $sub` that
+  // revives only ONE half of a register pair even when the sibling half is
+  // still read later in the SAME block.  In popcount16's loop the i16 `val`
+  // gives `dead $hl = KILL $hl, implicit-def $l` (for the `val & 1` low-byte
+  // read) followed by `LSHR16 $hl` (the `val >>= 1`, which needs $h); the
+  // dead $hl def kills $h, so LSHR16 -> SRL_H reads an undefined $h.
+  // fullyRecomputeLiveIns (below) only fixes block live-ins, not this
+  // intra-block gap.  Revive any sibling sub-register of a KILL-defined pair
+  // that is read downstream in the block before being redefined.  KILL emits
+  // no code, so adding an implicit-def is metadata-only (byte-identical).
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineBasicBlock::iterator It = MBB.begin(), E = MBB.end(); It != E;
+         ++It) {
+      MachineInstr &MI = *It;
+      if (!MI.isKill())
+        continue;
+      SmallVector<MCPhysReg, 2> PairDefs;
+      SmallSet<MCPhysReg, 4> AlreadyDef;
+      for (const MachineOperand &MO : MI.operands()) {
+        if (!MO.isReg() || !MO.isDef() || !MO.getReg().isPhysical())
+          continue;
+        MCPhysReg R = MO.getReg().asMCReg();
+        AlreadyDef.insert(R);
+        if (TRI->subregs(R).begin() != TRI->subregs(R).end())
+          PairDefs.push_back(R); // a register-pair super-register
+      }
+      for (MCPhysReg Pair : PairDefs) {
+        for (MCPhysReg Sub : TRI->subregs(Pair)) {
+          if (AlreadyDef.count(Sub))
+            continue;
+          bool ReadBeforeRedef = false;
+          for (auto Scan = std::next(It); Scan != E; ++Scan) {
+            if (Scan->readsRegister(Sub, TRI)) {
+              ReadBeforeRedef = true;
+              break;
+            }
+            if (Scan->definesRegister(Sub, TRI))
+              break; // redefined before any read: genuinely dead at the KILL
+          }
+          if (!ReadBeforeRedef)
+            continue;
+          MI.addOperand(MachineOperand::CreateReg(Sub, /*isDef=*/true,
+                                                  /*isImp=*/true));
+          Changed = true;
+          LLVM_DEBUG(dbgs() << "Z80FixupImplicitDefs: revived implicit-def "
+                            << printReg(Sub, TRI) << " on KILL: " << MI);
+        }
+      }
+    }
+  }
+
   // After removing the spurious super-register implicit-defs above, recompute
   // block live-ins for the whole function.  LiveVariables (#156428) also leaves
   // *inconsistent block live-ins* for independent register-pair halves -- a
