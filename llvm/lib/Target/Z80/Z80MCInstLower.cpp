@@ -13,6 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "Z80MCInstLower.h"
+#include "MCTargetDesc/Z80MCExpr.h"
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80InstrInfo.h"
 #include "Z80MachineFunctionInfo.h"
@@ -103,5 +104,20 @@ MCOperand Z80MCInstLower::lowerSymbolOperand(const MachineOperand &MO,
   if (!MO.isJTI() && MO.getOffset() != 0)
     Expr = MCBinaryExpr::createAdd(
         Expr, MCConstantExpr::create(MO.getOffset(), Ctx), Ctx);
+  // Byte-half operand flags (ravn/llvm-z80#205 follow-up): wrap the symbol in
+  // the lo/hi Z80MCExpr so an 8-bit immediate field (e.g. `LD (HL),<sym>`)
+  // emits the Addr16_Low / Addr16_High relocation instead of a 16-bit one.
+  switch (MO.getTargetFlags()) {
+  case Z80::MO_LO:
+    Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_LO, Expr, /*IsNegated=*/false,
+                             Ctx);
+    break;
+  case Z80::MO_HI:
+    Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_HI, Expr, /*IsNegated=*/false,
+                             Ctx);
+    break;
+  default:
+    break;
+  }
   return MCOperand::createExpr(Expr);
 }

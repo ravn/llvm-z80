@@ -40,6 +40,29 @@
 
 using namespace llvm;
 
+// ravn/llvm-z80#205 follow-up (experimental, default OFF).  Rewrite a K=2
+// pattern-fill seed `LD HL,VAL; LD (nn),HL; ... ; LD HL,nn; ... ; LDIR` so the
+// seed is written through (HL) in reversed byte order, landing HL on the fill
+// base -- which is the LDIR source -- and folding away the separate `LD HL,nn`
+// source setup.  Saves 1 byte/site UNCOMPRESSED (9 B value+seed+src-load ->
+// 8 B).  VAL may be a constant (two imm byte stores) or a symbol (MO_HI/MO_LO
+// byte-half stores, lowered to Addr16_High/Low relocations in Z80MCInstLower).
+//
+// CAVEAT -- why this is default OFF and not adopted by any production target:
+// the reversed seed replaces the original's repetitive address bytes
+// (`21 5f ed 22 00 ea 21 00 ea`, lots of repeated ea/00/21) with less
+// compressible ones (`21 01 ea 36 ed 2b 36 5f`).  On a ZX0-compressed PROM
+// (cpnos PROM1, autoload) the worse compressibility costs MORE than the 1 byte
+// saved -- measured cpnos PROM1 2032 -> 2033 B, a net REGRESSION -- so the win
+// only materialises on uncompressed targets.  Kept behind the flag as correct,
+// tested infrastructure (and the first user of the MO_LO/MO_HI byte-half
+// symbol-store lowering) pending an uncompressed workload that benefits.
+static cl::opt<bool> EnableReverseFillSeed(
+    "z80-reverse-fill-seed", cl::Hidden, cl::init(false),
+    cl::desc("Z80: rewrite K=2 LDIR fill seed as a reversed (HL) byte store "
+             "that lands HL on the fill base (saves 1 byte/site uncompressed; "
+             "can regress ZX0-compressed PROMs -- default off)"));
+
 // Custom DenseMapInfo for IX offsets.  The default DenseMapInfo<int8_t> uses
 // -1 and -2 as sentinel values, which collide with valid IX offsets.
 // Using int as the key type with out-of-range sentinels avoids this.
@@ -6353,6 +6376,97 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   // verify-clean (PEI and other generic post-RA passes have their own
   // pre-existing staleness).  Deferred pending either a byte-neutral surgical
   // live-in update in the #60 removal or a coordinated verify-clean effort.
+
+  // --- Peephole (experimental, #205 follow-up): reversed (HL) fill seed ---
+  // Match the K=2 LDIR-fill setup the pattern-fill lowering emits (DE first):
+  //   I5: LD_DE_nn  addr+2     ; LDIR destination (kept)
+  //   I4: LD_HL_nn  VAL        ; value (constant or symbol)
+  //   I3: LD_nnind_HL addr     ; seed store  (addr)
+  //   I2: LD_HL_nn  addr       ; LDIR source  (== seed addr)
+  //   I1: LD_BC_nn  len        ; LDIR count (kept)
+  //       LDIR
+  // and rewrite the value-load + seed-store + source-load (9 B) into a reversed
+  // (HL) seed that lands HL on the base (8 B):
+  //   LD HL,addr+1 ; LD (HL),hi ; DEC HL ; LD (HL),lo   (HL ends = addr = src)
+  // HL is then the LDIR source, so the separate `LD HL,addr` is folded away.
+  if (EnableReverseFillSeed) {
+    auto sameAddr = [](const MachineOperand &A, const MachineOperand &B) {
+      if (A.isImm() && B.isImm())
+        return A.getImm() == B.getImm();
+      if (A.isGlobal() && B.isGlobal())
+        return A.getGlobal() == B.getGlobal() &&
+               A.getOffset() == B.getOffset() &&
+               A.getTargetFlags() == B.getTargetFlags();
+      return false;
+    };
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE; ++MII) {
+        if (MII->getOpcode() != Z80::LDIR || MII == MBB.begin())
+          continue;
+        auto I1 = std::prev(MII);
+        if (I1 == MBB.begin() || I1->getOpcode() != Z80::LD_BC_nn)
+          continue;
+        auto I2 = std::prev(I1);
+        if (I2 == MBB.begin() || I2->getOpcode() != Z80::LD_HL_nn)
+          continue;
+        auto I3 = std::prev(I2);
+        if (I3 == MBB.begin() || I3->getOpcode() != Z80::LD_nnind_HL)
+          continue;
+        auto I4 = std::prev(I3);
+        const MachineOperand ValOp = I4->getOperand(0);  // the fill value
+        if (I4 == MBB.begin() || I4->getOpcode() != Z80::LD_HL_nn ||
+            !(ValOp.isImm() || ValOp.isGlobal()))
+          continue;
+        // I5 = the LDIR-destination load (LD DE,dst), emitted before the seed
+        // by the pattern-fill lowering; it is kept as-is.
+        auto I5 = std::prev(I4);
+        if (I5->getOpcode() != Z80::LD_DE_nn)
+          continue;
+        // Seed-store address must equal the LDIR source address.
+        if (!sameAddr(I3->getOperand(0), I2->getOperand(0)))
+          continue;
+
+        const MachineOperand Addr = I2->getOperand(0);  // base (== seed addr)
+        DebugLoc DL = I2->getDebugLoc();
+
+        // LD HL,addr+1
+        auto SrcLd = BuildMI(MBB, *I2, DL, TII->get(Z80::LD_HL_nn));
+        if (Addr.isImm())
+          SrcLd.addImm(Addr.getImm() + 1);
+        else
+          SrcLd.addGlobalAddress(Addr.getGlobal(), Addr.getOffset() + 1,
+                                 Addr.getTargetFlags());
+
+        // Emit `LD (HL),<hi/lo of VAL>`.  A constant VAL splits into two imm
+        // bytes; a symbol VAL uses MO_HI/MO_LO byte-half operands (lowered to
+        // the Addr16_High / Addr16_Low relocation in Z80MCInstLower).
+        auto emitByteStore = [&](bool HiHalf) {
+          auto MIB = BuildMI(MBB, *I2, DL, TII->get(Z80::LD_HLind_n));
+          if (ValOp.isImm()) {
+            int64_t V = ValOp.getImm();
+            MIB.addImm(HiHalf ? ((V >> 8) & 0xFF) : (V & 0xFF));
+          } else {
+            MIB.addGlobalAddress(ValOp.getGlobal(), ValOp.getOffset(),
+                                 HiHalf ? Z80::MO_HI : Z80::MO_LO);
+          }
+        };
+        // LD (HL),hi ; DEC HL ; LD (HL),lo   -> HL = addr
+        emitByteStore(/*HiHalf=*/true);
+        BuildMI(MBB, *I2, DL, TII->get(Z80::DEC_HL));
+        emitByteStore(/*HiHalf=*/false);
+
+        LLVM_DEBUG(dbgs() << "  reversed fill-seed\n");
+        // Drop the value load (I4), the absolute seed store (I3) and the
+        // separate source load (I2); the LD DE,dst (I5) and LD BC,len (I1) are
+        // kept, and HL now lands on the base via the reversed (HL) seed above.
+        I4->eraseFromParent();
+        I3->eraseFromParent();
+        I2->eraseFromParent();
+        Changed = true;
+      }
+    }
+  }
 
   return Changed;
 }
