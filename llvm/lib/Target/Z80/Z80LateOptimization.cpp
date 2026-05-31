@@ -3194,7 +3194,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
                           << TRI->getName(SbcRR) << "\n");
 
         // Replace I1..I6 with: AND A; SBC HL,rr.
-        BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(Z80::AND_A));
+        // A is dead after the branch (checked above), and AND A here only
+        // clears carry for the SBC -- its $a read is a don't-care.  Mark it
+        // undef so -verify-machineinstrs doesn't abort on an undefined $a read
+        // (ravn/llvm-z80#197; the byte-XOR compare this replaces left A dead).
+        auto AndA = BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(Z80::AND_A));
+        for (MachineOperand &MO : AndA->operands())
+          if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
+            MO.setIsUndef(true);
         BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(sbcHLOpc(SbcRR)));
 
         // Erase I1..I6 (advance MII past the deleted range first).
