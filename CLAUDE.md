@@ -285,7 +285,9 @@ Top 3 worst functions: fdc_read_data (+95B), check_sysfile (+59B), lookup_sector
 **PUSH/POP for IX/IY copies** (issue #32): FIXED. `copyPhysReg` now emits `COPY16_PUSHPOP` pseudo (single MI) instead of raw `PUSH IX; POP DE` for IX/IY copies without `+undocumented`. The pseudo expands to adjacent PUSH/POP in `Z80ExpandPseudo` (after all optimization passes), preventing passes from inserting between them. Documented instructions only, no +undocumented required. LateOptimization peepholes (IX constant propagation, ADD IX, IX transfer) updated to match the pseudo.
 
 ### Bug Reports
-File bugs in `ravn/llvm-z80` only, never upstream LLVM. Collect crash artifacts (preprocessed source, run script) into a zip.
+Default: file bugs in `ravn/llvm-z80` only, never official upstream LLVM. Collect crash artifacts (preprocessed source, run script) into a zip.
+
+**Engagement-mode (session 77, user-confirmed):** when the user explicitly directs a *curated* upstream submission "z80 upstream only", file issues at the fork-of-record **`llvm-z80/llvm-z80`** (@zlfn) — one issue per underlying bug, with a linked failing test case and the fix framed as a proposal, **drafted and approved before filing**, plus ONE tests-only PR (never a PR per bug, never a fix PR). Never official `llvm/llvm-project` directly; reference (don't duplicate) bugs already open there. See memories `feedback_no_upstream_issues`, `feedback_no_pull_requests`, `feedback_upstream_routing_two_targets`.
 
 ## Code Review Notes
 
