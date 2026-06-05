@@ -1,5 +1,38 @@
 # Session 77 — Curated upstream submission to llvm-z80/llvm-z80 (2026-06-01)
 
+> **RETRACTION (2026-06-05).** PR #17 was **closed by @zlfn** with: *"I can't
+> merge code contributions that contributors can't explain themselves.
+> Especially if it's unclear whether they should be submitted to upstream or
+> Z80 fork like this."* The rejection was correct on two grounds:
+>
+> 1. **Misroute.** 5 of the 6 XFAIL demonstrations are target-agnostic
+>    generic-LLVM bugs (#18 deleteDeadLoop, #19/#21 TruncInstCombine, #20
+>    SimplifyCFG cost gate, #22 InstCombine memcpy-fold) that belong at
+>    `llvm/llvm-project`, not at the Z80 fork. This session misread "z80
+>    upstream only" as a routing directive ("file at the Z80 fork") when it
+>    was actually a velocity directive ("don't fan out to multiple
+>    campaigns").
+> 2. **Undefendable bundle.** Six bugs in one PR, AI-generated rationale,
+>    no per-bug user-defendability check. The user said upthread: *"I have
+>    not understood these things well... trust that [the AI] got it right"*
+>    — exactly what zlfn rightly rejected.
+>
+> **Cleanup actions (option D, user-confirmed 2026-06-05):**
+> - PR #17 closed (by maintainer). No re-file.
+> - Issues #18-#25 to be withdrawn pending per-bug re-evaluation under the
+>   new explain-before-filing rule.
+> - PR #27 (test-runner) and Issue #26 stay — they were correctly scoped
+>   to genuine Z80-backend infrastructure and PR #27 was merged upstream.
+>
+> **Memory-rule updates:** `tasks/memory/feedback_upstream_routing_two_targets.md`,
+> `tasks/memory/feedback_no_upstream_issues.md`, and the new
+> `tasks/memory/feedback_explain_before_filing.md` codify the corrected policy.
+>
+> What follows below is the original session writeup, preserved as-is for
+> history. It documents what was *attempted*, not what was *correct*.
+
+---
+
 Continuation of session 77. After the #158 packaging + upstream-readiness assessment
 (recorded in the workspace CLAUDE.md #77 entry), the user directed a **curated upstream
 submission** to the z80 fork-of-record **`llvm-z80/llvm-z80`** (@zlfn). Directive:
