@@ -123,6 +123,10 @@ jobs:
   runtime-tests:
     name: test-runner clang suite (z88dk-ticks)
     runs-on: ubuntu-latest
+    # TODO: the 120-minute budget below is far too generous -- a healthy run
+    # of this job completes in ~10-15 min.  Tighten timeout-minutes to ~30
+    # (or whatever the real p99 is once we re-enable + measure) so a wedged
+    # build doesn't burn 2 hours of runner time before failing.
     timeout-minutes: 120
     # TEMPORARILY DISABLED 2026-06-06: this job is slow and currently failing
     # after the upstream/main merge (2b971123e3bd).  The failure is a real
