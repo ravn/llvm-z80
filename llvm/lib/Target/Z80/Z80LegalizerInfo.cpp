@@ -203,6 +203,7 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
       .libcallFor({S32, S64})
       .narrowScalarIf(LegalityPredicates::typeIs(0, S128),
                       LegalizeMutations::changeTo(0, S64))
+      .scalarize(0)  // <N x sT> from SLP -> N scalar G_MULs (Z80 has no SIMD)
       .widenScalarToNextPow2(0)
       .clampScalar(0, S8, S64);
 
@@ -283,6 +284,7 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
         return Q.Types[0].getSizeInBits() >
                Q.MMODescrs[0].MemoryTy.getSizeInBits();
       })
+      .scalarize(0)  // <N x sT> from SLP -> N scalar G_LOADs (Z80 has no SIMD)
       .clampScalar(0, S8, S16);
 
   getActionDefinitionsBuilder(G_STORE)
@@ -290,6 +292,7 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
           {{S8, P0, S8, 1}, {S16, P0, S16, 1}, {P0, P0, S16, 1},
            {S8, P2, S8, 1}}) // Port I/O: OUT (n),A
       .lowerIfMemSizeNotByteSizePow2()
+      .scalarize(0)  // <N x sT> from SLP -> N scalar G_STOREs (Z80 has no SIMD)
       .clampScalar(0, S8, S16);
 
   // Pointer operations
@@ -360,6 +363,15 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
 
   // Build vector (for creating 16-bit from two 8-bit values)
   getActionDefinitionsBuilder(G_BUILD_VECTOR).legalFor({{S16, S8}});
+
+  // Vector element extract/insert -- Z80 has no SIMD.  SLPVectorizer can
+  // still fire on adjacent struct-field patterns post-merge (e.g. Vec3 y+z
+  // → <2 x i16> mul; vec3_dot in test_31_struct_ops) before the legalizer
+  // sees them.  Lower scalarizes via G_UNMERGE_VALUES on a bitcast-to-scalar
+  // source, which our existing G_UNMERGE_VALUES rule ({S16,S32}) handles.
+  getActionDefinitionsBuilder(
+      {G_EXTRACT_VECTOR_ELT, G_INSERT_VECTOR_ELT})
+      .lower();
 
   // Bit manipulation builtins
   // G_BSWAP: custom lowering using UNMERGE+MERGE to avoid CSE conflict
