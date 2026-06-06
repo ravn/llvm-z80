@@ -128,13 +128,6 @@ jobs:
     # (or whatever the real p99 is once we re-enable + measure) so a wedged
     # build doesn't burn 2 hours of runner time before failing.
     timeout-minutes: 120
-    # TEMPORARILY DISABLED 2026-06-06: this job is slow and currently failing
-    # after the upstream/main merge (2b971123e3bd).  The failure is a real
-    # Z80-backend regression -- vec3_dot() in testcases/clang/test_31_struct_ops.c
-    # now emits G_EXTRACT_VECTOR_ELT on a <2 x s16>, which Z80LegalizerInfo
-    # doesn't scalarize.  Re-enable by removing the `if: false` below once the
-    # legalizer rule is added and the test goes green locally.
-    if: false
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
