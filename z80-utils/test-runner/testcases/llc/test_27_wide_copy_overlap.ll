@@ -94,7 +94,7 @@ define i16 @main() {
   %dst2 = getelementptr i8, ptr @buf2, i16 0
   %v2 = load i64, ptr %src2, align 1
   store i64 %v2, ptr %dst2, align 1
-  call void @ref_asc(ptr @buf2, i16 0, i16 1)
+  call void @ref_asc(ptr @ref2, i16 0, i16 1)
   %d2 = call i16 @diff16(ptr @buf2, ptr @ref2)
 
   %sum = add i16 %d1, %d2
