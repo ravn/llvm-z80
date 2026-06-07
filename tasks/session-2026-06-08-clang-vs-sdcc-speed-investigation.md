@@ -55,22 +55,49 @@ After this InstCombine, the IR feeds AggressiveInstCombine:
 - AVR: Phase 2 (#163/#164 synthetic trunc root) sees `(and i16 %4, 255)` with mask = 2^8 − 1.  Fires the synthetic trunc, walks the chain, narrows everything.  Final IR has `phi i8`.
 - Z80: Phase 2 has nothing to trigger on (the `and 255` is gone).  Skips.  IR stays i16.
 
-## Which InstCombine fold removes the mask on Z80
+## Which pass removes the mask on Z80 (FOUND)
 
-Not yet conclusively identified.  The plausible candidates:
+**`CorrelatedValuePropagationPass` (CVP).**  Per-pass trace shows the phi mask survives Z80's pipeline through `JumpThreadingPass` and is **gone after `CorrelatedValuePropagationPass`**.  AVR's CVP run on the equivalent stage **preserves** the mask.
 
-- `icmp eq (and X, MASK), (and Y, MASK) → icmp eq X, Y` when MASK doesn't affect the comparison's truth value.  Fires when KnownBits proves the unmasked compare is equivalent.
-- `(and X, MASK)` drop when KnownBits(X) ≤ MASK.  Fires on values like `%4` if KnownBits decides it's already narrow.
-- A TTI-driven fold that prefers wider arithmetic on targets without a strong i8 preference.
+But the divergence isn't CVP itself — it's the IR shape CVP receives:
 
-Z80 vs AVR TTI surface that *might* be relevant:
-- Both `n8:16` in data layout (8 and 16 both legal integers).
-- Both `getRegisterBitWidth = 8` (Z80) / similar on AVR.
-- `isZExtFree(i8, i16)`: Z80 returns `false` (explicit override at `Z80ISelLowering.cpp:221-223`); AVR inherits the base-class `false`.  **Equal.**
-- Z80 has custom `isLSRCostLess`, `isLegalAddImmediate=|Imm|≤3`, `Mul=Expensive`, `getPredictableBranchThreshold=0`.  AVR has different TTI shape (need to confirm).
+- **Z80** IR entering CVP has the `if (z & 0x80) atb ^= 0x1b;` lowered to a **branch** (an if-then with a phi merge).
+- **AVR** IR entering CVP has the same source lowered to a **select** (`%14 = select i1 %12, i8 %10, i8 %13`).
 
-A direct AVR-side investigation could:
-- Run `opt -passes=instcombine -S` on the same i16 IR with `-mtriple=avr` vs `-mtriple=z80` and see which fold differs.  Cheap to do; gives an exact answer.
+CVP uses LazyValueInfo (LVI), which can do **loop-carried range analysis on phis via per-edge ranges**.  On the branch form, LVI proves `%atb ≤ 255` via fixed-point iteration over the cycle (the branch gives it the per-edge range info it needs), then CVP drops the now-redundant `and i16 %4, 255` as a "useless mask".  On the select form, LVI doesn't get the same per-edge ranges and the simplification doesn't trigger.
+
+### Confirmation experiment
+
+Took AVR's pre-CVP IR (select form), rewrote the triple to `z80`, stripped the AVR-specific bits, and ran `opt -passes=correlated-propagation` with the **Z80 build of opt**:
+
+- Input: has `%5 = and i16 %4, 255` and select form.
+- Output: **PRESERVES the mask**.
+
+So Z80's CVP on select-form input behaves like AVR's CVP.  It's the IR shape that determines CVP's behavior, not the triple.
+
+### What drives the select-vs-branch divergence
+
+`Z80TTIImpl::getPredictableBranchThreshold` returns `BranchProbability(0, 1)` (= 0 %), which tells SimplifyCFG that every branch on Z80 is "predictable" — so the cost model prefers branches over selects.  AVR doesn't override this hook and gets the LLVM default (~99 %), so SimplifyCFG prefers selects.  Set in `Z80TargetTransformInfo.cpp:62-64`, originally from zlfn's initial Z80 backend commit (`31997a6`, 2026-03-12).
+
+## Why the original (unsound) #160/#165 worked despite this
+
+`gf_log 153 -> 28 B` from the pre-revert era was achieved by the **icmp-narrow outside-user gate**, not Phase 2.  That gate's check was only `KnownBits(Other) <= NarrowBits` — it didn't need a graph-side mask marker at all.  So even after CVP had stripped the mask, the gate fired on `icmp eq (raw phi), (and arg, 255)` because the AND-on-arg side was provably narrow.
+
+The sound v1+v2 (this morning's merges) adds the missing `KnownBits(GraphValue) <= NarrowBits` check.  That check requires the phi to be provably narrow, but KnownBits can't see through the cyclic phi (CVP/LVI's range analysis could, but TruncInstCombine doesn't use LVI).  So the sound gate correctly bails.
+
+In other words: the original wins came from an unsound shortcut.  The sound version reveals that **Z80 never had the structural conditions for Phase 2 to fire on `gf_log`** — the marker CVP strips is precisely what Phase 2 needs.  AVR has it; Z80 doesn't.
+
+## Fix landscape (now concrete)
+
+Option | What | Cost | Risk
+:-- | :-- | :-- | :--
+1. Accept regression | Ship as-is | None | None
+2. TruncInstCombine Phase 2 uses LVI | Don't pattern-match `(and X, MASK)` — query LVI for `getConstantRangeAtUse` and inject the synthetic trunc when the range fits in a legal narrow type | Medium (touch one pass, need lit + AES corpus) | Low–medium (LVI is generic, no target-specific risk)
+3. Change Z80 `getPredictableBranchThreshold` | Set to e.g. `BranchProbability(99, 100)` (the default) so SimplifyCFG prefers selects | Tiny | **High** — affects every branch decision in the backend, could regress code size or speed elsewhere (the hook was set deliberately to 0 from day 1)
+4. Frontend `!range` metadata on uint8_t-sourced values | Clang emits `!range !{i16 0, i16 256}` on uint8_t loads/parameters | Medium-large | Low (additive metadata)
+5. Cyclic-phi KnownBits | Strengthen KnownBits in middle-end to handle cyclic phis | Large | Low (additive)
+
+**Recommendation.** (2) is the cleanest pure-fix.  It generalizes Phase 2 from "match this pattern" to "narrow whenever the value's range proves narrowness", which subsumes the AES K&R shape and probably more.  Could be a future llvm-z80 patch and an upstream RFC at the same time.  (1) is the reasonable default if the user wants to focus on finishing firmware components.
 
 ## Implications for the icmp-narrow sound gate
 
