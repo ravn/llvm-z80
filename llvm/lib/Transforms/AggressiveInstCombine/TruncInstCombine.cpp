@@ -33,7 +33,6 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/Support/KnownBits.h"
 
 using namespace llvm;
@@ -44,87 +43,12 @@ STATISTIC(NumExprsReduced, "Number of truncations eliminated by reducing bit "
                            "width of expression graph");
 STATISTIC(NumInstrsReduced,
           "Number of instructions whose bit width was reduced");
-STATISTIC(NumIcmpsNarrowed,
-          "Number of icmps narrowed alongside trunc-rooted graph (ravn/llvm-z80#160)");
 STATISTIC(NumAndMaskRootsInjected,
           "Number of (and X, MASK) patterns narrowed via synthetic trunc root "
           "(ravn/llvm-z80#163, #164)");
 STATISTIC(NumCallArgRootsInjected,
           "Number of call arguments narrowed via callee-body-peek synthetic "
           "trunc root (ravn/llvm-z80#162 path 2)");
-STATISTIC(NumIcmpNonConstOtherNarrowed,
-          "Number of ICmpInsts narrowed where the non-graph operand is not "
-          "a ConstantInt but is provably narrow via KnownBits "
-          "(ravn/llvm-z80#165)");
-STATISTIC(NumAndMaskOutsideUserNarrowed,
-          "Number of `(and X, Const)` outside-graph users rewritten as "
-          "`(zext (and Xnarrow, ConstTrunc) to OrigTy)` (ravn/llvm-z80#165 "
-          "and-mask outside-user extension)");
-
-/// Predicate gate shared by all icmp narrowing paths (#160, #165): the
-/// comparison must be unsigned/equality, or signed with the `samesign`
-/// flag.  Signed predicates without samesign cannot be narrowed because
-/// they would change result when the dropped high bits encoded sign.
-static bool isIcmpPredicateNarrowSafe(ICmpInst *Cmp) {
-  switch (Cmp->getPredicate()) {
-  case CmpInst::ICMP_EQ:
-  case CmpInst::ICMP_NE:
-  case CmpInst::ICMP_ULT:
-  case CmpInst::ICMP_ULE:
-  case CmpInst::ICMP_UGT:
-  case CmpInst::ICMP_UGE:
-    return true;
-  case CmpInst::ICMP_SLT:
-  case CmpInst::ICMP_SLE:
-  case CmpInst::ICMP_SGT:
-  case CmpInst::ICMP_SGE:
-    return Cmp->hasSameSign();
-  default:
-    return false;
-  }
-}
-
-/// Decide whether an ICmpInst that uses an in-graph value can be narrowed
-/// alongside the trunc-rooted expression graph.  Companion of the rewrite
-/// in ReduceExpressionGraph.
-///
-/// Two shapes are accepted:
-///   (a) ravn/llvm-z80#160: ConstantInt on one side and \p GraphValue on
-///       the other, where the constant fits in \p NarrowTy.
-///   (b) ravn/llvm-z80#165: \p GraphValue on one side and a non-constant
-///       operand \p Other on the other, where computeKnownBits proves
-///       \p Other's value fits in \p NarrowTy.  Single-use \p Other only,
-///       so the synthetic trunc inserted at the icmp site doesn't leave
-///       the wide value alive in parallel.
-bool TruncInstCombine::canNarrowIcmpThroughGraph(ICmpInst *Cmp,
-                                                 Value *GraphValue,
-                                                 Type *NarrowTy) {
-  if (!isIcmpPredicateNarrowSafe(Cmp))
-    return false;
-
-  unsigned NarrowBits = NarrowTy->getScalarSizeInBits();
-
-  Value *Other = nullptr;
-  if (Cmp->getOperand(0) == GraphValue)
-    Other = Cmp->getOperand(1);
-  else if (Cmp->getOperand(1) == GraphValue)
-    Other = Cmp->getOperand(0);
-  else
-    return false;
-
-  // Shape (a): constant fitting in NarrowTy.  Safe unconditionally — the
-  // narrow rewrite folds the constant directly.
-  if (auto *C = dyn_cast<ConstantInt>(Other))
-    return C->getValue().getActiveBits() <= NarrowBits;
-
-  // Shape (b): non-constant Other.  Require both narrowness witness AND
-  // single-use to avoid leaving the wide value live alongside a fresh
-  // trunc — the cost gate for #165 (v1, mirrors #164 boolean form).
-  if (!Other->hasOneUse())
-    return false;
-  KnownBits Known = computeKnownBits(Other);
-  return Known.getMaxValue().getActiveBits() <= NarrowBits;
-}
 
 /// Given an instruction and a container, it fills all the relevant operands of
 /// that instruction, with respect to the Trunc expression graph optimizaton.
@@ -381,10 +305,6 @@ Type *TruncInstCombine::getBestTruncatedType() {
   // post-dominated by the trunc instruction, i.e., were visited during the
   // expression evaluation.
   unsigned DesiredBitWidth = 0;
-  PendingIcmps.clear();
-  PendingAndMasks.clear();
-  Type *TruncDstTy = CurrentTruncInst->getType();
-  unsigned NarrowBits = TruncDstTy->getScalarSizeInBits();
   for (auto Itr : InstInfoMap) {
     Instruction *I = Itr.first;
     if (I->hasOneUse())
@@ -393,52 +313,16 @@ Type *TruncInstCombine::getBestTruncatedType() {
     for (auto *U : I->users())
       if (auto *UI = dyn_cast<Instruction>(U))
         if (UI != CurrentTruncInst && !InstInfoMap.count(UI)) {
-          if (IsExtInst) {
-            // If this is an extension from the dest type, we can eliminate it,
-            // even if it has multiple users. Thus, update the DesiredBitWidth
-            // and validate all extension instructions agrees on same
-            // DesiredBitWidth.
-            unsigned ExtInstBitWidth =
-                I->getOperand(0)->getType()->getScalarSizeInBits();
-            if (DesiredBitWidth && DesiredBitWidth != ExtInstBitWidth)
-              return nullptr;
-            DesiredBitWidth = ExtInstBitWidth;
-            continue;
-          }
-          // ravn/llvm-z80#160 + #165: icmp users whose other operand is a
-          // constant fitting in the narrow type, or a non-constant
-          // KnownBits-narrowable value, are rewritten alongside the graph.
-          if (auto *Cmp = dyn_cast<ICmpInst>(UI)) {
-            if (canNarrowIcmpThroughGraph(Cmp, I, TruncDstTy)) {
-              if (!llvm::is_contained(PendingIcmps, Cmp))
-                PendingIcmps.push_back(Cmp);
-              continue;
-            }
-          }
-          // ravn/llvm-z80#165 (and-mask outside-user extension): accept
-          // `(and X, Const)` where X is in-graph and Const fits in the
-          // narrow type.  Rewritten in ReduceExpressionGraph as
-          // `(zext (and Xnarrow, ConstTrunc) to OrigTy)` so downstream
-          // consumers (icmps, stores, calls, etc.) keep OrigTy unchanged
-          // — InstCombine canonicalises the zext-and-consumer chains
-          // further.  Required to unblock gf_log-shape phi loops where
-          // a sibling and-mask gates a high-bit test outside the graph.
-          if (auto *BO = dyn_cast<BinaryOperator>(UI)) {
-            if (BO->getOpcode() == Instruction::And &&
-                BO != AndMaskParentSkip) {
-              ConstantInt *C = nullptr;
-              if (auto *CL = dyn_cast<ConstantInt>(BO->getOperand(0)))
-                C = (BO->getOperand(1) == I) ? CL : nullptr;
-              else if (auto *CR = dyn_cast<ConstantInt>(BO->getOperand(1)))
-                C = (BO->getOperand(0) == I) ? CR : nullptr;
-              if (C && C->getValue().getActiveBits() <= NarrowBits) {
-                if (!llvm::is_contained(PendingAndMasks, BO))
-                  PendingAndMasks.push_back(BO);
-                continue;
-              }
-            }
-          }
-          return nullptr;
+          if (!IsExtInst)
+            return nullptr;
+          // If this is an extension from the dest type, we can eliminate it,
+          // even if it has multiple users. Thus, update the DesiredBitWidth and
+          // validate all extension instructions agrees on same DesiredBitWidth.
+          unsigned ExtInstBitWidth =
+              I->getOperand(0)->getType()->getScalarSizeInBits();
+          if (DesiredBitWidth && DesiredBitWidth != ExtInstBitWidth)
+            return nullptr;
+          DesiredBitWidth = ExtInstBitWidth;
         }
   }
 
@@ -658,109 +542,13 @@ void TruncInstCombine::ReduceExpressionGraph(Type *SclTy) {
   // Erase old expression graph, which was replaced by the reduced expression
   // graph.
   CurrentTruncInst->eraseFromParent();
-  // ravn/llvm-z80#160 + #165: rewrite icmps that consumed in-graph values
-  // alongside the trunc-rooted graph.  Each such icmp becomes an iN-typed
-  // icmp using the narrowed graph value paired with either (#160) the
-  // ConstantInt operand truncated to iN, or (#165) a fresh trunc of the
-  // KnownBits-narrowable non-constant operand inserted at the icmp site.
-  // Done before the erase loop so the old graph values become use_empty.
-  for (ICmpInst *Cmp : PendingIcmps) {
-    // Identify which operand is the in-graph value being narrowed and which
-    // is the "other" side.  The graph operand is the one present in
-    // InstInfoMap; if both happen to be in the map (rare — the predicate
-    // matcher above doesn't require Other to be outside the graph), fall
-    // back to position 0 as graph operand.
-    Value *Op0 = Cmp->getOperand(0);
-    Value *Op1 = Cmp->getOperand(1);
-    bool GraphIsLHS;
-    Value *OldGraphOp = nullptr;
-    Value *OldOther = nullptr;
-    if (auto *I0 = dyn_cast<Instruction>(Op0); I0 && InstInfoMap.count(I0)) {
-      OldGraphOp = Op0;
-      OldOther = Op1;
-      GraphIsLHS = true;
-    } else {
-      OldGraphOp = Op1;
-      OldOther = Op0;
-      GraphIsLHS = false;
-    }
-
-    Value *NewGraphOp = getReducedOperand(OldGraphOp, SclTy);
-    Type *NewTy = NewGraphOp->getType();
-    unsigned NewBits = NewTy->getScalarSizeInBits();
-
-    IRBuilder<> Builder(Cmp);
-    Value *NewOther = nullptr;
-    if (auto *OldC = dyn_cast<ConstantInt>(OldOther)) {
-      // #160 path: fold the constant.
-      NewOther = ConstantInt::get(NewTy, OldC->getValue().trunc(NewBits));
-    } else {
-      // #165 path: KnownBits proved Other's value fits in NewTy; emit a
-      // fresh trunc at the icmp site.  InstCombine will fold this further
-      // when Other is itself a (and X, mask) narrowable witness.
-      NewOther = Builder.CreateTrunc(OldOther, NewTy);
-      ++NumIcmpNonConstOtherNarrowed;
-    }
-
-    Value *NewCmp =
-        GraphIsLHS
-            ? Builder.CreateICmp(Cmp->getPredicate(), NewGraphOp, NewOther)
-            : Builder.CreateICmp(Cmp->getPredicate(), NewOther, NewGraphOp);
-    if (auto *NewCmpI = dyn_cast<ICmpInst>(NewCmp)) {
-      NewCmpI->setSameSign(Cmp->hasSameSign());
-      NewCmpI->takeName(Cmp);
-    }
-    Cmp->replaceAllUsesWith(NewCmp);
-    Cmp->eraseFromParent();
-    ++NumIcmpsNarrowed;
-  }
-  PendingIcmps.clear();
-
-  // ravn/llvm-z80#165 (and-mask outside-user extension): rewrite
-  // `(and X, Const)` where X is in-graph as
-  // `(zext (and Xnarrow, ConstTrunc) to OrigTy)`.  Downstream consumers
-  // keep OrigTy; InstCombine folds zext-and-consumer chains afterward
-  // (e.g. `(icmp eq (zext (and Xn, M)) , 0)` -> `(icmp eq (and Xn, M), 0)`).
-  for (BinaryOperator *AndI : PendingAndMasks) {
-    Value *Op0 = AndI->getOperand(0);
-    Value *Op1 = AndI->getOperand(1);
-    Value *OldGraphOp = nullptr;
-    ConstantInt *OldC = nullptr;
-    if (auto *I0 = dyn_cast<Instruction>(Op0); I0 && InstInfoMap.count(I0)) {
-      OldGraphOp = Op0;
-      OldC = cast<ConstantInt>(Op1);
-    } else {
-      OldGraphOp = Op1;
-      OldC = cast<ConstantInt>(Op0);
-    }
-    Value *NewGraphOp = getReducedOperand(OldGraphOp, SclTy);
-    Type *NewTy = NewGraphOp->getType();
-    unsigned NewBits = NewTy->getScalarSizeInBits();
-    Constant *NewC =
-        ConstantInt::get(NewTy, OldC->getValue().trunc(NewBits));
-    IRBuilder<> Builder(AndI);
-    Value *NewAnd = Builder.CreateAnd(NewGraphOp, NewC);
-    Value *NewZext = Builder.CreateZExt(NewAnd, AndI->getType());
-    if (auto *NewAndI = dyn_cast<Instruction>(NewAnd))
-      NewAndI->takeName(AndI);
-    AndI->replaceAllUsesWith(NewZext);
-    AndI->eraseFromParent();
-    ++NumAndMaskOutsideUserNarrowed;
-  }
-  PendingAndMasks.clear();
-
-  // Erase old phi-nodes after the Pending* rewrites consumed their old
-  // operands.  RAUW with poison kills any remaining (truly outside-graph)
-  // uses.  Originally this block ran before the Pending* loops, but that
-  // poisoned operands of legitimate outside-graph users (icmp / and-mask)
-  // that consumed in-graph phis — see ravn/llvm-z80#165.
+  // First, erase old phi-nodes and its uses
   for (auto &Node : OldNewPHINodes) {
     PHINode *OldPN = Node.first;
     OldPN->replaceAllUsesWith(PoisonValue::get(OldPN->getType()));
     InstInfoMap.erase(OldPN);
     OldPN->eraseFromParent();
   }
-
   // Now we have expression graph turned into dag.
   // We iterate backward, which means we visit the instruction before we
   // visit any of its operands, this way, when we get to the operand, we already
@@ -855,12 +643,7 @@ bool TruncInstCombine::run(Function &F) {
         continue; // IRBuilder folded; nothing to narrow.
 
       CurrentTruncInst = Tr;
-      // Tell the outside-user check to skip THIS And — phase 2 will
-      // replace it directly below, so adding it to PendingAndMasks
-      // would leave a stale pointer for ReduceExpressionGraph.
-      AndMaskParentSkip = And;
       Type *NewDstSclTy = getBestTruncatedType();
-      AndMaskParentSkip = nullptr;
       // Rollback conditions:
       //   - chain feeding X isn't narrowable at all (getBestTruncatedType
       //     returned nullptr), OR
