@@ -16,6 +16,8 @@
 #include "Z80Subtarget.h"
 #include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/Combiner.h"
+#include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/CodeGen/GlobalISel/CombinerHelper.h"
 #include "llvm/CodeGen/GlobalISel/CombinerInfo.h"
 #include "llvm/CodeGen/GlobalISel/GIMatchTableExecutorImpl.h"
@@ -33,11 +35,93 @@
 
 using namespace llvm;
 
+// Emergency-off switch for the wide-copy -> block-move combine.
+static cl::opt<bool> EnableWideCopyBlockMove(
+    "z80-wide-copy-block-move", cl::init(true), cl::Hidden,
+    cl::desc("Rewrite wide scalar load+store pairs as block moves"));
+
 namespace {
 
 #define GET_GICOMBINER_TYPES
 #include "Z80GenPreLegalizeGICombiner.inc"
 #undef GET_GICOMBINER_TYPES
+
+// Wide scalar load+store pair -> block move (see Z80Combine.td).
+//
+// Soundness:
+//  - `store (load p), q` reads all bytes before writing any, which is
+//    exactly memmove semantics — G_MEMMOVE is correct even when p and q
+//    overlap, so no alias proof is needed between p and q themselves.
+//  - The rewrite happens at the STORE's position, i.e. the read moves
+//    DOWN to the store point.  Any intervening instruction that may
+//    write memory (or a call) could alias the source, so bail on those.
+bool matchWideCopyToBlockMove(MachineInstr &MI, MachineRegisterInfo &MRI,
+                              MachineInstr *&LoadMI) {
+  if (!EnableWideCopyBlockMove)
+    return false;
+  auto &Store = cast<GStore>(MI);
+  if (Store.isAtomic() || Store.isVolatile())
+    return false;
+
+  Register Val = Store.getValueReg();
+  LLT Ty = MRI.getType(Val);
+  // Wider than a register pair, whole bytes only.  i16 and below are
+  // native; non-byte sizes keep their existing lowering.
+  if (!Ty.isScalar() || Ty.getSizeInBits() < 32 || Ty.getSizeInBits() % 8)
+    return false;
+  // Full-width store of the loaded value only (no truncating store).
+  if (Store.getMMO().getSizeInBits().getValue() != Ty.getSizeInBits())
+    return false;
+  if (!MRI.hasOneNonDBGUse(Val))
+    return false;
+
+  MachineInstr *Def = MRI.getVRegDef(Val);
+  auto *Load = dyn_cast_or_null<GLoad>(Def);
+  if (!Load || Load->isAtomic() || Load->isVolatile())
+    return false;
+  if (Load->getMMO().getSizeInBits().getValue() != Ty.getSizeInBits())
+    return false;
+
+  // Same address space on both sides (and not the I/O-port space).
+  LLT DstPtrTy = MRI.getType(Store.getPointerReg());
+  LLT SrcPtrTy = MRI.getType(Load->getPointerReg());
+  if (DstPtrTy.getAddressSpace() != 0 || SrcPtrTy.getAddressSpace() != 0)
+    return false;
+
+  // The read moves down to the store point: nothing in between may write.
+  if (Load->getParent() != Store.getParent())
+    return false;
+  unsigned Scanned = 0;
+  for (auto It = std::next(Load->getIterator()); It != Store.getIterator();
+       ++It) {
+    if (++Scanned > 32)
+      return false;
+    if (It->mayStore() || It->isCall() || It->hasUnmodeledSideEffects())
+      return false;
+  }
+
+  LoadMI = Load;
+  return true;
+}
+
+void applyWideCopyToBlockMove(MachineInstr &MI, MachineRegisterInfo &MRI,
+                              MachineIRBuilder &B, MachineInstr *LoadMI) {
+  auto &Store = cast<GStore>(MI);
+  auto &Load = cast<GLoad>(*LoadMI);
+
+  B.setInsertPt(*MI.getParent(), MI.getIterator());
+  unsigned Bytes = MRI.getType(Store.getValueReg()).getSizeInBytes();
+  auto Size = B.buildConstant(LLT::scalar(16), Bytes);
+  B.buildInstr(TargetOpcode::G_MEMMOVE)
+      .addUse(Store.getPointerReg())
+      .addUse(Load.getPointerReg())
+      .addUse(Size.getReg(0))
+      .addImm(0) // not a tail call
+      .addMemOperand(&Store.getMMO())
+      .addMemOperand(&Load.getMMO());
+  MI.eraseFromParent();
+  LoadMI->eraseFromParent();
+}
 
 class Z80PreLegalizerCombinerImpl : public Combiner {
 protected:
