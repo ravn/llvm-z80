@@ -33,7 +33,6 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/Support/KnownBits.h"
 
 using namespace llvm;
@@ -44,65 +43,12 @@ STATISTIC(NumExprsReduced, "Number of truncations eliminated by reducing bit "
                            "width of expression graph");
 STATISTIC(NumInstrsReduced,
           "Number of instructions whose bit width was reduced");
-STATISTIC(NumIcmpsNarrowed,
-          "Number of icmps narrowed alongside trunc-rooted graph (ravn/llvm-z80#160)");
 STATISTIC(NumAndMaskRootsInjected,
           "Number of (and X, MASK) patterns narrowed via synthetic trunc root "
           "(ravn/llvm-z80#163, #164)");
 STATISTIC(NumCallArgRootsInjected,
           "Number of call arguments narrowed via callee-body-peek synthetic "
           "trunc root (ravn/llvm-z80#162 path 2)");
-
-/// Decide whether an ICmpInst that uses an in-graph value can be narrowed
-/// alongside the trunc-rooted expression graph.  Returns true when:
-///   - The icmp has a ConstantInt on one side and \p GraphValue on the other.
-///   - The constant's active bits fit in \p NarrowTy.
-///   - The predicate is either unsigned/equality (always safe under
-///     zero-extension narrowing), or it's signed and the icmp has the
-///     `samesign` flag (which asserts signed/unsigned interpretations agree
-///     on this operand, i.e. high bits are zero).
-/// Conservative on signed predicates without samesign.  Companion of the
-/// rewrite in ReduceExpressionGraph.  ravn/llvm-z80#160.
-static bool canNarrowIcmpThroughGraph(ICmpInst *Cmp, Value *GraphValue,
-                                      Type *NarrowTy) {
-  ConstantInt *C = nullptr;
-  Value *Other = nullptr;
-  if (auto *CL = dyn_cast<ConstantInt>(Cmp->getOperand(0))) {
-    C = CL;
-    Other = Cmp->getOperand(1);
-  } else if (auto *CR = dyn_cast<ConstantInt>(Cmp->getOperand(1))) {
-    C = CR;
-    Other = Cmp->getOperand(0);
-  } else {
-    return false;
-  }
-  if (Other != GraphValue)
-    return false;
-
-  unsigned NarrowBits = NarrowTy->getScalarSizeInBits();
-  // Constant must fit in the narrow type when interpreted as unsigned (the
-  // graph value is being narrowed to NarrowBits with high bits dropped).
-  if (C->getValue().getActiveBits() > NarrowBits)
-    return false;
-
-  switch (Cmp->getPredicate()) {
-  case CmpInst::ICMP_EQ:
-  case CmpInst::ICMP_NE:
-  case CmpInst::ICMP_ULT:
-  case CmpInst::ICMP_ULE:
-  case CmpInst::ICMP_UGT:
-  case CmpInst::ICMP_UGE:
-    return true;
-  case CmpInst::ICMP_SLT:
-  case CmpInst::ICMP_SLE:
-  case CmpInst::ICMP_SGT:
-  case CmpInst::ICMP_SGE:
-    // Safe only when signed/unsigned interpretations agree (samesign flag).
-    return Cmp->hasSameSign();
-  default:
-    return false;
-  }
-}
 
 /// Given an instruction and a container, it fills all the relevant operands of
 /// that instruction, with respect to the Trunc expression graph optimizaton.
@@ -359,8 +305,6 @@ Type *TruncInstCombine::getBestTruncatedType() {
   // post-dominated by the trunc instruction, i.e., were visited during the
   // expression evaluation.
   unsigned DesiredBitWidth = 0;
-  PendingIcmps.clear();
-  Type *TruncDstTy = CurrentTruncInst->getType();
   for (auto Itr : InstInfoMap) {
     Instruction *I = Itr.first;
     if (I->hasOneUse())
@@ -369,31 +313,16 @@ Type *TruncInstCombine::getBestTruncatedType() {
     for (auto *U : I->users())
       if (auto *UI = dyn_cast<Instruction>(U))
         if (UI != CurrentTruncInst && !InstInfoMap.count(UI)) {
-          if (IsExtInst) {
-            // If this is an extension from the dest type, we can eliminate it,
-            // even if it has multiple users. Thus, update the DesiredBitWidth
-            // and validate all extension instructions agrees on same
-            // DesiredBitWidth.
-            unsigned ExtInstBitWidth =
-                I->getOperand(0)->getType()->getScalarSizeInBits();
-            if (DesiredBitWidth && DesiredBitWidth != ExtInstBitWidth)
-              return nullptr;
-            DesiredBitWidth = ExtInstBitWidth;
-            continue;
-          }
-          // ravn/llvm-z80#160: icmp users whose other operand is a constant
-          // fitting in the trunc destination type can be rewritten alongside
-          // the graph rather than blocking it.  The icmp's constant operand
-          // is truncated to the narrow type and the icmp is recreated using
-          // the narrowed graph value.
-          if (auto *Cmp = dyn_cast<ICmpInst>(UI)) {
-            if (canNarrowIcmpThroughGraph(Cmp, I, TruncDstTy)) {
-              if (!llvm::is_contained(PendingIcmps, Cmp))
-                PendingIcmps.push_back(Cmp);
-              continue;
-            }
-          }
-          return nullptr;
+          if (!IsExtInst)
+            return nullptr;
+          // If this is an extension from the dest type, we can eliminate it,
+          // even if it has multiple users. Thus, update the DesiredBitWidth and
+          // validate all extension instructions agrees on same DesiredBitWidth.
+          unsigned ExtInstBitWidth =
+              I->getOperand(0)->getType()->getScalarSizeInBits();
+          if (DesiredBitWidth && DesiredBitWidth != ExtInstBitWidth)
+            return nullptr;
+          DesiredBitWidth = ExtInstBitWidth;
         }
   }
 
@@ -620,42 +549,6 @@ void TruncInstCombine::ReduceExpressionGraph(Type *SclTy) {
     InstInfoMap.erase(OldPN);
     OldPN->eraseFromParent();
   }
-  // ravn/llvm-z80#160: rewrite icmps that consumed in-graph values with a
-  // constant operand.  Each such icmp becomes an iN-typed icmp using the
-  // narrowed graph value and the constant truncated to iN.  Done before the
-  // erase loop so the old graph values become use_empty.
-  for (ICmpInst *Cmp : PendingIcmps) {
-    Value *OldOp = nullptr;
-    ConstantInt *OldC = nullptr;
-    bool ConstIsLHS = false;
-    if (auto *CL = dyn_cast<ConstantInt>(Cmp->getOperand(0))) {
-      OldC = CL;
-      OldOp = Cmp->getOperand(1);
-      ConstIsLHS = true;
-    } else {
-      OldC = cast<ConstantInt>(Cmp->getOperand(1));
-      OldOp = Cmp->getOperand(0);
-    }
-    Value *NewOp = getReducedOperand(OldOp, SclTy);
-    Type *NewTy = NewOp->getType();
-    unsigned NewBits = NewTy->getScalarSizeInBits();
-    Constant *NewC =
-        ConstantInt::get(NewTy, OldC->getValue().trunc(NewBits));
-    IRBuilder<> Builder(Cmp);
-    Value *NewCmp =
-        ConstIsLHS
-            ? Builder.CreateICmp(Cmp->getPredicate(), NewC, NewOp)
-            : Builder.CreateICmp(Cmp->getPredicate(), NewOp, NewC);
-    if (auto *NewCmpI = dyn_cast<ICmpInst>(NewCmp)) {
-      NewCmpI->setSameSign(Cmp->hasSameSign());
-      NewCmpI->takeName(Cmp);
-    }
-    Cmp->replaceAllUsesWith(NewCmp);
-    Cmp->eraseFromParent();
-    ++NumIcmpsNarrowed;
-  }
-  PendingIcmps.clear();
-
   // Now we have expression graph turned into dag.
   // We iterate backward, which means we visit the instruction before we
   // visit any of its operands, this way, when we get to the operand, we already

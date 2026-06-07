@@ -78,12 +78,6 @@ class TruncInstCombine {
   /// all other instructions in the graph that uses it.
   MapVector<Instruction *, Info> InstInfoMap;
 
-  /// ICmpInst users of in-graph instructions whose other operand is a
-  /// constant that fits in the narrowed type.  These are rewritten alongside
-  /// the main graph in ReduceExpressionGraph rather than blocking the graph
-  /// as a non-trivial outside user.  ravn/llvm-z80#160.
-  SmallVector<class ICmpInst *, 4> PendingIcmps;
-
 public:
   TruncInstCombine(AssumptionCache &AC, TargetLibraryInfo &TLI,
                    const TargetTransformInfo &TTI, const DataLayout &DL,
