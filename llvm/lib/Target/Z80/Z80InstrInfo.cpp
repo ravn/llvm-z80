@@ -2606,3 +2606,32 @@ unsigned Z80InstrInfo::getSpillCost(const TargetRegisterClass *RC,
   }
   return 6; // sane fallback
 }
+
+#include "llvm/CodeGen/MachineLoopInfo.h"
+
+// ravn/llvm-z80#23 Phase 3 (chapter 1, 2026-06-08): MachineLICM hoist
+// veto.  Gated by `-z80-use-tiered-cost-model` (Phase 1 flag).  When
+// active AND MI is rematerializable AND the loop body contains a CALL,
+// refuse the hoist -- the hoisted vreg would have to survive the call,
+// which under sdcccall(1) means a BSS spill+reload (6 B per pair),
+// exceeding the natural remat cost.
+bool Z80InstrInfo::shouldHoist(const MachineInstr &MI,
+                               const MachineLoop *FromLoop) const {
+  if (!useTieredCostModel() || !FromLoop)
+    return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+
+  // Only veto rematable instructions.  Non-rematable hoists go
+  // through MachineLICM's regular pressure-checked path, which the
+  // Phase 2 GR16 limit override already aligns with regalloc reality.
+  if (!isReMaterializable(MI))
+    return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+
+  // CALL in loop body -> refuse.  Heuristic foundation; chapter 2
+  // will extend to leaf-loops-with-high-pressure cases.
+  for (const MachineBasicBlock *MBB : FromLoop->blocks())
+    for (const MachineInstr &I : *MBB)
+      if (I.isCall())
+        return false;
+
+  return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+}

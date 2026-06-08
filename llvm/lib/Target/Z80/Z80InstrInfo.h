@@ -128,6 +128,23 @@ public:
   /// directly.  Default false.
   bool useTieredCostModel() const;
 
+  /// ravn/llvm-z80#23 Phase 3 (2026-06-08): cost-aware hoist veto.
+  /// MachineLICM consults this via TII->shouldHoist().  When the
+  /// tiered cost model is enabled, refuse to hoist a rematable
+  /// instruction out of a loop whose body contains a CALL --
+  /// sdcccall(1) clobbers HL/DE/BC, so a hoisted vreg's live range
+  /// crossing the call will spill to BSS, costing 6 B per save+reload
+  /// pair vs the remat's natural cost (typically 2-3 B per use).
+  ///
+  /// Caveat: autoload-in-c's worst regression (define_sextants nested
+  /// loops) is LEAF -- no CALL in body -- so this heuristic doesn't
+  /// catch it.  Phase 3 chapter 2 will need a register-pressure-
+  /// aware extension (e.g. "refuse cheap remats when the loop has
+  /// already accumulated N CSE-deduplicated rematables").  This
+  /// chapter ships the call-aware piece as foundation.
+  bool shouldHoist(const MachineInstr &MI,
+                   const MachineLoop *FromLoop) const override;
+
 private:
   const Z80Subtarget *STI;
 };
