@@ -81,30 +81,64 @@ to the 2 × `LD r,r` path) does **not** fix the miscompile — pi still
 returns the wrong checksum (881 B / 58.88 M ts FAIL vs 880 / 58.87 M).
 So `EX_DE_HL` is at most one symptom, not the root cause.
 
-## Where the bug actually lives (hypothesis)
+## Where the bug actually lives — NAMED 2026-06-09 continuation
 
-The MachineCSE change widens the live range of `%3` / `%37` from the
-entry block all the way through the outer + inner loops to the
-inner-loop PHI back-edges.  That extra liveness changes:
+**Bug location:** the outer-loop checksum PHI (`%2:gr16` in the MIR,
+`%4` in the IR) gets a split delivery path on the back-edge.  At
+`bb.5`'s tail (outer-loop body), `%32` (new checksum = old + c + q)
+is computed into HL and stored to memory at `__sfrend_bench_run-16`.
+At `bb.2`'s head (loop top), the PHI is consumed from register DE
+and written to the same memory slot.  But DE is never set to `%32` —
+it still holds `m` (the `umodsi3` leftover from `__umodsi3`'s DE return).
+The store-then-overwrite chain means each outer iteration's checksum
+slot ends up holding the **previous** iteration's `m`, not the
+accumulator.  Trace confirms: each block N's reported checksum equals
+*only* that block's contribution (c_old + q), with the accumulator
+permanently lost.
 
-- which vregs get coalesced (the inner-loop PHIs no longer have
-  fresh in-block defs to coalesce against);
-- which SSA values get spilled to BSS vs kept in registers across
-  the inner-loop body;
-- which back-edge values get assigned to which physical pairs.
+**Method of detection:** dumped per-block `checksum` via `OUT (2),A`
+in a traced variant of bench_pi.c (`/tmp/bench_pi_traced.c`).  PASS
+shows monotone-ish accumulation 3141 → 9067 → 14425 → ... → 28116;
+FAIL shows the per-block contribution 3141 → 5926 → 5358 → ... →
+2089 (just the latest block, never accumulating).
 
-The miscompile shows up in the **back-edge value transport** of the
-i32 `d` accumulator (`d *= (uint32_t)i` followed by the back-edge).
-Specifically the `mulsi3` result HL:DE flows into the back-edge as
-two 16-bit pieces, and the post-call sequence the regalloc emits
-gets one of those pieces into the wrong physical register on at least
-one iteration — but the verifier is silent (`-verify-machineinstrs`
-clean) and the SSA / liveness graph is internally consistent.
+**Final-asm evidence (CSE-on, `/tmp/pi_red_clang_on.s` lines 115-146):**
 
-The simplest hypothesis that fits: the register coalescer or the
-RegisterCoalescer's interaction with PHI elimination makes a
-locally-correct choice that depends on a transitive invariant
-MachineCSE has broken.
+    .LBB0_4:                            ; outer-loop body (bb.5)
+      ...
+      call ___umodsi3                   ; DE = m, HL = (high half, dropped)
+      pop af / pop af
+      ld   hl,(__sfrend_bench_run-16)   ; HL = checksum_old
+      ld   bc,(__sfrend_bench_run-20)   ; BC = c_old
+      add  hl,bc                        ; HL = checksum + c
+      ld   bc,(__sfrend_bench_run-2)    ; BC = q (saved earlier)
+      add  hl,bc                        ; HL = checksum + c + q = NEW CHECKSUM
+      ld   (__sfrend_bench_run-16),hl   ; <-- store new checksum to memory
+      ld   bc,65522
+      ld   hl,(__sfrend_bench_run-18)
+      add  hl,bc                        ; HL = new k
+      jp   .LBB0_1
+    .LBB0_1:                            ; loop top (bb.2)
+      ld   (__sfrend_bench_run-16),de   ; <-- !!! overwrites checksum with stale DE (=m)
+      ...
+
+The two writes to `-16` are racing; the second wins; DE holds the
+wrong value.
+
+**Why MachineCSE triggers it:** pre-CSE, `bb.2` had a fresh
+`%109 = LD_r16_nn 0` load for the checksum PHI's "from `bb.1`" arm.
+The coalescer saw a clean def at the loop top and assigned the PHI
+to a single register slot.  Post-CSE, `%109` is gone — `%2`'s PHI now
+takes input `%3:gr16` (entry-block constant 0) from `bb.1` and
+`%32:gr16` from `bb.5`.  The coalescer's choice differs and produces
+the split delivery (memory store on the back-edge arm, register read
+at the loop top), but neither arm writes the register that the other
+arm reads.
+
+**This is the kind of correctness bug `-verify-machineinstrs` cannot
+catch** — SSA is well-formed; liveness annotations agree; only the
+*runtime* semantics are wrong because the back-edge delivery and the
+loop-top consumption disagree about where the value lives.
 
 ## Things ruled out
 
@@ -118,30 +152,96 @@ MachineCSE has broken.
 - **Z80NarrowNoIndex / Z80FixupImplicitDefs / Z80LateOptimization** —
   not investigated yet; possible carriers.
 
-## Why we stopped here
+## Responsible pass — NAMED 2026-06-09 (final)
 
-Further isolation needs either:
+**Branch Folder (Control Flow Optimizer, `branch-folder`)** is the pass
+that introduces the runtime miscompile.  Confirmed by direct toggle:
 
-1. A binary-search through llvm's pass list with
-   `-mllvm -print-after=<pass>` to spot the first pass that produces
-   different post-CSE-on vs post-CSE-off MIR with semantic divergence;
-2. or a programmatic differential MIR-equivalence checker (rebuild
-   semantic interpretation) — out of session scope.
+    CLANG_EXTRA="-mllvm -z80-enable-cse -mllvm -disable-branch-fold" \
+      BENCH=pi ONLY=llvm-z80 ./sweep.sh
+    -> pi  llvm-z80  bin=884  text=300  ts=58865925  PASS
 
-The mitigation (CSE off by default) is stable; lit + runtime + the
-five compiler-comparison-corpus benches all PASS.  Production code
-cost is +21 B autoload / +7 B cpnos / +8 B BIOS — bounded and
-documented.  Future session can pick up with the
-`/tmp/pi_reduce_out.ll` + `/tmp/pi_reduce_interesting.sh` pair.
+With MachineCSE on AND branch-folding disabled, pi computes the correct
+checksum (28116).  Disabling MachineCSE alone or disabling
+branch-folding alone is sufficient to fix the miscompile.
 
-## Filing readiness
+**MIR delta across `branch-folder`:**
 
-NOT YET READY to file at llvm-z80/llvm-z80.  Per HARD rule
-`feedback_explain_before_filing`, we need a root cause we can name,
-not "MachineCSE exposes a downstream bug we haven't found."  The
-reducer is good, the MIR-delta is clean, but the "what's the actual
-bug" is missing — filing as-is would be the same misroute that got
-PR #17 retracted in session #77.
+After "Machine Late Instructions Cleanup" (pre-branch-fold), `bb.0`
+holds two stores of `$de` to two different BSS slots (the checksum
+init and the c init, both `LD_r16_nn 0; LD_nnind_DE <sfrend>`):
+
+    bb.0:
+      ...
+      $de = LD_r16_nn 0
+      LD_nnind_DE <__sfrend_bench_run>   ; store DE=0 to slot A
+      LD_nnind_DE <__sfrend_bench_run>   ; store DE=0 to slot B (same DE, different offset)
+
+    bb.1:
+      ; predecessors: bb.0, bb.4
+      liveins: $hl                       ; <-- $de NOT live-in
+      KILL $hl ; LD_A_L ; OR_H
+      LD_nnind_HL <__sfrend_bench_run>   ; store HL (k) to slot C
+      LD_nnind_HL <__sfrend_bench_run>   ; store HL (k) to slot D
+      LD_r16_nn 0 -> $bc
+      LD_r16_nn 0 -> $de
+      JR_Z bb.5
+
+After Branch Folder:
+
+    bb.0:
+      ...
+      $de = LD_r16_nn 0
+      LD_nnind_DE <__sfrend_bench_run>   ; ONE store remains in bb.0
+
+    bb.1:
+      ; predecessors: bb.0, bb.4
+      liveins: $hl, $de                  ; <-- $de NOW live-in!
+      LD_nnind_DE <__sfrend_bench_run>   ; <-- THE MOVED STORE -- BUG
+      KILL $hl ; LD_A_L ; OR_H
+      ...
+
+Branch Folder removed one of bb.0's two consecutive `LD_nnind_DE`
+stores and placed an equivalent store at the head of bb.1, adding
+`$de` to bb.1's liveins.  The hoist is unsound: `bb.4` (the outer
+back-edge predecessor of `bb.1`) does NOT end with `$de=0`; `bb.4`'s
+last call (`__umodsi3`) leaves DE holding the new `c` (= `m`).  When
+control reaches `bb.1` from `bb.4`, the hoisted `LD_nnind_DE` writes
+`m` into the checksum BSS slot, overwriting the freshly-computed new
+checksum that `bb.4` had just stored.  Each outer iteration's
+accumulator is thus replaced by the previous iteration's `m`, and the
+trace shows per-block contribution instead of running total.
+
+**Why MachineCSE makes the difference:** with CSE OFF, `bb.0` ends
+with `ld bc,0; ld de,0; ld (-16),de` — only the checksum init is in
+the entry path; the other BSS inits live in a separate bb.2 block
+reached only on the forward path from bb.1, not via the back-edge.
+With CSE ON, the deleted constant-load PHI sources collapse the
+forward-only bb.2 prelude, leaving bb.0 with two adjacent
+`LD_nnind_DE` stores that Branch Folder then misjudges as
+"hoist-equivalent."
+
+## Filing readiness — READY 2026-06-09
+
+Now have a complete, nameable root cause:
+- Pass: Branch Folder (`llvm/lib/CodeGen/BranchFolding.cpp`).
+- Bug class: unsound cross-block hoist of a store whose source-register
+  liveness is single-predecessor but moved into a multi-predecessor
+  successor.
+- Reducer: 69-line `.ll` (`/tmp/pi_reduce_out.ll`).
+- Verification: toggle of `-mllvm -disable-branch-fold` makes the
+  miscompile go away.
+
+Per HARD rule `feedback_explain_before_filing` we now have the
+"OK which pass produces that" answer.  The bug is in generic LLVM
+(Branch Folding is target-agnostic), so the upstream destination would
+be `llvm/llvm-project`, NOT `llvm-z80/llvm-z80` — per HARD rule
+`feedback_upstream_routing_two_targets`.  Filing requires the user's
+explicit per-filing go-ahead.
+
+The mitigation (CSE off by default) stays as-is until the upstream
+fix lands.  Production code cost is +21 B autoload / +7 B cpnos /
++8 B BIOS — bounded and documented.
 
 ## Pointers
 
