@@ -2609,29 +2609,77 @@ unsigned Z80InstrInfo::getSpillCost(const TargetRegisterClass *RC,
 
 #include "llvm/CodeGen/MachineLoopInfo.h"
 
-// ravn/llvm-z80#23 Phase 3 (chapter 1, 2026-06-08): MachineLICM hoist
-// veto.  Gated by `-z80-use-tiered-cost-model` (Phase 1 flag).  When
-// active AND MI is rematerializable AND the loop body contains a CALL,
-// refuse the hoist -- the hoisted vreg would have to survive the call,
-// which under sdcccall(1) means a BSS spill+reload (6 B per pair),
-// exceeding the natural remat cost.
+// ravn/llvm-z80#23 Phase 3 chapter 1+2 (2026-06-08): MachineLICM hoist
+// veto for Z80's tiered register file.  Gated by
+// `-z80-use-tiered-cost-model`.  Only vetoes rematerializable
+// instructions (non-rematable hoists go through MachineLICM's regular
+// pressure-checked path, which the Phase 2 GR16 limit override already
+// aligns with regalloc reality).
+//
+// Two conditions trigger the veto:
+//   ch1 (CALL-in-body):     loop body contains a CALL.  Hoisted vreg
+//                           must survive the CALL; sdcccall(1)
+//                           clobbers HL/DE/BC -> BSS spill, 6 B per
+//                           save+reload.
+//   ch2 (leaf high-pressure): count of preheader instructions that
+//                           are ALSO rematerializable AND whose def
+//                           is used in the loop reaches
+//                           CheapPairBudget (3 = HL+DE+BC).  Catches
+//                           autoload's define_sextants nested leaf
+//                           loops with CSE-deduplicated small
+//                           constants.
+//
+// ch2 narrows the ravn/llvm-z80#220 earlier attempt's overcount: that
+// attempt counted ANY preheader def with in-loop use (initialization,
+// COPYs, etc.), which led to overrefusing + presence-cost.  This
+// narrower filter (rematable + used-in-loop) targets the LICM-bypass
+// scenario specifically.
 bool Z80InstrInfo::shouldHoist(const MachineInstr &MI,
                                const MachineLoop *FromLoop) const {
   if (!useTieredCostModel() || !FromLoop)
     return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
-
-  // Only veto rematable instructions.  Non-rematable hoists go
-  // through MachineLICM's regular pressure-checked path, which the
-  // Phase 2 GR16 limit override already aligns with regalloc reality.
   if (!isReMaterializable(MI))
     return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
 
-  // CALL in loop body -> refuse.  Heuristic foundation; chapter 2
-  // will extend to leaf-loops-with-high-pressure cases.
+  // ch1: CALL in loop body.
   for (const MachineBasicBlock *MBB : FromLoop->blocks())
     for (const MachineInstr &I : *MBB)
       if (I.isCall())
         return false;
+
+  // ch2: count rematable preheader defs with in-loop uses.
+  const MachineBasicBlock *Preheader = FromLoop->getLoopPreheader();
+  if (!Preheader)
+    return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+  const MachineFunction *MF = MI.getMF();
+  if (!MF)
+    return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+  const MachineRegisterInfo &MRI = MF->getRegInfo();
+  unsigned Count = 0;
+  for (const MachineInstr &PreI : *Preheader) {
+    if (PreI.isDebugInstr() || PreI.isPHI() || PreI.isCopy())
+      continue;
+    if (!isReMaterializable(PreI))
+      continue;
+    bool UsedInLoop = false;
+    for (const MachineOperand &MO : PreI.defs()) {
+      if (!MO.isReg()) continue;
+      Register R = MO.getReg();
+      if (!R.isVirtual()) continue;
+      for (const MachineInstr &Use : MRI.use_nodbg_instructions(R)) {
+        if (FromLoop->contains(Use.getParent())) {
+          UsedInLoop = true;
+          break;
+        }
+      }
+      if (UsedInLoop) break;
+    }
+    if (UsedInLoop)
+      ++Count;
+  }
+  const unsigned CheapPairBudget = 3;
+  if (Count >= CheapPairBudget)
+    return false;
 
   return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
 }
