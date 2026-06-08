@@ -307,6 +307,55 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   is documented but not committed); CLAUDE.md "Known Non-Working"
   section.
 
+### B14. `+undocumented` codegen net-negative on production targets — measured 2026-06-08
+
+- **Status:** measured wontfix-for-production (correctness gate now
+  passes after the IY peephole fix in commit 2fa38d87245c; before
+  the fix, `+undocumented` miscompiled AES).
+- **Hypothesis tested:** user asked whether enabling
+  `+undocumented` (which adds IXH/IXL/IYH/IYL 8-bit half-register
+  ops + SLL + DDCB register-result variants on NMOS Z80) would
+  unlock the "IX/IY as spill tier" idea by making IX/IY-resident
+  values cheaper to access.
+- **Result:** every production target gets LARGER with
+  `+undocumented`:
+  - AES Oz text: 2156 -> 2171 (+15 B)
+  - AES Oz tstates: +0.07% slower
+  - AES O2: unchanged
+  - autoload PROM compressed: 1671 -> 1678 (+7 B)
+  - autoload raw .text: 1969 -> 1971 (+2 B)
+  - autoload `_main_relocated`: unchanged
+  - cpnos PROM1 / payload: unchanged
+  - rcbios BIOS: 5915 -> 5920 (+5 B)
+  - lit + runtime suites: clean
+- **Mechanism:** the half-register ops save 1-2 B at single sites
+  where IX/IY-resident 8-bit values are accessed directly, but the
+  compiler's response to having those ops available is to keep more
+  values in IX/IY for longer periods, which adds shuttle traffic
+  (PUSH IX/POP rr or undocumented LD r,IXH chains) elsewhere.  Net:
+  every byte column wider.  Matches the structural byte-arithmetic
+  analysis from the same session (`LD A,(IX+0)` = 3 B = same as
+  direct BSS `LD A,(nn)`).
+- **Side-finding (now resolved):** witnessed AES `_aes_mixColumns`
+  miscompile when `+undocumented` was enabled.  Root cause: the
+  unused-IY-save/restore peephole in `Z80LateOptimization.cpp`
+  matched a `POP_IY` in the entry block with a `PUSH_IY` in the
+  loop body, treating them as a save/restore pair when they were
+  actually parts of two SEPARATE `PUSH HL ; POP IY` ... `PUSH IY ;
+  POP HL` value-transfer patterns spanning the loop's back edge.
+  Erasing them left `PUSH HL` (entry) and `POP HL` (loop body)
+  unbalanced across the back edge.  Fixed in commit
+  ravn/llvm-z80@2fa38d87245c (require both ops to live in the
+  function's entry MBB).
+- **Revisit when:** a specific workload demonstrates a measurable
+  win, OR the Z80 backend's `+undocumented` codegen quality
+  improves (e.g. a regalloc hint that says "prefer IX/IY for
+  long-live-range values when half-register ops are available").
+  Production targets remain `+undocumented`-disabled until then.
+- **Pointers:** ravn/llvm-z80@2fa38d87245c (the IY peephole fix);
+  session writeup `session-2026-06-08-cost-model-phases-0-through-4.md`
+  (the cost-model arc this branched off of).
+
 ### B12. CSE-induced over-hoist in tight leaf loops — partial mitigation; ~50 B residual
 
 - **Status:** partial mitigation via Phase 3 ch2; residual remains.
