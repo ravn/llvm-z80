@@ -2277,3 +2277,34 @@ StringRef Z80RegisterInfo::getRegAsmName(MCRegister Reg) const {
     return "";
   }
 }
+
+// ============================================================================
+// ravn/llvm-z80#23 Phase 2 (2026-06-08) -- tiered GR16 pressure limit.
+// See header for rationale + path-not-taken on the full TableGen reshuffle.
+// ============================================================================
+
+static llvm::cl::opt<bool> TieredGR16Pressure(
+    "z80-tiered-gr16-pressure", llvm::cl::Hidden, llvm::cl::init(true),
+    llvm::cl::desc("Z80 #23 Phase 2: report GR16 pressure limit as 6 "
+                   "(3 cheap pairs HL/DE/BC) instead of 12 (all 6 logical "
+                   "pairs including IX/IY/AF).  Default ON.  AES -18 B at "
+                   "-Oz; autoload unchanged (its over-hoisting is gated by "
+                   "isReMaterializable bypass, not pressure -- Phase 3 "
+                   "addresses that)."));
+
+unsigned
+Z80RegisterInfo::getRegPressureSetLimit(const MachineFunction &MF,
+                                        unsigned Idx) const {
+  unsigned Default = Z80GenRegisterInfo::getRegPressureSetLimit(MF, Idx);
+  if (!TieredGR16Pressure)
+    return Default;
+  // Pressure set #10 is "GR16" per the TableGen-generated
+  // PressureNameTable.  Hard-coding the index is fragile (would break
+  // if the .td adds another GR16-equivalent class) but the alternative
+  // (string-compare every call) is the hot path.  Phase 3 can revisit.
+  // The 6 here is "3 cheap pairs × 2 register units per pair".
+  StringRef Name = getRegPressureSetName(Idx);
+  if (Name == "GR16")
+    return std::min<unsigned>(Default, 6);
+  return Default;
+}
