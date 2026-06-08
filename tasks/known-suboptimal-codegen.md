@@ -412,7 +412,14 @@ postpone — empty entries are fine if you don't have impact numbers yet.
 - **Why not yet filed upstream:** per HARD rule explain-before-filing,
   need to (a) bisect to specific CSE transformation, (b) reduce to
   small reproducer, (c) get user go-ahead.  Until then, document and
-  default-off.
+  default-off.  Progress 2026-06-09: 69-line `.ll` reducer at
+  `/tmp/pi_reduce_out.ll` via `llvm-reduce`; MachineCSE delta is
+  3 constant-load eliminations (`%108`,`%109`,`%110` re-pointed to
+  entry-block `%3`/`%37`); the actual codegen bug is downstream
+  (regalloc/coalesce reacting to the widened live range — `EX_DE_HL`
+  one-way-copy peephole ruled out as sole carrier); full writeup
+  in `tasks/session-2026-06-09-pi-cse-miscompile-investigation.md`.
+  Still NOT filing-ready — root cause not yet named.
 - **Cost of mitigation:** vs LICM+CSE config, defaulting CSE off
   costs:
   - autoload: 1652 → 1673 B (+21 B; 375 B free in 2 KB cap)
