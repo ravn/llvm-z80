@@ -271,6 +271,42 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   81165bdfc (P3 ch1), 4035d3cbd (P3 ch2), 1af0f1b85 (P4 ch1);
   plan in `tasks/plan-z80-cost-model-refinement-2026-06-08.md`.
 
+### B13. IX-as-allocatable confirmed net-negative — RE-VALIDATED 2026-06-08
+
+- **Status:** confirmed wontfix-mechanism (re-validated experiment).
+- **Hypothesis tested:** user asked whether the parked #12 "hasFP=false
+  PROM hangs after banner" runtime bug might be a stale artifact of an
+  earlier broader attempt at making IX allocatable.  We added a
+  scoped `-mllvm -z80-unreserve-ix-no-fp` flag that makes IX
+  allocatable only when hasFP=false (no allocas, no stack args) and
+  optsize + static-stack are set (same gating as IY).
+- **Result:** the documented size regression IS REAL on current HEAD.
+  Measured deltas vs default-OFF baseline (clean rebuild, three-cell
+  no-op-control discipline applied):
+  - AES Oz text: 2156 -> 2210 (**+54 B WORSE**)
+  - AES Oz tstates: 16.58 M -> 16.60 M (+0.12% WORSE)
+  - autoload raw .text: 1969 -> 1974 (+5 B WORSE)
+  - autoload rom.o text: 1846 -> 1865 (+19 B WORSE)
+  - rcbios BIOS: 5915 -> 5986 (**+71 B WORSE**)
+  - cpnos: unchanged (build-env noise only)
+- **Mechanism:** each IX-as-allocatable use pays a PUSH IX/POP IX
+  (2 B) or LD IXH/IXL (1-2 B undocumented) to shuttle values between
+  IX and HL/DE/BC for ops that don't support IX directly.  Shuttle
+  frequency exceeds spill-to-BSS savings.  Matches the original
+  CLAUDE.md note "fdc_read_data +26B from IX PUSH/POP copies" --
+  the cost is structural, not implementation-specific.
+- **Why we can't fix it:** for the byte cost to work out, IX-resident
+  values would need to be USED directly by Z80 instructions, but the
+  Z80 ISA only supports HL natively for most ops.  The PUSH/POP
+  shuttle is mandatory; only frequency reduction (i.e. fewer hoists
+  in the first place) helps.
+- **Revisit when:** never absent a fundamental change to Z80 ISA
+  support (which isn't happening).  The runtime-bug parking remains
+  in effect; this entry adds the byte-cost angle for completeness.
+- **Pointers:** session 2026-06-08 cost-model writeup (the experiment
+  is documented but not committed); CLAUDE.md "Known Non-Working"
+  section.
+
 ### B12. CSE-induced over-hoist in tight leaf loops — partial mitigation; ~50 B residual
 
 - **Status:** partial mitigation via Phase 3 ch2; residual remains.
