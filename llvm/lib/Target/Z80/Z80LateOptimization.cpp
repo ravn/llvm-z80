@@ -768,7 +768,30 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       ProloguePushIX->eraseFromParent();
       Changed = true;
     }
-    if (!IYUsedInBody && PushIY && PopIY) {
+    // ravn/llvm-z80 IY-peephole miscompile (2026-06-08): the tracking
+    // above grabs the first PUSH_IY and any POP_IY in the function
+    // regardless of basic-block position.  When +undocumented enables
+    // a value-transfer pattern (HL -> IY -> HL across a loop), the
+    // entry block ends up with PUSH_HL; POP_IY and the loop body
+    // has PUSH_IY; POP_HL.  The peephole then matches the entry
+    // POP_IY with the loop body's PUSH_IY and erases both, leaving
+    // PUSH_HL (entry) and POP_HL (loop body) unpaired -- stack drifts
+    // off the caller's frame after iteration 1.  Witnessed in AES
+    // _aes_mixColumns with +undocumented; manifests as AES verify
+    // FAIL + tstates collapse from 16.58M to 1.78M (program ends
+    // early via stack-return corruption).
+    //
+    // Restrict the optimization to the safe-and-sufficient case: both
+    // ops must live in the function's entry block.  A legitimate IY
+    // save/restore (when present) usually has both PUSH_IY and POP_IY
+    // in the entry block of compact functions, or the optimization
+    // is conservatively skipped in multi-block functions.  Missing
+    // some valid eliminations is acceptable; producing wrong code is
+    // not.
+    bool IYPairInEntry =
+        PushIY && PopIY && PushIY->getParent() == &MF.front() &&
+        PopIY->getParent() == &MF.front();
+    if (!IYUsedInBody && IYPairInEntry) {
       LLVM_DEBUG(dbgs() << "  Removing unused IY save/restore\n");
       PopIY->eraseFromParent();
       PushIY->eraseFromParent();
