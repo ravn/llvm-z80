@@ -81,6 +81,19 @@ public:
                             int64_t BrOffset = 0,
                             RegScavenger *RS = nullptr) const override;
 
+  /// ravn/llvm-z80#23: MachineLICM consults this to veto hoist
+  /// decisions per candidate instruction.  Z80's tiny register file
+  /// (3 GR16 pairs) means a hoisted invariant adds a value live
+  /// across the whole loop body; if the body contains a CALL
+  /// (sdcccall(1) clobbers HL/DE/BC), the hoisted value must be
+  /// spilled+reloaded each iteration, costing more than recompute
+  /// for 1-2 instruction invariants.  Refuse to hoist into loops
+  /// whose body contains any CALL.  AES-shape leaf loops still
+  /// benefit (no CALL in body -> heuristic doesn't trigger ->
+  /// LICM hoists -> ~9% tstate win).
+  bool shouldHoist(const MachineInstr &MI,
+                   const MachineLoop *FromLoop) const override;
+
 private:
   const Z80Subtarget *STI;
 };

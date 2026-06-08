@@ -74,6 +74,38 @@ static cl::opt<bool> DisableFixupImplicitDefs(
     "z80-disable-fixup-implicit-defs", cl::Hidden, cl::init(false),
     cl::desc("Disable the Z80FixupImplicitDefs #156428 mitigation pass"));
 
+// ravn/llvm-z80#23 investigation (2026-06-08): the global disable of
+// MachineLICM + MachineCSE in Z80PassConfig is BOTH a size workaround
+// (#128 / #198) AND a correctness guard at -O2 (MachineCSE alone
+// miscompiles AES, isolated, verifier FAIL).  These two opt-in flags
+// let an investigation harness (aes256-corpus/task3_licm_ab.sh and the
+// new compiler-comparison-corpus benches) lift each disable
+// independently to MEASURE the workaround's cost.  Both default OFF.
+// CSE-enable refuses to apply at -O2 (the #198 miscompile would corrupt
+// the measurement); LICM-enable applies at all opt levels.
+// ravn/llvm-z80#23 resolution (2026-06-08): historical `disablePass`
+// (LICM + EarlyLICM + CSE) is REMOVED.  Re-measurement on current HEAD
+// (clean rebuild, byte-identical to incremental) shows:
+//   AES -Oz tstates -8.9%, AES -O2 tstates -9.2% / .text -118 B
+//   autoload +64 B raw / +25 B compressed (temporary; will recover via
+//     follow-up cost-model work — user direction "don't let short-term
+//     size block structural fixes")
+//   cpnos PROM1 -11 B, rcbios +7 B (negligible)
+//   test-runner runtime suite: 854 PASS, 0 FAIL across O0..Oz
+//   #198 -O2 MachineCSE miscompile no longer reproduces.
+// The two flags below stay as the opt-OUT escape hatch — anyone hitting
+// a regression can flip a flag back without rebuilding clang.  Defaults
+// now TRUE so the disablePass effectively goes away.
+static cl::opt<bool> EnableMachineLICM(
+    "z80-enable-licm", cl::Hidden, cl::init(true),
+    cl::desc("Z80: enable MachineLICM + EarlyMachineLICM (default TRUE; "
+             "set false to restore the pre-2026-06-08 disablePass workaround)"));
+static cl::opt<bool> EnableMachineCSE(
+    "z80-enable-cse", cl::Hidden, cl::init(true),
+    cl::desc("Z80: enable MachineCSE (default TRUE; set false to restore "
+             "the pre-2026-06-08 disablePass workaround.  #198 -O2 miscompile "
+             "no longer reproduces on current HEAD per task3 re-measurement)"));
+
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   // Register both Z80 and SM83 targets.
   RegisterTargetMachine<Z80TargetMachine> X(getTheZ80Target());
@@ -230,32 +262,49 @@ class Z80PassConfig : public TargetPassConfig {
 public:
   Z80PassConfig(Z80TargetMachine &TM, PassManagerBase &PM)
       : TargetPassConfig(TM, PM) {
-    // ravn/llvm-z80#128: MachineLICM and MachineCSE consistently
-    // pessimize Z80 code because the 3-pair register file (DE/HL/BC)
-    // cannot hold the loop-invariants they want to hoist or the
-    // common subexpressions they want to share.  The hoisted/shared
-    // values get BSS-spilled across CALLs and reloaded each use,
-    // costing more bytes + tstates than the redundant computes they
-    // were meant to eliminate.  Measured on AES corpus at -Oz:
-    // disabling these two saves ~280 B per config at <0.3% tstate
-    // cost; on cpnos-rom snios_c.o: -141 B / -16% size.
+    // ravn/llvm-z80#128/#198/#23 -- HISTORICAL CONTEXT:
     //
-    // Disable globally pending #177 (Z80 TTI) which would let us
-    // gate this on per-function optsize/minsize attributes for a
-    // proper opt-level-sensitive decision.
+    // For ~2 months the Z80 backend shipped `disablePass(LICM + EarlyLICM
+    // + CSE)` unconditionally, on two grounds:
+    //   (a) size pessimization on cpnos/AES at -Oz (#128, #177 Task 3)
+    //   (b) correctness guard: MachineCSE miscompiled AES at -O2 (#198)
     //
-    // #177 Task 3 (2026-05-26) measured whether this should be gated by
-    // opt-level (keep LICM/CSE at -O2 for speed).  It should NOT.  With
-    // the disable lifted and LICM/CSE on, AES-256 measured:
-    //   -Oz: +34 B .text, +144 B bin, +0.22% tstates -- pessimizes, PASS.
-    //   -O2: MachineCSE MISCOMPILES (verifier FAIL, isolated to CSE; LICM
-    //        alone PASSes).  So the disable is also a CORRECTNESS guard,
-    //        not merely a size knob.  Tracked: ravn/llvm-z80#198.
-    // There is no opt level where enabling these helps Z80, so the disable
-    // stays UNCONDITIONAL (no gate).  Data: aes256-corpus/task3_licm_ab.sh.
-    disablePass(&EarlyMachineLICMID);
-    disablePass(&MachineLICMID);
-    disablePass(&MachineCSELegacyID);
+    // 2026-06-08 re-measurement on clean rebuild invalidated both
+    // grounds for current HEAD:
+    //   - AES at -Oz: LICM+CSE on saves 13 B AND 8.9% tstates (the
+    //     "+34 B" historical number no longer reproduces -- either
+    //     backend movement since 2026-05 or stale-rebuild measurement)
+    //   - AES at -O2: LICM+CSE on saves 118 B AND 9.2% tstates, PASS
+    //     (the #198 miscompile no longer reproduces -- verifier clean,
+    //     value oracle matches, test-runner 854 PASS 0 FAIL across all
+    //     opt levels with LICM+CSE forced on)
+    //   - autoload-in-c: +64 B raw .text / +25 B compressed (temporary
+    //     size regression; user direction 2026-06-08 "don't let short-
+    //     term size block structural fixes -- bytes will come back via
+    //     follow-up cost-model work").
+    //   - cpnos PROM1: -11 B (improves).
+    //   - rcbios BIOS: +7 B (negligible).
+    //
+    // Decision (2026-06-08, user-directed): default LICM+CSE ON.  The
+    // `EnableMachineLICM` / `EnableMachineCSE` cl::opt flags above
+    // default TRUE; set them FALSE to restore the historical workaround
+    // for diagnosis without rebuilding clang.
+    //
+    // Follow-up: `Z80InstrInfo::shouldHoist` (gated by
+    // `-z80-licm-block-on-call`) is an opt-in coarse heuristic that
+    // refuses to hoist out of loops whose body contains a CALL.  It
+    // preserves the AES win and eliminates the autoload regression,
+    // but currently un-does cpnos's improvement -- left default OFF
+    // pending a count-based refinement that respects already-hoisted
+    // live-across-call invariant count.  See known-suboptimal-codegen.md
+    // M5 for the full picture.
+    if (!EnableMachineLICM) {
+      disablePass(&EarlyMachineLICMID);
+      disablePass(&MachineLICMID);
+    }
+    if (!EnableMachineCSE) {
+      disablePass(&MachineCSELegacyID);
+    }
   }
 
   Z80TargetMachine &getZ80TargetMachine() const {

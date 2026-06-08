@@ -242,6 +242,30 @@ postpone — empty entries are fine if you don't have impact numbers yet.
 - **Revisit when:** PROM source switches to per-function locals with
   stack args.
 
+### B11. MachineLICM `shouldHoist` heuristic too coarse for cpnos/rcbios
+
+- **Status:** awaiting-count-based-refinement (2026-06-08).
+- **Impact:** with the heuristic OFF (current default), autoload-in-c
+  PROM grows +64 B raw .text / +25 B compressed vs the pre-#23
+  disablePass workaround.  With the heuristic ON (opt-in via
+  `-mllvm -z80-licm-block-on-call`), autoload regression is
+  eliminated but cpnos's -15 B LICM win is un-done.
+- **Pattern:** `Z80InstrInfo::shouldHoist` currently refuses to hoist
+  out of any loop whose body contains a CALL.  Binary
+  trigger — doesn't track how many invariants have already been
+  chosen for hoisting in this loop, so over-fires when only 1-2
+  hoists would have fit in caller-saved register space.
+- **Why we can't fix it (this session):** count-based refinement
+  needs to thread a per-loop hoisted-invariant-count through the
+  hoist-decision callback.  ~1 hour of design + measurement, but
+  out of scope for the session that landed the basic infrastructure.
+- **Revisit when:** autoload's +64 B raw growth becomes an actual
+  PROM-cap issue (currently 365 B free margin), OR cpnos's lost
+  -15 B becomes critical (currently 34 B free margin), OR someone
+  wants to default the heuristic ON.
+- **Pointers:** `tasks/session-2026-06-08-issue23-licm-cse-revalidation.md`,
+  `Z80InstrInfo.cpp` shouldHoist impl.
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work

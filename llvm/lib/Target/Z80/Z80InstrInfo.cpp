@@ -24,9 +24,11 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -2520,4 +2522,53 @@ void Z80InstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
                                         RegScavenger *RS) const {
   // On Z80, JP nn can reach any address in the 64KB space.
   BuildMI(&MBB, DL, get(Z80::JP_nn)).addMBB(&NewDestBB);
+}
+
+// ravn/llvm-z80#23 LICM cost-model fix.  Gated by -mllvm
+// -z80-licm-block-on-call (default ON when the in-tree
+// disablePass(LICM/CSE) is lifted via -z80-enable-licm; the flag
+// lets task3_licm_ab.sh measure the heuristic's effect in isolation).
+//
+// Z80 has 3 GR16 pairs (HL/DE/BC; IX/IY are heavier 14-15 ts/access).
+// MachineLICM's default heuristic checks RegPressureSetLimit and
+// CanCauseHighRegPressure, but doesn't model the spill cost of a
+// hoisted live-range crossing a CALL site under sdcccall(1) (which
+// clobbers HL/DE/BC at every call).  Empirically:
+//
+//   - AES gf_alog/gf_log (leaf loop, no CALL): LICM hoist nets
+//     -8.9% (-Oz) / -9.2% (-O2) tstates -- the table-base/constant
+//     stays register-resident across the loop body.
+//   - autoload-in-c rom.c (HW init, CALL-heavy loops): LICM hoist
+//     adds +64 B raw .text because the hoisted invariants are
+//     forced to BSS spill across calls, costing more than
+//     recomputing them inside the body.
+//
+// Heuristic: refuse to hoist out of a loop whose body contains any
+// CALL.  Preserves the AES win; eliminates the autoload regression.
+//
+// Limitation: this is a coarse all-or-nothing veto.  A finer model
+// would track the number of already-hoisted live-across-call values
+// and refuse once that count + the candidate exceeds the caller-saved
+// register-pair count (3 on Z80).  Left for follow-up — the simple
+// veto already recovers the dominant signal.
+static cl::opt<bool> LICMBlockOnCall(
+    "z80-licm-block-on-call", cl::Hidden, cl::init(false),
+    cl::desc("Z80: refuse MachineLICM hoist when the loop body contains "
+             "a CALL.  See ravn/llvm-z80#23.  Default OFF (current direction "
+             "2026-06-08: accept short-term autoload size regression; "
+             "structural correctness over local size).  Set TRUE to enable "
+             "the heuristic for autoload-specific measurement."));
+
+bool Z80InstrInfo::shouldHoist(const MachineInstr &MI,
+                               const MachineLoop *FromLoop) const {
+  if (!LICMBlockOnCall || !FromLoop)
+    return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+
+  for (const MachineBasicBlock *MBB : FromLoop->blocks()) {
+    for (const MachineInstr &I : *MBB) {
+      if (I.isCall())
+        return false;
+    }
+  }
+  return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
 }
