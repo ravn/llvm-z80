@@ -358,7 +358,9 @@ postpone — empty entries are fine if you don't have impact numbers yet.
 
 ### B12. CSE-induced over-hoist in tight leaf loops — partial mitigation; ~50 B residual
 
-- **Status:** partial mitigation via Phase 3 ch2; residual remains.
+- **Status:** SUPERSEDED 2026-06-08 same-day by B15.  The "+51 B raw"
+  residual was specific to the LICM+CSE default; with CSE now disabled
+  by default (B15) the residual goes away.  Kept for history.
 - **Impact:** autoload-in-c PROM is +13 B compressed / +51 B raw vs
   pre-#23.  The leaf-loop high-pressure veto (Phase 3 ch2) recovers
   about 13 B of the original +64 B regression; the remaining +51 B
@@ -381,6 +383,49 @@ postpone — empty entries are fine if you don't have impact numbers yet.
 - **Pointers:** `tasks/plan-z80-cost-model-refinement-2026-06-08.md`
   Phase 3 chapter 3 (CSE wiring is mentioned as "open design
   question"); session writeup for Phase 4 ch 1.
+
+### B15. MachineCSE miscompiles `bench_pi.c` at -Oz — #198 class still active
+
+- **Status:** ACTIVE correctness bug; mitigated by leaving MachineCSE
+  disabled by default (`-mllvm -z80-enable-cse` default FALSE,
+  Z80TargetMachine.cpp).
+- **History:** #23 retirement (2026-06-08, earlier same day) defaulted
+  both LICM and CSE to ON, citing "AES -Oz -8.9% tstates / -13 B"
+  and "#198 -O2 miscompile no longer reproduces."  Same-day
+  re-evaluation of clang vs SDCC across the full
+  compiler-comparison-corpus surfaced `pi llvm-z80 FAIL(exit=1)` --
+  not from the cost-model project (Phases 0-4 toggle leaves it
+  unchanged), but from the CSE enable.  Bisecting LICM vs CSE
+  independently (corpus + `aes256-corpus/probe_cse.sh`):
+  - LICM+CSE on : pi FAIL, AES aes_text=2156 ts=16,577,307
+  - LICM only   : pi PASS, AES aes_text=2238 ts=16,571,818  (faster!)
+  - both off    : pi PASS, AES aes_text=2226 ts=18,214,790
+  The −8.9% AES tstates win comes from **LICM, not CSE**; CSE only
+  contributed size (+79 B aes_text when off).  Disabling CSE keeps
+  the speed win and fixes pi.
+- **Reproducer:** `rc700-gensmedet/tasks/compiler-comparison-corpus/`
+  → `./sweep.sh` will surface `pi llvm-z80 FAIL(exit=1)` when CSE is
+  enabled (`-mllvm -z80-enable-cse`).  pi computes a checksum of pi
+  digits to 800 places via spigot algorithm; expected 28116, with
+  CSE-on returns some other value.  Not yet minimised to a small
+  IR-level test.
+- **Why not yet filed upstream:** per HARD rule explain-before-filing,
+  need to (a) bisect to specific CSE transformation, (b) reduce to
+  small reproducer, (c) get user go-ahead.  Until then, document and
+  default-off.
+- **Cost of mitigation:** vs LICM+CSE config, defaulting CSE off
+  costs:
+  - autoload: 1652 → 1673 B (+21 B; 375 B free in 2 KB cap)
+  - cpnos PROM1: 2023 → 2030 B (+7 B; 18 B free in 2 KB cap)
+  - rcbios BIOS: 5897 → 5905 B (+8 B)
+  - AES Oz aes_text: 2156 → 2238 B (+82 B; not size-bounded)
+  - AES Oz tstates: 16.577M → 16.572M (-5k ts, marginally faster)
+- **Revisit when:** a reduced reproducer exists; or a Z80-specific
+  CSE filter can identify the bad transformation; or the autoload
+  +21 B becomes binding.
+- **Pointers:** Z80TargetMachine.cpp lines 86-112 (the EnableMachineCSE
+  cl::opt + rationale comment); `aes256-corpus/probe_cse.sh` for
+  the three-state A/B; commit flipping default to false.
 
 ---
 
