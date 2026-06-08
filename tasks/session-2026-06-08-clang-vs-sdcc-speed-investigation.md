@@ -99,6 +99,28 @@ Option | What | Cost | Risk
 
 **Recommendation.** (2) is the cleanest pure-fix.  It generalizes Phase 2 from "match this pattern" to "narrow whenever the value's range proves narrowness", which subsumes the AES K&R shape and probably more.  Could be a future llvm-z80 patch and an upstream RFC at the same time.  (1) is the reasonable default if the user wants to focus on finishing firmware components.
 
+## Option (2) was attempted and didn't work
+
+Same-session continuation 2026-06-08 (user direction: "2"):
+
+- Branch `phase4-phi-via-lvi`: wired `LazyValueInfo` through `AggressiveInstCombinePass::run → runImpl → TruncInstCombine` as an additional analysis.  Extended `canNarrowIcmpThroughGraph` with a KnownBits-then-LVI fallback: when KnownBits is conservative (cyclic phi etc.), query `LVI->getConstantRangeAtUse(...)` and admit if the range fits in the narrow width.
+- Built clean.  Lit suite still 190 PASS + 4 XFAIL + 1 pre-existing FAIL.
+- **AES corpus unchanged**: `09_Oz_prod_like` still 2581 B / 18.21 M tstates (byte-identical to main).
+- Instrumented the LVI query with `errs() << ...`: on the post-CVP `gf_log` IR, LVI returns **full-set** for the `%4` phi.  The narrowness LVI proved during CVP's earlier run depended on the `(and i16 %4, 255)` mask being present in the IR; once CVP itself stripped that mask, LVI cannot recover the bound from the loop structure alone.  LVI's loop-carried per-edge analysis needs a starting constraint to propagate.
+
+**Conclusion for option (2)**: the approach is sound and the wiring works, but the analysis doesn't have the power we need on the post-CVP IR shape.  This is a CONSEQUENCE of CVP's own optimization that stripped the marker — the narrowness signal is genuinely lost.
+
+Branch discarded.  No commit.  Rough sketch preserved in `git reflog` and this writeup if anyone wants to revive it for a related shape (e.g. range-via-conditional inside a branch).
+
+## What option (2) showed about the fix landscape
+
+- Option (3) — change `getPredictableBranchThreshold` — would prevent the divergence by keeping selects, which keep the mask, which keeps the marker.  Still high-risk for other reasons.
+- Option (4) — frontend `!range` metadata — would inject a narrowness signal that survives CVP.  Most robust.
+- Option (5) — stronger middle-end phi analysis — could prove narrowness from the loop body's xor-with-i8-zext structure even without the mask, but this is research-grade work.
+- A new candidate option (6): **a target/InstCombine fold that AVOIDS stripping the constraint when no downstream pass can recover it** — e.g., teach the CVP-style fold to check whether AggressiveInstCombine could use the mask.  Architectural concern: CVP would need to know about AggressiveInstCombine's needs, breaking abstraction.  Unattractive.
+
+**Net.** The clean fixes all need either frontend cooperation (4) or middle-end research (5).  The local fixes (2, 3, 6) each have a structural reason they don't fully work.  Defaulting to option (1) — accept the AES K&R regression — is the honest reading.
+
 ## Implications for the icmp-narrow sound gate
 
 The v1 + v2 sound gate (this morning's merges, ravn/llvm-z80 main `0dcf93b`) is sound and useful for the SHAPES it sees.  It just doesn't see the AES K&R shape, because the narrowness signal (`and 255`) has already been stripped by Z80's InstCombine.
