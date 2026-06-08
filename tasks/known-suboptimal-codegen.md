@@ -384,11 +384,17 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   Phase 3 chapter 3 (CSE wiring is mentioned as "open design
   question"); session writeup for Phase 4 ch 1.
 
-### B15. MachineCSE miscompiles `bench_pi.c` at -Oz — #198 class still active
+### B15. Branch Folder unsound hoist exposed by MachineCSE — PARKED 2026-06-09
 
-- **Status:** ACTIVE correctness bug; mitigated by leaving MachineCSE
-  disabled by default (`-mllvm -z80-enable-cse` default FALSE,
-  Z80TargetMachine.cpp).
+- **Status:** KNOWN BUG, PARKED 2026-06-09 (user-directed).  Root cause
+  in generic LLVM (Branch Folder), not the Z80 backend; production
+  builds are NOT affected because the trigger MIR shape requires
+  MachineCSE, which is OFF by default in our fork (Z80TargetMachine.cpp
+  `EnableMachineCSE` cl::opt default FALSE).  Upstream filing prepared
+  and explained; held for the user's per-filing go-ahead per HARD rule
+  `feedback_explain_before_filing`.  Production runtime suite (lit 149
+  PASS + 4 XFAIL, test-runner 854 PASS / 0 FAIL across O0..Oz, MAME
+  boot, polypascal-test) is clean under the mitigation.
 - **History:** #23 retirement (2026-06-08, earlier same day) defaulted
   both LICM and CSE to ON, citing "AES -Oz -8.9% tstates / -13 B"
   and "#198 -O2 miscompile no longer reproduces."  Same-day
