@@ -242,26 +242,60 @@ postpone — empty entries are fine if you don't have impact numbers yet.
 - **Revisit when:** PROM source switches to per-function locals with
   stack args.
 
-### B11. MachineLICM call-hoist heuristic — RESOLVED 2026-06-08 via count-based refinement
+### B11. MachineLICM call-hoist heuristic — SUPERSEDED 2026-06-08 by tiered cost model
 
-- **Status:** RESOLVED via ravn/llvm-z80#220 (count-based threshold).
-- **Final state at HEAD:** `Z80InstrInfo::shouldHoist` now counts
-  already-hoisted preheader defs whose vreg is used inside the loop,
-  refuses when count >= `-z80-licm-call-hoist-threshold` (default 2,
-  reflecting IX + IY callee-saved pair budget under sdcccall(1)).
-  Default ON (`-z80-licm-block-on-call=true`).
+- **Status:** SUPERSEDED.  The #220 count-based heuristic was reverted
+  (had a presence-cost bug); the replacement is the multi-phase
+  tiered cost-model refinement landed across Phases 2-4 of the
+  cost-model project (see
+  `tasks/plan-z80-cost-model-refinement-2026-06-08.md`).
+- **Replacement infrastructure (default ON 2026-06-08):**
+  - `getRegPressureSetLimit` override: GR16 reported as 6 register
+    units instead of TableGen's 12, reflecting the 3 cheap pairs
+    HL/DE/BC.  Aligns MachineLICM's `CanCauseHighRegPressure` check
+    with what regalloc actually does.
+  - `Z80InstrInfo::shouldHoist` two-arm veto: refuses to hoist a
+    rematerializable instruction when the loop body contains a CALL
+    (chapter 1) OR when the preheader already has 3+ rematable defs
+    used inside the loop (chapter 2, leaf-loop high-pressure case).
+  - `getRematCost` / `getSpillCost` cost-query hooks (Phase 1; not
+    yet consumed by any pass besides `shouldHoist`).
+  - Master gate `-mllvm -z80-use-tiered-cost-model` (default TRUE).
 - **Final measurements (vs pre-#23 disablePass baseline):**
-  - AES -Oz: -51 B text, -9.0 % tstates
-  - AES -O2: -132 B text, -9.2 % tstates
-  - autoload PROM: +18 B compressed / +58 B raw (down from +25/+64 with
-    the binary heuristic OFF; cap still has 372 B free)
-  - cpnos PROM1: -7 B (vs -15 B with heuristic OFF; gives up 8 B for
-    autoload relief — acceptable trade)
-  - rcbios BIOS: +7 B (unchanged; heuristic doesn't fire on rcbios's
-    non-call hoist)
-- **Lit + runtime:** 149 PASS + 4 XFAIL; 854 PASS / 0 FAIL across O0..Oz.
-- **Pointers:** ravn/llvm-z80#220, session writeup,
-  `Z80InstrInfo.cpp::shouldHoist`.
+  - AES -Oz: −70 B text / −8.9 % tstates
+  - AES -O2: −132 B text / −9.2 % tstates
+  - autoload: +51 B raw (recovered 13 B of the post-#23 regression)
+  - cpnos / rcbios: unchanged from session-start
+  - Lit + runtime: 149 PASS + 4 XFAIL; 854 PASS / 0 FAIL across O0..Oz.
+- **Pointers:** ravn/llvm-z80 commits 087953bb4 (#23), b081796b8 (P2),
+  81165bdfc (P3 ch1), 4035d3cbd (P3 ch2), 1af0f1b85 (P4 ch1);
+  plan in `tasks/plan-z80-cost-model-refinement-2026-06-08.md`.
+
+### B12. CSE-induced over-hoist in tight leaf loops — partial mitigation; ~50 B residual
+
+- **Status:** partial mitigation via Phase 3 ch2; residual remains.
+- **Impact:** autoload-in-c PROM is +13 B compressed / +51 B raw vs
+  pre-#23.  The leaf-loop high-pressure veto (Phase 3 ch2) recovers
+  about 13 B of the original +64 B regression; the remaining +51 B
+  is from CSE de-duplications that the veto's "count of preheader
+  rematable defs" doesn't fully capture.
+- **Pattern:** CSE de-duplicates small constants (port addresses,
+  comparison constants) used multiple times in `define_sextants`'s
+  nested loops.  The de-duplicated vreg has multiple in-loop uses;
+  LICM hoists.  Regalloc spills to BSS because cumulative pressure
+  exceeds the cheap-pair budget.  Phase 3 ch2's veto fires for some
+  of these but not all.
+- **Why we can't fix it (this session):** would need either (a) a
+  Z80-specific pre-CSE filter that prevents CSE on small-constant
+  patterns in pressure-heavy leaf loops, or (b) a `getCSECost` hook
+  on `TargetInstrInfo` upstream that CSE consults.  Either is
+  Phase 3 chapter 3+ territory.
+- **Revisit when:** the +51 B raw begins to threaten the 2 KB PROM
+  cap (currently 377 B free); OR a Z80 backend session focuses on
+  CSE cost-model integration.
+- **Pointers:** `tasks/plan-z80-cost-model-refinement-2026-06-08.md`
+  Phase 3 chapter 3 (CSE wiring is mentioned as "open design
+  question"); session writeup for Phase 4 ch 1.
 
 ---
 
