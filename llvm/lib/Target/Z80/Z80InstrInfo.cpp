@@ -2556,11 +2556,13 @@ void Z80InstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
 // ============================================================================
 
 static cl::opt<bool> UseTieredCostModel(
-    "z80-use-tiered-cost-model", cl::Hidden, cl::init(false),
-    cl::desc("Z80 #23 Phase 1: enable Phase 3 consumers of the "
-             "Z80-specific cost-query hooks (getRematCost, "
-             "getSpillCost, ...).  Default OFF until Phase 3 wires "
-             "the consumers; flag is reserved infrastructure."));
+    "z80-use-tiered-cost-model", cl::Hidden, cl::init(true),
+    cl::desc("Z80 #23 Phase 4: master flag for the tiered cost-model "
+             "refinement.  Default ON 2026-06-08 after Phase 3 chs 1+2 "
+             "demonstrated AES -70 B (Oz) and autoload -13 B raw wins "
+             "with no regression on cpnos/rcbios/lit/runtime.  Set "
+             "false to restore pre-tiered-cost-model behavior for "
+             "diagnosis without rebuilding clang."));
 
 bool Z80InstrInfo::useTieredCostModel() const {
   return UseTieredCostModel;
