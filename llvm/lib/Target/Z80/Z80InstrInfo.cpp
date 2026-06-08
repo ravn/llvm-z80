@@ -2524,51 +2524,113 @@ void Z80InstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
   BuildMI(&MBB, DL, get(Z80::JP_nn)).addMBB(&NewDestBB);
 }
 
-// ravn/llvm-z80#23 LICM cost-model fix.  Gated by -mllvm
-// -z80-licm-block-on-call (default ON when the in-tree
-// disablePass(LICM/CSE) is lifted via -z80-enable-licm; the flag
-// lets task3_licm_ab.sh measure the heuristic's effect in isolation).
+// ravn/llvm-z80#23 / #220 LICM cost-model fix.
 //
-// Z80 has 3 GR16 pairs (HL/DE/BC; IX/IY are heavier 14-15 ts/access).
-// MachineLICM's default heuristic checks RegPressureSetLimit and
-// CanCauseHighRegPressure, but doesn't model the spill cost of a
-// hoisted live-range crossing a CALL site under sdcccall(1) (which
-// clobbers HL/DE/BC at every call).  Empirically:
+// Background: TableGen's auto-generated GR16 RegPressureSetLimit is 12
+// (counting register units; ~6 logical pairs).  But Z80's sdcccall(1)
+// clobbers HL/DE/BC at every call, so under "loop body contains a CALL"
+// the across-call-survival register-pair budget is only IX + IY (2 pairs,
+// 4 register units).  MachineLICM's CanCauseHighRegPressure consults the
+// TableGen limit and sees "plenty of room" -- hoists candidate; later
+// regalloc must spill the hoisted value to BSS each iteration.
 //
-//   - AES gf_alog/gf_log (leaf loop, no CALL): LICM hoist nets
-//     -8.9% (-Oz) / -9.2% (-O2) tstates -- the table-base/constant
-//     stays register-resident across the loop body.
-//   - autoload-in-c rom.c (HW init, CALL-heavy loops): LICM hoist
-//     adds +64 B raw .text because the hoisted invariants are
-//     forced to BSS spill across calls, costing more than
-//     recomputing them inside the body.
+// Empirically (2026-06-08 measurements at HEAD):
+//   - AES gf_alog/gf_log (leaf loops, no CALL): LICM hoist nets
+//     -8.9 % (-Oz) / -9.2 % (-O2) tstates.  No call -> heuristic
+//     never fires -> hoist happens -> table base stays in HL across
+//     the body.
+//   - autoload-in-c rom.c HW init (call-heavy loops with many
+//     invariants): without the heuristic, LICM blindly hoists and
+//     causes +64 B raw .text from BSS-spill traffic.
+//   - cpnos PROM1: has a call-loop with ~1 hoistable invariant that
+//     fits in IX/IY across the call -> binary heuristic was too
+//     aggressive (un-did the -15 B win); count-based threshold of 2
+//     lets it through.
 //
-// Heuristic: refuse to hoist out of a loop whose body contains any
-// CALL.  Preserves the AES win; eliminates the autoload regression.
+// Heuristic (count-based, replaces binary in 2026-06-08 commit):
+//   - If loop body has no CALL: defer to default (LICM is fine).
+//   - If has CALL: count preheader defs whose vreg is used inside the
+//     loop.  These are values already chosen for hoisting; they share
+//     the across-call survival budget with our candidate.
+//   - Refuse when count >= Threshold (default 2 = IX + IY callee-saved
+//     pairs).  Allows up to 2 cross-call hoists; refuses the 3rd+.
 //
-// Limitation: this is a coarse all-or-nothing veto.  A finer model
-// would track the number of already-hoisted live-across-call values
-// and refuse once that count + the candidate exceeds the caller-saved
-// register-pair count (3 on Z80).  Left for follow-up — the simple
-// veto already recovers the dominant signal.
+// Threshold = 2 is what fits when assuming IX is allocatable and IY is
+// allocatable (typical clang Z80 production).  Tune via the cl::opt for
+// experimentation.
 static cl::opt<bool> LICMBlockOnCall(
-    "z80-licm-block-on-call", cl::Hidden, cl::init(false),
-    cl::desc("Z80: refuse MachineLICM hoist when the loop body contains "
-             "a CALL.  See ravn/llvm-z80#23.  Default OFF (current direction "
-             "2026-06-08: accept short-term autoload size regression; "
-             "structural correctness over local size).  Set TRUE to enable "
-             "the heuristic for autoload-specific measurement."));
+    "z80-licm-block-on-call", cl::Hidden, cl::init(true),
+    cl::desc("Z80: count-based MachineLICM cost-model fix for call-heavy "
+             "loops.  See ravn/llvm-z80#23 / #220.  Default ON (2026-06-08 "
+             "count-based version: lets 1-2 invariants hoist past a call "
+             "into IX/IY callee-saved pairs, refuses the 3rd+ that would "
+             "force BSS spill+reload each iter)."));
+static cl::opt<unsigned> LICMCallHoistThreshold(
+    "z80-licm-call-hoist-threshold", cl::Hidden, cl::init(2),
+    cl::desc("Z80: maximum number of preheader defs (already chosen for "
+             "hoisting) that may live across a CALL in a LICM loop body "
+             "before further hoisting is refused.  Default 2 = IX + IY "
+             "callee-saved pair count."));
 
 bool Z80InstrInfo::shouldHoist(const MachineInstr &MI,
                                const MachineLoop *FromLoop) const {
   if (!LICMBlockOnCall || !FromLoop)
     return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
 
+  // No CALL in body -> default LICM cost model is appropriate.
+  bool HasCall = false;
   for (const MachineBasicBlock *MBB : FromLoop->blocks()) {
     for (const MachineInstr &I : *MBB) {
-      if (I.isCall())
-        return false;
+      if (I.isCall()) {
+        HasCall = true;
+        break;
+      }
+    }
+    if (HasCall)
+      break;
+  }
+  if (!HasCall)
+    return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
+
+  // Count preheader defs whose vreg is used inside the loop -- these
+  // are already-chosen-for-hoisting invariants that compete for the
+  // across-call survival budget (IX + IY, ~2 pairs).
+  const MachineBasicBlock *Preheader = FromLoop->getLoopPreheader();
+  if (!Preheader)
+    return false;  // conservative: no preheader -> can't measure -> refuse
+
+  const MachineFunction *MF = MI.getMF();
+  if (!MF)
+    return false;
+  const MachineRegisterInfo &MRI = MF->getRegInfo();
+
+  unsigned PreheaderHoistedUsedInLoop = 0;
+  for (const MachineInstr &PreI : *Preheader) {
+    if (PreI.isDebugInstr() || PreI.isPHI())
+      continue;
+    for (const MachineOperand &MO : PreI.operands()) {
+      if (!MO.isReg() || !MO.isDef())
+        continue;
+      Register DefReg = MO.getReg();
+      if (!DefReg.isVirtual())
+        continue;
+      // Does any use of this vreg live inside FromLoop?
+      bool UsedInLoop = false;
+      for (const MachineInstr &Use : MRI.use_nodbg_instructions(DefReg)) {
+        if (FromLoop->contains(Use.getParent())) {
+          UsedInLoop = true;
+          break;
+        }
+      }
+      if (UsedInLoop) {
+        ++PreheaderHoistedUsedInLoop;
+        break;  // only count once per def-MI
+      }
     }
   }
+
+  if (PreheaderHoistedUsedInLoop >= LICMCallHoistThreshold)
+    return false;
+
   return Z80GenInstrInfo::shouldHoist(MI, FromLoop);
 }
