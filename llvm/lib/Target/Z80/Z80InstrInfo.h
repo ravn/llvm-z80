@@ -81,6 +81,53 @@ public:
                             int64_t BrOffset = 0,
                             RegScavenger *RS = nullptr) const override;
 
+  // ravn/llvm-z80#23 Phase 1 (2026-06-08): cost-query hooks for the
+  // cost-model refinement plan in
+  // tasks/plan-z80-cost-model-refinement-2026-06-08.md.
+  //
+  // These hooks add NEW Z80-specific cost queries that future passes
+  // (Phase 3) will consult to make hoist / CSE / spill decisions
+  // aware of Z80's tiered register file.  Adding them is codegen-
+  // neutral until Phase 3 consumers light up; the
+  // `-z80-use-tiered-cost-model` cl::opt (default OFF) gates them.
+  //
+  // The defaults below match the values existing infrastructure
+  // already implicitly assumes, so the no-op-control measurement
+  // (see [[feedback_no_op_control_measurement]] memory rule) should
+  // be byte-identical to the pre-Phase-1 baseline.
+
+  /// Estimated size-in-bytes cost of rematerializing MI at a use
+  /// site.  Default: getInstSizeInBytes(MI).  A "1-byte rematable"
+  /// (e.g. `XOR A` to set A=0) is much cheaper than reloading from
+  /// BSS (3 B); a "3-byte rematable" (e.g. `LD HL,#imm`) costs the
+  /// same as a BSS reload, so the existing
+  /// `MachineLICM::isTriviallyReMaterializable` bypass overstates
+  /// its benefit in some cases.  Phase 3 will consult this in a
+  /// cost-aware version of the bypass.
+  unsigned getRematCost(const MachineInstr &MI) const;
+
+  /// Which mechanism the regalloc would use to spill a value of
+  /// register class RC across a code region.  Phase 3 will use
+  /// this to let the regalloc pick the cheapest available
+  /// mechanism rather than always reaching for BSS.
+  enum class Z80SpillKind { BSS, PushPop, IXIYIndex };
+
+  /// Estimated size-in-bytes cost of one spill+reload pair for
+  /// register class RC via the given spill mechanism.
+  /// Conservative defaults (Phase 1):
+  ///   BSS:       3 B (LD A,(nn) or LD HL,(nn))
+  ///   PushPop:   2 B (PUSH rr + POP rr)
+  ///   IXIYIndex: 3 B (LD A,(IX+0) with FD/DD prefix)
+  /// Phase 3 will widen this to a (bytes, tstates) tuple.
+  unsigned getSpillCost(const TargetRegisterClass *RC,
+                        Z80SpillKind Kind) const;
+
+  /// Returns whether the Phase 1 cost-query hooks are currently
+  /// enabled (cl::opt -z80-use-tiered-cost-model).  Convenience
+  /// wrapper so consumers don't have to reach for the flag
+  /// directly.  Default false.
+  bool useTieredCostModel() const;
+
 private:
   const Z80Subtarget *STI;
 };

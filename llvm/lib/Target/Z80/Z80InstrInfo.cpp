@@ -2545,3 +2545,64 @@ void Z80InstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
 // Simplest possible correct answer: don't override shouldHoist.  The
 // default LICM cost model + TableGen pressure limits already produce
 // the right behavior on the four production targets.
+
+// ============================================================================
+// ravn/llvm-z80#23 Phase 1 (2026-06-08) -- cost-query hooks.
+//
+// See tasks/plan-z80-cost-model-refinement-2026-06-08.md Phase 1.
+// These hooks are defined but not yet consumed by any pass; Phase 3
+// will wire them.  The -z80-use-tiered-cost-model cl::opt gates the
+// consumers (default OFF).  Adding the hooks is codegen-neutral.
+// ============================================================================
+
+static cl::opt<bool> UseTieredCostModel(
+    "z80-use-tiered-cost-model", cl::Hidden, cl::init(false),
+    cl::desc("Z80 #23 Phase 1: enable Phase 3 consumers of the "
+             "Z80-specific cost-query hooks (getRematCost, "
+             "getSpillCost, ...).  Default OFF until Phase 3 wires "
+             "the consumers; flag is reserved infrastructure."));
+
+bool Z80InstrInfo::useTieredCostModel() const {
+  return UseTieredCostModel;
+}
+
+unsigned Z80InstrInfo::getRematCost(const MachineInstr &MI) const {
+  // Phase 1 default: the instruction's literal byte length.  Most
+  // Z80 rematable instructions (`LD r, #imm` 2 B, `LD rr, #imm` 3 B,
+  // `XOR A` 1 B, etc.) have constant size, so getInstSizeInBytes is
+  // the right starting estimate.  Phase 3 may distinguish further
+  // (e.g. a context-aware cost that factors in tstate count).
+  return getInstSizeInBytes(MI);
+}
+
+unsigned Z80InstrInfo::getSpillCost(const TargetRegisterClass *RC,
+                                    Z80SpillKind Kind) const {
+  // Phase 1 defaults -- size in bytes per spill+reload PAIR (save +
+  // restore added together).
+  //
+  // BSS / spill-slot:
+  //   8-bit:  LD (nn),A + LD A,(nn) = 3 + 3 = 6
+  //   16-bit: LD (nn),HL + LD HL,(nn) = 3 + 3 = 6 (HL fast path)
+  //           LD (nn),DE/BC + LD DE/BC,(nn) = 4 + 4 = 8 (ED prefix)
+  //
+  // PUSH/POP (when applicable -- valid only if regalloc can find a
+  // bracketing point and the register is in {AF,BC,DE,HL,IX,IY}):
+  //   8-bit:  not a single op; spill the containing pair.
+  //   16-bit: PUSH rr + POP rr = 1 + 1 = 2.
+  //
+  // IX/IY-indexed (when a stack slot is exposed via IX or IY frame
+  // pointer):
+  //   8-bit:  LD (IX+d),r + LD r,(IX+d) = 3 + 3 = 6 (with DD prefix)
+  //   16-bit: requires 2x 8-bit accesses = 6 + 6 = 12 (heavy).
+  //
+  // Use the AnyGR16 default size of 6 for the BSS path; PushPop 2;
+  // IXIYIndex 6 for 8-bit, 12 for 16-bit.  RC is unused in this
+  // phase; Phase 3 will switch on RC->getID() to refine.
+  (void)RC;
+  switch (Kind) {
+  case Z80SpillKind::BSS:       return 6;
+  case Z80SpillKind::PushPop:   return 2;
+  case Z80SpillKind::IXIYIndex: return 6;
+  }
+  return 6; // sane fallback
+}
