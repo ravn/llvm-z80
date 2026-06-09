@@ -442,6 +442,47 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   cl::opt + rationale comment); `aes256-corpus/probe_cse.sh` for
   the three-state A/B; commit flipping default to false.
 
+### B16. CPIR/CPDR not used for memchr/memcmp/strchr lowering — accepted ZeroYield 2026-06-09
+
+- **Status:** accepted (ZeroYield on the four production firmware
+  components).  Re-survey trigger only.
+- **Impact:** zero today.  A C-source `memchr` / `memcmp` / `strchr` /
+  `strlen` / `strncmp` call would lower to a libcall (or an
+  open-coded byte-by-byte loop) instead of `CPIR` / `CPDR`.  A
+  CPIR-fused `memchr` on 256 B would be 2 B + ~21 T/byte vs a typical
+  open-coded loop at ~15+ B + ~40 T/byte (rough estimate; not
+  measured against a concrete witness because there is none).
+- **Current state of the backend:** CPI/CPIR/CPD/CPDR are defined
+  (`Z80InstrInfo.td:106-109`) but no GISel pattern, libcall expansion,
+  or middle-end combiner lowers a C-level `memchr` / `memcmp` /
+  `strchr` to them.  `cpnos-in-c/src/runtime.s:48-71` has a
+  hand-written `_memchr` using CPIR — but it is **unreferenced** by
+  any C source and is linker-stripped.  Verified 2026-06-09: `grep`
+  across autoload-in-c / cpnos-in-c / rcbios-in-c returns zero
+  C-source references to those symbols.
+- **Why we can't fix it (yet):** not a mechanism block — the surface
+  is implementable (a GISel combiner that turns
+  `G_INTRINSIC @llvm.memcmp.eq` / library-call `memchr` into a
+  CPIR-based pseudo, plus a runtime `_memcmp`/`_memchr` switch in
+  compiler-rt).  But with zero in-tree witnesses on the four
+  finishing-firmware components, the work has no measurable payoff.
+  Per the session #74 production-density verdict ("cheap codegen +
+  regalloc levers are exhausted; the remaining high-value compiler
+  work is upstream-submission packaging") we don't invest in
+  motivator-less ISel coverage.
+- **Revisit when:** any of the following surfaces:
+  - A new firmware component or corpus benchmark uses `memchr` /
+    `memcmp` / `strchr` / `strlen` / `strncmp` from C source.
+  - A libc (#35) lands that wires `string.h` to compiler-rt — then
+    the compiler-rt `_memcmp` / `_memchr` themselves can be CPIR-based
+    (single hand-written file, no compiler change needed).
+  - A motivating benchmark in `compiler-comparison-corpus` materially
+    regresses vs SDCC due to byte-loop memchr / memcmp / strchr.
+- **Pointers:** `ravn/llvm-z80#7` issue + 2026-06-09 correction
+  comment; `rc700-gensmedet/cpnos-in-c/src/runtime.s:48-71` for the
+  hand-written CPIR pattern (would be the model for any future
+  compiler-rt implementation).
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work
@@ -486,5 +527,5 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-06-08 (session adding the icmp-narrow sound
-gate v1 + v2 and surfacing M1).
+**Last updated:** 2026-06-09 (added B16 CPIR/CPDR ZeroYield entry +
+B15 Branch Folder PARKED + 2026-06-09 #7 umbrella close verification).
