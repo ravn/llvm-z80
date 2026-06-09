@@ -889,23 +889,28 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // set by DEC A); JR NZ tests Z from DEC A. DJNZ decrements B and branches
     // if B≠0 — same semantics.
     // Requires: A is dead after the sequence (DJNZ doesn't update A).
+    //
+    // ravn/llvm-z80#221: use next_nodbg() instead of std::next() to skip
+    // DBG_VALUE / DBG_LABEL pseudos that interleave under `-g`.  Raw
+    // std::next() lands on a debug pseudo, the opcode check fails, and the
+    // peephole silently bails on `-g` builds.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
         if (MII->getOpcode() != Z80::DEC_A) { ++MII; continue; }
         auto I1 = MII;
-        auto I2 = std::next(I1);
+        auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
         if (I2 == MIE || I2->getOpcode() != Z80::LD_B_A) {
           ++MII; continue;
         }
-        auto I3 = std::next(I2);
+        auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
         if (I3 == MIE) { ++MII; continue; }
         // Optional OR A between LD B,A and JR NZ
         MachineInstr *OrToErase = nullptr;
         auto IBranch = I3;
         if (I3->getOpcode() == Z80::OR_A) {
           OrToErase = &*I3;
-          IBranch = std::next(I3);
+          IBranch = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
           if (IBranch == MIE) { ++MII; continue; }
         }
         if (IBranch->getOpcode() != Z80::JR_NZ_e) {
@@ -942,18 +947,27 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MachineBasicBlock *TargetMBB = IBranch->getOperand(0).getMBB();
         DebugLoc DL = I1->getDebugLoc();
         LLVM_DEBUG(dbgs() << "  DEC A; LD B,A; [OR A;] JR NZ → DJNZ\n");
-        IBranch->eraseFromParent();
-        if (OrToErase) OrToErase->eraseFromParent();
-        I2->eraseFromParent();
-        MII = MBB.erase(I1);
+        // ravn/llvm-z80#221: erase [I1, IBranch] as a half-open range
+        // (one past IBranch) so any intervening DBG_VALUE pseudos (which
+        // tracked values through A that no longer exist after the rewrite)
+        // are also removed.  Leaving them would dangle on physreg state
+        // that the DJNZ doesn't produce.
+        auto EraseEnd = std::next(IBranch);
+        MII = MBB.erase(I1, EraseEnd);
         BuildMI(MBB, MII, DL, TII->get(Z80::DJNZ_e)).addMBB(TargetMBB);
         Changed = true;
+        // Suppress unused-variable warning on OrToErase — the range erase
+        // above already removed it (it lies within [I1, IBranch]).
+        (void)OrToErase;
       }
     }
 
     // --- Peephole: DEC B; JR NZ → DJNZ (Z80 only) ---
     // DJNZ is a 2-byte instruction that decrements B and branches if non-zero.
     // Replaces DEC B (1 byte) + JR NZ (2 bytes) = 3 bytes with DJNZ (2 bytes).
+    //
+    // ravn/llvm-z80#221: use SkipPHIsLabelsAndDebug() instead of std::next()
+    // to skip DBG_VALUE pseudos under `-g`.
     if (STI.hasZ80()) {
       for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
            MII != MIE;) {
@@ -961,7 +975,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           ++MII;
           continue;
         }
-        auto NextIt = std::next(MII);
+        auto NextIt = MBB.SkipPHIsLabelsAndDebug(std::next(MII));
         if (NextIt == MIE || NextIt->getOpcode() != Z80::JR_NZ_e) {
           ++MII;
           continue;
@@ -976,8 +990,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MachineBasicBlock *TargetMBB = NextIt->getOperand(0).getMBB();
         DebugLoc DL = MII->getDebugLoc();
         LLVM_DEBUG(dbgs() << "  DEC B; JR NZ → DJNZ\n");
-        NextIt->eraseFromParent();
-        MII = MBB.erase(MII);
+        // Range-erase [MII, NextIt] (one past NextIt) so intervening
+        // DBG_VALUE pseudos are removed too.  See #221 rationale.
+        auto EraseEnd = std::next(NextIt);
+        MII = MBB.erase(MII, EraseEnd);
         BuildMI(MBB, MII, DL, TII->get(Z80::DJNZ_e)).addMBB(TargetMBB);
         Changed = true;
       }
