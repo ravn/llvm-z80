@@ -1,7 +1,7 @@
 ; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s
 ;
 ; Direct exercise of the Z80 backend's claim of
-; `llvm.experimental.memset.pattern`.  This bypasses Z80LoopIdiomFill so we
+; `llvm.experimental.memset.pattern`.  This bypasses Z80PatternFillRecognize so we
 ; verify the legalizer arm in isolation: PreISelIntrinsicLowering must NOT
 ; expand the intrinsic (TTI hook returns false for i8/i16/i32 patterns), and
 ; Z80LegalizerInfo must lower it to the seed + LDIR idiom.

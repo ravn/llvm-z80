@@ -2,7 +2,7 @@
 ; RUN: llc -mtriple=sm83 -verify-machineinstrs < %s | FileCheck %s --check-prefix=SM83
 ;
 ; ravn/llvm-z80#205: the defined target intrinsic llvm.z80.pattern.fill replaces
-; Z80LoopIdiomFill's old UB-in-IR overlapping-memcpy representation of a
+; Z80PatternFillRecognize's old UB-in-IR overlapping-memcpy representation of a
 ; pattern-fill loop.  It carries the "intentional forward overlap" contract
 ; explicitly (so it is opaque to generic IR passes -- no UB, no
 ; PreISelIntrinsicLowering loop-expansion) and the backend lowers it directly:

@@ -50,7 +50,7 @@ let TargetPrefix = "z80" in {  // All intrinsics start with "llvm.z80."
   def int_z80_set_i : Intrinsic<[], [llvm_i8_ty], [IntrNoMem, IntrHasSideEffects]>;
 
   // Fill memory with `count` copies of a K-byte little-endian pattern
-  // (ravn/llvm-z80#205).  Emitted by Z80LoopIdiomFill for recognised pattern
+  // (ravn/llvm-z80#205).  Emitted by Z80PatternFillRecognize for recognised pattern
   // -fill loops and lowered by the backend to a seed store + forward LDIR
   // (the classic Z80 seed-and-propagate idiom).  This is a *defined* target
   // intrinsic -- unlike the previous overlapping-memcpy representation, which

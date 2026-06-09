@@ -1,4 +1,4 @@
-//===-- Z80LoopIdiomFill.cpp - Z80 Pattern-Fill Loop Idiom ----------------===//
+//===-- Z80PatternFillRecognize.cpp - Z80 Pattern-Fill Recogniser ---------===//
 //
 // Part of LLVM-Z80, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,8 +7,11 @@
 //===----------------------------------------------------------------------===//
 //
 // Recognise loops that fill a buffer with a fixed K-byte repeating pattern
-// (K in {1, 2, 3, 4}) for a constant trip count N, and replace them with the
-// target intrinsic llvm.z80.pattern.fill (issue #88, #205).
+// (K in {1, 2, 3, 4}) for a constant trip count N, and replace them with a
+// pattern-fill intrinsic (issue #88, #205).  Renamed 2026-06-09 from
+// Z80LoopIdiomFill: the recognition logic below is target-agnostic and is
+// the prototype of an eventual upstream LoopIdiomRecognize extension; the
+// `Z80` prefix tracks where it lives, not what it knows.
 //
 // Pre-rewrite shape (the canonical for-loop form):
 //
@@ -49,7 +52,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Z80LoopIdiomFill.h"
+#include "Z80PatternFillRecognize.h"
 #include "Z80.h"
 #include "Z80InstrInfo.h"
 
@@ -69,7 +72,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 
-#define DEBUG_TYPE "z80-loop-idiom-fill"
+#define DEBUG_TYPE "z80-pattern-fill-recognize"
 
 using namespace llvm;
 
@@ -249,7 +252,7 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
     if (!DT.dominates(Inst, Preheader->getTerminator()))
       return false;
 
-  LLVM_DEBUG(dbgs() << "z80-loop-idiom-fill: matched K=" << K << " N=" << N
+  LLVM_DEBUG(dbgs() << "z80-pattern-fill-recognize: matched K=" << K << " N=" << N
                     << " in " << Header->getParent()->getName() << "\n");
 
   // Emit one of two intrinsics depending on K:
@@ -328,11 +331,11 @@ bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, DominatorTree &DT,
 
 // Legacy FunctionPass wrapper so llc's addIRPasses pipeline picks
 // the pass up.
-class Z80LoopIdiomFillLegacyPass : public FunctionPass {
+class Z80PatternFillRecognizeLegacyPass : public FunctionPass {
 public:
   static char ID;
-  Z80LoopIdiomFillLegacyPass() : FunctionPass(ID) {
-    initializeZ80LoopIdiomFillLegacyPassPass(*PassRegistry::getPassRegistry());
+  Z80PatternFillRecognizeLegacyPass() : FunctionPass(ID) {
+    initializeZ80PatternFillRecognizeLegacyPassPass(*PassRegistry::getPassRegistry());
   }
 
   bool runOnFunction(Function &F) override {
@@ -352,27 +355,27 @@ public:
   }
 
   StringRef getPassName() const override {
-    return "Z80 Loop Idiom Fill (legacy)";
+    return "Z80 Pattern Fill Recognize (legacy)";
   }
 };
 
 } // namespace
 
-char Z80LoopIdiomFillLegacyPass::ID = 0;
+char Z80PatternFillRecognizeLegacyPass::ID = 0;
 
-INITIALIZE_PASS_BEGIN(Z80LoopIdiomFillLegacyPass, DEBUG_TYPE,
-                      "Z80 Loop Idiom Fill", false, false)
+INITIALIZE_PASS_BEGIN(Z80PatternFillRecognizeLegacyPass, DEBUG_TYPE,
+                      "Z80 Pattern Fill Recognize", false, false)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
-INITIALIZE_PASS_END(Z80LoopIdiomFillLegacyPass, DEBUG_TYPE,
-                    "Z80 Loop Idiom Fill", false, false)
+INITIALIZE_PASS_END(Z80PatternFillRecognizeLegacyPass, DEBUG_TYPE,
+                    "Z80 Pattern Fill Recognize", false, false)
 
-FunctionPass *llvm::createZ80LoopIdiomFillLegacyPass() {
-  return new Z80LoopIdiomFillLegacyPass();
+FunctionPass *llvm::createZ80PatternFillRecognizeLegacyPass() {
+  return new Z80PatternFillRecognizeLegacyPass();
 }
 
-PreservedAnalyses Z80LoopIdiomFill::run(Function &F,
+PreservedAnalyses Z80PatternFillRecognize::run(Function &F,
                                        FunctionAnalysisManager &AM) {
   auto &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);

@@ -629,7 +629,7 @@ bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,
     if (!STI.hasZ80()) {
       // SM83 has no LDIR; the seed-and-propagate trick is unavailable.  For a
       // constant count, emit `count` independent pattern stores (defined, no
-      // overlap).  Z80LoopIdiomFill is the only emitter and the matcher
+      // overlap).  Z80PatternFillRecognize is the only emitter and the matcher
       // requires a constant trip count, so the variable case is unreachable.
       if (!CountC)
         report_fatal_error("llvm.z80.pattern.fill: variable count "
@@ -699,8 +699,8 @@ bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,
     Register DstPtr = MI.getOperand(1).getReg();
     Register Pattern = MI.getOperand(2).getReg();
     Register Count = MI.getOperand(3).getReg();
-    // MI.getOperand(4) is `isvolatile` -- ignored.  Z80LoopIdiomFill never
-    // marks these as volatile.
+    // MI.getOperand(4) is `isvolatile` -- ignored.  Z80PatternFillRecognize
+    // never marks these as volatile.
 
     LLT PtrTy = MRI.getType(DstPtr);
     LLT PatLLT = MRI.getType(Pattern);

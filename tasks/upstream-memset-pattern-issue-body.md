@@ -190,7 +190,7 @@ direction; deferring to your preferred sequencing.
 ## Cross-references
 
 - Original fork-local fix (custom `llvm.z80.pattern.fill` intrinsic +
-  `Z80LoopIdiomFill` recognizer): ravn/llvm-z80#205.
+  `Z80PatternFillRecognize` recognizer): ravn/llvm-z80#205.
 - Live regression demonstrating the custom-pass maintenance burden the
   hook would retire: ravn/llvm-z80#217 (a 2026-06 upstream merge
   re-imported a `hasDedicatedExits()` assert into `deleteDeadLoop()`;

@@ -60,7 +60,7 @@ The current workaround in our fork (ravn/llvm-z80#205, session 76):
 
 - Define a target-specific intrinsic `llvm.z80.pattern.fill(ptr, iN,
   i16 K, i16 count)` in `IntrinsicsZ80.td`.
-- Add a pre-ISel pass `Z80LoopIdiomFill` that pattern-matches the
+- Add a pre-ISel pass `Z80PatternFillRecognize` that pattern-matches the
   source loop and rewrites it to a call of `llvm.z80.pattern.fill`.
 - Lower the custom intrinsic to seed-store + LDIR in `Z80LegalizerInfo`.
 
@@ -68,14 +68,14 @@ This works in production (cpnos IVT-init uses it) and is byte-identical
 to the prior `volatile`-marked overlapping-memcpy lowering it replaced.
 But it carries growing **upstream-debt**:
 
-- **Duplicate idiom recognizer.**  `Z80LoopIdiomFill` mirrors logic that
+- **Duplicate idiom recognizer.**  `Z80PatternFillRecognize` mirrors logic that
   `LoopIdiomRecognize` already implements upstream, just with a different
   emit target.  Two recognizers will drift in shape and edge-case
   handling over time.
 - **API-drift maintenance cost.**  ravn/llvm-z80#217 is the first
   concrete drift cost: a 2026-06 upstream merge re-imported a
   `hasDedicatedExits()` assert into `deleteDeadLoop()`, and our
-  `Z80LoopIdiomFill::runOnLoop` does not satisfy that precondition.
+  `Z80PatternFillRecognize::runOnLoop` does not satisfy that precondition.
   Custom passes touching upstream-shared loop APIs are now ours to
   maintain forever.
 - **Unfiled smell.**  Per the U-LLVM coherence map
@@ -293,7 +293,7 @@ Possible outcomes and responses:
 Stages 1-5 + 7 + 8 are implemented on ravn/llvm-z80 main at commit
 `6839ebc4bcbf [Z80][PROOF-OF-CONCEPT] TTI hook for experimental_memset_pattern`.
 Stage 6 (delete fork-local intrinsic) is gated on K=3 generalisation —
-documented in `Z80LoopIdiomFill.cpp:256-267` as deferred.
+documented in `Z80PatternFillRecognize.cpp:256-267` as deferred.
 
 | Stage | Files | LOC est. | POC status |
 |---|---|---|---|
@@ -301,7 +301,7 @@ documented in `Z80LoopIdiomFill.cpp:256-267` as deferred.
 | 2. PreISelIntrinsicLowering consumes the hook | `PreISelIntrinsicLowering.cpp` (line 421) | ~10 | DONE in `6839ebc` |
 | 3. Z80 backend overrides the hook | `Z80TargetTransformInfo.h/.cpp` (line 107) | ~5 | DONE in `6839ebc` (false iff K in {1,2,4}) |
 | 4. Z80 legalizer claims the intrinsic | `Z80LegalizerInfo.cpp` (line 686) | ~30 (mostly moved from existing custom-intrinsic arm) | DONE in `6839ebc` (new arm; custom arm retained for K=3) |
-| 5. Z80LoopIdiomFill emits upstream intrinsic | `Z80LoopIdiomFill.cpp` (lines 256-300) | ~10 | DONE in `6839ebc` for K in {1,2,4}; K=3 stays on fork intrinsic |
+| 5. Z80PatternFillRecognize emits upstream intrinsic | `Z80PatternFillRecognize.cpp` (lines 256-300) | ~10 | DONE in `6839ebc` for K in {1,2,4}; K=3 stays on fork intrinsic |
 | 6. Delete custom intrinsic + custom legalizer arm | `IntrinsicsZ80.td`, `Z80LegalizerInfo.cpp` | -50 | **DEFERRED** — gated on K=3 generalisation |
 | 7. New lit test | `llvm/test/CodeGen/Z80/experimental-memset-pattern.ll` | ~50 | DONE in `6839ebc` |
 | 8. Update `issue-205-pattern-fill.ll` to track the new intrinsic name | existing test | ~10 | DONE in `6839ebc` (test still PASSes — covers K=3 + the rotated/non-rotated trip-count fix from #205) |
@@ -327,16 +327,86 @@ Until either lands, ~50 LOC of fork-local intrinsic + recogniser stay.
 This is the **only** remaining residual after the proposed hook lands;
 everything else has migrated.
 
-### 7.2 What still anchors `Z80LoopIdiomFill` to the fork
+### 7.2 What still anchors `Z80PatternFillRecognize` to the fork
 
-Section 1 framed the long-term goal as retiring `Z80LoopIdiomFill`
-itself by getting upstream `LoopIdiomRecognize` to handle the multi-byte
-pattern-fill shape.  That is **out of scope** for this PR — it's a much
-bigger upstream change (touches a different pass, a different review
-audience) and is only worth it once Z80 itself is closer to mainline.
-The current PR's scope: get the *lowering* path through the upstream
-intrinsic, so the *recogniser* is the only remaining duplicate (not the
-recogniser + the legalizer + the custom intrinsic).
+(The pass was renamed from `Z80PatternFillRecognize` on 2026-06-09.  The body is
+target-agnostic — it's the prototype of the eventual upstream
+`LoopIdiomRecognize` extension — and the `Z80` prefix tracks where it
+lives, not what it knows.)
+
+Section 1 framed the long-term goal as retiring this pass by getting
+upstream `LoopIdiomRecognize` to handle the multi-byte pattern-fill
+shape.  That is **out of scope** for this PR — it's a much bigger
+upstream change (touches a different pass, a different review audience)
+and is only worth it once Z80 itself is closer to mainline.  The current
+PR's scope: get the *lowering* path through the upstream intrinsic, so
+the *recogniser* is the only remaining duplicate (not the recogniser +
+the legalizer + the custom intrinsic).
+
+### 7.3 Why we don't make `LoopIdiomRecognize` overridable
+
+A reasonable alternative to "propose adding K-byte pattern recognition
+to upstream" is "propose adding *extensibility* to upstream so backends
+can plug in their own recognisers."  Concretely, a TTI hook like
+
+```cpp
+/// Try a target-specific loop idiom recognition on \p L.  Return true if
+/// the loop was rewritten (and the recogniser preserved analyses
+/// appropriately); false to let the rest of LoopIdiomRecognize proceed.
+bool tryRecognizeCustomLoopIdiom(Loop *L, ScalarEvolution &SE,
+                                 DominatorTree &DT, LoopInfo &LI) const;
+```
+
+called from `LoopIdiomRecognize::runOnLoop` before the built-in matchers.
+Symmetric to the `shouldExpandExperimentalMemSetPattern` hook this RFC
+proposes for the lowering side.
+
+We decided **not** to lead with this for three reasons:
+
+1. **Recognition contracts are open-ended.**  The lowering-side hook has
+   a tight contract: "I, the backend, will lower this *specific*
+   intrinsic; here are the failure modes."  A recognition-side hook
+   would have to enumerate what the recogniser may rewrite *into*,
+   what analyses it must preserve, what loop topologies it's allowed to
+   delete, what diagnostics it must emit on contradiction.  The matrix
+   of "I rewrote it, but you, the upstream matcher, still see it"
+   states is large; getting it provably safe is a substantial design
+   doc on its own.
+
+2. **No motivating second consumer.**  An extensibility hook needs to be
+   justified by *several* would-be consumers (the "rule of three").
+   Today the only consumer is Z80's pattern-fill recogniser.  Reviewers
+   reasonably ask: "if no other in-tree backend wants this, why not put
+   the specific recognition into the upstream pass directly?" — and the
+   answer is hard to give without the cyclic-dependency-on-Z80-mainlining
+   argument that section 1 / the "much larger" framing already covers.
+
+3. **The hook we already propose can carry more weight than it looks.**
+   With `shouldExpandExperimentalMemSetPattern`, the backend
+   already gets to *claim the intrinsic*; the only thing it doesn't get
+   to do is *produce the intrinsic from a loop in the first place*.
+   The cleanest upstream story when Z80 is closer to mainline:
+   "add multi-byte K-pattern recognition to `LoopIdiomRecognize`,
+   emitting the existing `experimental.memset.pattern` intrinsic; the
+   existing TTI hook already lets backends control whether to expand or
+   claim it."  No extensibility hook needed — recognition becomes
+   uniformly upstream-owned; lowering choice stays target-driven.
+
+The status-quo workaround (target-extensible recognition by adding a
+parallel pass via `TargetPassConfig::addIRPasses`, as
+`Z80PatternFillRecognize` does today) is the *de-facto* extensibility
+mechanism.  It's less clean than a hook (two passes scanning the
+function, no coordination on what each rewrites), but it doesn't
+require an upstream review surface and it costs nothing as long as the
+target's pass runs early enough to consume the loops the upstream pass
+would also have matched.  For Z80 today, the upstream pass doesn't
+match our K-byte shape at all, so the cost is zero.
+
+If a second backend ever shows up wanting target-specific loop-idiom
+recognition, the extensibility-hook design becomes attractive
+on the "rule of three" — file then.  Until then: don't bid for
+extensibility we can't justify, and keep the proposed scope of this RFC
+tight (single intrinsic, single hook, default-true).
 
 Total net: roughly **+30 LOC of upstream change + ~0 LOC of Z80 change**
 (the Z80 side mostly *moves* code from the custom intrinsic arm to the

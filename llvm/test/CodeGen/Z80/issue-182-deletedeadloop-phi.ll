@@ -13,7 +13,7 @@
 ;
 ; This is reachable from clean source code: two sequential loops over
 ; the same array, where the first loop is rewritten to memcpy by
-; `Z80LoopIdiomFill` and then deleted via `deleteDeadLoop`.
+; `Z80PatternFillRecognize` and then deleted via `deleteDeadLoop`.
 
 @a = dso_local global [100 x i8] zeroinitializer, align 1
 

@@ -46,7 +46,7 @@
 #include "Z80FixupImplicitDefs.h"
 #include "Z80IndexIV.h"
 #include "Z80AutoStaticStack.h"
-#include "Z80LoopIdiomFill.h"
+#include "Z80PatternFillRecognize.h"
 #include "Z80LoopRotate.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
@@ -123,7 +123,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80PostLegalizerCombinerPass(PR);
   initializeZ80FixupImplicitDefsPass(PR);
   initializeZ80LateOptimizationPass(PR);
-  initializeZ80LoopIdiomFillLegacyPassPass(PR);
+  initializeZ80PatternFillRecognizeLegacyPassPass(PR);
   initializeZ80LoopRotateLegacyPassPass(PR);
   initializeZ80AutoStaticStackPass(PR);
   initializeZ80LowerSelectPass(PR);
@@ -219,8 +219,8 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
   PB.registerPipelineParsingCallback(
       [](StringRef Name, FunctionPassManager &PM,
          ArrayRef<PassBuilder::PipelineElement>) {
-        if (Name == "z80-loop-idiom-fill") {
-          PM.addPass(Z80LoopIdiomFill());
+        if (Name == "z80-pattern-fill-recognize") {
+          PM.addPass(Z80PatternFillRecognize());
           return true;
         }
         if (Name == "z80-loop-rotate") {
@@ -241,7 +241,7 @@ void Z80TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
   PB.registerVectorizerStartEPCallback(
       [](FunctionPassManager &PM, OptimizationLevel Level) {
         if (Level != OptimizationLevel::O0) {
-          PM.addPass(Z80LoopIdiomFill());
+          PM.addPass(Z80PatternFillRecognize());
           // Re-rotate head-test loops that LLVM's LoopRotate skipped at
           // -Oz due to the minsize gate (issue #77a).
           PM.addPass(Z80LoopRotate());
@@ -366,7 +366,7 @@ void Z80PassConfig::addIRPasses() {
     addPass(createInstructionCombiningPass());
     // Pattern-fill rewrite (issue #88).  Runs from llc's IR pipeline
     // here; clang's pipeline picks it up via PassBuilder hook.
-    addPass(createZ80LoopIdiomFillLegacyPass());
+    addPass(createZ80PatternFillRecognizeLegacyPass());
     // Re-rotate head-test loops that LLVM's LoopRotate skipped at -Oz
     // due to the minsize gate (issue #77a).
     addPass(createZ80LoopRotateLegacyPass());
