@@ -1,0 +1,27 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: undoc-iy-fix
+# date: 2026-06-08T20:26:04Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 504640f748bf
+# clang_built: 2026-06-08T22:26:02Z
+# clang_uncommitted_changes: 2
+# clang_extra: '-Xclang -target-feature -Xclang +undocumented'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+undoc-iy-fix	aes_Oz_default	text	2171
+undoc-iy-fix	aes_Oz_default	bin	2531
+undoc-iy-fix	aes_Oz_default	tstates	16589229
+undoc-iy-fix	aes_Oz_default	verify	PASS
+undoc-iy-fix	aes_O2_default	text	4367
+undoc-iy-fix	aes_O2_default	bin	5556
+undoc-iy-fix	aes_O2_default	tstates	16536005
+undoc-iy-fix	aes_O2_default	verify	PASS
+undoc-iy-fix	autoload	text_raw	1971
+undoc-iy-fix	autoload	prom_bin	1678
+undoc-iy-fix	autoload	prom_free	370
+undoc-iy-fix	autoload	main_relocated_size	614
+undoc-iy-fix	autoload	rom_o_text	1848
+undoc-iy-fix	cpnos	prom1_bin	1997
+undoc-iy-fix	cpnos	prom1_free	51
+undoc-iy-fix	cpnos	payload	2008
+undoc-iy-fix	rcbios	bios_bytes	5920

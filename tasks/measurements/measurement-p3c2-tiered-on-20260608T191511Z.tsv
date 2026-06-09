@@ -1,0 +1,27 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: p3c2-tiered-on
+# date: 2026-06-08T19:15:11Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 81165bdfcc5d
+# clang_built: 2026-06-08T21:14:53Z
+# clang_uncommitted_changes: 2
+# clang_extra: '-mllvm -z80-use-tiered-cost-model'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+p3c2-tiered-on	aes_Oz_default	text	2156
+p3c2-tiered-on	aes_Oz_default	bin	2516
+p3c2-tiered-on	aes_Oz_default	tstates	16577307
+p3c2-tiered-on	aes_Oz_default	verify	PASS
+p3c2-tiered-on	aes_O2_default	text	4367
+p3c2-tiered-on	aes_O2_default	bin	5556
+p3c2-tiered-on	aes_O2_default	tstates	16536005
+p3c2-tiered-on	aes_O2_default	verify	PASS
+p3c2-tiered-on	autoload	text_raw	1969
+p3c2-tiered-on	autoload	prom_bin	1671
+p3c2-tiered-on	autoload	prom_free	377
+p3c2-tiered-on	autoload	main_relocated_size	614
+p3c2-tiered-on	autoload	rom_o_text	1846
+p3c2-tiered-on	cpnos	prom1_bin	1992
+p3c2-tiered-on	cpnos	prom1_free	56
+p3c2-tiered-on	cpnos	payload	1998
+p3c2-tiered-on	rcbios	bios_bytes	5915

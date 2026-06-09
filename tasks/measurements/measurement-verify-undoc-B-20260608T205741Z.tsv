@@ -1,0 +1,27 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: verify-undoc-B
+# date: 2026-06-08T20:57:41Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 2fa38d87245c
+# clang_built: 2026-06-08T22:27:58Z
+# clang_uncommitted_changes: 1
+# clang_extra: '-Xclang -target-feature -Xclang +undocumented'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+verify-undoc-B	aes_Oz_default	text	2171
+verify-undoc-B	aes_Oz_default	bin	2531
+verify-undoc-B	aes_Oz_default	tstates	16589229
+verify-undoc-B	aes_Oz_default	verify	PASS
+verify-undoc-B	aes_O2_default	text	4367
+verify-undoc-B	aes_O2_default	bin	5556
+verify-undoc-B	aes_O2_default	tstates	16536005
+verify-undoc-B	aes_O2_default	verify	PASS
+verify-undoc-B	autoload	text_raw	1971
+verify-undoc-B	autoload	prom_bin	1678
+verify-undoc-B	autoload	prom_free	370
+verify-undoc-B	autoload	main_relocated_size	614
+verify-undoc-B	autoload	rom_o_text	1848
+verify-undoc-B	cpnos	prom1_bin	1997
+verify-undoc-B	cpnos	prom1_free	51
+verify-undoc-B	cpnos	payload	2008
+verify-undoc-B	rcbios	bios_bytes	5920

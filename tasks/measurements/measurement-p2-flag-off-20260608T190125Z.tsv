@@ -1,0 +1,27 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: p2-flag-off
+# date: 2026-06-08T19:01:26Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 7c28d7447781
+# clang_built: 2026-06-08T21:01:12Z
+# clang_uncommitted_changes: 3
+# clang_extra: '-mllvm -z80-tiered-gr16-pressure=false'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+p2-flag-off	aes_Oz_default	text	2213
+p2-flag-off	aes_Oz_default	bin	2634
+p2-flag-off	aes_Oz_default	tstates	16593330
+p2-flag-off	aes_Oz_default	verify	PASS
+p2-flag-off	aes_O2_default	text	4381
+p2-flag-off	aes_O2_default	bin	5570
+p2-flag-off	aes_O2_default	tstates	16535503
+p2-flag-off	aes_O2_default	verify	PASS
+p2-flag-off	autoload	text_raw	1982
+p2-flag-off	autoload	prom_bin	1683
+p2-flag-off	autoload	prom_free	365
+p2-flag-off	autoload	main_relocated_size	621
+p2-flag-off	autoload	rom_o_text	1859
+p2-flag-off	cpnos	prom1_bin	1992
+p2-flag-off	cpnos	prom1_free	56
+p2-flag-off	cpnos	payload	1998
+p2-flag-off	rcbios	bios_bytes	5915

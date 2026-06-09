@@ -1,0 +1,27 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: verify-baseline-A
+# date: 2026-06-08T20:57:35Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 2fa38d87245c
+# clang_built: 2026-06-08T22:27:58Z
+# clang_uncommitted_changes: 1
+# clang_extra: '(none)'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+verify-baseline-A	aes_Oz_default	text	2156
+verify-baseline-A	aes_Oz_default	bin	2516
+verify-baseline-A	aes_Oz_default	tstates	16577307
+verify-baseline-A	aes_Oz_default	verify	PASS
+verify-baseline-A	aes_O2_default	text	4367
+verify-baseline-A	aes_O2_default	bin	5556
+verify-baseline-A	aes_O2_default	tstates	16536005
+verify-baseline-A	aes_O2_default	verify	PASS
+verify-baseline-A	autoload	text_raw	1969
+verify-baseline-A	autoload	prom_bin	1671
+verify-baseline-A	autoload	prom_free	377
+verify-baseline-A	autoload	main_relocated_size	614
+verify-baseline-A	autoload	rom_o_text	1846
+verify-baseline-A	cpnos	prom1_bin	1997
+verify-baseline-A	cpnos	prom1_free	51
+verify-baseline-A	cpnos	payload	2008
+verify-baseline-A	rcbios	bios_bytes	5915

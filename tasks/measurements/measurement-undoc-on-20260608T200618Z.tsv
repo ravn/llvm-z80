@@ -1,0 +1,33 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: undoc-on
+# date: 2026-06-08T20:06:20Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 504640f748bf
+# clang_built: 2026-06-08T21:51:19Z
+# clang_uncommitted_changes: 1
+# clang_extra: '-Xclang -target-feature -Xclang +undocumented'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+undoc-on	aes_Oz_default	text	2159
+undoc-on	aes_Oz_default	bin	2519
+undoc-on	aes_Oz_default	tstates	1782426
+undoc-on	aes_Oz_default	verify	FAIL
+undoc-on	aes_O2_default	text	4367
+undoc-on	aes_O2_default	bin	5556
+undoc-on	aes_O2_default	tstates	16536005
+undoc-on	aes_O2_default	verify	PASS
+undoc-on	autoload	text_raw	1971
+undoc-on	autoload	prom_bin	1678
+undoc-on	autoload	prom_free	370
+undoc-on	autoload	main_relocated_size	614
+undoc-on	autoload	rom_o_text	1848
+undoc-on	cpnos	prom1_bin	1997
+undoc-on	cpnos	prom1_free	51
+undoc-on	cpnos	payload	2008
+undoc-on	rcbios	bios_bytes	5920
+undoc-on	runtime	pass	854
+undoc-on	runtime	fail	0
+undoc-on	runtime	fatal	0
+undoc-on	runtime	skip	256
+undoc-on	lit	pass	(97.39%)
+undoc-on	lit	xfail	(2.61%)
