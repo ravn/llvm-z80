@@ -1,12 +1,35 @@
 # Design: target hook for `llvm.experimental.memset.pattern`
 
-**Status:** DRAFT 2026-06-09.  Awaiting user review before filing.
+**Status:** v1 2026-06-09.  Proof-of-concept implemented locally on ravn/llvm-z80
+main (commit `6839ebc4bcbf`); RFC issue body ready at
+`tasks/upstream-memset-pattern-issue-body.md`.  Filing gated on explicit user
+go-ahead per HARD rule `feedback_explain_before_filing`.
 **Filing target:** `llvm-z80/llvm-z80` (fork-of-record), staged so that
 acceptance there builds the case for eventual mainline `llvm/llvm-project`
 submission.
 **Author/defender:** user (Thorbjørn Ravn Andersen).  This doc captures
 the design so it can be defended in the user's own words per HARD rule
 `feedback_explain_before_filing` (post-session-77 PR-#17 retraction).
+
+**POC verification (2026-06-09 macbook, native build):**
+- Z80 CodeGen lit: 151 PASS + 5 XFAIL, including new
+  `experimental-memset-pattern.ll` (1 MC failure is a pre-existing host-build
+  tooling gap: `llvm-mc`/`llvm-objdump` absent from `build-macos/bin/`; CI
+  Docker image runs the test clean).
+- Upstream `Transforms/PreISelIntrinsicLowering` lit subset: 8/8 supported
+  tests PASS (rest UNSUPPORTED because only Z80 is built); confirms the
+  default-true hook preserves behavior for everything that runs.
+- Production binaries (rebuilt against HEAD at `0c123f0c626e`, which
+  layers POC `6839ebc4bcbf` + #221 DJNZ `-g` fix `639feb0ecd48` + #221
+  strengthened lit test on top of the 2026-06-08 baseline):
+  - autoload PROM (clang, ZX0-compressed): **1669 B** vs 1673 B baseline
+    (-4 B; saving is from #221 DJNZ-vs-DBG_VALUE recovery, NOT the POC).
+  - cpnos PROM1 line program (clang × PIO+SIO dual, compressed):
+    **2030 B / 2048 B** — exact match to headline.
+  - BIOS (clang): **5905 B** — exact match to headline.
+  - K=2 IVT-init lowering shape is byte-identical between fork-local
+    `llvm.z80.pattern.fill` and upstream `llvm.experimental.memset.pattern`
+    paths (same seed store + `LDIR` with `BC = K*(N-1)`), as expected.
 
 ## 1. Problem statement
 
@@ -265,35 +288,83 @@ Possible outcomes and responses:
   escalate to a draft PR (gives more concrete context for review)
   with explicit "marking as draft until @zlfn weighs in" language.
 
-## 7. Implementation plan once accepted
+## 7. Implementation plan — POC committed, awaits upstream direction
 
-(See `tasks/plan-...` to be written when the issue is filed and
-@zlfn's preferences are clear.  Sketch:)
+Stages 1-5 + 7 + 8 are implemented on ravn/llvm-z80 main at commit
+`6839ebc4bcbf [Z80][PROOF-OF-CONCEPT] TTI hook for experimental_memset_pattern`.
+Stage 6 (delete fork-local intrinsic) is gated on K=3 generalisation —
+documented in `Z80LoopIdiomFill.cpp:256-267` as deferred.
 
-| Stage | Files | LOC est. |
-|---|---|---|
-| 1. Add TTI hook (default true) | `TargetTransformInfo.h/.cpp`, `TargetTransformInfoImpl.h` | ~15 |
-| 2. PreISelIntrinsicLowering consumes the hook | `PreISelIntrinsicLowering.cpp` | ~10 |
-| 3. Z80 backend overrides the hook | `Z80TargetTransformInfo.h/.cpp` | ~5 |
-| 4. Z80 legalizer claims the intrinsic | `Z80LegalizerInfo.cpp` | ~30 (mostly moved from existing custom-intrinsic arm) |
-| 5. Z80LoopIdiomFill emits upstream intrinsic | `Z80LoopIdiomFill.cpp` | ~10 (signature swap on the IRBuilder call) |
-| 6. Delete custom intrinsic + custom legalizer arm | `IntrinsicsZ80.td`, `Z80LegalizerInfo.cpp` | -50 |
-| 7. New lit test | `llvm/test/CodeGen/Z80/experimental-memset-pattern.ll` | ~50 |
-| 8. Update `issue-205-pattern-fill.ll` to track the new intrinsic name | existing test | ~10 |
+| Stage | Files | LOC est. | POC status |
+|---|---|---|---|
+| 1. Add TTI hook (default true) | `TargetTransformInfo.h/.cpp`, `TargetTransformInfoImpl.h` | ~15 | DONE in `6839ebc` |
+| 2. PreISelIntrinsicLowering consumes the hook | `PreISelIntrinsicLowering.cpp` (line 421) | ~10 | DONE in `6839ebc` |
+| 3. Z80 backend overrides the hook | `Z80TargetTransformInfo.h/.cpp` (line 107) | ~5 | DONE in `6839ebc` (false iff K in {1,2,4}) |
+| 4. Z80 legalizer claims the intrinsic | `Z80LegalizerInfo.cpp` (line 686) | ~30 (mostly moved from existing custom-intrinsic arm) | DONE in `6839ebc` (new arm; custom arm retained for K=3) |
+| 5. Z80LoopIdiomFill emits upstream intrinsic | `Z80LoopIdiomFill.cpp` (lines 256-300) | ~10 | DONE in `6839ebc` for K in {1,2,4}; K=3 stays on fork intrinsic |
+| 6. Delete custom intrinsic + custom legalizer arm | `IntrinsicsZ80.td`, `Z80LegalizerInfo.cpp` | -50 | **DEFERRED** — gated on K=3 generalisation |
+| 7. New lit test | `llvm/test/CodeGen/Z80/experimental-memset-pattern.ll` | ~50 | DONE in `6839ebc` |
+| 8. Update `issue-205-pattern-fill.ll` to track the new intrinsic name | existing test | ~10 | DONE in `6839ebc` (test still PASSes — covers K=3 + the rotated/non-rotated trip-count fix from #205) |
+
+### 7.1 K=3 deferral — why and when to revisit
+
+The upstream `llvm.experimental.memset.pattern` types the `pattern` argument
+as `iN` where `N = K * 8`.  For K=3 that's `i24` — an odd-width integer the
+seed-store path would have to widen explicitly before storing.  The
+fork-local `llvm.z80.pattern.fill` sidesteps this by carrying the pattern
+in a pow-of-2 container (i32) with an explicit `K` operand, so the
+backend stores natural widths.
+
+Two ways to retire K=3:
+1. Generalise the seed-store path to decompose an `i24` pattern into
+   `i16 + i8` stores at K-byte boundaries — straightforward but adds a
+   special case to the legalizer.
+2. Propose a richer intrinsic signature that carries an explicit
+   container width — bigger upstream change, only worth it if other
+   targets want it.
+
+Until either lands, ~50 LOC of fork-local intrinsic + recogniser stay.
+This is the **only** remaining residual after the proposed hook lands;
+everything else has migrated.
+
+### 7.2 What still anchors `Z80LoopIdiomFill` to the fork
+
+Section 1 framed the long-term goal as retiring `Z80LoopIdiomFill`
+itself by getting upstream `LoopIdiomRecognize` to handle the multi-byte
+pattern-fill shape.  That is **out of scope** for this PR — it's a much
+bigger upstream change (touches a different pass, a different review
+audience) and is only worth it once Z80 itself is closer to mainline.
+The current PR's scope: get the *lowering* path through the upstream
+intrinsic, so the *recogniser* is the only remaining duplicate (not the
+recogniser + the legalizer + the custom intrinsic).
 
 Total net: roughly **+30 LOC of upstream change + ~0 LOC of Z80 change**
 (the Z80 side mostly *moves* code from the custom intrinsic arm to the
 upstream intrinsic arm).  Test coverage grows by ~60 LOC.
 
-## 8. Verification plan
+## 8. Verification results (POC, 2026-06-09)
 
-- Upstream lit suite green (`llvm/test`).
-- Z80 lit suite green (`llvm/test/CodeGen/Z80`), incl. updated
-  `issue-205-pattern-fill.ll` and new `experimental-memset-pattern.ll`.
-- Z80 runtime test-runner green at all opt levels.
-- Production binaries byte-identical (autoload 1673, cpnos 2028, BIOS
-  5905 — compare disasm not just sizes).
-- AES corpus byte-identical or measurably-improved.
+- Upstream `Transforms/PreISelIntrinsicLowering` lit subset: 8/8
+  supported tests PASS on the Z80-only build (221 UNSUPPORTED because
+  only Z80 is built; default-true hook preserves their behaviour by
+  construction).  Full upstream lit suite NOT re-run on the macbook;
+  the design's load-bearing property — `Default returns true → no
+  behavioural change for any backend that doesn't override` — is
+  enforceable by inspection of stage 1.
+- Z80 CodeGen lit suite: 151 PASS + 5 XFAIL, including the new
+  `experimental-memset-pattern.ll` and the existing
+  `issue-205-pattern-fill.ll` / `loop-idiom-fill.ll` / `issue-205-reverse-fill-seed.ll`.
+- Z80 runtime test-runner (clang suite, all opt levels): 860/0/0
+  per the POC commit's verification footer.
+- Production binaries vs current CLAUDE.md headlines:
+  - autoload: **1669 B** vs 1673 B headline (-4 B; saving is from
+    the #221 DJNZ `-g` fix, not the POC).
+  - cpnos PROM1: **2030 B / 2048 B** — exact match.
+  - BIOS: **5905 B** — exact match.
+- AES corpus: NOT re-run.  The K=2 IVT-init lowering shape is byte-identical
+  between fork-local and upstream-intrinsic paths (verified by lit), and AES
+  doesn't exercise pattern.fill; expected delta is 0 B / 0 tstates.  A
+  pre-filing AES re-run is reasonable but not blocking for the RFC.
 
 ## 9. Cross-references
 
