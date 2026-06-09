@@ -104,6 +104,23 @@ bool Z80TTIImpl::areInlineCompatible(const Function *Caller,
 // addressing as cheap.  On Z80 it would just be dead-code paths.
 bool Z80TTIImpl::prefersVectorizedAddressing() const { return false; }
 
+bool Z80TTIImpl::shouldExpandExperimentalMemSetPattern(
+    const IntrinsicInst *II) const {
+  // Pattern is the second arg (dst, pattern, count, isvolatile).
+  // Claim only integer patterns of bit width 8 / 16 / 32; the Z80 legalizer's
+  // seed-store path emits s16 chunks + an s8 tail, which fits these widths
+  // without needing to widen a non-pow-of-2 pattern type (e.g. i24).  Wider /
+  // non-integer / non-pow-of-2 patterns fall through to the upstream expand
+  // path (libcall or open-coded loop), preserving correctness even though
+  // suboptimal.
+  Value *Pattern = II->getArgOperand(1);
+  Type *PatTy = Pattern->getType();
+  if (!PatTy->isIntegerTy())
+    return true;
+  unsigned BW = PatTy->getIntegerBitWidth();
+  return BW != 8 && BW != 16 && BW != 32;
+}
+
 // "Legal add immediate" means the target can add this constant to a register
 // WITHOUT first materializing it into another register.  Z80 has no
 // `ADD HL,nn` / `ADD rr,nn`: a 16-bit constant add costs `LD rr,nn` (3 B) +

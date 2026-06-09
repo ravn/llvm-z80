@@ -414,9 +414,15 @@ bool PreISelIntrinsicLowering::expandMemIntrinsicUses(
       const TargetLibraryInfo &TLI = LookupTLI(*ParentFunc);
       Constant *PatternValue = getMemSetPattern16Value(Memset, TLI);
       if (!PatternValue) {
-        // If it isn't possible to emit a memset_pattern16 libcall, expand to
-        // a loop instead.
+        // If it isn't possible to emit a memset_pattern16 libcall, give the
+        // target a chance to claim the intrinsic (via a TargetTransformInfo
+        // hook); otherwise expand to a loop.
         const TargetTransformInfo &TTI = LookupTTI(*ParentFunc);
+        if (!TTI.shouldExpandExperimentalMemSetPattern(Memset)) {
+          // The target's legalizer (or a target-specific pass) will lower
+          // the intrinsic.  Leave it in IR; do NOT erase.
+          break;
+        }
         expandMemSetPatternAsLoop(Memset, TTI);
         Changed = true;
         Memset->eraseFromParent();

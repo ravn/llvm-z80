@@ -63,6 +63,16 @@ public:
 
   bool isLegalAddImmediate(int64_t Imm) const override;
 
+  /// Z80 has LDIR (block-copy with implicit counter); a multi-byte pattern
+  /// fill lowers to seed + LDIR.  Claim llvm.experimental.memset.pattern at
+  /// legalize time when the pattern type fits the seed-store machinery
+  /// (integer with bit width 8, 16, or 32 -- i.e. K in {1, 2, 4}).
+  /// Non-pow-of-2 widths (e.g. i24 / K=3) fall through to the upstream
+  /// expand path until the seed-store path is generalised.
+  /// See Z80LegalizerInfo's Intrinsic::experimental_memset_pattern arm.
+  bool
+  shouldExpandExperimentalMemSetPattern(const IntrinsicInst *II) const override;
+
   InstructionCost getArithmeticInstrCost(
       unsigned Opcode, Type *Ty, TargetTransformInfo::TargetCostKind CostKind,
       TargetTransformInfo::OperandValueInfo Op1Info = {

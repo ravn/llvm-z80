@@ -252,24 +252,29 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
   LLVM_DEBUG(dbgs() << "z80-loop-idiom-fill: matched K=" << K << " N=" << N
                     << " in " << Header->getParent()->getName() << "\n");
 
-  // ravn/llvm-z80#205: emit the defined target intrinsic
-  // llvm.z80.pattern.fill(base, pattern, K, N).  The backend lowers it to the
-  // seed store + forward LDIR (Z80) -- the same compact idiom as before -- but
-  // because it is a target intrinsic it is opaque to generic passes: no UB (the
-  // previous representation, an *overlapping* memcpy, was UB in IR and only
-  // survived via a `volatile` marker, #136) and no PreISelIntrinsicLowering
-  // loop-expansion (which is what would happen to llvm.experimental.memset
-  // .pattern).  SM83 (no LDIR) lowers the intrinsic to unrolled stores.
+  // Emit one of two intrinsics depending on K:
+  //   K in {1, 2, 4}: llvm.experimental.memset.pattern -- the upstream-defined
+  //     intrinsic.  Pre-2026-06-09 this was untenable because PreISelIntrinsicLowering
+  //     unconditionally expanded it (libcall or loop); the new TTI hook
+  //     `shouldExpandExperimentalMemSetPattern` (Z80 returns false for these
+  //     widths) lets the intrinsic survive to the Z80 legalizer, which emits
+  //     the same seed + LDIR idiom as before.
+  //   K == 3: keep the fork-local llvm.z80.pattern.fill -- a pow-of-2 container
+  //     (i32) carrying an explicit K=3 lets us avoid an i24 store-decomposition
+  //     in the legalizer.  Migrating this to the upstream intrinsic requires
+  //     generalising the seed-store path to widen non-pow-of-2 patterns; deferred
+  //     to a follow-up.
+  // SM83 (no LDIR) lowers either intrinsic to unrolled stores.
   IRBuilder<> Builder(Preheader->getTerminator());
   Type *I16 = Type::getInt16Ty(Header->getContext());
 
-  // Assemble the K-byte pattern as a single little-endian integer.  Use a
-  // power-of-two container (i8/i16/i32) rather than an exact iK*8 width: K==3
-  // would otherwise be an i24, which the backend cannot store as a single MI.
-  // The real pattern width is passed explicitly to the intrinsic.  A slot at
-  // byte Offset (width Size) occupies pattern bits [Offset*8, Offset*8+Size*8);
-  // Z80 is little-endian, so a lower address is a less-significant byte.
-  unsigned ContBytes = K <= 1 ? 1 : K <= 2 ? 2 : 4;  // K in 1..4
+  bool UseUpstream = (K == 1 || K == 2 || K == 4);
+
+  // Assemble the K-byte pattern as a single little-endian integer.  For the
+  // upstream path, use the natural iK*8 width (i8/i16/i32).  For the fork
+  // intrinsic (K==3), use a pow-of-2 container (i32) and pass the real K
+  // explicitly so the backend never has to emit an i24 store.
+  unsigned ContBytes = UseUpstream ? K : 4;
   Type *PatTy = IntegerType::get(Header->getContext(), ContBytes * 8);
   Value *Pattern = ConstantInt::get(PatTy, 0);
   for (const Slot &S : Slots) {
@@ -279,9 +284,20 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
     Pattern = Builder.CreateOr(Pattern, V);
   }
 
-  Builder.CreateIntrinsic(
-      Intrinsic::z80_pattern_fill, {PatTy},
-      {Base, Pattern, ConstantInt::get(I16, K), ConstantInt::get(I16, N)});
+  if (UseUpstream) {
+    // llvm.experimental.memset.pattern(ptr dst, iN pattern, iM count, i1 vol)
+    // Type args are: [dst type, pattern type, count type].  isvolatile = false.
+    Type *I1 = Type::getInt1Ty(Header->getContext());
+    Builder.CreateIntrinsic(
+        Intrinsic::experimental_memset_pattern,
+        {Base->getType(), PatTy, I16},
+        {Base, Pattern, ConstantInt::get(I16, N), ConstantInt::get(I1, 0)});
+  } else {
+    // K == 3 stays on the fork-local intrinsic for now.
+    Builder.CreateIntrinsic(
+        Intrinsic::z80_pattern_fill, {PatTy},
+        {Base, Pattern, ConstantInt::get(I16, K), ConstantInt::get(I16, N)});
+  }
 
   // Erase the original stores.  deleteDeadLoop will remove the empty
   // body+IV-update plus header CFG.

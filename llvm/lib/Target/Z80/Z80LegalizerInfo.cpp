@@ -683,6 +683,119 @@ bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,
     return true;
   }
 
+  case Intrinsic::experimental_memset_pattern: {
+    // Upstream `llvm.experimental.memset.pattern(ptr dst, iN pattern,
+    // iM count, i1 isvolatile)`.  K = pattern bit width / 8 (derived
+    // from the type; no explicit K operand).  Z80TTIImpl claims this
+    // only when pattern is an integer of width 8 / 16 / 32; non-pow-of-2
+    // (e.g. i24 / K=3) goes through the upstream expand path -- so the
+    // K range we see here is {1, 2, 4}.  Lowering mirrors the
+    // z80_pattern_fill arm above; the K=3 case stays on the custom
+    // intrinsic until the seed-store path is generalised to widen
+    // non-pow-of-2 patterns before LShr-decomposing them.
+    MachineIRBuilder &B = Helper.MIRBuilder;
+    MachineRegisterInfo &MRI = *B.getMRI();
+    MachineFunction &MF = B.getMF();
+    Register DstPtr = MI.getOperand(1).getReg();
+    Register Pattern = MI.getOperand(2).getReg();
+    Register Count = MI.getOperand(3).getReg();
+    // MI.getOperand(4) is `isvolatile` -- ignored.  Z80LoopIdiomFill never
+    // marks these as volatile.
+
+    LLT PtrTy = MRI.getType(DstPtr);
+    LLT PatLLT = MRI.getType(Pattern);
+    LLT S8 = LLT::scalar(8), S16 = LLT::scalar(16);
+    unsigned PatBits = PatLLT.getSizeInBits();
+    if (PatBits != 8 && PatBits != 16 && PatBits != 32)
+      report_fatal_error("llvm.experimental.memset.pattern: Z80 legalizer "
+                         "only handles 8/16/32-bit patterns (TTI hook "
+                         "should have routed others to upstream expand)");
+    unsigned K = PatBits / 8;
+    auto CountC = getIConstantVRegSExtVal(Count, MRI);
+
+    B.setInsertPt(*MI.getParent(), MI.getIterator());
+
+    // Store the K-byte pattern at BaseAddr using legal-width stores: 2-byte
+    // (s16) chunks plus a 1-byte (s8) tail.  K in {1,2,4} so the shift
+    // amounts stay strictly inside the pattern container (no out-of-bounds
+    // shifts; no need to widen).  Same machinery as z80_pattern_fill arm.
+    auto emitSeedAt = [&](Register BaseAddr) {
+      for (unsigned Off = 0; Off < K;) {
+        unsigned W = (K - Off >= 2) ? 2 : 1;
+        LLT VT = (W == 2) ? S16 : S8;
+        Register Shifted = Pattern;
+        if (Off != 0)
+          Shifted =
+              B.buildLShr(PatLLT, Pattern, B.buildConstant(PatLLT, Off * 8))
+                  .getReg(0);
+        Register Chunk =
+            (VT == PatLLT) ? Shifted : B.buildTrunc(VT, Shifted).getReg(0);
+        Register Addr = BaseAddr;
+        if (Off != 0)
+          Addr = B.buildPtrAdd(PtrTy, BaseAddr, B.buildConstant(S16, Off))
+                     .getReg(0);
+        auto *MMO = MF.getMachineMemOperand(
+            MachinePointerInfo(), MachineMemOperand::MOStore, W, Align(1));
+        B.buildStore(Chunk, Addr, *MMO);
+        Off += W;
+      }
+    };
+
+    const auto &STI = MF.getSubtarget<Z80Subtarget>();
+    if (!STI.hasZ80()) {
+      // SM83: no LDIR.  Same fallback as z80_pattern_fill: unroll `count`
+      // independent seed stores when count is a known constant.
+      if (!CountC)
+        report_fatal_error("llvm.experimental.memset.pattern: variable count "
+                           "unsupported on SM83");
+      for (int64_t I = 0; I < *CountC; ++I) {
+        Register Addr = DstPtr;
+        if (I != 0) {
+          auto Off = B.buildConstant(S16, I * (int64_t)K);
+          Addr = B.buildPtrAdd(PtrTy, DstPtr, Off).getReg(0);
+        }
+        emitSeedAt(Addr);
+      }
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // count <= 1: the seed is the entire fill (no LDIR).
+    if (CountC && *CountC <= 1) {
+      emitSeedAt(DstPtr);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Widen Count to S16 if narrower (upstream intrinsic permits iM for
+    // any M; Z80 LDIR's BC is fixed 16-bit).
+    LLT CntTy = MRI.getType(Count);
+    if (CntTy.getSizeInBits() < 16)
+      Count = B.buildZExt(S16, Count).getReg(0);
+    else if (CntTy.getSizeInBits() > 16)
+      Count = B.buildTrunc(S16, Count).getReg(0);
+
+    auto KC = B.buildConstant(S16, K);
+    Register DstPlusK = B.buildPtrAdd(PtrTy, DstPtr, KC).getReg(0);
+    Register Len;
+    if (CountC) {
+      Len = B.buildConstant(S16, (int64_t)K * (*CountC - 1)).getReg(0);
+    } else {
+      auto One = B.buildConstant(S16, 1);
+      auto Cm1 = B.buildSub(S16, Count, One);
+      Len = B.buildMul(S16, Cm1, KC).getReg(0);
+    }
+    // DE-first order matches the z80_pattern_fill arm; ZX0 byte adjacency.
+    B.buildCopy(Register(Z80::DE), DstPlusK);
+    emitSeedAt(DstPtr);
+    B.buildCopy(Register(Z80::HL), DstPtr);
+    B.buildCopy(Register(Z80::BC), Len);
+    B.buildInstr(CountC ? Z80::LDIR : Z80::LDIR_GUARDED);
+
+    MI.eraseFromParent();
+    return true;
+  }
+
   default:
     return false;
   }

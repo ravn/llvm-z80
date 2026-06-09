@@ -1984,6 +1984,15 @@ public:
   /// into a shuffle sequence.
   LLVM_ABI bool shouldExpandReduction(const IntrinsicInst *II) const;
 
+  /// \returns True if PreISelIntrinsicLowering should expand the given
+  /// llvm.experimental.memset.pattern intrinsic (to a libcall or a loop).
+  /// Return false if the target's legalizer or a target-specific pass will
+  /// lower the intrinsic itself.  When false is returned, the backend MUST
+  /// handle the intrinsic at legalization time; otherwise codegen will abort.
+  /// Default: true (preserve historical behavior for all in-tree targets).
+  LLVM_ABI bool
+  shouldExpandExperimentalMemSetPattern(const IntrinsicInst *II) const;
+
   enum struct ReductionShuffle { SplitHalf, Pairwise };
 
   /// \returns The shuffle sequence pattern used to expand the given reduction
