@@ -29,8 +29,35 @@
 ;
 ; The innermost (k=0 / 256 iters) MUST become a single `djnz`.
 
+; The innermost loop must get B + DJNZ (it runs the most iterations, so it
+; benefits most -- 1 B and 3 T per iter vs DEC r; JR NZ on any other reg).
+; FileCheck anchors on the LLVM-emitted "This Inner Loop Header" comment,
+; captures the innermost loop's label, and asserts djnz targets that exact
+; label.  The outer/middle loops must use the compact `DEC r; JR NZ` form
+; (3 B / 16 T per iter), NOT the 5-instruction round-trip `LD A,r; DEC A;
+; LD r,A; OR A; JR NZ` (6 B / ~30 T) that the #221 peephole rewrites away
+; -- so CHECK-NOT verifies the round-trip pattern doesn't appear.
+;
+; Exactly ONE djnz fires (only one register can be B at a time).  A future
+; two-DJNZ-via-PUSH/POP optimisation, if it ever lands, would need to
+; update this test -- but until then the second djnz is intentional
+; failure: if it appears, something has rewired the regalloc unexpectedly.
+
 ; CHECK-LABEL: triple_nest:
-; CHECK: djnz
+; LLVM emits the SSA block name (e.g. `%inner_hdr`) as a trailing comment
+; on the label line; use that to anchor the innermost-loop label even
+; though it isn't the first .LBB label in the function.
+; CHECK: [[INNER:\.LBB[0-9_]+]]:{{[ \t]*}}; %inner_hdr
+; CHECK: djnz [[INNER]]
+; Exactly one djnz today (only one reg can be B at a time).  If a future
+; two-DJNZ-via-PUSH/POP optimisation lands, update this CHECK-NOT.
+; CHECK-NOT: djnz
+; The optimal lowering for outer / mid loops is `dec r; jr nz`, not the
+; 5-instruction round-trip `ld a,r; dec a; ld r,a; or a; jr nz` that the
+; #221 peephole removes.  Verify by absence of the round-trip's signature
+; `ld a,<gr8>` followed end-of-line (the leftover load before djnz appears
+; only on the inner loop and gets rewritten by later passes).
+; CHECK-NOT: {{ld a,[bcdehl]$}}
 define void @triple_nest(i8 zeroext %outer, i8 zeroext %mid_init) {
 entry:
   %t = icmp eq i8 %outer, 0
