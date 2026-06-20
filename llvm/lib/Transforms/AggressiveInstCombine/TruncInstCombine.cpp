@@ -107,6 +107,12 @@ bool TruncInstCombine::buildTruncExpressionGraph() {
       continue;
     }
 
+    // Arguments are leaves; getReducedOperand emits a trunc at function entry.
+    if (isa<Argument>(Curr)) {
+      Worklist.pop_back();
+      continue;
+    }
+
     auto *I = dyn_cast<Instruction>(Curr);
     if (!I)
       return false;
@@ -188,14 +194,7 @@ unsigned TruncInstCombine::getMinBitWidth() {
   unsigned OrigBitWidth =
       CurrentTruncInst->getOperand(0)->getType()->getScalarSizeInBits();
 
-  if (isa<Constant>(Src))
-    return TruncBitWidth;
-
-  // Argument leaves impose no bit-width requirement of their own (see
-  // #158).  The walker handles Argument operands of in-graph instructions;
-  // here we handle the case where the trunc's direct operand is itself an
-  // Argument (chain root with no intermediate instructions).
-  if (isa<Argument>(Src))
+  if (isa<Constant>(Src) || isa<Argument>(Src))
     return TruncBitWidth;
 
   Worklist.push_back(Src);
@@ -278,6 +277,10 @@ unsigned TruncInstCombine::getMinBitWidth() {
 
 Type *TruncInstCombine::getBestTruncatedType() {
   if (!buildTruncExpressionGraph())
+    return nullptr;
+
+  // Trivial trunc-of-Argument: skip; rewriting would just relocate the trunc.
+  if (InstInfoMap.empty() && isa<Argument>(CurrentTruncInst->getOperand(0)))
     return nullptr;
 
   // We don't want to duplicate instructions, which isn't profitable. Thus, we
@@ -382,6 +385,12 @@ Value *TruncInstCombine::getReducedOperand(Value *V, Type *SclTy) {
     C = ConstantExpr::getTrunc(C, Ty);
     // If we got a constantexpr back, try to simplify it with DL info.
     return ConstantFoldConstant(C, DL, &TLI);
+  }
+
+  if (auto *A = dyn_cast<Argument>(V)) {
+    IRBuilder<> Builder(A->getContext());
+    Builder.SetInsertPointPastAllocas(A->getParent());
+    return Builder.CreateTrunc(A, Ty, A->getName() + ".trunc");
   }
 
   auto *I = cast<Instruction>(V);
