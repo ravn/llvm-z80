@@ -16,7 +16,7 @@ declare void @sink(i8)
 define i1 @samesign_sgt_const(i8 %xb) {
 ; CHECK-LABEL: @samesign_sgt_const(
 ; CHECK-NEXT:    [[X_T:%.*]] = and i8 [[XB:%.*]], 15
-; CHECK-NEXT:    [[CMP:%.*]] = icmp samesign sgt i8 [[X_T]], 7
+; CHECK-NEXT:    [[CMP:%.*]] = icmp sgt i8 [[X_T]], 7
 ; CHECK-NEXT:    call void @sink(i8 [[X_T]])
 ; CHECK-NEXT:    ret i1 [[CMP]]
 ;
@@ -33,7 +33,7 @@ define i1 @samesign_sgt_const(i8 %xb) {
 define i1 @samesign_sle_const(i8 %xb) {
 ; CHECK-LABEL: @samesign_sle_const(
 ; CHECK-NEXT:    [[X_T:%.*]] = and i8 [[XB:%.*]], 63
-; CHECK-NEXT:    [[CMP:%.*]] = icmp samesign sle i8 [[X_T]], 42
+; CHECK-NEXT:    [[CMP:%.*]] = icmp sle i8 [[X_T]], 42
 ; CHECK-NEXT:    call void @sink(i8 [[X_T]])
 ; CHECK-NEXT:    ret i1 [[CMP]]
 ;

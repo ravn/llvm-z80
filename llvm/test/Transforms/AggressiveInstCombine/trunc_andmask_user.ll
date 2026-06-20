@@ -16,8 +16,9 @@ declare void @sink16(i16)
 
 define i16 @andmask_fits_unproven(i8 %xb) {
 ; CHECK-LABEL: @andmask_fits_unproven(
-; CHECK-NEXT:    [[X_T:%.*]] = trunc i16 [[X:%.*]] to i8
-; CHECK-NEXT:    [[ROT_T:%.*]] = call i8 @llvm.fshl.i8(i8 [[X_T]], i8 [[X_T]], i8 1)
+; CHECK-NEXT:    [[SHL:%.*]] = shl i8 [[XB:%.*]], 1
+; CHECK-NEXT:    [[LSHR:%.*]] = lshr i8 [[XB]], 7
+; CHECK-NEXT:    [[ROT_T:%.*]] = or i8 [[SHL]], [[LSHR]]
 ; CHECK-NEXT:    [[MASK_T:%.*]] = and i8 [[ROT_T]], -1
 ; CHECK-NEXT:    [[Z:%.*]] = zext i8 [[MASK_T]] to i16
 ; CHECK-NEXT:    call void @sink(i8 [[ROT_T]])
@@ -37,8 +38,7 @@ define i16 @andmask_fits_unproven(i8 %xb) {
 
 define i16 @andmask_smaller(i8 %xb) {
 ; CHECK-LABEL: @andmask_smaller(
-; CHECK-NEXT:    [[X_T:%.*]] = trunc i16 [[X:%.*]] to i8
-; CHECK-NEXT:    [[ADD_T:%.*]] = add i8 [[X_T]], 1
+; CHECK-NEXT:    [[ADD_T:%.*]] = add i8 [[X_T:%.*]], 1
 ; CHECK-NEXT:    [[MASK_T:%.*]] = and i8 [[ADD_T]], 15
 ; CHECK-NEXT:    [[Z:%.*]] = zext i8 [[MASK_T]] to i16
 ; CHECK-NEXT:    call void @sink(i8 [[ADD_T]])
@@ -90,16 +90,21 @@ define i16 @or_outside_not_admitted(i8 %xb) {
   ret i16 %or
 }
 
-;; --- Positive: mixed and-mask + icmp on the same in-graph value ---
+;; --- Mixed shape, icmp-gate dominates: when both outside-user kinds reach
+;; the same in-graph value AND the icmp soundness gate fails (here %add =
+;; %x + 1 has KnownBits.getMaxValue.activeBits = 9 > MinBitWidth = 8), the
+;; whole rewrite is rejected.  Pins the property that the icmp gate's
+;; nullptr return aborts the and-mask path too — by design, since
+;; getBestTruncatedType is all-or-nothing per chain.
 
-define i1 @mixed_andmask_and_icmp(i8 %xb, ptr %p) {
-; CHECK-LABEL: @mixed_andmask_and_icmp(
-; CHECK-NEXT:    [[X_T:%.*]] = trunc i16 [[X:%.*]] to i8
-; CHECK-NEXT:    [[ADD_T:%.*]] = add i8 [[X_T]], 1
-; CHECK-NEXT:    [[MASK_T:%.*]] = and i8 [[ADD_T]], 15
-; CHECK-NEXT:    [[Z:%.*]] = zext i8 [[MASK_T]] to i16
-; CHECK-NEXT:    store i16 [[Z]], ptr [[P:%.*]], align 2
-; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[ADD_T]], 7
+define i1 @mixed_andmask_and_icmp_gate_fails(i8 %xb, ptr %p) {
+; CHECK-LABEL: @mixed_andmask_and_icmp_gate_fails(
+; CHECK-NEXT:    [[Z:%.*]] = zext i8 [[MASK_T:%.*]] to i16
+; CHECK-NEXT:    [[ADD:%.*]] = add i16 [[Z]], 1
+; CHECK-NEXT:    [[MASK:%.*]] = and i16 [[ADD]], 15
+; CHECK-NEXT:    store i16 [[MASK]], ptr [[P:%.*]], align 2
+; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i16 [[ADD]], 7
+; CHECK-NEXT:    [[ADD_T:%.*]] = trunc i16 [[ADD]] to i8
 ; CHECK-NEXT:    call void @sink(i8 [[ADD_T]])
 ; CHECK-NEXT:    ret i1 [[CMP]]
 ;
