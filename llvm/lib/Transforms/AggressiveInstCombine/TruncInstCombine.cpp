@@ -108,20 +108,8 @@ bool TruncInstCombine::buildTruncExpressionGraph() {
     }
 
     auto *I = dyn_cast<Instruction>(Curr);
-    if (!I) {
-      // Function arguments (and other non-instruction values that are not
-      // Constants) can appear as operands in the expression graph.  Treat
-      // them as leaves — they'll be explicitly truncated at narrowing time
-      // in getReducedOperand.  Without this, expressions rooted at function
-      // parameters (e.g., K&R-style u8 parameters that get int-promoted at
-      // the ABI boundary on small-int targets) can never be narrowed back
-      // to their natural width.
-      if (isa<Argument>(Curr)) {
-        Worklist.pop_back();
-        continue;
-      }
+    if (!I)
       return false;
-    }
 
     if (!Stack.empty() && Stack.back() == I) {
       // Already handled all instruction operands, can remove it from both the
@@ -217,14 +205,6 @@ unsigned TruncInstCombine::getMinBitWidth() {
     Value *Curr = Worklist.back();
 
     if (isa<Constant>(Curr)) {
-      Worklist.pop_back();
-      continue;
-    }
-
-    // Arguments are leaves in the expression graph (see
-    // buildTruncExpressionGraph).  They impose no bit-width requirement
-    // on themselves — they'll be explicitly truncated at narrowing time.
-    if (isa<Argument>(Curr)) {
       Worklist.pop_back();
       continue;
     }
@@ -402,16 +382,6 @@ Value *TruncInstCombine::getReducedOperand(Value *V, Type *SclTy) {
     C = ConstantExpr::getTrunc(C, Ty);
     // If we got a constantexpr back, try to simplify it with DL info.
     return ConstantFoldConstant(C, DL, &TLI);
-  }
-
-  // Function arguments are treated as leaves of the expression graph (see
-  // buildTruncExpressionGraph).  Emit an explicit trunc to narrow them.
-  // Insert the trunc at the function entry so it dominates every narrowed
-  // use throughout the function.
-  if (auto *Arg = dyn_cast<Argument>(V)) {
-    Function *F = Arg->getParent();
-    IRBuilder<> Builder(&*F->getEntryBlock().getFirstInsertionPt());
-    return Builder.CreateTrunc(V, Ty);
   }
 
   auto *I = cast<Instruction>(V);
