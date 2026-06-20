@@ -49,89 +49,6 @@ STATISTIC(NumAndMaskRootsInjected,
 STATISTIC(NumCallArgRootsInjected,
           "Number of call arguments narrowed via callee-body-peek synthetic "
           "trunc root (ravn/llvm-z80#162 path 2)");
-STATISTIC(NumIcmpsNarrowed,
-          "Number of outside-graph ICmpInst users narrowed alongside the "
-          "trunc-rooted expression graph (ravn/llvm-z80#160 sound version)");
-
-/// Bit-width an operand value must fit in (KnownBits.getMaxValue activeBits
-/// upper bound) for narrowing the icmp to \p NarrowBits to preserve the
-/// comparison's result.  Unsigned and equality predicates: any value
-/// representable in NarrowBits is fine.  Signed predicates (admitted only
-/// via `samesign` in `isIcmpPredicateNarrowSafe`): the sign bit at the
-/// narrow width must remain clear, so the operand must fit in NarrowBits-1
-/// — otherwise a value like 200 (positive at i16, negative at i8) flips
-/// the comparison's sign reading despite the samesign assertion at i16.
-static unsigned narrowIcmpOperandFitBits(CmpInst::Predicate P,
-                                         unsigned NarrowBits) {
-  return CmpInst::isSigned(P) ? (NarrowBits - 1) : NarrowBits;
-}
-
-/// Predicate gate for icmp narrowing through the trunc-rooted graph.
-/// Unsigned and equality predicates are always candidates; signed
-/// predicates require the `samesign` flag (i.e. the optimizer has
-/// already proven signed/unsigned interpretations agree at the wide
-/// width — `narrowIcmpOperandFitBits` enforces they still agree at the
-/// narrow width).
-static bool isIcmpPredicateNarrowSafe(ICmpInst *Cmp) {
-  switch (Cmp->getPredicate()) {
-  case CmpInst::ICMP_EQ:
-  case CmpInst::ICMP_NE:
-  case CmpInst::ICMP_ULT:
-  case CmpInst::ICMP_ULE:
-  case CmpInst::ICMP_UGT:
-  case CmpInst::ICMP_UGE:
-    return true;
-  case CmpInst::ICMP_SLT:
-  case CmpInst::ICMP_SLE:
-  case CmpInst::ICMP_SGT:
-  case CmpInst::ICMP_SGE:
-    return Cmp->hasSameSign();
-  default:
-    return false;
-  }
-}
-
-bool TruncInstCombine::canNarrowIcmpThroughGraph(ICmpInst *Cmp,
-                                                Value *GraphValue,
-                                                Type *NarrowTy) {
-  if (!isIcmpPredicateNarrowSafe(Cmp))
-    return false;
-
-  unsigned NarrowBits = NarrowTy->getScalarSizeInBits();
-  unsigned FitBits = narrowIcmpOperandFitBits(Cmp->getPredicate(), NarrowBits);
-
-  // Identify the non-graph operand.  Either operand may equal GraphValue;
-  // both being GraphValue (self-compare) collapses to "Other = GraphValue"
-  // — same narrowness check still applies (it's the constraint on the
-  // observed value, not on identity).
-  Value *Other = nullptr;
-  if (Cmp->getOperand(0) == GraphValue)
-    Other = Cmp->getOperand(1);
-  else if (Cmp->getOperand(1) == GraphValue)
-    Other = Cmp->getOperand(0);
-  else
-    return false;
-
-  // SOUNDNESS GATE — the in-graph operand observed by this outside icmp
-  // must itself fit in the narrow width.  Without this, narrowing the
-  // icmp replaces a comparison over GraphValue's full wide value with
-  // one over only its low NarrowBits — a different operation when high
-  // bits are set.  Runtime witnesses: test_220 / test_221 / test_222.
-  KnownBits GraphKnown = computeKnownBits(GraphValue);
-  if (GraphKnown.getMaxValue().getActiveBits() > FitBits)
-    return false;
-
-  // Other-side narrowness.  ConstantInt: direct activeBits check.
-  // Variable: require single-use (so the fresh narrow trunc inserted at
-  // the icmp site doesn't leave the wide value alive in parallel) AND
-  // KnownBits-provable narrowness.
-  if (auto *C = dyn_cast<ConstantInt>(Other))
-    return C->getValue().getActiveBits() <= FitBits;
-  if (!Other->hasOneUse())
-    return false;
-  KnownBits OtherKnown = computeKnownBits(Other);
-  return OtherKnown.getMaxValue().getActiveBits() <= FitBits;
-}
 
 /// Given an instruction and a container, it fills all the relevant operands of
 /// that instruction, with respect to the Trunc expression graph optimizaton.
@@ -388,8 +305,6 @@ Type *TruncInstCombine::getBestTruncatedType() {
   // post-dominated by the trunc instruction, i.e., were visited during the
   // expression evaluation.
   unsigned DesiredBitWidth = 0;
-  PendingIcmps.clear();
-  Type *TruncDstTy = CurrentTruncInst->getType();
   for (auto Itr : InstInfoMap) {
     Instruction *I = Itr.first;
     if (I->hasOneUse())
@@ -398,31 +313,16 @@ Type *TruncInstCombine::getBestTruncatedType() {
     for (auto *U : I->users())
       if (auto *UI = dyn_cast<Instruction>(U))
         if (UI != CurrentTruncInst && !InstInfoMap.count(UI)) {
-          if (IsExtInst) {
-            // If this is an extension from the dest type, we can eliminate it,
-            // even if it has multiple users. Thus, update the DesiredBitWidth
-            // and validate all extension instructions agree.
-            unsigned ExtInstBitWidth =
-                I->getOperand(0)->getType()->getScalarSizeInBits();
-            if (DesiredBitWidth && DesiredBitWidth != ExtInstBitWidth)
-              return nullptr;
-            DesiredBitWidth = ExtInstBitWidth;
-            continue;
-          }
-          // ravn/llvm-z80#160 sound version: an icmp user whose operands
-          // are both narrowness-witnessed (in-graph value via KnownBits +
-          // outside operand via KnownBits or constant) can be rewritten
-          // alongside the graph.  Predicate gate in
-          // isIcmpPredicateNarrowSafe; full soundness in
-          // canNarrowIcmpThroughGraph.
-          if (auto *Cmp = dyn_cast<ICmpInst>(UI)) {
-            if (canNarrowIcmpThroughGraph(Cmp, I, TruncDstTy)) {
-              if (!llvm::is_contained(PendingIcmps, Cmp))
-                PendingIcmps.push_back(Cmp);
-              continue;
-            }
-          }
-          return nullptr;
+          if (!IsExtInst)
+            return nullptr;
+          // If this is an extension from the dest type, we can eliminate it,
+          // even if it has multiple users. Thus, update the DesiredBitWidth and
+          // validate all extension instructions agrees on same DesiredBitWidth.
+          unsigned ExtInstBitWidth =
+              I->getOperand(0)->getType()->getScalarSizeInBits();
+          if (DesiredBitWidth && DesiredBitWidth != ExtInstBitWidth)
+            return nullptr;
+          DesiredBitWidth = ExtInstBitWidth;
         }
   }
 
@@ -642,56 +542,6 @@ void TruncInstCombine::ReduceExpressionGraph(Type *SclTy) {
   // Erase old expression graph, which was replaced by the reduced expression
   // graph.
   CurrentTruncInst->eraseFromParent();
-  // ravn/llvm-z80#160 sound version: rewrite admitted outside-graph icmps
-  // BEFORE the phi-erase loop.  The phi-erase RAUW's in-graph phis with
-  // poison; once that runs, any wide-typed icmp still referencing the old
-  // in-graph value would see poison operands.  Do the icmp rewrites first
-  // so the in-graph operand is replaced cleanly, and the wide icmp falls
-  // dead before phi-erase.
-  for (ICmpInst *Cmp : PendingIcmps) {
-    // Identify graph-side vs other-side using InstInfoMap membership.
-    Value *Op0 = Cmp->getOperand(0);
-    Value *Op1 = Cmp->getOperand(1);
-    Value *OldGraphOp = nullptr;
-    Value *OldOther = nullptr;
-    bool GraphIsLHS = false;
-    if (auto *I0 = dyn_cast<Instruction>(Op0); I0 && InstInfoMap.count(I0)) {
-      OldGraphOp = Op0;
-      OldOther = Op1;
-      GraphIsLHS = true;
-    } else {
-      OldGraphOp = Op1;
-      OldOther = Op0;
-    }
-
-    Value *NewGraphOp = getReducedOperand(OldGraphOp, SclTy);
-    Type *NewTy = NewGraphOp->getType();
-    unsigned NewBits = NewTy->getScalarSizeInBits();
-
-    IRBuilder<> Builder(Cmp);
-    Value *NewOther = nullptr;
-    if (auto *OldC = dyn_cast<ConstantInt>(OldOther)) {
-      NewOther = ConstantInt::get(NewTy, OldC->getValue().trunc(NewBits));
-    } else {
-      // canNarrowIcmpThroughGraph proved Other narrow + single-use; emit
-      // a trunc at the icmp site.
-      NewOther = Builder.CreateTrunc(OldOther, NewTy);
-    }
-
-    Value *NewLHS = GraphIsLHS ? NewGraphOp : NewOther;
-    Value *NewRHS = GraphIsLHS ? NewOther : NewGraphOp;
-    ICmpInst *NewCmp = cast<ICmpInst>(
-        Builder.CreateICmp(Cmp->getPredicate(), NewLHS, NewRHS));
-    // Preserve samesign flag (predicate gate requires it for signed cmps;
-    // the narrow icmp's signed/unsigned interpretations still agree, by
-    // the FitBits constraint enforced in canNarrowIcmpThroughGraph).
-    if (Cmp->hasSameSign())
-      NewCmp->setSameSign(true);
-    NewCmp->takeName(Cmp);
-    Cmp->replaceAllUsesWith(NewCmp);
-    Cmp->eraseFromParent();
-    ++NumIcmpsNarrowed;
-  }
   // First, erase old phi-nodes and its uses
   for (auto &Node : OldNewPHINodes) {
     PHINode *OldPN = Node.first;

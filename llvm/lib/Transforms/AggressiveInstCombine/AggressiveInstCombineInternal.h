@@ -43,7 +43,6 @@ class AssumptionCache;
 class DataLayout;
 class DominatorTree;
 class Function;
-class ICmpInst;
 class Instruction;
 class TargetLibraryInfo;
 class TargetTransformInfo;
@@ -79,13 +78,6 @@ class TruncInstCombine {
   /// all other instructions in the graph that uses it.
   MapVector<Instruction *, Info> InstInfoMap;
 
-  /// Outside-graph ICmpInst users approved for in-place narrowing by
-  /// `canNarrowIcmpThroughGraph`.  Rewritten in `ReduceExpressionGraph`
-  /// before the in-graph phi-erase loop so the wide operands fall dead.
-  /// ravn/llvm-z80#160 + sound version (#160-sound) — keyed by-icmp so
-  /// duplicates across multiple in-graph operands don't double-rewrite.
-  SmallVector<ICmpInst *, 4> PendingIcmps;
-
 public:
   TruncInstCombine(AssumptionCache &AC, TargetLibraryInfo &TLI,
                    const TargetTransformInfo &TTI, const DataLayout &DL,
@@ -116,19 +108,6 @@ private:
   ///         expression graph, or nullptr if the expression graph is not
   ///         eligible to be reduced.
   Type *getBestTruncatedType();
-
-  /// Decide whether an outside-graph ICmpInst that consumes \p GraphValue
-  /// can be rewritten alongside the trunc-rooted graph at \p NarrowTy.
-  ///
-  /// SOUNDNESS: an outside icmp observes the FULL wide value of \p GraphValue
-  /// — narrowing the icmp replaces that observation with only the low
-  /// NarrowBits.  Sound iff BOTH \p GraphValue's KnownBits AND the
-  /// non-graph operand's KnownBits fit in the narrow width.  For signed
-  /// predicates (admitted only with the `samesign` flag), "fit" tightens to
-  /// NarrowBits - 1 so the sign bit stays clear at the narrow width and
-  /// the signed/unsigned interpretations the flag asserts still agree.
-  bool canNarrowIcmpThroughGraph(ICmpInst *Cmp, Value *GraphValue,
-                                 Type *NarrowTy);
 
   KnownBits computeKnownBits(const Value *V) const {
     return llvm::computeKnownBits(V, DL, &AC,
