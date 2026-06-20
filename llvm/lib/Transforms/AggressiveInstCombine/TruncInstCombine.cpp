@@ -279,6 +279,7 @@ unsigned TruncInstCombine::getMinBitWidth() {
 Type *TruncInstCombine::getBestTruncatedType() {
   // Reset per-graph state from any previous run.
   NarrowedICmps.clear();
+  NarrowedAndMasks.clear();
 
   if (!buildTruncExpressionGraph())
     return nullptr;
@@ -293,6 +294,9 @@ Type *TruncInstCombine::getBestTruncatedType() {
   // expression evaluation.
   unsigned DesiredBitWidth = 0;
   SmallVector<ICmpInst *, 4> ICmpCandidates;
+  SmallVector<BinaryOperator *, 4> AndMaskCandidates;
+  unsigned TruncDstBits =
+      CurrentTruncInst->getType()->getScalarSizeInBits();
   for (auto Itr : InstInfoMap) {
     Instruction *I = Itr.first;
     if (I->hasOneUse())
@@ -324,6 +328,39 @@ Type *TruncInstCombine::getBestTruncatedType() {
                 ICmpCandidates.push_back(Cmp);
               continue;
             }
+          // Fork extension on top of llvm/llvm-project#204920: outside-graph
+          // `(and X, Const)` where X is in-graph and Const fits in the
+          // narrow width.  Rewritten in ReduceExpressionGraph as
+          // `(zext (and Xnarrow, ConstTrunc) to OrigTy)`.  Sound regardless
+          // of the in-graph operand's KnownBits — the mask discards high
+          // bits of X unconditionally, so the AND's OrigTy value is
+          // unchanged by the rewrite.  ravn/llvm-z80#165.
+          if (auto *BO = dyn_cast<BinaryOperator>(UI)) {
+            // Skip the parent And of the locally-injected synthetic trunc
+            // root (ravn/llvm-z80#163/#164) — that path replaces the
+            // parent directly post-call, and a NarrowedAndMasks entry
+            // would dangle in ReduceExpressionGraph's rewrite loop.
+            if (BO->getOpcode() == Instruction::And &&
+                BO != AndMaskParentSkip) {
+              ConstantInt *MaskC = nullptr;
+              if (auto *CL = dyn_cast<ConstantInt>(BO->getOperand(0))) {
+                if (BO->getOperand(1) == I)
+                  MaskC = CL;
+              }
+              if (!MaskC) {
+                if (auto *CR = dyn_cast<ConstantInt>(BO->getOperand(1))) {
+                  if (BO->getOperand(0) == I)
+                    MaskC = CR;
+                }
+              }
+              if (MaskC &&
+                  MaskC->getValue().getActiveBits() <= TruncDstBits) {
+                if (!llvm::is_contained(AndMaskCandidates, BO))
+                  AndMaskCandidates.push_back(BO);
+                continue;
+              }
+            }
+          }
           if (!IsExtInst)
             return nullptr;
           // If this is an extension from the dest type, we can eliminate it,
@@ -414,6 +451,12 @@ Type *TruncInstCombine::getBestTruncatedType() {
     }
   }
   NarrowedICmps = std::move(ICmpCandidates);
+
+  // Fork extension: the and-mask candidates collected above are sound
+  // unconditionally — the AND clamps the value to the mask, so the
+  // narrow form sees the same bits the OrigTy form did.  No deferred
+  // validation against MinBitWidth needed.
+  NarrowedAndMasks = std::move(AndMaskCandidates);
 
   return IntegerType::get(CurrentTruncInst->getContext(), MinBitWidth);
 }
@@ -571,6 +614,38 @@ void TruncInstCombine::ReduceExpressionGraph(Type *SclTy) {
   // graph.
   CurrentTruncInst->eraseFromParent();
 
+  // Fork extension on top of llvm/llvm-project#204920: rewrite admitted
+  // outside-graph `(and X, Const)` users at the narrow type, then wrap
+  // the result in a zext back to the AND's OrigTy so all downstream
+  // consumers see an unchanged value.  Same "BEFORE phi-erase" ordering
+  // rationale as the icmp loop below: phi-valued in-graph operands get
+  // RAUW'd to poison there, and any still-wide AND referencing them
+  // would otherwise capture poison.  ravn/llvm-z80#165.
+  for (BinaryOperator *And : NarrowedAndMasks) {
+    Value *Op0 = And->getOperand(0);
+    Value *Op1 = And->getOperand(1);
+    ConstantInt *MaskC;
+    Value *OldGraphOp;
+    if (auto *CL = dyn_cast<ConstantInt>(Op0)) {
+      MaskC = CL;
+      OldGraphOp = Op1;
+    } else {
+      MaskC = cast<ConstantInt>(Op1);
+      OldGraphOp = Op0;
+    }
+    Value *NewGraphOp = getReducedOperand(OldGraphOp, SclTy);
+    Type *NewTy = NewGraphOp->getType();
+    unsigned NewBits = NewTy->getScalarSizeInBits();
+    IRBuilder<> Builder(And);
+    Constant *NewMask =
+        ConstantInt::get(NewTy, MaskC->getValue().trunc(NewBits));
+    Value *NewAnd = Builder.CreateAnd(NewGraphOp, NewMask);
+    Value *NewZext = Builder.CreateZExt(NewAnd, And->getType());
+    And->replaceAllUsesWith(NewZext);
+    And->eraseFromParent();
+  }
+  NarrowedAndMasks.clear();
+
   // Rewrite admitted outside-graph icmp users at the narrow type. Must
   // happen BEFORE the phi-erase loop below: phi-valued in-graph operands
   // are RAUW'd to poison there, and any still-wide icmp referencing them
@@ -698,7 +773,13 @@ bool TruncInstCombine::run(Function &F) {
         continue; // IRBuilder folded; nothing to narrow.
 
       CurrentTruncInst = Tr;
+      // ravn/llvm-z80#165 v2 outside-user and-mask path: tell the gate
+      // in getBestTruncatedType to NOT admit this parent `And` as a
+      // NarrowedAndMasks rewrite candidate — we replace it directly
+      // below and a NarrowedAndMasks entry would dangle.
+      AndMaskParentSkip = And;
       Type *NewDstSclTy = getBestTruncatedType();
+      AndMaskParentSkip = nullptr;
       // Rollback conditions:
       //   - chain feeding X isn't narrowable at all (getBestTruncatedType
       //     returned nullptr), OR

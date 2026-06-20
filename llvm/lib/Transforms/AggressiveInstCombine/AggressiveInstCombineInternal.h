@@ -40,6 +40,7 @@
 
 namespace llvm {
 class AssumptionCache;
+class BinaryOperator;
 class DataLayout;
 class DominatorTree;
 class Function;
@@ -84,6 +85,28 @@ class TruncInstCombine {
   /// by getBestTruncatedType and consumed (and cleared) by
   /// ReduceExpressionGraph.
   SmallVector<ICmpInst *, 4> NarrowedICmps;
+
+  /// Fork extension on top of llvm/llvm-project#204920: outside-graph
+  /// `(and X, Const)` users where X is in-graph and Const fits in the
+  /// narrow width.  Rewritten as `(zext (and Xnarrow, ConstTrunc) to
+  /// OrigTy)` in ReduceExpressionGraph before the in-graph phi-erase
+  /// loop.  Sound regardless of the graph-side KnownBits — the AND
+  /// discards X's high bits unconditionally, so the rewrite preserves
+  /// the AND's OrigTy value.  ravn/llvm-z80#165 outside-user and-mask
+  /// path.
+  SmallVector<BinaryOperator *, 4> NarrowedAndMasks;
+
+  /// Transient: when the local and-mask synthetic trunc-root injection
+  /// (ravn/llvm-z80#163/#164, runs in the `run()` outer loop) calls
+  /// `getBestTruncatedType` with a synthetic trunc derived from
+  /// `(and X, MASK)`, the outside-user gate must NOT admit the parent
+  /// `and` as a NarrowedAndMasks candidate — the injection path
+  /// replaces the parent directly after the call, and a
+  /// NarrowedAndMasks entry would dangle (And erased; rewrite loop in
+  /// ReduceExpressionGraph then touches a freed pointer).
+  /// Set by the injection path before each `getBestTruncatedType` call;
+  /// cleared after.  nullptr in all other phases.
+  BinaryOperator *AndMaskParentSkip = nullptr;
 
 public:
   TruncInstCombine(AssumptionCache &AC, TargetLibraryInfo &TLI,
