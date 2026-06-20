@@ -304,8 +304,19 @@ Type *TruncInstCombine::getBestTruncatedType() {
           // Outside-graph equality and unsigned icmp users can be narrowed
           // alongside the graph if KnownBits proves both operands fit in the
           // narrow type. Defer that check to after MinBitWidth is known.
+          //
+          // Fork extension on top of llvm/llvm-project#204920: signed
+          // predicates are admitted when the icmp carries the `samesign`
+          // flag — the optimizer has already proven the signed/unsigned
+          // interpretations agree at the wide width.  The deferred check
+          // tightens the FitBits to NarrowBits-1 for signed cases so the
+          // sign bit stays clear at the narrow width and the assertion
+          // continues to hold.  Without this, the AES K&R gf_log shape
+          // leaves the loop-exit `sge` wide; with it, the surrounding
+          // expression graph and the icmp both narrow.
           if (auto *Cmp = dyn_cast<ICmpInst>(UI))
-            if (Cmp->isEquality() || Cmp->isUnsigned()) {
+            if (Cmp->isEquality() || Cmp->isUnsigned() ||
+                (Cmp->isSigned() && Cmp->hasSameSign())) {
               // The same icmp can be reached via more than one of its
               // operands when both are in-graph; rewriting it twice would
               // dereference a freed pointer.
@@ -388,10 +399,17 @@ Type *TruncInstCombine::getBestTruncatedType() {
   // fits in MinBitWidth — the in-graph operand's narrow form is its low
   // MinBitWidth bits, so if the full value exceeds that the rewritten icmp
   // would observe a different value and could change the comparison result.
+  //
+  // Fork extension on top of llvm/llvm-project#204920: signed predicates
+  // (admitted only with `samesign` above) tighten FitBits to MinBitWidth-1
+  // so the sign bit at the narrow width remains clear — otherwise a value
+  // like 200 (positive at i16, negative at i8) would flip the comparison's
+  // sign reading despite the samesign assertion at the wide width.
   for (ICmpInst *Cmp : ICmpCandidates) {
+    unsigned FitBits = Cmp->isSigned() ? MinBitWidth - 1 : MinBitWidth;
     for (Value *Op : Cmp->operands()) {
       KnownBits K = llvm::computeKnownBits(Op, DL, &AC, /*CtxI=*/Cmp, &DT);
-      if (K.getMaxValue().getActiveBits() > MinBitWidth)
+      if (K.getMaxValue().getActiveBits() > FitBits)
         return nullptr;
     }
   }
