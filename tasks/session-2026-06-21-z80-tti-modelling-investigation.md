@@ -59,6 +59,40 @@ these to decide hoist-once vs rematerialize-per-use.  With the default,
 multi-use 16-bit constants are not hoisted on Z80 when they should be (or
 vice versa).
 
+**Empirical follow-up 2026-06-21 (same day)**: implemented the override
+with RED-GREEN-REFACTOR.  Test: 3-block function with constant 4660 used
+as call arg in three distinct blocks.  RED confirmed (3 × `ld hl, 4660`).
+Implemented `getIntImmCost`, `getIntImmCostInst` (with Add/Sub |Imm|<=3
+and i8 ALU folds returning TCC_Free), and `getIntImmCostIntrin`.  Rebuilt
+llc, re-ran.
+
+**Zero codegen change.**  Verified ConstantHoisting DOES fire at IR level
+(`-print-after=consthoist` shows the hoisted `%const` marker and three
+uses sharing it).  Verified the hoist survives IRTranslation to GMIR
+(`%11:_(s16) = G_CONSTANT i16 4660` in entry, `$hl = COPY %11` at each
+use).  Then the register allocator dematerializes it because
+`Z80InstrInfo.td:1316`'s `LD_r16_nn` pseudo is marked
+`isAsCheapAsAMove = true; isReMaterializable = true` -- a *correct*
+marking (keeping a constant alive across multiple branches consumes one of
+Z80's 3 register pairs for the dominating region, which is expensive;
+rematerializing at each use is cheaper).
+
+Reverted both .h and .cpp.  Lit test deleted.  Issue #229 held open at
+fork (not WONT-FIX) for a future scenario where regalloc gains awareness
+of hoisted constants.  Full attribution comment at
+`ravn/llvm-z80#229#issuecomment-4762027638`.
+
+This is the **second inert hole** of the 2026-06-21 inventory (after Hole
+4 / #230).  Both follow the same pattern: cost fix correct as a model
+statement, upstream consumer fires correctly, downstream Z80-specific
+decision (LSR canonicalization for #230, regalloc's `isReMaterializable`
+for #229) makes the IR-level transformation invisible in final codegen.
+
+**Implication: the entire 2026-06-21 hole inventory is at risk of being
+inert on GISel-Z80.**  Holes 1 (#227 `getCmpSelInstrCost`) and 2 (#228
+`getCallInstrCost`) deserve the same empirical test before assuming
+either is a production win.
+
 ### Hole 4: `isLegalICmpImmediate` on Z80TargetLowering
 
 Not overridden.  `Z80TargetLowering` has `isLegalAddressingMode`,
