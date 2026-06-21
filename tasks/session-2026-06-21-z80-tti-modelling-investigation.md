@@ -65,9 +65,33 @@ Not overridden.  `Z80TargetLowering` has `isLegalAddressingMode`,
 `isTruncateFree`, `isZExtFree` but no `isLegalICmpImmediate`.  Default =
 true for the full 64-bit range.  Z80 reality: `CP n` exists for 8-bit
 A-vs-immediate (1 byte).  No `CP rr,nn` form for 16-bit — a 16-bit
-cmp-vs-imm must `LD rr,nn` first.  CGP and LSR consult this; lying as
-"always legal" lets them prefer cmp-against-imm shapes that aren't
-actually cheap.
+cmp-vs-imm must `LD rr,nn` first.
+
+**Empirical follow-up 2026-06-21 (later, same day)**: attempted to ship
+the override with RED-GREEN-REFACTOR.  Test-first: 5-case lit, run RED
+(passed: codegen matches today's output).  Implemented the override
+exactly as proposed.  Re-ran: **zero codegen change on any of the five
+cases.**
+
+Traced consumers: LSR's only call site is `LoopStrengthReduce.cpp:1899`
+in `LSRUse::ICmpZero` formula scoring -- saying "false" makes LSR
+*decline* to propose the `cmp x, c => cmp (x-c), 0` normalization, NOT
+force a countdown IV.  The four `TargetLowering.cpp` consumers
+(`:5234`, `:5430`, `:5443`, `:5646`) are all SelectionDAG combine layer
+-- dead for our GISel-only backend.  CGP `optimizeCmpInstr` does not
+consult this hook (uses `shouldFoldICmpWithConstant` instead).
+
+Net: the override is correct as a model statement but has **no
+observable codegen impact** on Z80 today.  Reverted both .h and .cpp
+changes; lit test deleted.  Issue #230 held open (not WONT-FIX -- if
+Z80 ever gains a SelectionDAG path, the four `TargetLowering.cpp`
+consumers become live) but moved to back of the queue.  Full
+attribution comment at `ravn/llvm-z80#230#issuecomment-4761976501`.
+
+This finding **strengthens** the #184 reconsideration in the next
+section: Hole 4 was already argued not to disambiguate the AES-vs-cpnos
+asymmetry; the empirical inertness confirms it can't influence anything
+in the relevant code path.
 
 ### Hole 5 (not a hole, just a comment fix)
 
@@ -186,8 +210,10 @@ up.  Order by signal-to-risk:
 3. **`getIntImmCost` family** — moderate impact.  Affects
    ConstantHoisting.  Low risk because the pass tends to be
    conservative.
-4. **`isLegalICmpImmediate` on Z80TargetLowering** — cheap, narrowly
-   scoped.  Returns true only for 8-bit A-vs-immediate.
+4. **`isLegalICmpImmediate` on Z80TargetLowering** — VERIFIED INERT on
+   GISel-Z80 (empirical test 2026-06-21, see Hole 4 details above).
+   Held open at the back of the queue for a future SelectionDAG path
+   or LSR evolution.  Do NOT re-attempt without a new in-tree witness.
 5. **Z80NarrowIV call-crossing predicate** — independent track
    (not a cost-model change).  The remaining route to closing #184's
    stated goal once Holes 1-4 are ruled out as alternate paths.
