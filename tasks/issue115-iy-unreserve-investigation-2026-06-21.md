@@ -13,6 +13,64 @@ on top of BCReg / BReg / AReg / GR16NoIR, the 3-pair set's existing
 behaviour must be solid for LDIR / LDDR / CPIR / CPDR (which need
 HL+DE+BC) and DJNZ (which needs B).
 
+## ⚠ STRUCTURAL CAVEAT discovered 2026-06-21 (later still)
+
+An attempt to apply HLReg to the sister case #111 (i16 self-loop
+pointer-arg) hit a structural conflict: when an HLReg-constrained
+vreg is used as a **memory pointer** in the loop body, greedy
+correctly **spills** it because the canonical Z80 memory access via
+`(HL)` requires `INC_HL` (which physically clobbers `$hl`).  A vreg
+can't be stably constrained to `$hl` AND fed into a sequence that
+destroys `$hl`.
+
+Full writeup: `3-pair-set-hlreg-structural-conflict-2026-06-21.md`.
+
+### Impact on this issue's design sketch
+
+The pickup runbook below assumes HLReg works universally on
+constrained-to-HL vregs.  The 2026-06-21 attempt proved that
+**partially false** -- it works for some use-site patterns but
+not others.  Re-audit the 7 IY-extraction sites (autoload 2 +
+rcbios 5) against this taxonomy before implementing:
+
+| Post-extract use | HLReg applies? |
+|------------------|----------------|
+| `call` argument (HL passed, then dead) | ✓ YES -- value consumed, no in-loop $hl mutation |
+| `SBC HL,rr` (16-bit compare, value-dead-after) | ✓ YES -- same |
+| Memory access via `(HL)` then `INC_HL` (the rcbios e680 case) | ✗ NO -- physical $hl clobber kills the constraint |
+| `ADD HL,rr` (HL modified) | ✗ NO -- same |
+
+So the partial-#115 close is **even narrower** than the parked
+design sketch claimed.  Roughly: HLReg works on the
+"transfer-to-HL-then-consume" cases but not the
+"use-HL-then-keep-using-it" cases.
+
+The remaining cases (where HLReg doesn't apply) need a different
+mechanism -- likely the ISel idiom recognition path discussed in
+the #111 closing comment: recognise "store-then-advance" patterns
+and lower so the post-store HL value IS the next-iteration
+pointer (single vreg flowing through, no separate `INC16` pseudo).
+
+Before any future implementation: triage each of the 7 sites
+against this taxonomy, count how many fall into the ✓ bucket vs
+the ✗ bucket, and decide whether the ✓-only subset is worth the
+implementation effort.
+
+### Update to "How to pick this up"
+
+Add this step **before** the existing Step 3:
+
+> **Step 2.5 -- triage the 7 sites against the structural caveat.**
+> For each IY-extraction site, examine the post-extract use:
+> - If it's a function arg / value-dead-after compare: HLReg
+>   applies; site is fixable by the design sketch below.
+> - If it's a memory access via (HL) followed by INC_HL / ADD HL,rr
+>   / similar HL-mutation: HLReg is infeasible (greedy will spill).
+>   Site needs a different fix (out of #115's scope).
+> Count the ratio.  If the ✓ subset is < 50% of sites, reconsider
+> whether implementing HLReg is worth it for that few extractions.
+
+
 **Pickup**: see the "How to pick this up" section near the bottom of
 this writeup.  The empirical numbers, design sketch, and risks are
 already characterised; reading this file end-to-end gives full context
