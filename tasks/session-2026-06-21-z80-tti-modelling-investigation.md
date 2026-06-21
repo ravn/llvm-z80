@@ -490,6 +490,21 @@ cost-modelling?" -- collapses to: **none of them.**  The investigation
 strongly confirmed the existing fork architecture choice: cost-model
 hooks complement Z80-specific machinery, neither replaces the other.
 
+### Pivot 2026-06-21 (post-#115 examination)
+
+User-directed pivot at end of this thread: focus on getting the usual
+**3-pair register set (BC, DE, HL) right for LDIR/LDDR/DJNZ idioms**
+before extending the single-register-class machinery further.  #115
+parked with a thorough pickup runbook in
+`issue115-iy-unreserve-investigation-2026-06-21.md`.  The pivot
+direction has higher leverage than #115's HLReg/DEReg extension:
+solid LDIR/DJNZ codegen on the existing 3-pair set unlocks
+production-wide gains that the IY-extraction work (~21 B aggregate)
+cannot match.
+
+No new tracker filed for the pivot yet -- the work will be scoped
+when picked up.
+
 Plus a tiny code-comment fix at `Z80TargetTransformInfo.cpp:38-44` —
 ride along with #1.
 

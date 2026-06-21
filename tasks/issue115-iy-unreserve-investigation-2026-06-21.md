@@ -1,6 +1,28 @@
 # Issue #115 — IY-extraction overhead investigation 2026-06-21
 
-**Goal**: examine whether #115's premise (greedy picks IY for HL/DE-
+## ⏸ PARKED 2026-06-21 (later, same day)
+
+**Status**: PARKED.  Premise verified real (~21 B recoverable on the
+production triplet); design sketch ready; implementation NOT started.
+
+**Why parked**: a higher-priority direction surfaced -- **get the
+usual 3-pair register set (BC, DE, HL) right so LDIR and DJNZ behave
+correctly**.  #115's HLReg/DEReg approach would *extend* the
+single-register-class machinery; before adding new exclusion classes
+on top of BCReg / BReg / AReg / GR16NoIR, the 3-pair set's existing
+behaviour must be solid for LDIR / LDDR / CPIR / CPDR (which need
+HL+DE+BC) and DJNZ (which needs B).
+
+**Pickup**: see the "How to pick this up" section near the bottom of
+this writeup.  The empirical numbers, design sketch, and risks are
+already characterised; reading this file end-to-end gives full context
+in ~10 minutes.
+
+---
+
+## Goal (original 2026-06-21 framing)
+
+Examine whether #115's premise (greedy picks IY for HL/DE-
 needed values, forcing `PUSH IY; POP HL` extractions) still applies on
 current production builds, and if so, sketch the implementation.
 
@@ -323,3 +345,234 @@ on the existing #232 artefacts.
 - `llvm/lib/Target/Z80/Z80RegisterInfo.cpp:277` -- the
   `z80IsIYAllocatable` condition (production IY-allocatable in -Oz +
   static-stack).
+
+---
+
+## How to pick this up (future-me checklist)
+
+When someone (probably future-me) returns to #115 after the
+3-pair-set focus has been resolved, here's the runbook to re-derive
+context and resume.
+
+### Step 0 -- read these three things, in order, ~10 minutes
+
+1. **This file** end-to-end (above and below).
+2. **The empirical scan numbers** -- re-derive via Step 1 to confirm
+   they still hold; the production binaries may have moved.
+3. **The four precedent issues** in 15 seconds each: #94, #98, #99 set
+   up BReg/BCReg; #112 set up GR16NoIR; #172 set up AReg/Z80PinAluAccumulator;
+   #110 is the underlying greedy heuristic problem.  All have closing
+   comments that explain mechanism; skim those.
+
+### Step 1 -- re-derive the empirical numbers
+
+```bash
+cd /Users/ravn/z80/rc700-gensmedet
+make -C autoload-in-c clean && make -C autoload-in-c prom
+make -C cpnos-in-c clean && make -C cpnos-in-c prom1-lineprog
+make -C rcbios-in-c clean && make -C rcbios-in-c bios
+
+# Capture ELFs (paths approximate -- find the *.elf in each subdir).
+AUTOLOAD=autoload-in-c/clang/prom.clang.elf
+CPNOS=cpnos-in-c/clang-prom1lineprog/prom1-lineprog.elf
+RCBIOS=rcbios-in-c/clang/bios.clang.elf
+
+# Count IY-extractions (the #115 pattern, "iy→hl + iy→bc"):
+for elf in $AUTOLOAD $CPNOS $RCBIOS; do
+  hl=$(/Users/ravn/z80/llvm-z80/build-macos/bin/llvm-objdump -d --triple=z80 $elf \
+       | awk '/push.*iy/{f=1; next} f && /pop.*hl/{c++} {f=0} END{print c+0}')
+  bc=$(/Users/ravn/z80/llvm-z80/build-macos/bin/llvm-objdump -d --triple=z80 $elf \
+       | awk '/push.*iy/{f=1; next} f && /pop.*bc/{c++} {f=0} END{print c+0}')
+  echo "$(basename $elf): iy→hl=$hl  iy→bc=$bc"
+done
+```
+
+Compare to the 2026-06-21 baseline: {autoload: 1+1=2}, {cpnos: 0},
+{rcbios: 5+0=5}.  If counts moved significantly, the gap has shifted;
+re-evaluate the design before implementing.
+
+### Step 2 -- prerequisite check: 3-pair-set work is done
+
+Before implementing HLReg/DEReg, confirm:
+
+- LDIR/LDDR/CPIR/CPDR produce HL/DE/BC source vregs via greedy
+  without unnecessary COPYs (the "3-pair-set right" work from the
+  pivot).
+- DJNZ counter pinning via BReg / BCReg is still firing (the
+  Z80SplitDjnzCounters pass).
+- No new precedents have landed that would replace the
+  single-register-class pattern with something better.
+
+If those are all OK, proceed to Step 3.
+
+### Step 3 -- implement per the design sketch (above section)
+
+Read the "Design sketch -- HLReg / DEReg" section above; follow Steps
+A through F.  ~1-2 sessions of careful work for someone familiar with
+GISel + TableGen.
+
+### Step 4 -- validate
+
+- Lit test pinning LDIR-via-vreg shape with no `push iy; pop hl`.
+- Re-run full Z80 lit suite.
+- Re-derive Step 1's numbers; the iy→hl/bc counts should drop toward
+  zero on autoload + rcbios.
+- Re-measure compressed ROM sizes (per #232's lesson, raw and
+  compressed can disagree).
+- Run the test-runner suite under +static-stack to catch
+  over-constraint regressions.
+
+### Step 5 -- close #115
+
+Once Step 4 confirms the extraction count is at or near zero with no
+regressions, close the issue with a comment referencing the final
+measurements and a link to the implementation commit.
+
+---
+
+## Open questions discovered during investigation
+
+Things that came up during the examine pass and were left
+unanswered.  Resolve before or during implementation:
+
+1. **Is `hl→iy` (the "intentional" direction) also bad?**  9 transfers
+   across the triplet (3 autoload + 6 rcbios; cpnos none).  These look
+   intentional (a value placed into IY for subsequent `(IY+d)` indexed
+   access) but the count is large enough that some may be artifacts of
+   regalloc indecision -- a vreg picked into IY only to be PUSH/POP'd
+   in.  Worth a separate scan: at each `push hl; pop iy` site, does
+   the IY value get used as `(IY+d)` indexing before being clobbered
+   or copied out?  If not, the COPY into IY is wasted.
+
+2. **ADD HL,rr generalisation -- how much does it actually save?**  The
+   design sketch notes ADD HL,rr is the long tail.  Quantify it: walk
+   the production triplet's disassembly counting cases where a vreg
+   should have been in HL for an ADD HL,rr and wasn't.  If the count
+   is small (~3-5), HLReg's LDIR-only application captures most of the
+   recoverable bytes; if it's large (>20), the ADD HL,rr extension is
+   important.
+
+3. **Does the COPY-elimination heuristic (#110) still override
+   target hints on current LLVM?**  The single-register-class pattern
+   exists *specifically* because #110 makes target hints unreliable.
+   But #110 is a generic LLVM regalloc concern -- upstream may have
+   improved the heuristic since the precedent issues (#94/#98) landed.
+   If #110's pain has been reduced, target hints might work today
+   without needing exclusion classes -- which would make HLReg/DEReg
+   redundant.  Check upstream `RegAllocGreedy` history for changes to
+   copy-elimination heuristics since the BCReg precedent landed.
+
+4. **What's the over-constraint cost on cpnos?**  cpnos has zero
+   IY-extractions currently.  Adding HLReg might inadvertently force
+   COPYs in cpnos where today it has none.  The empirical scan for
+   cpnos showed it's clean; need to verify HLReg doesn't break that.
+
+5. **Z80NarrowNoIndex interaction.**  `Z80NarrowNoIndex` (per
+   `Z80NarrowNoIndex.cpp:131`) is gated on `z80IsIYAllocatable`; it
+   eliminates IY-half emissions in a way that complements HLReg/DEReg.
+   Need to confirm the two passes don't have an ordering or
+   correctness interaction.
+
+---
+
+## Surrounding context (deeper background)
+
+This section dumps everything else encountered during the
+investigation that's worth knowing when picking up.
+
+### Why the regalloc-class pattern exists (deeper than the precedent list)
+
+The greedy regalloc's copy-elimination heuristic (#110) tries to
+collapse a `vreg = COPY %src` followed by `... uses vreg ...` into a
+single allocation: if `%src` is already in a physreg, the heuristic
+prefers to keep `vreg` in the same physreg as `%src`, eliminating the
+COPY.  This is correct for most targets where any GPR can hold any
+value.
+
+On Z80 it's catastrophic: many vregs MUST be in specific physregs
+(LDIR needs HL/DE/BC; DJNZ needs B; ALU goes through A).  When the
+heuristic ignores the target hint (`getRegAllocationHints`), the
+backend has to COPY-out-then-COPY-back, costing bytes.
+
+The single-register-class pattern (`BCReg`, `BReg`, `AReg`,
+`GR16NoIR`) works around this by removing the choice entirely: a
+vreg constrained to `BCReg` cannot be allocated to anything other
+than BC, so the heuristic has no alternative to consider.
+
+`HLReg` / `DEReg` extend the pattern to LDIR/LDDR/CPIR/CPDR (which
+need HL/DE/BC) and to ADD HL,rr (which needs HL as the destination).
+
+### The 2026-06-21 misclassification trail (don't repeat the mistake)
+
+The 2026-06-21 inverse analysis classified #115 as a "plausible
+cost-model retire-candidate" because the analysis author
+(present-me at the time) confused two things:
+
+1. "IY reservation default-on" -- which the analysis treated as a
+   global toggle to retire via cost-model.  In reality:
+   - IY is **already allocatable** on production (`-Oz +
+     static-stack`).
+   - The "reservation" is only on non-production builds (-O0,
+     non-static-stack).
+   - So there's no production sledgehammer to retire.
+
+2. "Per-pair cost tradeoffs" -- which the analysis suggested could be
+   modelled by a context-aware `CostPerUse` (IY=2 in cold blocks,
+   higher in tight loops).  In reality:
+   - #115's actual fix is regalloc-class machinery, not cost.
+   - Cost-aware regalloc isn't the mechanism that prevents the
+     extraction; class exclusion is.
+   - Even if `CostPerUse` were context-aware, greedy's
+     copy-elimination heuristic would still override it (#110).
+
+When re-reading the 2026-06-21 inverse-analysis section, note this
+correction.  Don't re-attempt cost-model framing for #115.
+
+### IY-half (IXH/IXL/IYH/IYL) interaction
+
+Under `+undocumented`, the half-index registers (IXH/IXL/IYH/IYL)
+become allocatable.  These are 8-bit subregs of IX/IY accessible via
+undocumented Z80 opcodes (`LD IXH, n` etc.).  The closed issues
+#37/#112/#113/#189 dealt with the encoder + emission of these.
+
+#115 is at the *16-bit pair* level (IY as a pair, not its halves).
+The half-index work is orthogonal.  Don't conflate.
+
+### CALL / RET / register conventions
+
+`Z80_CSR_SaveList` and `Z80_AllReg_CSR_RegMask` define what's
+preserved across calls.  HLReg-constrained vregs that are alive
+across calls may force a callee-save spill, depending on the
+convention.  Worth checking when implementing -- the constraint
+mechanics may interact differently for live-across-CALL vregs vs
+local-to-block vregs.
+
+### The pivot to "3-pair set right"
+
+The user's stated pivot is to focus on getting the usual 3-pair
+register set (BC, DE, HL) right for LDIR and DJNZ.  Quoting:
+
+> It is more important to get the usual 3 register set right so things
+> turn out right for ldir and djnz
+
+The implication: before extending the single-register-class machinery
+(HLReg / DEReg for #115), the existing 3-pair behaviour for the
+canonical Z80 idioms (LDIR / LDDR / DJNZ) should be solid.  If those
+idioms are currently producing unnecessary COPYs even at the 3-pair
+level, fixing that has higher leverage than extending the machinery.
+
+When picking up #115, first confirm the pivot work is done -- otherwise
+HLReg/DEReg may layer on top of an unstable base.
+
+---
+
+## What this writeup is NOT
+
+- It is not an implementation.  Step C in the design sketch needs real
+  code; this writeup contains pseudocode only.
+- It is not a closed issue.  #115 stays OPEN at fork as a parked
+  marker; the implementation work resumes here when picked up.
+- It is not a cost-model edit proposal.  The 2026-06-21 inverse
+  analysis classified #115 as cost-model; that was wrong.  This
+  writeup explicitly corrects that and routes the fix to regalloc-
+  class machinery.
