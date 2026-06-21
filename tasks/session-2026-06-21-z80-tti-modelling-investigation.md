@@ -336,10 +336,90 @@ simply duplicate it.
 - The mis-labelled "Vectorizer-only hooks" comment at
   `Z80TargetTransformInfo.cpp:38-44` should still be amended (the
   empirical inertness doesn't make the mis-label correct; future
-  contributors reading the file will still be confused by it).  Out of
-  scope for this session; tracked separately.
+  contributors reading the file will still be confused by it).
+  Tracked as **#233** for a future session to pick up.
 - This writeup itself is the record of what was investigated and why
   none of the holes are actionable today.
+
+## Inverse: where would modelling REPLACE machinery?
+
+The five-hole sweep asked "would adding cost-model signal eliminate
+the need for downstream Z80-specific machinery?"  Empirically: no,
+because the downstream machinery already produces the right shape.
+
+The inverse question is: of the Z80-specific machinery that exists,
+which pieces would be **better expressed via cost-modelling** instead
+of as a fix-up pass / peephole / hard-coded rule / global disable?
+
+Classified during this session's continuation:
+
+### Strong candidate (one)
+
+**LSR sledgehammer: `-disable-lsr` in production builds (#232).**
+The only cost-model-deficit-driven global disable remaining in the
+tree.  Other "disabled" features have different reasons: MachineCSE
+off = B15 Branch Folder bug workaround, LICM off = historical, machine
+outliner off = hard architectural fact (4 B overhead per outlined
+sequence), IY reserved = #115.  LSR is the only one where the right
+cost signal could in principle retire the sledgehammer.
+
+The cost-model pieces are partly in place (`isLSRCostLess`
+register-count-first, `isLegalAddImmediate=±3`, `getNumberOfRegisters=3`),
+but production still needs the sledgehammer -- so LSR is consulting
+something else (or missing a signal) that lets it create the
+3-pair-busting IVs.  Investigation route in #232.
+
+Caveat: even this could land inert (the #184 wall says no scalar
+per-(opcode, type) cost can encode register pressure asymmetries).
+The investigation step is *not* to edit any cost: first identify the
+signal LSR is actually missing on a production-shape repro.
+
+### Plausible candidate (one)
+
+**IY reservation default-on (#115).**  Reserved by default and only
+un-reservable via flag because the regalloc cost model can't reliably
+evaluate prefixed vs non-prefixed pair tradeoffs.  CostPerUse=2 on IY
+is the existing modelling fragment; what's missing is a use-context-
+aware penalty (IY is fine in cold blocks, costly in tight loops).
+Better modelling could retire the reservation; #189/#27/#112
+byte-decompose fixes already removed one layer of post-hoc cleanup.
+
+Same caveat as #232: empirical gating mandatory.  Cross-ref comment
+added to #115.
+
+### Weak / no candidates
+
+These are machinery for good reason -- don't try to model them away:
+
+- **Z80LowerSelect**: lowering necessity (no conditional move).
+- **`isReMaterializable` on LD_r{8,16}_n**: correct *lowering*
+  statement; the regalloc rematerialization decision (which made #229
+  inert) is the right answer for a 3-pair allocator.
+- **`MaxStoresPerMemcpy = 1`**: already cost-modelled correctly; the
+  threshold IS the model.
+- **CostPerUse: IX=1, IY=2 (`Z80InstrInfo.td`)**: already cost-modelled
+  correctly.
+- **`areInlineCompatible`**: cost-aware short-circuit; a richer cost
+  model would just duplicate the existing simple rules.
+- **MachineCSE off (B15)**: bug workaround for the Branch Folder
+  unsound hoist, not a cost question.  Fix via fixing Branch Folder.
+- **`PredictableSelectIsExpensive = true`**: dead code on GISel
+  (SelectionDAG-only flag).
+- **#168 SimplifyCFG patch**: empirically equivalent to #227 in output;
+  swapping has no value.
+- **Disabled machine outliner**: hard architectural fact.  Cost-driven
+  self-disable via `getCallInstrCost` empirically verified inert (#228).
+
+### Net of the inverse analysis
+
+The dividing line between "cost model" and "Z80-specific machinery"
+is mostly correct on this fork.  Two cases (LSR sledgehammer + IY
+reservation) might admit better modelling; the other ~10 cases are
+the right layer.
+
+Both of those two are now tracked: #232 (new this session) and #115
+(updated with cross-ref).  Both carry the same empirical-gating
+discipline the five-hole sweep established.
 
 Plus a tiny code-comment fix at `Z80TargetTransformInfo.cpp:38-44` —
 ride along with #1.
