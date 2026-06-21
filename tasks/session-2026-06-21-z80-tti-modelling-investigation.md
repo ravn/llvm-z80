@@ -391,18 +391,41 @@ the LSR sledgehammer belongs in the same category as #184 -- outside
 TTI's expressive power -- not in the "cost-model could replace it"
 category.
 
-### Plausible candidate (one)
+### Plausible candidate (one) — CORRECTED 2026-06-21 (later)
 
-**IY reservation default-on (#115).**  Reserved by default and only
-un-reservable via flag because the regalloc cost model can't reliably
-evaluate prefixed vs non-prefixed pair tradeoffs.  CostPerUse=2 on IY
-is the existing modelling fragment; what's missing is a use-context-
-aware penalty (IY is fine in cold blocks, costly in tight loops).
-Better modelling could retire the reservation; #189/#27/#112
-byte-decompose fixes already removed one layer of post-hoc cleanup.
+**IY reservation default-on (#115).**  Originally classified as the
+"plausible cost-model retire-candidate."  The same-day investigation
+falsified this classification:
 
-Same caveat as #232: empirical gating mandatory.  Cross-ref comment
-added to #115.
+- **IY is already allocatable on production today.**
+  `z80IsIYAllocatable(MF)` returns true under `hasOptSize() &&
+  staticStack()`, which is true for all three production targets
+  (`-Oz` + `+static-stack`).  No "reservation sledgehammer" to
+  retire.  The 2026-06-21 sweep's framing was a mis-read of the
+  code state.
+- **#115's actual proposed fix is regalloc-class machinery, not a
+  cost-model edit.**  HLReg/DEReg single-register classes are
+  structurally identical to the existing BCReg / GR16NoIR /
+  AReg / BReg uses -- TableGen + RegisterInfo constraints, not
+  TTI cost hooks.  Not in the "cost-model could replace machinery"
+  bucket at all.
+
+Empirical scan of production triplet IY-extraction overhead:
+
+| Target | iy→hl + iy→bc (the #115 pattern) | bytes |
+|--------|----------------------------------|-------|
+| autoload | 2 transfers | 6 B |
+| cpnos PROM1 | 0 | 0 B |
+| rcbios | 5 | 15 B |
+| **Aggregate** | 7 | **~21 B** |
+
+#115's premise is real and current; ~21 B aggregate recoverable.  See
+`issue115-iy-unreserve-investigation-2026-06-21.md` for the empirical
+scan, design sketch (HLReg/DEReg per existing BCReg/GR16NoIR pattern),
+and reconciliation.
+
+**Moved to "weak/no candidates -- the right layer is machinery"**
+list below.
 
 ### Weak / no candidates
 
@@ -429,31 +452,43 @@ These are machinery for good reason -- don't try to model them away:
 
 ### Net of the inverse analysis
 
-**Updated 2026-06-21 (later, post-#232 investigation)**:
+**Updated 2026-06-21 (later, post-#232 and #115 investigations)**:
 
 The dividing line between "cost model" and "Z80-specific machinery"
-is **even cleaner** than the original inverse analysis claimed.
-Of the two candidates filed:
+is **even cleaner** than the original inverse analysis claimed.  Both
+candidates filed turned out to NOT be cost-model candidates:
 
 - **#232 LSR sledgehammer** turned out to be *outside* TTI's
   expressive power -- not a cost-model deficit but a downstream-
   compressor effect (ZX0).  Closed WONT-FIX after empirical A/B.
   See `issue232-lsr-sledgehammer-investigation-2026-06-21.md`.
 
-- **#115 IY reservation** remains the *only* plausible cost-model
-  candidate from the inverse analysis.  Same empirical-gating
-  discipline still required before any cost edit.
+- **#115 IY reservation** turned out to NOT be a reservation
+  sledgehammer at all -- IY is already allocatable on production
+  (`-Oz + static-stack` triggers `z80IsIYAllocatable`).  #115's
+  actual proposed fix is regalloc-class machinery (HLReg/DEReg
+  single-register classes), the same layer as BCReg / GR16NoIR /
+  AReg.  See `issue115-iy-unreserve-investigation-2026-06-21.md`.
+  ~21 B recoverable per the empirical scan; design sketch ready.
 
-Surprise actionable finding from #232's investigation: rcbios's
-`-disable-lsr` is a verified byte-identical no-op (LSR doesn't fire on
-that codebase at -Oz).  Filed as **#234** -- a tiny stale-flag
-removal, the only concrete code change this whole 2026-06-21 thread
-produced.
+Surprise actionable findings:
+- **#234** (NEW): rcbios's `-disable-lsr` is a verified byte-identical
+  no-op (LSR doesn't fire on that codebase at -Oz).  Stale-flag
+  removal.  Concrete code change.
+- **#115** (already open): the empirical scan + design sketch reduced
+  this to a well-scoped 1-2-session implementation task.  Not a
+  cost-model question.
 
-So: 1 of ~13 pieces of Z80-specific machinery *might* still admit
-better modelling (#115), 12 of ~13 are the right layer or outside
-TTI entirely.  Plus one tiny cleanup (#234) for a flag that's just
-stale.
+So: **zero** of ~13 pieces of Z80-specific machinery still admit
+"better modelling via cost-model edit."  All 13 are either the right
+layer (machinery: TableGen/RegInfo/peepholes/lowering passes) or
+outside TTI entirely (compressibility, regalloc-pressure asymmetries).
+
+The 2026-06-21 inverse-analysis premise -- "of the existing Z80-
+specific machinery, which pieces would be better expressed via
+cost-modelling?" -- collapses to: **none of them.**  The investigation
+strongly confirmed the existing fork architecture choice: cost-model
+hooks complement Z80-specific machinery, neither replaces the other.
 
 Plus a tiny code-comment fix at `Z80TargetTransformInfo.cpp:38-44` —
 ride along with #1.
