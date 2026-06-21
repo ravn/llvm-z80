@@ -43,12 +43,51 @@ Direct scalar consumers verified by grep on the in-tree LLVM at HEAD:
 - `llvm/lib/Transforms/Scalar/SpeculativeExecution.cpp:252`
 - LICM, LoopUnroll, IROutliner via `getInstructionCost` dispatch.
 
+**Empirical follow-up 2026-06-21 (same day)**: implemented the override
+exactly as proposed (cost = 4 + 2*Bytes at TCK_CodeSize, 2 + Bytes at
+TCK_RecipThroughput / TCK_Latency).  Three layers of test, all identical
+baseline vs patched:
+
+1. Full 156-test Z80 lit suite at -O2: every test byte-identical.
+2. Synthetic two-entry-phi + 3-way cascade at O1/O2/Os/Oz: identical.
+3. Predictable-branch shape with `!prof` (the exact path #168 does NOT
+   cover, where #227's cost-gate would have to fire on its own):
+   identical.
+
+Why: bug 3's production density win is already captured by #168's
+SimplifyCFG patch (`cd2a2ace8754`), Z80LowerSelect handles whatever
+shape SimplifyCFG hands it by emitting the same branch+materialize
+regardless, and downstream regalloc materializes equivalently in both
+cases.  The IR-level cost decision becomes invisible at the asm level.
+
+Reverted .h + .cpp.  No lit test added (no behavior to pin).  Issue
+#227 held open at fork (not WONT-FIX).  Full attribution comment at
+`ravn/llvm-z80#227#issuecomment-4762587647`.
+
 ### Hole 2: `getCallInstrCost`
 
 Not implemented.  Default = 1.  Z80 reality: `CALL nn` = 3 B / 17 T plus
 caller-saved register flush.  Affects IROutliner, IPO inlining heuristics
 beyond our `areInlineCompatible` short-circuit, and any cost analysis
 that estimates a basic block containing calls.
+
+**Empirical follow-up 2026-06-21 (same day)**: implemented the override
+exactly as proposed (cost = 3 at TCK_CodeSize, 5 at TCK_RecipThroughput).
+Test workload: synthetic IR with three call-heavy shapes (small leaf
+helper with two call sites, two outlinable shared regions, hot loop
+with call body).  Two layers of test, all identical baseline vs patched:
+
+1. Full 156-test Z80 lit suite at -O2: every test byte-identical.
+2. Call-heavy synthetic at -O2: all three shapes byte-identical.
+
+Why: `areInlineCompatible` already short-circuits the major Z80
+inlining decisions.  IROutliner doesn't fire on shapes small enough at
+-O2 to surface a 1-vs-3 CALL-cost difference.  LICM hoist-around-call
+conservatism wasn't sensitive to the cost on the synthetic.
+
+Reverted .h + .cpp.  No lit test added.  Issue #228 held open at fork
+(not WONT-FIX).  Full attribution comment at
+`ravn/llvm-z80#228#issuecomment-4762588850`.
 
 ### Hole 3: `getIntImmCost` / `getIntImmCostInst` / `getIntImmCostIntrin`
 
@@ -231,26 +270,76 @@ session formalises that as a discipline going forward.
 
 ## Recommendation / tracker layout
 
-File five scoped trackers at ravn/llvm-z80 (one per hole), each gated
-behind the existing `-z80-experimental-tti-costs` flag for the same
-proven-codegen-neutral measure-before-default-on rhythm that #177 set
-up.  Order by signal-to-risk:
+**ALL FIVE HOLES VERIFIED INERT OR N/A ON GISel-Z80 (2026-06-21
+empirical sweep).**  Original ranking (now superseded — kept for
+historical context):
 
-1. **`getCmpSelInstrCost`** — highest impact, lowest risk.  Closes bug
-   3 properly.  Retires #168 SimplifyCFG cost gate as redundant.
-2. **`getCallInstrCost`** — moderate impact.  Affects IPO/outliner
-   decisions; some risk of inlining regressions on the production
-   triplet, must A/B.
-3. **`getIntImmCost` family** — moderate impact.  Affects
-   ConstantHoisting.  Low risk because the pass tends to be
-   conservative.
-4. **`isLegalICmpImmediate` on Z80TargetLowering** — VERIFIED INERT on
-   GISel-Z80 (empirical test 2026-06-21, see Hole 4 details above).
-   Held open at the back of the queue for a future SelectionDAG path
-   or LSR evolution.  Do NOT re-attempt without a new in-tree witness.
-5. **Z80NarrowIV call-crossing predicate** — independent track
-   (not a cost-model change).  The remaining route to closing #184's
-   stated goal once Holes 1-4 are ruled out as alternate paths.
+1. **`getCmpSelInstrCost`** (#227) — VERIFIED INERT.  Held open at fork.
+2. **`getCallInstrCost`** (#228) — VERIFIED INERT.  Held open at fork.
+3. **`getIntImmCost` family** (#229) — VERIFIED INERT.  Held open at
+   fork.
+4. **`isLegalICmpImmediate` on Z80TargetLowering** (#230) — VERIFIED
+   INERT.  Held open at fork.
+5. **Z80NarrowIV call-crossing predicate** (#231) — pass doesn't exist
+   (removed 2026-05-23, `59bc5533f9c9`); cpnos pain is hypothetical
+   (only under WONT-FIX #184 i16=2 cost).  Speculative-future tracker.
+
+**Do not re-attempt any of these without a new in-tree witness.**
+
+## What the sweep clarified
+
+The 2026-06-21 investigation premise was "tell LLVM the truth about
+Z80 costs and it'll naturally pick the right shapes."  Empirically,
+on GISel-Z80 in 2026-06, this is wrong.  Two reasons:
+
+1. **Multiple correct cost models meeting in the middle.**  IR-level
+   passes (SimplifyCFG, ConstantHoisting, LSR, IROutliner) have one
+   cost-aware view; Z80-specific lowering (Z80LowerSelect, LSR's
+   countdown canonicalization) and regalloc (\`isReMaterializable\`,
+   register-pressure tracking) have another.  They often disagree.
+   The downstream one wins because it runs later and has more
+   information (regalloc has actual register pressure; Z80LowerSelect
+   knows it always lowers selects to branches anyway).
+
+2. **Effective workarounds already shipped.**  Bug 3's production win
+   is captured by #168's SimplifyCFG patch.  Constant rematerialization
+   is correct via \`isReMaterializable\`.  LSR is disabled in production
+   (-disable-lsr).  Inlining decisions are captured by
+   \`areInlineCompatible\`.  Each of these is the right Z80-specific
+   machinery for its problem -- displacing them with cost-model-driven
+   generic logic would not be an improvement.
+
+The investigation produced **clarification, not regression**: what
+looked like correctable model-inaccuracy is in fact Z80-specific
+machinery doing the right thing where the IR-level cost model would
+simply duplicate it.
+
+## What this means for #184 and bug 3
+
+- **#184 (i16 arithmetic cost)** stays WONT-FIX.  The reconsideration
+  in this writeup ruled out all four cost-model holes as alternate
+  routes; the empirical inertness sweep confirms there is no cost-model
+  variation that disambiguates the AES-vs-cpnos call-crossing
+  asymmetry.  The only architectural alternative remains a
+  regalloc-aware narrowing pass (#231, speculative-future).
+
+- **Bug 3 / #168** stays as-is.  #227 would be the "correct layer" fix
+  in principle, but empirically it produces zero codegen change on top
+  of #168, so swapping has no value today.  The production win is
+  captured.
+
+## What stays as durable output
+
+- The five fork trackers (#227-#231) document specific hooks and the
+  empirical findings.  Future readers see what was tried, what
+  happened, and the trigger conditions for revisit.
+- The mis-labelled "Vectorizer-only hooks" comment at
+  `Z80TargetTransformInfo.cpp:38-44` should still be amended (the
+  empirical inertness doesn't make the mis-label correct; future
+  contributors reading the file will still be confused by it).  Out of
+  scope for this session; tracked separately.
+- This writeup itself is the record of what was investigated and why
+  none of the holes are actionable today.
 
 Plus a tiny code-comment fix at `Z80TargetTransformInfo.cpp:38-44` —
 ride along with #1.
