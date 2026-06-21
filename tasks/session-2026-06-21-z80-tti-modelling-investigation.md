@@ -353,26 +353,43 @@ of as a fix-up pass / peephole / hard-coded rule / global disable?
 
 Classified during this session's continuation:
 
-### Strong candidate (one)
+### Strong candidate (one) -- CORRECTED 2026-06-21 (later)
 
 **LSR sledgehammer: `-disable-lsr` in production builds (#232).**
-The only cost-model-deficit-driven global disable remaining in the
-tree.  Other "disabled" features have different reasons: MachineCSE
-off = B15 Branch Folder bug workaround, LICM off = historical, machine
-outliner off = hard architectural fact (4 B overhead per outlined
-sequence), IY reserved = #115.  LSR is the only one where the right
-cost signal could in principle retire the sledgehammer.
 
-The cost-model pieces are partly in place (`isLSRCostLess`
-register-count-first, `isLegalAddImmediate=±3`, `getNumberOfRegisters=3`),
-but production still needs the sledgehammer -- so LSR is consulting
-something else (or missing a signal) that lets it create the
-3-pair-busting IVs.  Investigation route in #232.
+Originally classified as the "strong candidate" for cost-model-driven
+retirement.  The 2026-06-21 same-day investigation (writeup
+`llvm-z80/tasks/issue232-lsr-sledgehammer-investigation-2026-06-21.md`)
+**falsified this classification.**
 
-Caveat: even this could land inert (the #184 wall says no scalar
-per-(opcode, type) cost can encode register pressure asymmetries).
-The investigation step is *not* to edit any cost: first identify the
-signal LSR is actually missing on a production-shape repro.
+Empirical measurement across all three production targets:
+
+| Target | Raw text Δ | Compressed Δ | ROM Δ |
+|--------|------------|--------------|-------|
+| autoload | −1 B | +13 B (ZX0) | +13 B |
+| cpnos    | +2 B | +13 B (ZX0) | +11 B |
+| rcbios   |  0 B | (no compression) |  0 B |
+
+On autoload + cpnos, LSR-enabled produces *slightly smaller raw code*
+(-1 / +2 B net) but the ZX0-compressed payload grows by 13 B.  Reason:
+LSR's strength-reduction transforms emit IY-indexed accesses (\`0xFD\`
+prefix + per-use-site offset bytes) that have more diverse byte
+patterns than the baseline's repetitive \`inc hl; ld a, d; inc a\`
+sequences.  ZX0 finds the baseline shape easier to compress.
+
+This is **outside the TTI cost model entirely** -- the same
+architectural-limit class as #184.  Per-(opcode, type) cost cannot
+encode global byte-pattern statistics of the compressed artifact.
+No cost-model edit will retire `-disable-lsr` on autoload or cpnos.
+
+On rcbios, the flag is **byte-identical no-op** (5462 B with and
+without; instruction-level identical disassembly).  Stale carry-over
+that can be removed -- tracked as #234.
+
+#232 closed WONT-FIX.  The "strong candidate" classification was wrong;
+the LSR sledgehammer belongs in the same category as #184 -- outside
+TTI's expressive power -- not in the "cost-model could replace it"
+category.
 
 ### Plausible candidate (one)
 
@@ -412,14 +429,31 @@ These are machinery for good reason -- don't try to model them away:
 
 ### Net of the inverse analysis
 
-The dividing line between "cost model" and "Z80-specific machinery"
-is mostly correct on this fork.  Two cases (LSR sledgehammer + IY
-reservation) might admit better modelling; the other ~10 cases are
-the right layer.
+**Updated 2026-06-21 (later, post-#232 investigation)**:
 
-Both of those two are now tracked: #232 (new this session) and #115
-(updated with cross-ref).  Both carry the same empirical-gating
-discipline the five-hole sweep established.
+The dividing line between "cost model" and "Z80-specific machinery"
+is **even cleaner** than the original inverse analysis claimed.
+Of the two candidates filed:
+
+- **#232 LSR sledgehammer** turned out to be *outside* TTI's
+  expressive power -- not a cost-model deficit but a downstream-
+  compressor effect (ZX0).  Closed WONT-FIX after empirical A/B.
+  See `issue232-lsr-sledgehammer-investigation-2026-06-21.md`.
+
+- **#115 IY reservation** remains the *only* plausible cost-model
+  candidate from the inverse analysis.  Same empirical-gating
+  discipline still required before any cost edit.
+
+Surprise actionable finding from #232's investigation: rcbios's
+`-disable-lsr` is a verified byte-identical no-op (LSR doesn't fire on
+that codebase at -Oz).  Filed as **#234** -- a tiny stale-flag
+removal, the only concrete code change this whole 2026-06-21 thread
+produced.
+
+So: 1 of ~13 pieces of Z80-specific machinery *might* still admit
+better modelling (#115), 12 of ~13 are the right layer or outside
+TTI entirely.  Plus one tiny cleanup (#234) for a flag that's just
+stale.
 
 Plus a tiny code-comment fix at `Z80TargetTransformInfo.cpp:38-44` —
 ride along with #1.
