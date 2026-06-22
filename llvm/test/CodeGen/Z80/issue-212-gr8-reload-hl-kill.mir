@@ -1,0 +1,74 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=prologepilog \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80 #212 -- at -O0 with +static-stack, fastregalloc kills $hl
+# at an XOR_CMP_EQ16 (consumed both halves into the flag result).  The
+# next instruction is a RELOAD_GR8 into $h (or $l) whose frame offset,
+# after Z80FrameLowering's __sfrend_-relative layout, falls outside the
+# (IX+d) -128..+127 range -- so PEI dispatches to
+# expandReloadGR8LargeOffset.
+#
+# Before the fix, that expander unconditionally set
+#   NeedSaveHL = DstIsHL || isRegLiveAt($hl, NextIt)
+# i.e. "save HL whenever we're reloading into one of its halves," to
+# preserve the sibling half across the address-computation borrow.  But
+# when fastregalloc has just killed $hl whole, the would-be borrow PUSH
+# reads an undefined $hl and trips -verify-machineinstrs.
+#
+# The fix narrows the gate to the SIBLING half: when reloading into $h,
+# save only if $l is live downstream; mirror for $l.  The half being
+# loaded is about to be overwritten by the closing LD <DstReg>,A, so it
+# doesn't need preservation.
+#
+# Here the only post-reload reader is the RET's `implicit $h`, so $l is
+# dead at NextIt -> no PUSH_HL must be emitted, and the verifier must
+# pass.  Both the "save" and the "restore" disappear.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  define dso_local void @reload_h_after_hl_kill() #0 {
+    ; The alloca forces hasFP=true so PEI uses IX-relative addressing instead
+    ; of the +static-stack BSS direct-addressing short-circuit -- without it,
+    ; PEI would lower the RELOAD_GR8 to `LD A,(addr); LD H,A` and never reach
+    ; the large-offset expander where #212 lives.
+    %x = alloca i8, align 1
+    ret void
+  }
+  attributes #0 = { "target-features"="+static-stack" "frame-pointer"="all" }
+...
+---
+name:            reload_h_after_hl_kill
+alignment:       1
+tracksRegLiveness: true
+noVRegs:         true
+frameInfo:
+  maxAlignment:    1
+stack:
+  # ~200B leading slot pushes %stack.1's frame offset past -128, forcing
+  # PEI to take the large-offset RELOAD_GR8 expansion path.
+  - { id: 0, type: default, offset: 0, size: 200, alignment: 1 }
+  - { id: 1, type: default, offset: 0, size: 1,   alignment: 1 }
+body:             |
+  bb.0:
+    liveins: $hl, $bc
+
+    ; XOR_CMP_EQ16 kills BOTH halves of HL ($l and $h) and writes the
+    ; bool result into A.  After this, $hl is dead.
+    XOR_CMP_EQ16 killed renamable $hl, killed renamable $bc, implicit-def $a, implicit-def dead $b, implicit-def $flags
+
+    ; Large-offset reload into $h.  The pre-fix expander would emit
+    ; PUSH_HL here -- reading killed $hl -- before computing the address.
+    renamable $h = RELOAD_GR8 %stack.1, 0
+
+    ; $l is dead at this RET; only $h matters.
+    RET implicit $h
+...
+
+# The address-computation borrow inside `emitLargeOffsetAddr` legitimately
+# emits `PUSH_IX; POP_HL` to load IX into HL -- that's expected and unrelated
+# to the #212 bug.  The bug-introduced extra is a `PUSH_HL` (the borrow save
+# bracket) that disappears with the fix.  Check that no PUSH_HL is emitted.
+#
+# CHECK-LABEL: name: reload_h_after_hl_kill
+# CHECK-NOT: PUSH_HL

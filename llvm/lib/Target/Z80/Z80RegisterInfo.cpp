@@ -626,10 +626,18 @@ static void expandSpillGR8LargeOffset(MachineBasicBlock &MBB,
   bool PreserveFlags = isFlagsLiveAfter(MI, TRI);
   auto NextIt = std::next(MachineBasicBlock::iterator(MI));
 
-  // When spilling H or L, we must always save/restore HL: the other half of
-  // the pair may be needed by a subsequent SPILL_GR8 (the register allocator
-  // often emits consecutive SPILL_GR8 for L and H from the same killed HL).
-  bool NeedSaveHL = SrcIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  // When spilling H or L, save HL only if the OTHER half is live downstream
+  // (the half we are spilling is consumed by this MI).  If both halves are
+  // dead at NextIt (e.g. fastregalloc killed $hl on the previous
+  // XOR_CMP_EQ16), saving HL would PUSH undef and trip
+  // -verify-machineinstrs (ravn/llvm-z80#212).
+  bool NeedSaveHL;
+  if (SrcIsHL) {
+    Register OtherHalf = (SrcReg == Z80::H) ? Z80::L : Z80::H;
+    NeedSaveHL = isRegLiveAt(OtherHalf, MBB, NextIt, TRI);
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  }
   bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, TRI);
   bool NeedSaveAF = SrcIsHL && isRegLiveAt(Z80::A, MBB, NextIt, TRI);
 
@@ -672,10 +680,21 @@ static void expandReloadGR8LargeOffset(MachineBasicBlock &MBB,
   bool PreserveFlags = isFlagsLiveAfter(MI, TRI);
   auto NextIt = std::next(MachineBasicBlock::iterator(MI));
 
-  // When reloading into H or L, always save/restore HL: consecutive
-  // RELOAD_GR8 for H and L need the restored HL so the second reload's
-  // "LD DstReg, A" writes into a correctly-preserved register pair.
-  bool NeedSaveHL = DstIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  // When reloading into H or L, save HL only if the OTHER half is live
+  // downstream (the half we are reloading into is about to be overwritten by
+  // the LD DstReg,A copy that finishes this reload).  If both halves are
+  // dead at NextIt (e.g. fastregalloc killed $hl on a prior XOR_CMP_EQ16),
+  // saving HL would PUSH undef and trip -verify-machineinstrs
+  // (ravn/llvm-z80#212).  When the sibling IS live (the consecutive-RELOAD
+  // case the original comment described), isRegLiveAt sees the read and
+  // returns true, so the save still fires.
+  bool NeedSaveHL;
+  if (DstIsHL) {
+    Register OtherHalf = (DstReg == Z80::H) ? Z80::L : Z80::H;
+    NeedSaveHL = isRegLiveAt(OtherHalf, MBB, NextIt, TRI);
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  }
   bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, TRI);
   bool NeedSaveAF = DstIsHL && isRegLiveAt(Z80::A, MBB, NextIt, TRI);
 
