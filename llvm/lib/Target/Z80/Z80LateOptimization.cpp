@@ -813,6 +813,13 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     // Replaces a 5-instruction decrement-and-branch sequence (28T, 6B) with
     // DEC r; JR NZ (14T, 3B). DEC r sets Z flag correctly for JR NZ, and
     // stays within the analyzable branch framework. Works on Z80 and SM83.
+    //
+    // ravn/llvm-z80#221: use SkipPHIsLabelsAndDebug() instead of std::next()
+    // to skip DBG_VALUE pseudos that interleave under `-g`.  Raw std::next()
+    // lands on a debug pseudo, the opcode check fails, and the peephole
+    // silently bails on `-g` builds.  Three production sites in autoload
+    // (_delay's mid-counter, _compare_6bytes, _check_sysfile) hit this --
+    // 3 B per site × 3 sites = 9 B win on autoload.
     for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
          MII != MIE;) {
       // Match: LD A,r (identify counter register r)
@@ -822,26 +829,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         continue;
       }
       auto I1 = MII;
-      auto I2 = std::next(I1);
-      if (I2 == MIE) {
-        ++MII;
-        continue;
-      }
-      auto I3 = std::next(I2);
-      if (I3 == MIE) {
-        ++MII;
-        continue;
-      }
-      auto I4 = std::next(I3);
-      if (I4 == MIE) {
-        ++MII;
-        continue;
-      }
-      auto I5 = std::next(I4);
-      if (I5 == MIE) {
-        ++MII;
-        continue;
-      }
+      auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+      if (I2 == MIE) { ++MII; continue; }
+      auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+      if (I3 == MIE) { ++MII; continue; }
+      auto I4 = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
+      if (I4 == MIE) { ++MII; continue; }
+      auto I5 = MBB.SkipPHIsLabelsAndDebug(std::next(I4));
+      if (I5 == MIE) { ++MII; continue; }
 
       // Match: DEC A; LD r,A; OR A; JR NZ,target
       if (I2->getOpcode() != Z80::DEC_A ||
@@ -864,11 +859,12 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       LLVM_DEBUG(dbgs() << "  Loop counter peephole: LD A,"
                         << printReg(CounterReg, TRI) << " sequence → DEC "
                         << printReg(CounterReg, TRI) << "; JR NZ\n");
-      I5->eraseFromParent();
-      I4->eraseFromParent();
-      I3->eraseFromParent();
-      I2->eraseFromParent();
-      MII = MBB.erase(I1);
+      // ravn/llvm-z80#221: range-erase [I1, std::next(I5)) so any DBG_VALUE
+      // pseudos interleaved between the matched MIs (referencing the
+      // about-to-be-erased $a value) are also removed.  Leaving them would
+      // dangle on physreg state that the new DEC r; JR NZ doesn't produce.
+      auto EraseEnd = std::next(I5);
+      MII = MBB.erase(I1, EraseEnd);
       BuildMI(MBB, MII, DL, TII->get(DECOpc));
       BuildMI(MBB, MII, DL, TII->get(Z80::JR_NZ_e)).addMBB(TargetMBB);
       Changed = true;
