@@ -1,0 +1,53 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -z80-unreserve-iy \
+# RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#239 site 1: ZEXT_GR8_GR16 IY-destination path
+# (Z80InstrInfo.cpp expandPostRAPseudo) emits PUSH_HL on the
+# `HLLive = contains(H) || contains(L)` gate.  When exactly ONE half is
+# live and the other undef, the pair PUSH_HL would read partial-undef $hl
+# and trip -verify-machineinstrs.
+#
+# Fixture shape: ZEXT_GR8_GR16 $iy = ZEXT_GR8_GR16 $e (so SrcReg=E, not H/L).
+# Live-in $h-only (L undef), so HLLive=true via H but L undef.  Without
+# +undocumented (LD IYL,E etc. are undocumented), the path routes through
+# HL.
+#
+# Fix: IMPLICIT_DEF the dead half before PUSH_HL (mirrors the
+# expandSpillGR8SPRelative pattern in Z80RegisterInfo.cpp for #210 /
+# #212 follow-up).
+
+--- |
+  target triple = "z80"
+  define void @zext_iy_h_live_l_undef() #0 { ret void }
+  attributes #0 = { "target-features"="+static-stack" optsize }
+...
+---
+name:            zext_iy_h_live_l_undef
+alignment:       1
+tracksRegLiveness: true
+noVRegs:         true
+body:             |
+  bb.0:
+    liveins: $a, $e, $h
+    ; ZEXT_GR8_GR16 $iy = $e -- zero-extend E into IY.  Without
+    ; +undocumented, no direct LD IYL,E; the expander routes through HL via
+    ; PUSH_HL gate.  $h is live (forces HLLive=true backward-scan).  $l is
+    ; undef.  Pre-fix, the expander's PUSH_HL read partial-undef $hl.
+    $iy = ZEXT_GR8_GR16 $e
+    AND_r killed $h, implicit-def $a, implicit-def $flags, implicit $a
+    RET implicit $a
+...
+
+# The dead $l half is IMPLICIT_DEF'd before PUSH_HL so the pair PUSH does
+# not read partial-undef.  -verify-machineinstrs in the RUN line is the
+# load-bearing assertion; the CHECKs below pin the shape.
+#
+# CHECK-LABEL: name: zext_iy_h_live_l_undef
+# CHECK: $l = IMPLICIT_DEF
+# CHECK-NEXT: PUSH_HL
+# CHECK: LD_L_E
+# CHECK: LD_H_n 0
+# CHECK: PUSH_HL
+# CHECK: POP_IY
+# CHECK: POP_HL
