@@ -3,8 +3,16 @@
 Read by Claude Code, GitHub Copilot, Cursor, and other agentic tools.
 
 **This file is identical across all of my projects.** It describes how I (the human)
-like any AI tool to operate, independent of any one codebase. Only add to it when a
-genuinely cross-project rule emerges — then propagate the same edit everywhere.
+like any AI tool to operate, independent of any one codebase. The canonical source
+is **https://github.com/ravn/AGENTS.md**; the copy in any project root is a mirror.
+When a genuinely cross-project rule emerges, edit the canonical first and then
+propagate the same edit to each project root.
+
+**Staleness check.** At the start of a coding session — or whenever something in
+this file feels out of step with how I'm asking you to work today — fetch
+`https://raw.githubusercontent.com/ravn/AGENTS.md/main/AGENTS.md` and diff it
+against the local copy. If they differ, surface the diff and let me decide
+whether to sync before continuing.
 
 **Project-specific setup, constraints, build commands, and status — when the project
 has them — live in a `PROJECT.md` alongside this file** (and in `CLAUDE.md`, which
@@ -33,6 +41,12 @@ the whole brief.
 
 ## Communication
 
+- **Flag model fit before starting a task.** If you are on a smaller/faster model
+  (e.g. Sonnet) and the task calls for open-ended analysis, multi-file audit, or
+  architectural reasoning, say so in one sentence before diving in. If you are on a
+  larger model (e.g. Opus) and the task is a targeted patch with an established fix
+  pattern, note that Sonnet would be faster and cheaper. One sentence is enough; don't
+  overdo it.
 - **Think out loud.** Narrate the reasoning, not just the conclusion. Concise, not
   terse-to-the-point-of-opaque.
 - **No apologies, no self-flagellation.** Don't say "sorry" or "my bad." Report the
@@ -61,10 +75,50 @@ the whole brief.
   skipped, say it. State "done" only when verified.
 - Use ASCII `->` rather than Unicode arrows (terminal rendering).
 
+## Code comments
+
+- **Default to layered comments on non-trivial logic** — the opposite of
+  "self-documenting code." When a chunk is non-obvious: write a block comment
+  above it (WHAT it does, WHY it's there, any gotcha — ordering, soundness,
+  "don't move this past X"); include a **worked example with concrete values**
+  from a real test case or bug repro showing what the data structures end up
+  holding; and put a **one-line WHY on each non-trivial guard** (`if (...)
+  continue;` / `if (...) return ...;`) so a reader doesn't have to
+  reverse-engineer the condition. If two related blocks share state (block A
+  populates, block B consumes), reference the same example in both so a
+  reader follows one story top-to-bottom.
+- Keep examples concrete — real values from real tests, not `Foo` / `X`.
+  Keep one-liners tight (~70 chars after the indent). Don't restate what
+  the code says (`// loop over operands`); explain WHY (`// skip defs that
+  overlap an existing operand`).
+- The converse: if the chunk is genuinely obvious — a one-line helper, a
+  one-statement body, an identifier whose name already says it — no comment
+  needed. The goal is to spare the reader reverse-engineering, not to
+  paper every line.
+
+## GitHub bodies
+
+- **Write PR, issue, and comment bodies as long flowing lines** — don't
+  hard-wrap at ~80 columns the way you would for source code or commit
+  messages. GitHub's markdown in these contexts honors a single newline as a
+  hard `<br>` (unlike rendered `.md` files in a repo, where it folds into a
+  space), so hard-wrapping makes the rendered prose look like fixed-width
+  text with a ragged right margin. One paragraph = one line; blank lines
+  between paragraphs; leave headings / lists / fenced code blocks alone
+  (they work either way). Quick fix when caught after the fact: join lines
+  per paragraph and re-push with `gh pr edit <num> --body-file …`.
+- Exceptions that stay hard-wrapped: commit messages (50/72 convention) and
+  source code comments (~70 cols).
+
 ## Verification & commit discipline
 
 - **Test before fix.** Write the failing test first, then make it pass.
-- **Baseline before you change.** Capture the control measurement on the *unmodified* system -- test-runner fail-set, binary sizes, timings -- *before* you touch anything. A delta needs both endpoints; reconstructing the "before" after the fact (stash, rebuild, rerun) is slower and error-prone, and you may not be able to get back to a clean baseline at all. If you find yourself measuring only the "after," stop and go capture the "before" first.
+- **Baseline before you change.** Capture the control measurement on the *unmodified*
+  system — test-runner fail-set, binary sizes, timings — *before* you touch anything.
+  A delta needs both endpoints; reconstructing the "before" after the fact (stash,
+  rebuild, rerun) is slower and error-prone, and you may not be able to get back to a
+  clean baseline at all. If you find yourself measuring only the "after," stop and go
+  capture the "before" first.
 - **Verify before "done."** Prove it works — run the tests, check the logs, diff
   behavior between the baseline and your change. Never mark complete on assumption.
 - **Building is not behaving.** A clean compile / smaller binary is not proof of
