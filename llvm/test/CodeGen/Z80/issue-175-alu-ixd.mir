@@ -1,0 +1,134 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80#175 -- Z80LateOptimization fuses
+#   LD <r>,(IX+d) ; <ALU>_<r>
+# into the single-instruction `<ALU> a,(IX+d)` form when <r> is dead after
+# the ALU.  Mirror for (IY+d).  Saves 1 B + 4 ts per fusion site.
+#
+# These post-RA MIR fixtures mirror the AES corpus pattern: a spilled vreg
+# reloads via LD <r>,(IX+d) into a non-A register, then the ALU op
+# (per-register form, e.g. XOR_E) consumes it with A as accumulator.  After
+# the ALU, <r> is dead (the spill is the sole def in this window).
+
+--- |
+  target triple = "z80"
+  define void @xor_ixd() { ret void }
+  define void @or_iyd() { ret void }
+  define void @and_ixd() { ret void }
+  define void @sub_ixd() { ret void }
+  define void @cp_iyd() { ret void }
+  define void @xor_ixd_a_dst_no_fuse() { ret void }
+  define void @xor_ixd_live_no_fuse() { ret void }
+...
+
+# -- LD E,(IX-1) ; XOR E -> XOR a,(IX-1) -- E dead, fuse.
+# CHECK-LABEL: name: xor_ixd
+# CHECK:      XOR_IXd -1
+# CHECK-NOT:  LD_E_IXd
+# CHECK-NOT:  XOR_E
+---
+name:            xor_ixd
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $ix
+    LD_E_IXd -1, implicit-def $e, implicit $ix
+    XOR_E implicit-def $a, implicit-def $flags, implicit $a, implicit killed $e
+    RET implicit $a
+...
+
+# -- LD C,(IY+4) ; OR C -> OR a,(IY+4) -- IY-flavor of the same fuse.
+# CHECK-LABEL: name: or_iyd
+# CHECK:      OR_IYd 4
+# CHECK-NOT:  LD_C_IYd
+# CHECK-NOT:  OR_C
+---
+name:            or_iyd
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $iy
+    LD_C_IYd 4, implicit-def $c, implicit $iy
+    OR_C implicit-def $a, implicit-def $flags, implicit $a, implicit killed $c
+    RET implicit $a
+...
+
+# -- LD B,(IX-2) ; AND B -> AND a,(IX-2)
+# CHECK-LABEL: name: and_ixd
+# CHECK:      AND_IXd -2
+---
+name:            and_ixd
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $ix
+    LD_B_IXd -2, implicit-def $b, implicit $ix
+    AND_B implicit-def $a, implicit-def $flags, implicit $a, implicit killed $b
+    RET implicit $a
+...
+
+# -- LD D,(IX+8) ; SUB D -> SUB a,(IX+8) -- non-commutative; only Src2 fuses
+# CHECK-LABEL: name: sub_ixd
+# CHECK:      SUB_IXd 8
+---
+name:            sub_ixd
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $ix
+    LD_D_IXd 8, implicit-def $d, implicit $ix
+    SUB_D implicit-def $a, implicit-def $flags, implicit $a, implicit killed $d
+    RET implicit $a
+...
+
+# -- LD H,(IY-3) ; CP H -> CP a,(IY-3) -- only sets flags
+# CHECK-LABEL: name: cp_iyd
+# CHECK:      CP_IYd -3
+---
+name:            cp_iyd
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $iy
+    LD_H_IYd -3, implicit-def $h, implicit $iy
+    CP_H implicit-def $flags, implicit $a, implicit killed $h
+    RET implicit $flags
+...
+
+# -- Negative: LD A,(IX+d) ; XOR A is "A ^= mem; A ^= A" -> A := 0.
+# Rewriting to XOR a,(IX+d) would XOR (IX+d) with old A; NOT semantically
+# equivalent.  Peephole must skip dst=A.
+# CHECK-LABEL: name: xor_ixd_a_dst_no_fuse
+# CHECK:      LD_A_IXd 4
+# CHECK:      XOR_A
+# CHECK-NOT:  XOR_IXd
+---
+name:            xor_ixd_a_dst_no_fuse
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $ix
+    LD_A_IXd 4, implicit-def $a, implicit $ix
+    XOR_A implicit-def $a, implicit-def $flags, implicit $a
+    RET implicit $a
+...
+
+# -- Negative: E is read after the ALU (live across).  Peephole would
+# erase the LD that defined E, leaving the later use observing stale data.
+# Must NOT fire.
+# CHECK-LABEL: name: xor_ixd_live_no_fuse
+# CHECK:      LD_E_IXd -1
+# CHECK:      XOR_E
+# CHECK-NOT:  XOR_IXd
+---
+name:            xor_ixd_live_no_fuse
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $a, $ix
+    LD_E_IXd -1, implicit-def $e, implicit $ix
+    XOR_E implicit-def $a, implicit-def $flags, implicit $a, implicit $e
+    LD_A_E implicit-def $a, implicit $e
+    RET implicit $a
+...

@@ -1296,6 +1296,115 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MI->eraseFromParent();
     }
 
+    // --- Peephole: LD r,(IX+d); <ALU> r → <ALU> a,(IX+d) (#175) ---
+    // After PEI rewrites spill reloads to LD <r>,(IX+d), and the per-register
+    // ALU op consumes <r> with A as accumulator, the two-MI sequence
+    // (4 B / 23 ts) can become a single fused indexed-ALU (3 B / 19 ts).
+    // Safe when r is dead after the ALU.  Skip dst=A: `LD A,(IX+d); XOR A`
+    // is `A ^= (IX+d); A ^= A` which clears A -- rewriting to `XOR a,(IX+d)`
+    // would XOR (IX+d) with the prior A, semantically different.
+    {
+      // Map per-register ALU opcode (XOR_E, OR_C, ...) -> (dst-register, base
+      // operation).  Returns Register() if not a fusable ALU.
+      auto getAluSrcReg = [](unsigned Opc) -> Register {
+        switch (Opc) {
+        case Z80::XOR_B: case Z80::OR_B: case Z80::AND_B: case Z80::SUB_B:
+        case Z80::CP_B:  return Z80::B;
+        case Z80::XOR_C: case Z80::OR_C: case Z80::AND_C: case Z80::SUB_C:
+        case Z80::CP_C:  return Z80::C;
+        case Z80::XOR_D: case Z80::OR_D: case Z80::AND_D: case Z80::SUB_D:
+        case Z80::CP_D:  return Z80::D;
+        case Z80::XOR_E: case Z80::OR_E: case Z80::AND_E: case Z80::SUB_E:
+        case Z80::CP_E:  return Z80::E;
+        case Z80::XOR_H: case Z80::OR_H: case Z80::AND_H: case Z80::SUB_H:
+        case Z80::CP_H:  return Z80::H;
+        case Z80::XOR_L: case Z80::OR_L: case Z80::AND_L: case Z80::SUB_L:
+        case Z80::CP_L:  return Z80::L;
+        default: return Register();
+        }
+      };
+      auto getIXFusedOp = [](unsigned AluOpc) -> unsigned {
+        switch (AluOpc) {
+        case Z80::XOR_B: case Z80::XOR_C: case Z80::XOR_D: case Z80::XOR_E:
+        case Z80::XOR_H: case Z80::XOR_L: return Z80::XOR_IXd;
+        case Z80::OR_B:  case Z80::OR_C:  case Z80::OR_D:  case Z80::OR_E:
+        case Z80::OR_H:  case Z80::OR_L:  return Z80::OR_IXd;
+        case Z80::AND_B: case Z80::AND_C: case Z80::AND_D: case Z80::AND_E:
+        case Z80::AND_H: case Z80::AND_L: return Z80::AND_IXd;
+        case Z80::SUB_B: case Z80::SUB_C: case Z80::SUB_D: case Z80::SUB_E:
+        case Z80::SUB_H: case Z80::SUB_L: return Z80::SUB_IXd;
+        case Z80::CP_B:  case Z80::CP_C:  case Z80::CP_D:  case Z80::CP_E:
+        case Z80::CP_H:  case Z80::CP_L:  return Z80::CP_IXd;
+        default: return 0;
+        }
+      };
+      auto getIYFusedOp = [](unsigned AluOpc) -> unsigned {
+        switch (AluOpc) {
+        case Z80::XOR_B: case Z80::XOR_C: case Z80::XOR_D: case Z80::XOR_E:
+        case Z80::XOR_H: case Z80::XOR_L: return Z80::XOR_IYd;
+        case Z80::OR_B:  case Z80::OR_C:  case Z80::OR_D:  case Z80::OR_E:
+        case Z80::OR_H:  case Z80::OR_L:  return Z80::OR_IYd;
+        case Z80::AND_B: case Z80::AND_C: case Z80::AND_D: case Z80::AND_E:
+        case Z80::AND_H: case Z80::AND_L: return Z80::AND_IYd;
+        case Z80::SUB_B: case Z80::SUB_C: case Z80::SUB_D: case Z80::SUB_E:
+        case Z80::SUB_H: case Z80::SUB_L: return Z80::SUB_IYd;
+        case Z80::CP_B:  case Z80::CP_C:  case Z80::CP_D:  case Z80::CP_E:
+        case Z80::CP_H:  case Z80::CP_L:  return Z80::CP_IYd;
+        default: return 0;
+        }
+      };
+      auto getLoadIYdDstReg = [](unsigned Opc) -> Register {
+        switch (Opc) {
+        case Z80::LD_A_IYd: return Z80::A;
+        case Z80::LD_B_IYd: return Z80::B;
+        case Z80::LD_C_IYd: return Z80::C;
+        case Z80::LD_D_IYd: return Z80::D;
+        case Z80::LD_E_IYd: return Z80::E;
+        case Z80::LD_H_IYd: return Z80::H;
+        case Z80::LD_L_IYd: return Z80::L;
+        default: return Register();
+        }
+      };
+      for (auto MII = MBB.begin(); MII != MBB.end();) {
+        auto I1 = MII;
+        auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+        if (I2 == MBB.end()) { ++MII; continue; }
+        unsigned LdOpc = I1->getOpcode();
+        unsigned AluOpc = I2->getOpcode();
+        Register LdDst = getLoadIXdDstReg(LdOpc);
+        bool IsIX = LdDst.isValid();
+        if (!IsIX)
+          LdDst = getLoadIYdDstReg(LdOpc);
+        Register AluSrc = getAluSrcReg(AluOpc);
+        if (!LdDst.isValid() || !AluSrc.isValid() || LdDst != AluSrc) {
+          ++MII; continue;
+        }
+        // Skip dst=A: A^A = 0 (not equivalent to XOR a,(IX+d)).
+        if (LdDst == Z80::A) { ++MII; continue; }
+        unsigned FusedOpc = IsIX ? getIXFusedOp(AluOpc) : getIYFusedOp(AluOpc);
+        if (!FusedOpc) { ++MII; continue; }
+        if (I1->getNumOperands() < 1 || !I1->getOperand(0).isImm()) {
+          ++MII; continue;
+        }
+        int64_t Disp = I1->getOperand(0).getImm();
+        auto AfterAlu = std::next(I2);
+        auto Liveness = MBB.computeRegisterLiveness(TRI, LdDst, AfterAlu);
+        if (Liveness != MachineBasicBlock::LQR_Dead) { ++MII; continue; }
+        LLVM_DEBUG(dbgs() << "  #175: LD " << TRI->getName(LdDst)
+                          << ",(" << (IsIX ? "IX" : "IY") << "+" << Disp
+                          << "); " << TII->getName(AluOpc)
+                          << " " << TRI->getName(LdDst) << " -> "
+                          << TII->getName(FusedOpc) << " a,("
+                          << (IsIX ? "IX" : "IY") << "+" << Disp << ")\n");
+        BuildMI(MBB, I1, I1->getDebugLoc(), TII->get(FusedOpc)).addImm(Disp);
+        auto AfterErase = std::next(I2);
+        I1->eraseFromParent();
+        I2->eraseFromParent();
+        MII = AfterErase;
+        Changed = true;
+      }
+    }
+
     // --- Peephole: LD L,H; LD H,0; LD A,L → LD A,H ---
     // When extracting the high byte of HL into A, the compiler sometimes
     // routes through L (LD L,H; LD H,0; LD A,L) instead of directly (LD A,H).
