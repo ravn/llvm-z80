@@ -626,15 +626,21 @@ static void expandSpillGR8LargeOffset(MachineBasicBlock &MBB,
   bool PreserveFlags = isFlagsLiveAfter(MI, TRI);
   auto NextIt = std::next(MachineBasicBlock::iterator(MI));
 
-  // When spilling H or L, save HL only if the OTHER half is live downstream
-  // (the half we are spilling is consumed by this MI).  If both halves are
-  // dead at NextIt (e.g. fastregalloc killed $hl on the previous
-  // XOR_CMP_EQ16), saving HL would PUSH undef and trip
-  // -verify-machineinstrs (ravn/llvm-z80#212).
+  // When spilling H or L, the source half has already been copied to A, so
+  // the address borrow only needs to preserve the OTHER half OR the source
+  // half if either is live past the spill.  Forcing the save unconditionally
+  // made PUSH_HL read an undefined half when the other was dead (#212; same
+  // shape #210 already addressed for the SP-relative variant).  If only the
+  // source half is live, IMPLICIT_DEF the dead other half so the pair PUSH
+  // does not trip -verify-machineinstrs.
   bool NeedSaveHL;
+  bool OtherLive = false;
+  Register Other;
   if (SrcIsHL) {
-    Register OtherHalf = (SrcReg == Z80::H) ? Z80::L : Z80::H;
-    NeedSaveHL = isRegLiveAt(OtherHalf, MBB, NextIt, TRI);
+    Other = (SrcReg == Z80::H) ? Z80::L : Z80::H;
+    OtherLive = isRegLiveAt(Other, MBB, NextIt, TRI);
+    bool SrcLive = isRegLiveAt(SrcReg, MBB, NextIt, TRI);
+    NeedSaveHL = OtherLive || SrcLive;
   } else {
     NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
   }
@@ -647,8 +653,11 @@ static void expandSpillGR8LargeOffset(MachineBasicBlock &MBB,
   if (SrcIsHL)
     BuildMI(MBB, MI, DL, TII.get(getCopyToAOpcode(SrcReg)));
 
-  if (NeedSaveHL)
+  if (NeedSaveHL) {
+    if (SrcIsHL && !OtherLive)
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Other);
     BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+  }
   if (NeedSaveTemp)
     BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
@@ -687,7 +696,10 @@ static void expandReloadGR8LargeOffset(MachineBasicBlock &MBB,
   // saving HL would PUSH undef and trip -verify-machineinstrs
   // (ravn/llvm-z80#212).  When the sibling IS live (the consecutive-RELOAD
   // case the original comment described), isRegLiveAt sees the read and
-  // returns true, so the save still fires.
+  // returns true, so the save still fires.  In that case IMPLICIT_DEF the
+  // destination half first -- its old value is dead (about to be
+  // overwritten) and would otherwise leave the pair PUSH reading half-undef
+  // (mirrors expandReloadGR8SPRelative for #210).
   bool NeedSaveHL;
   if (DstIsHL) {
     Register OtherHalf = (DstReg == Z80::H) ? Z80::L : Z80::H;
@@ -700,8 +712,11 @@ static void expandReloadGR8LargeOffset(MachineBasicBlock &MBB,
 
   if (NeedSaveAF)
     BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_AF));
-  if (NeedSaveHL)
+  if (NeedSaveHL) {
+    if (DstIsHL)
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), DstReg);
     BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
+  }
   if (NeedSaveTemp)
     BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
