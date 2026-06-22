@@ -1,0 +1,41 @@
+# RUN: llc -mtriple=z80 -z80-unreserve-iy \
+# RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#239 site 3: RELOAD_GR16 with IX/IY destination routes through
+# HL (LD L,(IX+d); LD H,(IX+d+1); PUSH HL; POP IX/IY).  The save bracket
+# used `NeedSaveHL = contains(H) || contains(L)` but emitted unconditional
+# PUSH_HL — reading partial-undef $hl when only one half was live.
+#
+# Fixture: RELOAD_GR16 into $iy (no +static-stack => IX-indexed load path).
+# $h live, $l undef => NeedSaveHL=true but $l is partial-undef.
+#
+# Fix: IMPLICIT_DEF dead half before PUSH_HL.
+
+--- |
+  target triple = "z80"
+  define void @reload_iy_h_live_l_undef() { ret void }
+...
+---
+name:            reload_iy_h_live_l_undef
+alignment:       1
+tracksRegLiveness: true
+noVRegs:         true
+body:             |
+  bb.0:
+    liveins: $a, $h
+    ; RELOAD_GR16 $iy from IX-indexed slot -2.  $h live, $l undef.
+    ; Pre-fix: PUSH_HL read partial-undef $hl.
+    $iy = RELOAD_GR16 -2, 0
+    AND_r killed $h, implicit-def $a, implicit-def $flags, implicit $a
+    RET implicit $a
+...
+
+# CHECK-LABEL: name: reload_iy_h_live_l_undef
+# CHECK:      $l = IMPLICIT_DEF
+# CHECK-NEXT: PUSH_HL
+# CHECK:      LD_L_IXd -2
+# CHECK:      LD_H_IXd -1
+# CHECK:      PUSH_HL
+# CHECK:      POP_IY
+# CHECK:      POP_HL

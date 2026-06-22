@@ -466,12 +466,28 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
           BuildMI(MBB, I, DL, get(Z80::POP_DE));
         }
       } else {
-        BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+        // Dest is not H/L: extract IX/IY half via PUSH IX; POP HL; LD dest,H/L.
+        // Gate the HL save/restore on liveness; IMPLICIT_DEF dead half before
+        // PUSH_HL so the pair PUSH does not read partial-undef (#239 site 5a).
+        const TargetRegisterInfo *TRI5a = STI->getRegisterInfo();
+        auto HLQ5a = MBB.computeRegisterLiveness(TRI5a, Z80::H, I);
+        auto LLQ5a = MBB.computeRegisterLiveness(TRI5a, Z80::L, I);
+        bool HLive5a = (HLQ5a != MachineBasicBlock::LQR_Dead);
+        bool LLive5a = (LLQ5a != MachineBasicBlock::LQR_Dead);
+        bool NeedSaveHL5a = HLive5a || LLive5a;
+        if (NeedSaveHL5a) {
+          if (!HLive5a)
+            BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+          if (!LLive5a)
+            BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+          BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+        }
         BuildMI(MBB, I, DL, get(PushOp));
         BuildMI(MBB, I, DL, get(Z80::POP_HL));
         unsigned LdOp = Z80::getLD8RegOpcode(DestReg, ExtractReg);
         BuildMI(MBB, I, DL, get(LdOp));
-        BuildMI(MBB, I, DL, get(Z80::POP_HL));
+        if (NeedSaveHL5a)
+          BuildMI(MBB, I, DL, get(Z80::POP_HL));
       }
       return;
     }
@@ -500,30 +516,57 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
       unsigned PopIR = (DstIsIXH || DstIsIXL) ? Z80::POP_IX : Z80::POP_IY;
       Register TargetReg = DstIsIndexHi ? Z80::H : Z80::L;
 
+      // Compute HL liveness once; shared by both sub-paths below.
+      const TargetRegisterInfo *TRI5bc = STI->getRegisterInfo();
+      auto HLQ5bc = MBB.computeRegisterLiveness(TRI5bc, Z80::H, I);
+      auto LLQ5bc = MBB.computeRegisterLiveness(TRI5bc, Z80::L, I);
+      bool HLive5bc = (HLQ5bc != MachineBasicBlock::LQR_Dead);
+      bool LLive5bc = (LLQ5bc != MachineBasicBlock::LQR_Dead);
+      bool NeedSaveHL5bc = HLive5bc || LLive5bc;
+
       if (SrcReg == Z80::H || SrcReg == Z80::L) {
+        // Source is H/L: preserve it in A first, then save HL across the
+        // PUSH IX; POP HL read-modify-write.  Gate and IMPLICIT_DEF dead half
+        // before PUSH_HL (#239 site 5b).
         BuildMI(MBB, I, DL, get(Z80::PUSH_AF));
         unsigned LdASrc = Z80::getLD8RegOpcode(Z80::A, SrcReg);
         BuildMI(MBB, I, DL, get(LdASrc));
-        BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+        if (NeedSaveHL5bc) {
+          if (!HLive5bc)
+            BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+          if (!LLive5bc)
+            BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+          BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+        }
         BuildMI(MBB, I, DL, get(PushIR));
         BuildMI(MBB, I, DL, get(Z80::POP_HL));
         unsigned LdTargetA = Z80::getLD8RegOpcode(TargetReg, Z80::A);
         BuildMI(MBB, I, DL, get(LdTargetA));
         BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
         BuildMI(MBB, I, DL, get(PopIR));
-        BuildMI(MBB, I, DL, get(Z80::POP_HL));
+        if (NeedSaveHL5bc)
+          BuildMI(MBB, I, DL, get(Z80::POP_HL));
         BuildMI(MBB, I, DL, get(Z80::POP_AF));
         return;
       }
 
-      BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+      // Source is not H/L: read-modify-write IX/IY via HL scratch.
+      // Gate and IMPLICIT_DEF dead half before PUSH_HL (#239 site 5c).
+      if (NeedSaveHL5bc) {
+        if (!HLive5bc)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+        if (!LLive5bc)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+        BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+      }
       BuildMI(MBB, I, DL, get(PushIR));
       BuildMI(MBB, I, DL, get(Z80::POP_HL));
       unsigned LdOp = Z80::getLD8RegOpcode(TargetReg, SrcReg);
       BuildMI(MBB, I, DL, get(LdOp));
       BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
       BuildMI(MBB, I, DL, get(PopIR));
-      BuildMI(MBB, I, DL, get(Z80::POP_HL));
+      if (NeedSaveHL5bc)
+        BuildMI(MBB, I, DL, get(Z80::POP_HL));
       return;
     }
   }
@@ -1156,10 +1199,17 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         LiveRegs.addLiveOuts(MBB);
         for (auto I = MBB.rbegin(); &*I != &MI; ++I)
           LiveRegs.stepBackward(*I);
-        bool NeedSaveHL =
-            LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
-        if (NeedSaveHL)
+        bool HLive = LiveRegs.contains(Z80::H);
+        bool LLive = LiveRegs.contains(Z80::L);
+        bool NeedSaveHL = HLive || LLive;
+        if (NeedSaveHL) {
+          // IMPLICIT_DEF dead half before PUSH_HL (ravn/llvm-z80#239 site 2).
+          if (!HLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+          if (!LLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
           BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        }
         BuildMI(MBB, MI, DL, get(PushOp));
         BuildMI(MBB, MI, DL, get(Z80::POP_HL));
         BuildMI(MBB, MI, DL, get(Z80::LD_IXd_L)).addImm(Offset);
@@ -1260,10 +1310,17 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
         LiveRegs.addLiveOuts(MBB);
         for (auto I = MBB.rbegin(); &*I != &MI; ++I)
           LiveRegs.stepBackward(*I);
-        bool NeedSaveHL =
-            LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
-        if (NeedSaveHL)
+        bool HLive = LiveRegs.contains(Z80::H);
+        bool LLive = LiveRegs.contains(Z80::L);
+        bool NeedSaveHL = HLive || LLive;
+        if (NeedSaveHL) {
+          // IMPLICIT_DEF dead half before PUSH_HL (ravn/llvm-z80#239 site 3).
+          if (!HLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+          if (!LLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
           BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        }
         BuildMI(MBB, MI, DL, get(Z80::LD_L_IXd)).addImm(Offset);
         BuildMI(MBB, MI, DL, get(Z80::LD_H_IXd)).addImm(Offset + 1);
         BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
@@ -1920,15 +1977,22 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       LiveRegs.addLiveOuts(MBB);
       for (auto I = MBB.rbegin(); &*I != &MI; ++I)
         LiveRegs.stepBackward(*I);
-      bool HLLive =
-          LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
+      bool HLive = LiveRegs.contains(Z80::H);
+      bool LLive = LiveRegs.contains(Z80::L);
+      bool HLLive = HLive || LLive;
 
       // Step 1: Get source high byte into A.
       if (SrcIsIR) {
         // Extract via PUSH IX/IY; POP HL; LD A,H
         // (HL might be the destination — save it if live and not dst)
-        if (HLLive && DstReg != Z80::HL)
+        if (HLLive && DstReg != Z80::HL) {
+          // IMPLICIT_DEF dead half before PUSH_HL (ravn/llvm-z80#239 site 4).
+          if (!HLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+          if (!LLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
           BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        }
         BuildMI(MBB, MI, DL, get(Z80::getPushOpcode(SrcReg)));
         BuildMI(MBB, MI, DL, get(Z80::POP_HL));
         BuildMI(MBB, MI, DL, get(Z80::LD_A_H));
@@ -1946,8 +2010,14 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       // Step 3: Write A to both bytes of destination.
       if (DstIsIR) {
         // Build result in HL, transfer via PUSH HL; POP IX/IY
-        if (HLLive)
+        if (HLLive) {
+          // IMPLICIT_DEF dead half before PUSH_HL (ravn/llvm-z80#239 site 5).
+          if (!HLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+          if (!LLive)
+            BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
           BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+        }
         BuildMI(MBB, MI, DL, get(Z80::LD_L_A));
         BuildMI(MBB, MI, DL, get(Z80::LD_H_A));
         BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
