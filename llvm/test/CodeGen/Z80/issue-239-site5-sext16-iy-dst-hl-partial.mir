@@ -1,0 +1,41 @@
+# RUN: llc -mtriple=z80 -z80-unreserve-iy \
+# RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#239 site 5: SEXT16 with IX/IY destination (SrcIsIR=false,
+# DstIsIR=true).  Step 3 builds the result in HL, then transfers via
+# PUSH HL; POP IX/IY.  If HL is live, the code saves HL first — but the
+# save used `HLLive = contains(H) || contains(L)` without per-half
+# IMPLICIT_DEF, so a partial-undef half tripped -verify-machineinstrs.
+#
+# Fixture: SEXT16 $iy = sign_extend($bc).  $h live, $l undef.
+#
+# Fix: IMPLICIT_DEF dead half before PUSH_HL in the DstIsIR save bracket.
+
+--- |
+  target triple = "z80"
+  define void @sext16_iy_dst_h_live_l_undef() { ret void }
+...
+---
+name:            sext16_iy_dst_h_live_l_undef
+alignment:       1
+tracksRegLiveness: true
+noVRegs:         true
+body:             |
+  bb.0:
+    liveins: $a, $h, $bc
+    ; SEXT16 $iy = sign_extend($bc).  $h live, $l undef.
+    ; Pre-fix: PUSH_HL (save bracket) read partial-undef $hl.
+    $iy = SEXT16 $bc, implicit-def $a, implicit-def $flags
+    AND_r killed $h, implicit-def $a, implicit-def $flags, implicit $a
+    RET implicit $a
+...
+
+# CHECK-LABEL: name: sext16_iy_dst_h_live_l_undef
+# CHECK:      $l = IMPLICIT_DEF
+# CHECK-NEXT: PUSH_HL
+# CHECK:      LD_L_A
+# CHECK:      LD_H_A
+# CHECK:      PUSH_HL
+# CHECK:      POP_IY
+# CHECK:      POP_HL

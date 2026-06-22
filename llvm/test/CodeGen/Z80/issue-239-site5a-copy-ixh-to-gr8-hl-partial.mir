@@ -1,0 +1,39 @@
+# RUN: llc -mtriple=z80 \
+# RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#239 site 5a: copyPhysReg IXH/IXL/IYH/IYL -> GR8 (dest not
+# H/L), without +undocumented.  The path saves HL unconditionally before
+# PUSH IX; POP HL; LD dest, H/L.  When HL is partially undef the unconditional
+# PUSH_HL reads the undef half and trips -verify-machineinstrs.
+#
+# Fixture: COPY $e = $ixh.  $h live, $l undef.
+#
+# Fix: gate PUSH_HL/POP_HL on liveness; IMPLICIT_DEF dead half first.
+
+--- |
+  target triple = "z80"
+  define void @copy_ixh_to_e_h_live_l_undef() { ret void }
+...
+---
+name:            copy_ixh_to_e_h_live_l_undef
+alignment:       1
+tracksRegLiveness: true
+noVRegs:         true
+body:             |
+  bb.0:
+    liveins: $a, $h, $ix
+    ; COPY $e = $ixh without +undocumented.  $h live, $l undef.
+    ; Pre-fix: unconditional PUSH_HL read partial-undef $hl.
+    $e = COPY $ixh
+    AND_r killed $h, implicit-def $a, implicit-def $flags, implicit $a
+    RET implicit $a
+...
+
+# CHECK-LABEL: name: copy_ixh_to_e_h_live_l_undef
+# CHECK:      $l = IMPLICIT_DEF
+# CHECK-NEXT: PUSH_HL
+# CHECK:      PUSH_IX
+# CHECK:      POP_HL
+# CHECK:      LD_E_H
+# CHECK:      POP_HL
