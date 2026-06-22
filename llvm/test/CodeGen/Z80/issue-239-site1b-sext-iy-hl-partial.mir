@@ -1,0 +1,52 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -z80-unreserve-iy \
+# RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#239 site 1b: SEXT_GR8_GR16 IY-destination path
+# (Z80InstrInfo.cpp expandPostRAPseudo) — symmetric sibling of site 1.
+# Same partial-undef hazard: HLLive = contains(H) || contains(L), but
+# when exactly ONE half is live, the pair PUSH_HL would read partial-undef
+# $hl and trip -verify-machineinstrs.
+#
+# Fixture shape: SEXT_GR8_GR16 $iy = $e (SrcReg=E, not H/L).
+# Live-in $h-only (L undef), so HLLive=true via H but L undef.  Without
+# +undocumented, the expander routes through HL.
+#
+# Fix: IMPLICIT_DEF the dead half before PUSH_HL (same as ZEXT site 1 and
+# the expandSpillGR8SPRelative pattern for #210 / #212).
+
+--- |
+  target triple = "z80"
+  define void @sext_iy_h_live_l_undef() #0 { ret void }
+  attributes #0 = { "target-features"="+static-stack" optsize }
+...
+---
+name:            sext_iy_h_live_l_undef
+alignment:       1
+tracksRegLiveness: true
+noVRegs:         true
+body:             |
+  bb.0:
+    liveins: $a, $e, $h
+    ; SEXT_GR8_GR16 $iy = $e -- sign-extend E into IY.  Without
+    ; +undocumented the expander routes through HL.  $h is live
+    ; (HLLive=true); $l is undef.  Pre-fix, PUSH_HL read partial-undef $hl.
+    $iy = SEXT_GR8_GR16 $e, implicit-def $a, implicit-def $flags
+    AND_r killed $h, implicit-def $a, implicit-def $flags, implicit $a
+    RET implicit $a
+...
+
+# The dead $l half is IMPLICIT_DEF'd before PUSH_HL.
+# -verify-machineinstrs in the RUN line is the load-bearing assertion.
+#
+# CHECK-LABEL: name: sext_iy_h_live_l_undef
+# CHECK:      $l = IMPLICIT_DEF
+# CHECK-NEXT: PUSH_HL
+# CHECK:      LD_A_E
+# CHECK:      LD_L_A
+# CHECK:      RLCA
+# CHECK:      SBC_A_A
+# CHECK:      LD_H_A
+# CHECK:      PUSH_HL
+# CHECK:      POP_IY
+# CHECK:      POP_HL

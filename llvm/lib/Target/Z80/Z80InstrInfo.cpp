@@ -391,14 +391,30 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     if (DestReg == Z80::BC || DestReg == Z80::DE) {
       unsigned LdHiOp = (DestReg == Z80::BC) ? Z80::LD_B_H : Z80::LD_D_H;
       unsigned LdLoOp = (DestReg == Z80::BC) ? Z80::LD_C_L : Z80::LD_E_L;
+      // Only PUSH_HL when HL holds a value that needs preserving.  If either
+      // half is undef, IMPLICIT_DEF it before PUSH_HL so the pair PUSH does
+      // not read partial-undef (ravn/llvm-z80#239 site 6).
+      auto HLQ = MBB.computeRegisterLiveness(TRI, Z80::H, I);
+      auto LLQ = MBB.computeRegisterLiveness(TRI, Z80::L, I);
+      bool HLive = (HLQ != MachineBasicBlock::LQR_Dead);
+      bool LLive = (LLQ != MachineBasicBlock::LQR_Dead);
+      bool NeedSaveHL = HLive || LLive;
+      int HLComp = NeedSaveHL ? 2 : 0;
       if (FlagsLive)
         BuildMI(MBB, I, DL, get(Z80::PUSH_AF));
-      BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
-      BuildMI(MBB, I, DL, get(Z80::LD_HL_nn)).addImm(SPComp + 2);
+      if (NeedSaveHL) {
+        if (!HLive)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+        if (!LLive)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+        BuildMI(MBB, I, DL, get(Z80::PUSH_HL));
+      }
+      BuildMI(MBB, I, DL, get(Z80::LD_HL_nn)).addImm(SPComp + HLComp);
       BuildMI(MBB, I, DL, get(Z80::ADD_HL_SP));
       BuildMI(MBB, I, DL, get(LdHiOp));
       BuildMI(MBB, I, DL, get(LdLoOp));
-      BuildMI(MBB, I, DL, get(Z80::POP_HL));
+      if (NeedSaveHL)
+        BuildMI(MBB, I, DL, get(Z80::POP_HL));
       if (FlagsLive)
         BuildMI(MBB, I, DL, get(Z80::POP_AF));
       return;
@@ -838,10 +854,18 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       LiveRegs.addLiveOuts(MBB);
       for (auto I = MBB.rbegin(); &*I != &MI; ++I)
         LiveRegs.stepBackward(*I);
-      bool HLLive =
-          LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
-      if (HLLive)
+      bool HLive = LiveRegs.contains(Z80::H);
+      bool LLive = LiveRegs.contains(Z80::L);
+      bool HLLive = HLive || LLive;
+      if (HLLive) {
+        // IMPLICIT_DEF any dead half before PUSH_HL so the pair PUSH does
+        // not read partial-undef (ravn/llvm-z80#239 site 1).
+        if (!HLive)
+          BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+        if (!LLive)
+          BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
         BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+      }
       // Copy source to L (skip if already there)
       if (SrcReg != Z80::L) {
         unsigned CopyOp = Z80::getLD8RegOpcode(Z80::L, SrcReg);
@@ -894,10 +918,18 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       LiveRegs.addLiveOuts(MBB);
       for (auto I = MBB.rbegin(); &*I != &MI; ++I)
         LiveRegs.stepBackward(*I);
-      bool HLLive =
-          LiveRegs.contains(Z80::H) || LiveRegs.contains(Z80::L);
-      if (HLLive)
+      bool HLive = LiveRegs.contains(Z80::H);
+      bool LLive = LiveRegs.contains(Z80::L);
+      bool HLLive = HLive || LLive;
+      if (HLLive) {
+        // IMPLICIT_DEF any dead half before PUSH_HL so the pair PUSH does
+        // not read partial-undef (ravn/llvm-z80#239 site 1 symmetry).
+        if (!HLive)
+          BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+        if (!LLive)
+          BuildMI(MBB, MI, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
         BuildMI(MBB, MI, DL, get(Z80::PUSH_HL));
+      }
       // Copy source to A (for sign-bit extraction)
       if (SrcReg != Z80::A) {
         unsigned CopyToA = Z80::getLD8RegOpcode(Z80::A, SrcReg);
