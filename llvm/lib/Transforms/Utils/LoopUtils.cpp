@@ -565,38 +565,21 @@ void llvm::deleteDeadLoop(Loop *L, DominatorTree *DT, ScalarEvolution *SE,
 
     // Rewrite phis in the exit block to get their inputs from the Preheader
     // instead of the exiting block.
-    //
-    // The original code (pre-ravn/llvm-z80#182 fix) assumed every phi entry
-    // in ExitBlock came from an exiting block of this loop -- it kept entry
-    // 0, remapped its predecessor to Preheader, and nuked the rest.  That
-    // assumption breaks when ExitBlock is reachable from OUTSIDE this loop
-    // too: e.g. when ExitBlock is another loop's header with its own
-    // backedge phi entries, those non-loop entries got mistakenly removed,
-    // producing malformed SSA (instructions referencing their own SSA name).
-    //
-    // Iterate explicitly: keep entries whose source block is NOT in this
-    // loop, remap exactly one from-loop entry to Preheader, drop the rest.
     for (PHINode &P : ExitBlock->phis()) {
-      int FirstLoopIdx = -1;
-      SmallVector<unsigned, 4> ToRemove;
-      for (unsigned I = 0, E = P.getNumIncomingValues(); I < E; ++I) {
-        if (L->contains(P.getIncomingBlock(I))) {
-          if (FirstLoopIdx < 0)
-            FirstLoopIdx = I;
-          else
-            ToRemove.push_back(I);
-        }
-      }
-      // There must be at least one from-loop entry; if there isn't, the
-      // exit block isn't actually reachable from this loop and we shouldn't
-      // be here.
-      assert(FirstLoopIdx >= 0 &&
-             "ExitBlock unreachable from this loop");
-      P.setIncomingBlock(FirstLoopIdx, Preheader);
-      // Remove redundant from-loop entries (in reverse index order so
-      // earlier indices stay valid).
-      for (auto It = ToRemove.rbegin(); It != ToRemove.rend(); ++It)
-        P.removeIncomingValue(*It, /* DeletePHIIfEmpty */ false);
+      // Set the zero'th element of Phi to be from the preheader and remove all
+      // other incoming values. Given the loop has dedicated exits, all other
+      // incoming values must be from the exiting blocks.
+      int PredIndex = 0;
+      P.setIncomingBlock(PredIndex, Preheader);
+      // Removes all incoming values from all other exiting blocks (including
+      // duplicate values from an exiting block).
+      // Nuke all entries except the zero'th entry which is the preheader entry.
+      P.removeIncomingValueIf([](unsigned Idx) { return Idx != 0; },
+                              /* DeletePHIIfEmpty */ false);
+
+      assert((P.getNumIncomingValues() == 1 &&
+              P.getIncomingBlock(PredIndex) == Preheader) &&
+             "Should have exactly one value and that's from the preheader!");
     }
 
     if (DT) {
