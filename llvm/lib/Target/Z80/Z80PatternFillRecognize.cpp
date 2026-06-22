@@ -306,6 +306,13 @@ bool tryRewritePatternFill(Loop &L, ScalarEvolution &SE, DominatorTree &DT,
   // body+IV-update plus header CFG.
   for (StoreInst *SI : Stores)
     SI->eraseFromParent();
+  // deleteDeadLoop asserts L->hasDedicatedExits().  When two sequential
+  // loops share a CFG edge (e.g. the deleted loop's exit IS the next
+  // loop's header), that header has a self-backedge predecessor outside
+  // the deleted loop, breaking the contract.  Form dedicated exits so
+  // the upstream invariant holds (ravn/llvm-z80#217).
+  formDedicatedExitBlocks(&L, &DT, &LI, /*MSSAU=*/nullptr,
+                          /*PreserveLCSSA=*/true);
   deleteDeadLoop(&L, &DT, &SE, &LI);
   return true;
 }
