@@ -11,14 +11,13 @@
 ### #224 — LiveVariables spurious super-register implicit-def
 **Staging tracker:** ravn/llvm-z80#224  
 **Fix in this fork:** commit `a32c4f33` (`llvm/lib/CodeGen/LiveVariables.cpp`)  
-**Upstream issue to close:** `llvm/llvm-project#156428` (open since 2025-09-02, confirmed on DSP / Z80 / AVR by three separate reporters including @zlfn)
+**Upstream issue:** `llvm/llvm-project#156428` (open since 2025-09-02)  
+**Analysis posted:** https://github.com/llvm/llvm-project/issues/156428#issuecomment-4779185912 (2026-06-23)  
+**Draft (no-hints):** `tasks/upstream-156428-draft-issue.md`
 
-**Root cause:** `LiveVariables::HandlePhysRegDef` adds an implicit-def for the full super-register when one sub-register is defined, even on targets where the sub-registers are independent and don't share storage. This causes `MachineCopyPropagation` to incorrectly treat the other half as defined.
-
-**What to do:**
-1. Open a PR at `llvm/llvm-project` with `Fixes #156428` in the body.
-2. The PR body should lead with 2-3 sentences you wrote explaining the bug.
-3. The fix is in `LiveVariables.cpp` — copy from `a32c4f33` and adapt to upstream HEAD.
+**Status:** Analysis comment posted. Next step: open a PR at `llvm/llvm-project`
+with a clean-room implementation (`Fixes #156428` in body). All information
+needed is in the comment — open a fresh session, read the comment, implement.
 
 ---
 
