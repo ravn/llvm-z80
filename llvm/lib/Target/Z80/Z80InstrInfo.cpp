@@ -1937,26 +1937,54 @@ bool Z80InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
       BuildMI(MBB, MI, DL, get(Z80::POP_HL));
       BuildMI(MBB, MI, DL, get(Z80::ADD_SP_e)).addImm(Amount & 0xFF);
       BuildMI(MBB, MI, DL, get(Z80::JP_HLind));
-    } else if (Amount <= 8) {
-      // Z80 small: POP BC; INC SP × N; PUSH BC; RET
-      // Use BC (not HL) because HL may hold i32/float return high word.
-      // BC is caller-saved and never part of any Z80 return value.
-      BuildMI(MBB, MI, DL, get(Z80::POP_BC));
-      for (unsigned i = 0; i < Amount; ++i)
-        BuildMI(MBB, MI, DL, get(Z80::INC_SP));
-      BuildMI(MBB, MI, DL, get(Z80::PUSH_BC));
-      BuildMI(MBB, MI, DL, get(Z80::RET));
     } else {
-      // Z80 large: POP BC; LD HL,N; ADD HL,SP; LD SP,HL; PUSH BC; RET
-      // NOTE: This clobbers HL. Safe for __sdcccall(1) where Amount>8 only
-      // occurs with RetBits<=16 (return in A/DE). For future __z88dk_callee
-      // with i32/float returns (HLDE), this path needs revision.
-      BuildMI(MBB, MI, DL, get(Z80::POP_BC));
-      BuildMI(MBB, MI, DL, get(Z80::LD_HL_nn)).addImm(Amount);
-      BuildMI(MBB, MI, DL, get(Z80::ADD_HL_SP));
-      BuildMI(MBB, MI, DL, get(Z80::LD_SP_HL));
-      BuildMI(MBB, MI, DL, get(Z80::PUSH_BC));
-      BuildMI(MBB, MI, DL, get(Z80::RET));
+      // For any N ≥ 2: if HL is dead (not holding a return value), use the
+      // EX (SP),HL trick — saves 2 B regardless of N (#146):
+      //   POP HL                 ; HL = ret addr, SP → args
+      //   INC SP × (N-2)         ; skip first N-2 arg bytes
+      //   EX (SP),HL             ; (SP) = ret addr, HL = garbage
+      //   RET                    ; jump to ret addr, SP past all args
+      //
+      // If HL is live (holds return value), fall back to the safe BC sequence:
+      //   POP BC; INC SP × N; PUSH BC; RET   (small N ≤ 8)
+      //   POP BC; LD HL,N; ADD HL,SP; LD SP,HL; PUSH BC; RET  (large N)
+      // HL is safe to clobber when the return value doesn't live there.
+      // sdcccall(1) places: i8/bool → A (or L); i16 → HL; i32/float → HLDE.
+      // For i16 and i32 returns HL carries return data — skip the trick.
+      // For void, i8, and all other types HL is free.
+      const Function &F = MBB.getParent()->getFunction();
+      const Type *RetTy = F.getReturnType();
+      // sdcccall(1) return registers: i8/bool→A, i16/ptr→HL, i32/float→HLDE.
+      // getPrimitiveSizeInBits() returns 0 for pointers; treat them as 16-bit.
+      unsigned RetBits = RetTy->isPointerTy() ? 16
+                                              : RetTy->getPrimitiveSizeInBits();
+      bool HLDead = !RetTy->isVoidTy() ? (RetBits != 16 && RetBits != 32)
+                                        : true;
+
+      if (HLDead && Amount >= 2) {
+        // POP HL; INC SP × (N-2); EX (SP),HL; RET  (ravn/llvm-z80#146)
+        BuildMI(MBB, MI, DL, get(Z80::POP_HL));
+        for (unsigned i = 0; i < Amount - 2; ++i)
+          BuildMI(MBB, MI, DL, get(Z80::INC_SP));
+        BuildMI(MBB, MI, DL, get(Z80::EX_SPind_HL));
+        BuildMI(MBB, MI, DL, get(Z80::RET));
+      } else if (Amount <= 8) {
+        // Z80 small: POP BC; INC SP × N; PUSH BC; RET
+        // Use BC (not HL) because HL holds a return value.
+        BuildMI(MBB, MI, DL, get(Z80::POP_BC));
+        for (unsigned i = 0; i < Amount; ++i)
+          BuildMI(MBB, MI, DL, get(Z80::INC_SP));
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_BC));
+        BuildMI(MBB, MI, DL, get(Z80::RET));
+      } else {
+        // Z80 large: POP BC; LD HL,N; ADD HL,SP; LD SP,HL; PUSH BC; RET
+        BuildMI(MBB, MI, DL, get(Z80::POP_BC));
+        BuildMI(MBB, MI, DL, get(Z80::LD_HL_nn)).addImm(Amount);
+        BuildMI(MBB, MI, DL, get(Z80::ADD_HL_SP));
+        BuildMI(MBB, MI, DL, get(Z80::LD_SP_HL));
+        BuildMI(MBB, MI, DL, get(Z80::PUSH_BC));
+        BuildMI(MBB, MI, DL, get(Z80::RET));
+      }
     }
     MI.eraseFromParent();
     return true;

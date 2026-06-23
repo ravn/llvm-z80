@@ -26,5 +26,9 @@ entry:
 ; Base is held in BC and re-copied into HL for each add; both adds use HL.
 ; CHECK:      add hl,de
 ; CHECK:      add hl,de
-; The BC-fallback's `pop hl` between/around the adds must never appear.
-; CHECK-NOT:  pop hl
+; Epilog: i8 return -> HL dead -> EX (SP),HL retcleanup trick (ravn/llvm-z80#146).
+; The BC-fallback pop hl between the adds is gone; one pop hl in the epilog is OK.
+; CHECK:      pop ix
+; CHECK-NEXT: pop hl
+; CHECK-NEXT: ex (sp),hl
+; CHECK-NEXT: ret
