@@ -779,8 +779,9 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempHi)));
 
-    // Restore HL from TempReg if the spill didn't kill HL.
-    if (!MI->getOperand(0).isKill()) {
+    // Restore HL from TempReg if HL is still live after this spill.
+    // isKill() is not authoritative; use the liveness scan instead (#236).
+    if (isRegLiveAt(Z80::HL, MBB, NextIt, TRI)) {
       unsigned CopyH = (TempReg == Z80::BC) ? Z80::LD_H_B : Z80::LD_H_D;
       unsigned CopyL = (TempReg == Z80::BC) ? Z80::LD_L_C : Z80::LD_L_E;
       BuildMI(MBB, MI, DL, TII.get(CopyL));
@@ -1234,8 +1235,9 @@ static void expandSpillGR16SPRelative(MachineBasicBlock &MBB,
     BuildMI(MBB, MI, DL, TII.get(Z80::INC_HL));
     BuildMI(MBB, MI, DL, TII.get(getStoreHLindOpcode(TempHi)));
 
-    if (!MI->getOperand(0).isKill()) {
-      // Restore HL from TempReg
+    // Restore HL from TempReg if HL is still live after this spill.
+    // isKill() is not authoritative; use the liveness scan instead (#236).
+    if (isRegLiveAt(Z80::HL, MBB, NextIt, TRI)) {
       unsigned RestL = (TempReg == Z80::BC) ? Z80::LD_L_C : Z80::LD_L_E;
       unsigned RestH = (TempReg == Z80::BC) ? Z80::LD_H_B : Z80::LD_H_D;
       BuildMI(MBB, MI, DL, TII.get(RestL));
@@ -2039,7 +2041,14 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPushOpcode(TempReg)));
 
-    // Save HL (the value to add/sub to).
+    // Save HL (the value to add/sub to). PUSH_HL reads both H and L.
+    // If fastregalloc left one half implicit-undef (e.g. only the low byte of
+    // the running sum is live after this instruction), IMPLICIT_DEF it before
+    // PUSH to silence -verify-machineinstrs (#237, same class as #212/#210).
+    if (!isRegLiveAt(Z80::H, MBB, NextIt, this))
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+    if (!isRegLiveAt(Z80::L, MBB, NextIt, this))
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Z80::L);
     BuildMI(MBB, MI, DL, TII.get(Z80::PUSH_HL));
 
     // Compute address: HL = IX + Offset (clobbers HL)

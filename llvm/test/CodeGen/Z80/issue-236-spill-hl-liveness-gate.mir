@@ -1,0 +1,54 @@
+# RUN: llc -mtriple=z80 -z80-auto-static-stack=false \
+# RUN:     -run-pass=prologepilog -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#236: expandSpillGR16LargeOffset / expandSpillGR16SPRelative
+# HL-source branches used !MI->getOperand(0).isKill() to decide whether to
+# restore HL after the spill.  isKill() is unreliable — a stale kill marker
+# can silently omit the restore even when HL is live downstream (miscompile).
+#
+# Fix: replace both sites with isRegLiveAt(Z80::HL, MBB, NextIt, TRI),
+# matching the pattern used by every other liveness-gated save/restore in
+# Z80RegisterInfo.cpp (same class as #210 / #212).
+#
+# Fixture: SPILL_GR16 $hl to a slot in a 202-byte frame (offset -202,
+# exceeding -128 → large-offset path).  $hl is live after the spill (in
+# liveins AND consumed by the RET) so the restore MUST fire.
+#
+# We cannot forge a kill marker via MIR text, so this test guards the
+# CORRECT path (live-after → restore present).  The miscompile path
+# (stale isKill=true, HL live but restore suppressed) is prevented by
+# switching to the authoritative isRegLiveAt check.
+
+--- |
+  target triple = "z80"
+  define i16 @spill_hl_live_after(i16 %x) nounwind {
+    %arr = alloca [200 x i8], align 1
+    ret i16 %x
+  }
+...
+---
+name:            spill_hl_live_after
+tracksRegLiveness: true
+frameInfo:
+  maxAlignment: 1
+stack:
+  - { id: 0, size: 200, alignment: 1 }
+  - { id: 1, size: 2,   alignment: 1 }
+body: |
+  bb.0:
+    liveins: $hl
+    ; Spill HL to the 16-bit slot (id=1). With id=0 occupying 200 bytes,
+    ; the slot for id=1 computes to offset below -128 → large-offset path.
+    SPILL_GR16 $hl, %stack.1, 0
+    ; HL is still live here (consumed by RET).
+    RET implicit $hl
+...
+
+# CHECK-LABEL: name: spill_hl_live_after
+# Large-offset expansion saves HL data via temp, does address calc, stores,
+# then restores HL from temp because HL is live after the spill.
+# The restore is two LD r,r' copies: LD L,? ; LD H,?
+# CHECK:      LD_L_{{[CDE]}}
+# CHECK:      LD_H_{{[BDE]}}
+# CHECK:      RET implicit $hl

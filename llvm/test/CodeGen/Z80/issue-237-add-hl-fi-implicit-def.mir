@@ -1,0 +1,49 @@
+# RUN: llc -mtriple=z80 -z80-auto-static-stack=false \
+# RUN:     -run-pass=prologepilog -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#237: ADD_HL_FI / SUB_HL_FI large-offset fallback emitted an
+# unconditional PUSH_HL to save the running sum before emitLargeOffsetAddr
+# clobbered HL.  PUSH_HL reads both H and L as a pair — if fastregalloc left
+# one half implicit-undef (e.g. H is dead after the instruction because only
+# the low byte of the result is used), the verifier tripped on a pair-read of
+# a partially-undef register (same class as #210 / #212).
+#
+# Fix: before PUSH_HL, check if each half is live at NextIt via isRegLiveAt.
+# IMPLICIT_DEF any dead half so the pair PUSH reads a defined (if don't-care)
+# register.
+#
+# Fixture: ADD_HL_FI over a 202-byte frame (slot 1 at large offset).
+# Only $l is consumed by the RET, so H is dead at NextIt → IMPLICIT_DEF $h.
+
+--- |
+  target triple = "z80"
+  define i8 @add_hl_fi_large(i8 %x) nounwind {
+    %arr = alloca [200 x i8], align 1
+    ret i8 %x
+  }
+...
+---
+name:            add_hl_fi_large
+tracksRegLiveness: true
+frameInfo:
+  maxAlignment: 1
+stack:
+  - { id: 0, size: 200, alignment: 1 }
+  - { id: 1, size: 2,   alignment: 1 }
+body: |
+  bb.0:
+    liveins: $hl
+    ; ADD_HL_FI folds a frame-indexed load into the HL running sum.
+    ; Slot 1 is at large offset (>127) → large-offset expansion path.
+    ; H is dead after (only $l returned) → IMPLICIT_DEF $h before PUSH_HL.
+    ADD_HL_FI %stack.1, implicit-def $hl, implicit-def $a, implicit-def $flags, implicit $hl
+    RET implicit $l
+...
+
+# CHECK-LABEL: name: add_hl_fi_large
+# IMPLICIT_DEF $h must appear before the running-sum PUSH_HL.
+# CHECK:      $h = IMPLICIT_DEF
+# CHECK-NEXT: PUSH_HL
+# Final ADD uses the restored HL (running sum) plus the loaded frame value.
+# CHECK:      ADD_HL_{{BC|DE}}
