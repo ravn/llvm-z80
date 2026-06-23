@@ -1,0 +1,48 @@
+# RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+# RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs \
+# RUN:     -debugify-and-strip-all-safe %s -o - | FileCheck %s
+#
+# ravn/llvm-z80#117: extend peephole #116 to the neither-in-HL case.
+# When the i16 EQ/NE byte-XOR sequence has neither operand pair in HL,
+# and HL is dead at the compare site, insert PUSH rr; POP HL before
+# AND A; SBC HL,rr (5 B total vs 6 B XOR sequence = -1 B).
+#
+# Fixture: QPair=BC, PPair=DE, T=H (scratch).  HL not in liveins.
+
+--- |
+  target triple = "z80"
+  define void @eq_bc_de() { ret void }
+...
+---
+name:            eq_bc_de
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $bc, $de
+    ; i16 EQ XOR sequence: QPair=BC vs PPair=DE, T=H.  HL dead at entry.
+    LD_A_B implicit-def $a, implicit $b
+    XOR_D implicit-def $a, implicit-def $flags, implicit $a, implicit $d
+    LD_H_A implicit-def $h, implicit $a
+    LD_A_C implicit-def $a, implicit $c
+    XOR_E implicit-def $a, implicit-def $flags, implicit $a, implicit $e
+    OR_H implicit-def $a, implicit-def $flags, implicit $a, implicit $h
+    JR_Z_e %bb.1, implicit $flags
+    JR_e %bb.2
+
+  bb.1:
+    RET
+
+  bb.2:
+    RET
+...
+
+# CHECK-LABEL: name: eq_bc_de
+# CHECK:      PUSH_BC
+# CHECK-NEXT: POP_HL
+# CHECK-NEXT: AND_A
+# CHECK-NEXT: SBC_HL_DE
+# CHECK-NEXT: JR_Z_e
+# CHECK-NOT:  XOR
+# CHECK-NOT:  OR_H

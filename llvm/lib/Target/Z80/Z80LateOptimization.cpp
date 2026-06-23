@@ -3256,27 +3256,29 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         MCPhysReg X = isLdAr(MII->getOpcode());
         if (!X) { ++MII; continue; }
         auto I1 = MII;
-        auto I2 = std::next(I1);
+        // ravn/llvm-z80#221: use SkipPHIsLabelsAndDebug to skip DBG_VALUE
+        // pseudos that interleave under -g; raw std::next lands on them.
+        auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
         if (I2 == MIE) { ++MII; continue; }
         // I2: XOR R1
         MCPhysReg R1 = isXorR(I2->getOpcode());
         if (!R1) { ++MII; continue; }
-        auto I3 = std::next(I2);
+        auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
         if (I3 == MIE) { ++MII; continue; }
         // I3: LD T,A
         MCPhysReg T = isLdrA(I3->getOpcode());
         if (!T) { ++MII; continue; }
-        auto I4 = std::next(I3);
+        auto I4 = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
         if (I4 == MIE) { ++MII; continue; }
         // I4: LD A,Y
         MCPhysReg Y = isLdAr(I4->getOpcode());
         if (!Y) { ++MII; continue; }
-        auto I5 = std::next(I4);
+        auto I5 = MBB.SkipPHIsLabelsAndDebug(std::next(I4));
         if (I5 == MIE) { ++MII; continue; }
         // I5: XOR R2
         MCPhysReg R2 = isXorR(I5->getOpcode());
         if (!R2) { ++MII; continue; }
-        auto I6 = std::next(I5);
+        auto I6 = MBB.SkipPHIsLabelsAndDebug(std::next(I5));
         if (I6 == MIE) { ++MII; continue; }
         // I6: OR T'
         MCPhysReg ORr = isOrR(I6->getOpcode());
@@ -3304,21 +3306,31 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Identify which pair is HL (clean case) and which becomes
         // the SBC operand.  SBC operand must be BC or DE.
         MCPhysReg SbcRR;
+        bool NeedMoveToHL = false; // true = neither-in-HL path (#117)
+        MCPhysReg MoveToHL = 0;   // the pair to PUSH/POP into HL
         if (QPair == Z80::HL && (PPair == Z80::BC || PPair == Z80::DE)) {
           SbcRR = PPair;
         } else if (PPair == Z80::HL && (QPair == Z80::BC || QPair == Z80::DE)) {
           SbcRR = QPair;
+        } else if ((QPair == Z80::BC || QPair == Z80::DE) &&
+                   (PPair == Z80::BC || PPair == Z80::DE) &&
+                   QPair != PPair) {
+          // Neither side is HL but both are BC/DE (#117 extension).
+          // Move QPair into HL via PUSH/POP (2 B) then SBC HL,PPair (2 B):
+          // AND A + PUSH + POP + SBC = 5 B vs 6 B XOR sequence = −1 B.
+          // Requires HL to be dead at the compare site (dead-before-I1) so
+          // clobbering it with POP HL is safe.
+          NeedMoveToHL = true;
+          MoveToHL = QPair;
+          SbcRR = PPair;
         } else {
-          // Neither side is HL — would need to move one to HL first,
-          // costing 2 B and risking the regalloc-eviction problem
-          // that bit the ISel-time attempt.  Skip for now.
           ++MII; continue;
         }
 
         // I7 must consume only the Z flag (JR Z/NZ or JP Z/NZ).  SBC
         // sets Z correctly for equality but produces different
         // values for C/N/P/V/S/H than the original byte-XOR sequence.
-        auto I7 = std::next(I6);
+        auto I7 = MBB.SkipPHIsLabelsAndDebug(std::next(I6));
         if (I7 == MIE) { ++MII; continue; }
         unsigned BrOpc = I7->getOpcode();
         if (BrOpc != Z80::JR_Z_e && BrOpc != Z80::JR_NZ_e &&
@@ -3329,19 +3341,35 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // After the branch, A / T / HL / FLAGS must all be dead so
         // the replacement (which preserves A and T but writes HL+FLAGS)
         // is observably equivalent.
-        auto AfterBr = std::next(I7);
+        auto AfterBr = MBB.SkipPHIsLabelsAndDebug(std::next(I7));
         if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::A)) { ++MII; continue; }
         if (!isRegDeadAfter(AfterBr, MBB, TRI, T)) { ++MII; continue; }
         if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::HL)) { ++MII; continue; }
 
-        LLVM_DEBUG(dbgs() << "  i16 EQ/NE byte-XOR -> SBC HL,"
-                          << TRI->getName(SbcRR) << "\n");
+        // #117: for the neither-in-HL path, HL must be dead at I1 so the
+        // PUSH/POP HL that moves QPair into HL doesn't clobber a live HL
+        // value.  Check H and L separately (pair query may return LQR_Unknown
+        // when one half is partially determined).  Skip when either half is
+        // not known dead.
+        if (NeedMoveToHL) {
+          auto HQ = MBB.computeRegisterLiveness(TRI, Z80::H, I1);
+          auto LQ = MBB.computeRegisterLiveness(TRI, Z80::L, I1);
+          if (HQ != MachineBasicBlock::LQR_Dead ||
+              LQ != MachineBasicBlock::LQR_Dead) { ++MII; continue; }
+        }
 
-        // Replace I1..I6 with: AND A; SBC HL,rr.
-        // A is dead after the branch (checked above), and AND A here only
-        // clears carry for the SBC -- its $a read is a don't-care.  Mark it
-        // undef so -verify-machineinstrs doesn't abort on an undefined $a read
-        // (ravn/llvm-z80#197; the byte-XOR compare this replaces left A dead).
+        LLVM_DEBUG(dbgs() << "  i16 EQ/NE byte-XOR -> "
+                          << (NeedMoveToHL ? "PUSH/POP HL; " : "")
+                          << "SBC HL," << TRI->getName(SbcRR) << "\n");
+
+        // Replace I1..I6 with: [PUSH MoveToHL; POP HL;] AND A; SBC HL,rr.
+        // AND A clears carry for the SBC; mark its $a read undef since A
+        // was left dead by the byte-XOR sequence (#197).
+        if (NeedMoveToHL) {
+          unsigned PushOpc = Z80::getPushOpcode(MoveToHL);
+          BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(PushOpc));
+          BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(Z80::POP_HL));
+        }
         auto AndA = BuildMI(MBB, *I1, I1->getDebugLoc(), TII->get(Z80::AND_A));
         for (MachineOperand &MO : AndA->operands())
           if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
@@ -5822,72 +5850,98 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
-  // --- Peephole #18: `LD r, n` → `LD r, A` when A already holds constant n ---
-  // After `XOR A` / `SUB A` (A=0) or `LD A, n`, a subsequent immediate load of
-  // the SAME constant into another 8-bit register is 1 B shorter as a copy from
-  // A (`LD r,A` = 1 B vs `LD r,n` = 2 B).  `LD r,A` only READS A, so A's value
-  // and the flags are preserved — the tracked constant stays valid for further
-  // fires (e.g. `xor a; ld l,0; ld h,0` → `xor a; ld l,a; ld h,a`, −2 B).
-  // Tracking is strictly within one basic block (reset at entry); any def of A
-  // (including a CALL's RegMask clobber) invalidates the known value.
-  // ravn/llvm-z80#18.
+  // --- Peephole #18/#206: `LD r, n` → `LD r, r'` when r' already holds n ---
+  // #18 (original): `XOR A`/`LD A,n` seeds A; subsequent `LD r,n` with the
+  // same n becomes `LD r,A` (1 B vs 2 B, saves 1 B/fire).
+  // #206 (extension): track ALL seven GR8 registers (B,C,D,E,H,L,A).
+  // When any tracked register r' already holds the wanted constant, emit the
+  // cheaper `LD r,r'` (1 B) instead of `LD r,n` (2 B).  Source preference:
+  // A first (so existing XOR-A chains keep the same code shape), then B..L
+  // in the order they appear in the register file.
+  // Tracking is strictly within one basic block; any def of a register
+  // (including CALL RegMask clobbers) invalidates that register's entry.
+  // ravn/llvm-z80#18 / ravn/llvm-z80#206.
   {
-    auto ldNtoLdA = [](unsigned Opc) -> unsigned {
+    // Map a `LD r, n` opcode to the destination physical register.
+    auto ldNDst = [](unsigned Opc) -> MCPhysReg {
       switch (Opc) {
-      case Z80::LD_B_n: return Z80::LD_B_A;
-      case Z80::LD_C_n: return Z80::LD_C_A;
-      case Z80::LD_D_n: return Z80::LD_D_A;
-      case Z80::LD_E_n: return Z80::LD_E_A;
-      case Z80::LD_H_n: return Z80::LD_H_A;
-      case Z80::LD_L_n: return Z80::LD_L_A;
-      default:          return 0;
+      case Z80::LD_A_n: return Z80::A;
+      case Z80::LD_B_n: return Z80::B;
+      case Z80::LD_C_n: return Z80::C;
+      case Z80::LD_D_n: return Z80::D;
+      case Z80::LD_E_n: return Z80::E;
+      case Z80::LD_H_n: return Z80::H;
+      case Z80::LD_L_n: return Z80::L;
+      default:          return MCPhysReg(0);
       }
     };
+
+    // All seven GR8 registers in source-preference order (A first).
+    const MCPhysReg GR8Regs[] = {
+        Z80::A, Z80::B, Z80::C, Z80::D, Z80::E, Z80::H, Z80::L};
+
     for (MachineBasicBlock &MBB : MF) {
-      bool AKnown = false;
-      int64_t AVal = 0;
+      // KnownVal[i]: the 8-bit constant held in GR8Regs[i], or -1 if unknown.
+      int64_t KnownVal[7];
+      std::fill(std::begin(KnownVal), std::end(KnownVal), -1);
+
+      // Seed A=0 from XOR A / SUB A at the top so the existing #18 behavior
+      // for the most common case (xor a + zero-init sequence) is unchanged.
+      auto setKnown = [&](MCPhysReg Reg, int64_t Val) {
+        for (int i = 0; i < 7; ++i)
+          if (GR8Regs[i] == Reg) { KnownVal[i] = Val & 0xFF; return; }
+      };
+      auto clearKnown = [&](MCPhysReg Reg) {
+        for (int i = 0; i < 7; ++i)
+          if (TRI->regsOverlap(GR8Regs[i], Reg)) KnownVal[i] = -1;
+      };
+
       for (auto MII = MBB.begin(); MII != MBB.end();) {
         MachineInstr &MI = *MII;
         unsigned Opc = MI.getOpcode();
 
-        // Fire on an immediate load of the value A already holds.
-        if (unsigned NewOpc = ldNtoLdA(Opc)) {
-          if (AKnown && MI.getNumOperands() >= 1 && MI.getOperand(0).isImm() &&
-              (MI.getOperand(0).getImm() & 0xFF) == (AVal & 0xFF)) {
-            BuildMI(MBB, MII, MI.getDebugLoc(), TII->get(NewOpc));
-            MII = MBB.erase(MII);
-            Changed = true;
-            continue; // A and its tracked value are unchanged by LD r,A
+        // Check for `LD r, n` where some tracked register already holds n.
+        if (MCPhysReg Dst = ldNDst(Opc)) {
+          if (MI.getNumOperands() >= 1 && MI.getOperand(0).isImm()) {
+            int64_t N = MI.getOperand(0).getImm() & 0xFF;
+            for (int i = 0; i < 7; ++i) {
+              if (GR8Regs[i] == Dst) continue; // don't LD r,r
+              if (KnownVal[i] != N) continue;
+              unsigned CopyOpc = Z80::getLD8RegOpcode(Dst, GR8Regs[i]);
+              if (!CopyOpc) continue;
+              BuildMI(MBB, MII, MI.getDebugLoc(), TII->get(CopyOpc));
+              MII = MBB.erase(MII);
+              Changed = true;
+              // Dst now holds N — update tracker without clearing it.
+              setKnown(Dst, N);
+              goto next_mi_206;
+            }
           }
-          // `LD r,n` (r != A) never defines A — tracked value stays valid.
+          // No source found — record that Dst now holds N.
+          if (MI.getNumOperands() >= 1 && MI.getOperand(0).isImm())
+            setKnown(Dst, MI.getOperand(0).getImm());
+          else
+            clearKnown(Dst);
+          ++MII;
+          next_mi_206:;
+          continue;
+        }
+
+        // Seed A=0 from XOR A / SUB A.
+        if (Opc == Z80::XOR_A || Opc == Z80::SUB_A) {
+          setKnown(Z80::A, 0);
           ++MII;
           continue;
         }
 
-        // Maintain the A-known state.
-        if (Opc == Z80::XOR_A || Opc == Z80::SUB_A) {
-          AKnown = true;
-          AVal = 0;
-        } else if (Opc == Z80::LD_A_n && MI.getNumOperands() >= 1 &&
-                   MI.getOperand(0).isImm()) {
-          AKnown = true;
-          AVal = MI.getOperand(0).getImm();
-        } else {
-          bool ADefd = MI.isCall();
-          if (!ADefd)
-            for (const MachineOperand &MO : MI.operands()) {
-              if (MO.isRegMask() && MO.clobbersPhysReg(Z80::A)) {
-                ADefd = true;
-                break;
-              }
-              if (MO.isReg() && MO.getReg().isValid() && MO.isDef() &&
-                  TRI->regsOverlap(MO.getReg(), Z80::A)) {
-                ADefd = true;
-                break;
-              }
-            }
-          if (ADefd)
-            AKnown = false;
+        // Invalidate any defined registers (including CALL clobbers).
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isRegMask()) {
+            for (MCPhysReg R : GR8Regs)
+              if (MO.clobbersPhysReg(R)) clearKnown(R);
+          } else if (MO.isReg() && MO.getReg().isValid() && MO.isDef()) {
+            clearKnown(MO.getReg());
+          }
         }
         ++MII;
       }
