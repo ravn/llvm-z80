@@ -1551,11 +1551,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Match: LD C,L; LD B,H (copy HL → BC)
         if (MII->getOpcode() != Z80::LD_C_L) { ++MII; continue; }
         auto I0 = MII; // LD C,L
-        auto I1 = std::next(I0); if (I1 == MIE) { ++MII; continue; }
+        // ravn/llvm-z80#241: use SkipPHIsLabelsAndDebug to skip DBG_VALUE
+        // pseudos that interleave under -g; raw std::next lands on them.
+        auto I1 = MBB.SkipPHIsLabelsAndDebug(std::next(I0));
+        if (I1 == MIE) { ++MII; continue; }
         if (I1->getOpcode() != Z80::LD_B_H) { ++MII; continue; }
-        auto I2 = std::next(I1); if (I2 == MIE) { ++MII; continue; }
+        auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+        if (I2 == MIE) { ++MII; continue; }
         if (I2->getOpcode() != Z80::EX_DE_HL) { ++MII; continue; }
-        auto I3 = std::next(I2); if (I3 == MIE) { ++MII; continue; }
+        auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+        if (I3 == MIE) { ++MII; continue; }
         if (I3->getOpcode() != Z80::ADD_HL_BC) { ++MII; continue; }
 
         // Matched: LD C,L; LD B,H; EX DE,HL; ADD HL,BC
@@ -1567,7 +1572,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         DebugLoc DL = I0->getDebugLoc();
 
         // Check for trailing EX DE,HL (result needed in DE).
-        auto I4 = std::next(I3);
+        auto I4 = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
         bool HasTrailingEX = (I4 != MIE && I4->getOpcode() == Z80::EX_DE_HL);
 
         // BC safety: must be dead after the rewrite point.  Without this
@@ -1577,7 +1582,9 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // GISel doesn't seem to produce such shapes, but the check is
         // cheap and matches the original safety comment that was
         // aspirational, not enforced (#109).
-        auto AfterRewrite = HasTrailingEX ? std::next(I4) : std::next(I3);
+        auto AfterRewrite = HasTrailingEX
+                                ? MBB.SkipPHIsLabelsAndDebug(std::next(I4))
+                                : MBB.SkipPHIsLabelsAndDebug(std::next(I3));
         if (!isRegDeadAfter(AfterRewrite, MBB, TRI, Z80::BC)) {
           ++MII;
           continue;
@@ -1627,13 +1634,16 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           ++MII; continue;
         }
 
-        auto I1 = std::next(I0); if (I1 == MIE) { ++MII; continue; }
+        // ravn/llvm-z80#241: SkipPHIsLabelsAndDebug to skip DBG_VALUE pseudos.
+        auto I1 = MBB.SkipPHIsLabelsAndDebug(std::next(I0));
+        if (I1 == MIE) { ++MII; continue; }
         // Match I1: INC A or DEC A
         bool IsInc = (I1->getOpcode() == Z80::INC_A);
         bool IsDec = (I1->getOpcode() == Z80::DEC_A);
         if (!IsInc && !IsDec) { ++MII; continue; }
 
-        auto I2 = std::next(I1); if (I2 == MIE) { ++MII; continue; }
+        auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+        if (I2 == MIE) { ++MII; continue; }
         // Match I2: LD (addr),A — same address as I0
         if (I2->getOpcode() != Z80::LD_nnind_A) { ++MII; continue; }
 
@@ -1651,7 +1661,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // flag-only uses (branches on Z/NZ) are safe. We also handle an
         // optional OR A between the store and the branch (redundant flag
         // test that the compiler inserts due to IR freeze).
-        auto I3 = std::next(I2);
+        auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
         MachineInstr *ExtraToErase = nullptr; // optional OR A to remove
         bool ADead = false;
 
@@ -1669,7 +1679,7 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Check if A is dead starting from instruction IBr onward.
         auto checkADeadAfterBranch = [&](MachineBasicBlock::iterator IBr)
             -> bool {
-          auto INext = std::next(IBr);
+          auto INext = MBB.SkipPHIsLabelsAndDebug(std::next(IBr));
           if (INext != MIE)
             return definesA(INext->getOpcode());
           // IBr is at BB end — check all successor BBs.
@@ -1686,12 +1696,14 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           } else if (I3->isReturn()) {
             // RET/RETI/RETN — A is dead after return.
             ADead = true;
-          } else if (Opc3 == Z80::OR_A && std::next(I3) != MIE &&
-                     isZNZBranch(std::next(I3)->getOpcode())) {
-            // OR A; JR Z/NZ — the OR A is a redundant flag test.
-            // DEC/INC (HL) already sets Z. Remove the OR A too.
-            ExtraToErase = &*I3;
-            ADead = checkADeadAfterBranch(std::next(I3));
+          } else if (Opc3 == Z80::OR_A) {
+            auto I3Next = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
+            if (I3Next != MIE && isZNZBranch(I3Next->getOpcode())) {
+              // OR A; JR Z/NZ — OR A is a redundant flag test; DEC/INC (HL)
+              // already sets Z. Remove the OR A too.
+              ExtraToErase = &*I3;
+              ADead = checkADeadAfterBranch(I3Next);
+            }
           } else if (isZNZBranch(Opc3)) {
             ADead = checkADeadAfterBranch(I3);
           }
@@ -1794,16 +1806,20 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (!ExpCP) { ++MII; continue; }
 
         auto I0 = MII; // LD r,A
-        auto I1 = std::next(I0); if (I1 == MIE) { ++MII; continue; }
+        // ravn/llvm-z80#241: SkipPHIsLabelsAndDebug to skip DBG_VALUE pseudos.
+        auto I1 = MBB.SkipPHIsLabelsAndDebug(std::next(I0));
+        if (I1 == MIE) { ++MII; continue; }
         // I1 must be LD A,#imm
         if (I1->getOpcode() != Z80::LD_A_n) { ++MII; continue; }
         int64_t Imm = I1->getOperand(0).getImm();
 
-        auto I2 = std::next(I1); if (I2 == MIE) { ++MII; continue; }
+        auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+        if (I2 == MIE) { ++MII; continue; }
         // I2 must be CP r (matching the register from LD r,A)
         if (I2->getOpcode() != ExpCP) { ++MII; continue; }
 
-        auto I3 = std::next(I2); if (I3 == MIE) { ++MII; continue; }
+        auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+        if (I3 == MIE) { ++MII; continue; }
         // I3 must be a carry-based branch
         auto [FlippedBr, IsCarry] = flipCarryBranch(I3->getOpcode());
         if (!IsCarry) { ++MII; continue; }
@@ -1817,7 +1833,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // CP operand (different result), so Z/S/P/H differ between the
         // original and the rewrite.  Only carry is preserved-and-flipped
         // (the branch reads it correctly).  ravn/llvm-z80#108 (site 4).
-        if (!isRegDeadAfter(std::next(I3), MBB, TRI, Z80::FLAGS)) {
+        if (!isRegDeadAfter(MBB.SkipPHIsLabelsAndDebug(std::next(I3)),
+                            MBB, TRI, Z80::FLAGS)) {
           ++MII; continue;
         }
 
