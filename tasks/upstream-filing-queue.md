@@ -12,7 +12,7 @@
 **Staging tracker:** ravn/llvm-z80#224  
 **Fix in this fork:** commit `a32c4f33` (`llvm/lib/CodeGen/LiveVariables.cpp`)  
 **Upstream issue:** `llvm/llvm-project#156428` (open since 2025-09-02)  
-**Analysis posted:** https://github.com/llvm/llvm-project/issues/156428#issuecomment-4779185912 (2026-06-23)  
+**Analysis posted:** https://github.com/ravn/llvm-z80/issues/224#issuecomment-4779725792 (2026-06-23)  
 **Draft (no-hints):** `tasks/upstream-156428-draft-issue.md`
 
 **Status:** Analysis comment posted. Next step: open a PR at `llvm/llvm-project`
