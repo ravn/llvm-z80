@@ -483,6 +483,57 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   hand-written CPIR pattern (would be the model for any future
   compiler-rt implementation).
 
+### B17. Multi-byte (i16/i32) arithmetic materializes carries via `sbc a,a` instead of threading the native ADC/SBC chain — NEEDS ROOT-CAUSE 2026-06-24
+
+- **Status:** open, needs-root-cause (discovered in the dcc-corpus
+  three-compiler comparison, `z80-utils/compiler-zoo/cpm_zoo.py`).
+- **Impact:** the dominant driver of clang's **1.5–2.4× raw-code gap
+  vs zsdcc on integer-arithmetic tests**.  Measured 2026-06-24 (raw
+  code+rodata of the test TU, no runtime):
+  - `triangle` clang 323 B vs zsdcc 137 B (2.4×)
+  - `e`        clang 503 B vs zsdcc 242 B (2.1×)
+  - `fact`     clang 238 B vs zsdcc 151 B (1.6×)
+- **Pattern:** for multi-byte add/sub/compare, clang materializes the
+  carry/comparison result into a register as 0x00/0xFF via `sbc a,a`,
+  then `and 1` / masks / spills it — instead of consuming the flag
+  directly.  Instruction-count witness (`grep -c 'sbc a,a'`):
+  triangle **14**, fact **10**, e **2**; zsdcc emits **0** on all
+  three.  zsdcc instead threads the native carry chain
+  (`add a,lo; adc a,..; adc a,..; adc a,hi`) across the bytes and
+  branches on flags (`or`-chain + `jr NZ` for the `==0` test).
+- **Why not fixed yet:** NOT root-caused.  Unknown whether the
+  `sbc a,a` originates in GISel legalization of i16/i32 G_ADD/G_SUB
+  carry handling, in icmp lowering, or as residue of wider (i33)
+  overflow arithmetic.  Per `feedback_file_bugs_not_fixes` /
+  `feedback_verdict_after_real_pass_output`, no issue is filed and no
+  fix proposed until a minimal repro pins the emitting pass.  Note it
+  is ADJACENT to but distinct from #93 (constant-trip carry-test
+  loop), #120 (`SBC A,A` mask/carry-roundtrip peephole deletion), and
+  #216 (`sbc a,a` as a *wanted* select-lowering) — those treat
+  `sbc a,a` as either a loop idiom or a desired output; B17 is its
+  OVERUSE as the default multi-byte carry-propagation shape.
+- **Revisit when:** TASK queued — minimal i32 `a+b` / `a==0` repro,
+  `-print-after-all` to find the first pass emitting the `sbc a,a`,
+  AVR cross-check (`feedback_avr_density_oracle`).  Then decide
+  GISel-legalization fix vs late-opt peephole vs upstream.
+- **Pointers:** `compiler-zoo/cpm_zoo.py` (the comparison that
+  surfaced it); dcc `tests/{triangle,fact,e}.c`.
+
+### Note — production `-disable-lsr` confirmed stale (relates to M3, #232/#234)
+
+The 2026-06-24 comparison independently reproduced #232's conclusion:
+carrying `-mllvm -disable-lsr` (the historical "LSR is harmful"
+sledgehammer) is **net-negative on general loops** — it cost the
+`clangp` flavor **−38 % speed and +57 B on tqsort** (LSR's
+strength-reduction of `base+i*size` index math is a real win;
+disabling it recomputes the index every iteration).  Production already
+removed the flag (#234, verified no-op 2026-06-21); `cpm_zoo.py`'s
+`clangp` was updated to drop it too, after which clangp no longer
+regresses vs plain clang.  The residual M3 concern is only the
+*counter-widening* half of LSR, which `Z80NarrowIV` + `isLSRCostLess`
+already mostly contain — the right long-term lever is finishing that
+cost model, never a global LSR off-switch.
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work

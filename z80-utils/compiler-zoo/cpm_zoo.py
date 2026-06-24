@@ -210,17 +210,20 @@ def run_vcpm(com_path, args=""):
 # Two clang flavors:
 #   clang  — plain -Os (general, reentrant; what a CP/M user would invoke)
 #   clangp — the RC700 production tuning, applied SAFELY per test:
-#            always: +shadow-regs, -disable-lsr  (both reentrancy-safe)
+#            always: +shadow-regs (reentrancy-safe, inert for spill reduction)
 #            +static-stack ONLY when the test is non-recursive — it is
 #            non-reentrant and SILENTLY miscompiles recursion (see memory rule
 #            feedback_static_stack_nonrecursive_only; nqueens was the witness).
+# NOTE: -disable-lsr is intentionally NOT here.  Production removed it (ravn/
+# llvm-z80#234, verified no-op 2026-06-21; #232 concluded LSR is generally
+# good); carrying it made clangp slower/bigger than clang on LSR-friendly loops
+# (tqsort -38% speed) — a stale-flag artifact, not a real production tradeoff.
 CLANG_BASE = ["--target=z80", "-Os", "-fno-builtin",
               "-ffunction-sections", "-fdata-sections",
               "-nostdlib", "-nostartfiles", "-I", CPM_DIR]
 # Reentrancy-safe production flags (always applied in the clangp flavor).
 CLANG_PROD_SAFE = [
     "-Xclang", "-target-feature", "-Xclang", "+shadow-regs",
-    "-mllvm", "-disable-lsr",
 ]
 # The non-reentrant flag, gated on a recursion check.
 CLANG_STATIC_STACK = [
