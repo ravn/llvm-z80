@@ -207,11 +207,26 @@ def run_vcpm(com_path, args=""):
 # Build recipes (one .COM per compiler)
 # --------------------------------------------------------------------------
 
-CLANG_CFLAGS = ["--target=z80", "-Os", "-fno-builtin",
-                "-ffunction-sections", "-fdata-sections",
-                "-nostdlib", "-nostartfiles", "-I", CPM_DIR]
+# Two clang flavors:
+#   clang  — plain -Os (general, reentrant; what a CP/M user would invoke)
+#   clangp — the production tuning used for the RC700 firmware:
+#            +static-stack (locals in BSS, NON-REENTRANT — breaks recursion),
+#            +shadow-regs, -disable-lsr.  Shown so the size/speed effect of the
+#            production flags is visible; expect recursive tests to DIFF.
+CLANG_BASE = ["--target=z80", "-Os", "-fno-builtin",
+              "-ffunction-sections", "-fdata-sections",
+              "-nostdlib", "-nostartfiles", "-I", CPM_DIR]
+CLANG_PROD_EXTRA = [
+    "-Xclang", "-target-feature", "-Xclang", "+static-stack",
+    "-Xclang", "-target-feature", "-Xclang", "+shadow-regs",
+    "-mllvm", "-disable-lsr",
+]
+CLANG_FLAGS = {"clang": CLANG_BASE, "clangp": CLANG_BASE + CLANG_PROD_EXTRA}
+# Back-compat alias for external callers.
+CLANG_CFLAGS = CLANG_BASE
 
-def build_clang(name, outdir):
+def build_clang(name, outdir, flags=None):
+    flags = flags if flags is not None else CLANG_BASE
     src = src_path(name)
     if not src:
         return None
@@ -221,7 +236,7 @@ def build_clang(name, outdir):
                        ("std",  os.path.join(CPM_DIR, "cpm_stdlib.c")),
                        ("test", src)):
         o = os.path.join(outdir, f"clang_{unit}.o")
-        r = run([CLANG] + CLANG_CFLAGS + ["-c", path, "-o", o])
+        r = run([CLANG] + flags + ["-c", path, "-o", o])
         if r.returncode != 0 or not os.path.exists(o):
             return None
         objs[unit] = o
@@ -330,12 +345,13 @@ def _m80(runcpm, outdir, cmdline, linker="M80.COM"):
 # Raw codegen size (test TU only, no runtime)
 # --------------------------------------------------------------------------
 
-def raw_clang(name, outdir):
+def raw_clang(name, outdir, flags=None):
+    flags = flags if flags is not None else CLANG_BASE
     src = src_path(name)
     if not src:
         return None
     o = os.path.join(outdir, "raw_clang.o")
-    if run([CLANG] + CLANG_CFLAGS + ["-c", src, "-o", o]).returncode != 0:
+    if run([CLANG] + flags + ["-c", src, "-o", o]).returncode != 0:
         return None
     r = run([OBJDUMP, "--section-headers", o])
     total = 0
@@ -403,8 +419,18 @@ def raw_dcc(name, outdir):
 # Per-test measurement
 # --------------------------------------------------------------------------
 
-BUILDERS = {"dcc": build_dcc, "clang": build_clang, "zsdcc": build_zsdcc}
-RAW      = {"dcc": raw_dcc,   "clang": raw_clang,   "zsdcc": raw_zsdcc}
+BUILDERS = {
+    "dcc":    build_dcc,
+    "clang":  lambda n, o: build_clang(n, o, CLANG_FLAGS["clang"]),
+    "clangp": lambda n, o: build_clang(n, o, CLANG_FLAGS["clangp"]),
+    "zsdcc":  build_zsdcc,
+}
+RAW = {
+    "dcc":    raw_dcc,
+    "clang":  lambda n, o: raw_clang(n, o, CLANG_FLAGS["clang"]),
+    "clangp": lambda n, o: raw_clang(n, o, CLANG_FLAGS["clangp"]),
+    "zsdcc":  raw_zsdcc,
+}
 
 def measure(name, compilers):
     """Return {compiler: {size, raw, tstates, out, built}}."""
@@ -448,19 +474,24 @@ def main():
     ap.add_argument("tests", nargs="*", help="test names (default: curated subset)")
     ap.add_argument("--all", action="store_true", help="full curated corpus")
     ap.add_argument("--csv", action="store_true", help="CSV output")
-    ap.add_argument("--compilers", default="dcc,clang,zsdcc",
-                    help="comma list (default dcc,clang,zsdcc)")
+    ap.add_argument("--compilers", default="dcc,clang,clangp,zsdcc",
+                    help="comma list (default dcc,clang,clangp,zsdcc; "
+                         "clang=plain -Os, clangp=production +static-stack/-disable-lsr)")
     a = ap.parse_args()
 
     compilers = [c.strip() for c in a.compilers.split(",") if c.strip()]
     tests = a.tests or (FULL_TESTS if a.all else DEFAULT_TESTS)
     os.makedirs(WORK, exist_ok=True)
 
+    # raw = the test TU's own code+rodata (no runtime) — the headline metric.
+    # tstates = execution time.  The full .COM is still built (needed to run),
+    # but its size is not reported: each toolchain's linked runtime dominates it
+    # and is not a property of the compiler's codegen.
     if a.csv:
-        print("test,compiler,size,raw,tstates,verdict")
+        print("test,compiler,raw,tstates,verdict")
     else:
-        print(f"{'test':<11}{'compiler':<8}{'size':>8}{'raw':>8}{'tstates':>13}  verdict")
-        print("-" * 58)
+        print(f"{'test':<11}{'compiler':<8}{'raw':>8}{'tstates':>13}  verdict")
+        print("-" * 50)
 
     for name in tests:
         if not src_path(name):
@@ -471,17 +502,17 @@ def main():
             r = res[c]
             if not r.get("built"):
                 if a.csv:
-                    print(f"{name},{c},BUILD_FAIL,,,")
+                    print(f"{name},{c},BUILD_FAIL,,")
                 else:
-                    print(f"{name:<11}{c:<8}{'BUILD_FAIL':>8}{'':>8}{'':>13}")
+                    print(f"{name:<11}{c:<8}{'BUILD_FAIL':>8}{'':>13}")
                 continue
-            sz, raw, ts, v = r["size"], r.get("raw"), r.get("tstates"), r["verdict"]
+            raw, ts, v = r.get("raw"), r.get("tstates"), r["verdict"]
             raw_s = str(raw) if raw is not None else "?"
             ts_s = str(ts) if ts is not None else "?"
             if a.csv:
-                print(f"{name},{c},{sz},{raw_s},{ts_s},{v}")
+                print(f"{name},{c},{raw_s},{ts_s},{v}")
             else:
-                print(f"{name:<11}{c:<8}{sz:>8}{raw_s:>8}{ts_s:>13}  {v}")
+                print(f"{name:<11}{c:<8}{raw_s:>8}{ts_s:>13}  {v}")
         if not a.csv:
             print()
 
