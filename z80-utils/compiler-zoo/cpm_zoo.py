@@ -209,21 +209,96 @@ def run_vcpm(com_path, args=""):
 
 # Two clang flavors:
 #   clang  — plain -Os (general, reentrant; what a CP/M user would invoke)
-#   clangp — the production tuning used for the RC700 firmware:
-#            +static-stack (locals in BSS, NON-REENTRANT — breaks recursion),
-#            +shadow-regs, -disable-lsr.  Shown so the size/speed effect of the
-#            production flags is visible; expect recursive tests to DIFF.
+#   clangp — the RC700 production tuning, applied SAFELY per test:
+#            always: +shadow-regs, -disable-lsr  (both reentrancy-safe)
+#            +static-stack ONLY when the test is non-recursive — it is
+#            non-reentrant and SILENTLY miscompiles recursion (see memory rule
+#            feedback_static_stack_nonrecursive_only; nqueens was the witness).
 CLANG_BASE = ["--target=z80", "-Os", "-fno-builtin",
               "-ffunction-sections", "-fdata-sections",
               "-nostdlib", "-nostartfiles", "-I", CPM_DIR]
-CLANG_PROD_EXTRA = [
-    "-Xclang", "-target-feature", "-Xclang", "+static-stack",
+# Reentrancy-safe production flags (always applied in the clangp flavor).
+CLANG_PROD_SAFE = [
     "-Xclang", "-target-feature", "-Xclang", "+shadow-regs",
     "-mllvm", "-disable-lsr",
 ]
-CLANG_FLAGS = {"clang": CLANG_BASE, "clangp": CLANG_BASE + CLANG_PROD_EXTRA}
+# The non-reentrant flag, gated on a recursion check.
+CLANG_STATIC_STACK = [
+    "-Xclang", "-target-feature", "-Xclang", "+static-stack",
+]
 # Back-compat alias for external callers.
 CLANG_CFLAGS = CLANG_BASE
+
+_recursive_cache = {}
+
+def is_recursive(name):
+    """True if the test's own call graph has a cycle (direct/mutual recursion),
+    or it makes an indirect call while taking the address of a defined function
+    (conservatively unsafe).  Used to decide whether +static-stack is safe.
+    Correctness-first: when in doubt, report recursive (skip static-stack)."""
+    if name in _recursive_cache:
+        return _recursive_cache[name]
+    src = src_path(name)
+    if not src:
+        return True
+    r = run([CLANG, "--target=z80", "-Os", "-fno-builtin", "-I", CPM_DIR,
+             "-emit-llvm", "-S", "-o", "-", src])
+    ir = r.stdout or ""
+    # Defined functions and their direct callees (among defined functions).
+    import re as _re
+    defined = set(_re.findall(r"^define\b.*?@([A-Za-z0-9_.$]+)\(", ir, _re.M))
+    if not defined:
+        _recursive_cache[name] = True
+        return True
+    # Split into per-function bodies to attribute call edges.
+    edges = {f: set() for f in defined}
+    cur = None
+    addr_taken = set()
+    has_indirect = False
+    for line in ir.splitlines():
+        m = _re.match(r"^define\b.*?@([A-Za-z0-9_.$]+)\(", line)
+        if m:
+            cur = m.group(1); continue
+        if line.startswith("}"):
+            cur = None; continue
+        if cur is not None:
+            for callee in _re.findall(r"\bcall\b[^@\n]*@([A-Za-z0-9_.$]+)\(", line):
+                if callee in defined:
+                    edges[cur].add(callee)
+            # Indirect call: `call ... %reg(` with no @target on the line.
+            if _re.search(r"\bcall\b", line) and not _re.search(r"@[A-Za-z0-9_.$]+\(", line):
+                has_indirect = True
+        # address-of a defined function used as a value (not in a call target)
+        for f in _re.findall(r"@([A-Za-z0-9_.$]+)\b", line):
+            if f in defined and "call" not in line:
+                addr_taken.add(f)
+    # Cycle detection (DFS with colors); self-loop counts.
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {f: WHITE for f in defined}
+    def dfs(u):
+        color[u] = GREY
+        for v in edges[u]:
+            if color[v] == GREY:
+                return True
+            if color[v] == WHITE and dfs(v):
+                return True
+        color[u] = BLACK
+        return False
+    cyclic = any(color[f] == WHITE and dfs(f) for f in defined)
+    # Conservative: an indirect call plus an address-taken defined function
+    # could close a cycle we can't see syntactically.
+    result = bool(cyclic or (has_indirect and addr_taken))
+    _recursive_cache[name] = result
+    return result
+
+def clangp_flags(name):
+    """Production flags, with +static-stack only when the test is non-recursive."""
+    flags = CLANG_BASE + CLANG_PROD_SAFE
+    if not is_recursive(name):
+        flags = flags + CLANG_STATIC_STACK
+    return flags
+
+CLANG_FLAGS = {"clang": CLANG_BASE}  # clangp is per-test, see clangp_flags()
 
 def build_clang(name, outdir, flags=None):
     flags = flags if flags is not None else CLANG_BASE
@@ -421,14 +496,14 @@ def raw_dcc(name, outdir):
 
 BUILDERS = {
     "dcc":    build_dcc,
-    "clang":  lambda n, o: build_clang(n, o, CLANG_FLAGS["clang"]),
-    "clangp": lambda n, o: build_clang(n, o, CLANG_FLAGS["clangp"]),
+    "clang":  lambda n, o: build_clang(n, o, CLANG_BASE),
+    "clangp": lambda n, o: build_clang(n, o, clangp_flags(n)),
     "zsdcc":  build_zsdcc,
 }
 RAW = {
     "dcc":    raw_dcc,
-    "clang":  lambda n, o: raw_clang(n, o, CLANG_FLAGS["clang"]),
-    "clangp": lambda n, o: raw_clang(n, o, CLANG_FLAGS["clangp"]),
+    "clang":  lambda n, o: raw_clang(n, o, CLANG_BASE),
+    "clangp": lambda n, o: raw_clang(n, o, clangp_flags(n)),
     "zsdcc":  raw_zsdcc,
 }
 
