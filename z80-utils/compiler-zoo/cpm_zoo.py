@@ -305,15 +305,26 @@ def _crlf(path):
     open(path, "wb").write(data)
 
 def _m80(runcpm, outdir, cmdline, linker="M80.COM"):
-    """Invoke M80/L80 via runcpm.sh (vcpm) inside outdir; timeout-guarded."""
+    """Invoke M80/L80 via runcpm.sh (vcpm) inside outdir; timeout-guarded.
+
+    Runs in its own session so a timeout kills the WHOLE process group — the
+    bash wrapper AND the Java/vcpm grandchild.  Without killpg, a vcpm that
+    hangs on console input is orphaned and lingers (a leak that compounds over
+    a 170-test run)."""
+    import signal
+    p = subprocess.Popen(["bash", runcpm, linker, cmdline], cwd=outdir,
+                         stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
     try:
-        subprocess.run(["bash", runcpm, linker, cmdline], cwd=outdir,
-                       stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=40)
-    except Exception:  # noqa
+        p.wait(timeout=40)
+        return True
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except Exception:  # noqa
+            p.kill()
         return False
-    return True
 
 # --------------------------------------------------------------------------
 # Raw codegen size (test TU only, no runtime)
@@ -355,30 +366,34 @@ def raw_zsdcc(name, outdir):
 
 def raw_dcc(name, outdir):
     """Assemble the dcc .MAC standalone (no RTL) and read __BSSB = end of
-    code+data from the M80 listing's symbol table."""
+    code+data from the M80 listing's symbol table.
+
+    Uses a dedicated subdir + the fixed 8-char-safe module name 'RAW' so it
+    never collides with build_dcc's outputs and never exceeds CP/M's 8-char
+    filename limit (e.g. an 'R'+'TMALLOCH' prefix would be 9 chars and hang)."""
     src = src_path(name)
     if not src:
         return None
-    upper = name.upper()
-    shutil.copyfile(os.path.join(DCC_DIR, "m80.com"), os.path.join(outdir, "M80.COM"))
-    mac = os.path.join(outdir, f"R{upper}.MAC")
+    rdir = os.path.join(outdir, "rawdcc")
+    shutil.rmtree(rdir, ignore_errors=True)
+    os.makedirs(rdir, exist_ok=True)
+    shutil.copyfile(os.path.join(DCC_DIR, "m80.com"), os.path.join(rdir, "M80.COM"))
+    mac = os.path.join(rdir, "RAW.MAC")
     dcc = os.path.join(DCC_DIR, "dcc")
     dccpeep = os.path.join(DCC_DIR, "dccpeep")
     if run([dcc, src, "-o", mac], cwd=DCC_DIR).returncode != 0:
         return None
-    peep = os.path.join(outdir, "_RP.MAC")
+    peep = os.path.join(rdir, "_RP.MAC")
     if run([dccpeep, mac, peep]).returncode == 0 and os.path.exists(peep):
         shutil.move(peep, mac)
     _crlf(mac)
     runcpm = os.path.join(DCC_DIR, "runcpm.sh")
-    _m80(runcpm, outdir, f"R{upper},R{upper}=R{upper}.MAC /Z")
-    prn = os.path.join(outdir, f"r{name.lower()}.prn")  # M80 lowercases the listing
-    if not os.path.exists(prn):
-        # fall back to any matching prn
-        for f in os.listdir(outdir):
-            if f.lower() == f"r{name.lower()}.prn":
-                prn = os.path.join(outdir, f); break
-    if not os.path.exists(prn):
+    _m80(runcpm, rdir, "RAW,RAW=RAW.MAC /Z")
+    prn = None
+    for f in os.listdir(rdir):
+        if f.lower() == "raw.prn":
+            prn = os.path.join(rdir, f); break
+    if not prn or not os.path.exists(prn):
         return None
     txt = open(prn, errors="ignore").read()
     m = re.search(r"([0-9A-Fa-f]{1,4})[I]?'?\s+__BSSB", txt)
