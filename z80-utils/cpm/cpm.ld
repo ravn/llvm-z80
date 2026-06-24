@@ -32,5 +32,13 @@ SECTIONS {
 
     __bss_length = __bss_end - __bss_start;
 
+    /* Heap grows upward from end of BSS.  The ceiling leaves headroom below
+       the stack (SP starts at 0xFFFE) and the 0xDC00 BDOS stub used by the
+       ticks harness — 0xC000 gives a generous, safe TPA heap.
+       Names are single-underscore so the C mangling (which prepends '_')
+       resolves: C `heap_start` -> asm `_heap_start`. */
+    _heap_start = __bss_end;
+    _heap_end   = 0xC000;
+
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
