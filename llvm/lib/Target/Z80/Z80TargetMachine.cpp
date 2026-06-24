@@ -44,6 +44,7 @@
 #include "Z80Combiner.h"
 #include "Z80ExpandPseudo.h"
 #include "Z80FixupImplicitDefs.h"
+#include "Z80FuseCarryChain.h"
 #include "Z80IndexIV.h"
 #include "Z80AutoStaticStack.h"
 #include "Z80PatternFillRecognize.h"
@@ -122,6 +123,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80PreLegalizerCombinerPass(PR);
   initializeZ80PostLegalizerCombinerPass(PR);
   initializeZ80FixupImplicitDefsPass(PR);
+  initializeZ80FuseCarryChainPass(PR);
   initializeZ80LateOptimizationPass(PR);
   initializeZ80PatternFillRecognizeLegacyPassPass(PR);
   initializeZ80LoopRotateLegacyPassPass(PR);
@@ -484,6 +486,11 @@ void Z80PassConfig::addPostRewrite() {
   // elimination.  See Z80FixupImplicitDefs.cpp for full explanation.
   if (!DisableFixupImplicitDefs)
     addPass(createZ80FixupImplicitDefsPass());
+
+  // Keep multi-byte add/sub carry in the flag across limbs instead of
+  // round-tripping it through A (SBC A,A; AND 1 / LD A,r; RRCA).  Runs while
+  // the carry pseudos are still intact, before ExpandPostRAPseudos.
+  addPass(createZ80FuseCarryChain());
 }
 
 void Z80PassConfig::addPreSched2() {

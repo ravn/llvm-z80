@@ -38,6 +38,7 @@ add_llvm_target(Z80CodeGen
   Z80PostLegalizerCombiner.cpp
   Z80ExpandPseudo.cpp
   Z80FixupImplicitDefs.cpp
+  Z80FuseCarryChain.cpp
   Z80FrameLowering.cpp
   Z80ISelLowering.cpp
   Z80IndexIV.cpp

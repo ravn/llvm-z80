@@ -483,7 +483,16 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   hand-written CPIR pattern (would be the model for any future
   compiler-rt implementation).
 
-### B17. Multi-byte (i16/i32) arithmetic materializes carries via `sbc a,a` instead of threading the native ADC/SBC chain — NEEDS ROOT-CAUSE 2026-06-24
+### B17. Multi-byte (i32/i64) arithmetic materializes carries via `sbc a,a` instead of threading the native ADC/SBC chain — FIXED 2026-06-24 (`Z80FuseCarryChain`, see `tasks/b17-fuse-carry-chain-2026-06-24.md`)
+
+**FIXED.** New post-RA `Z80FuseCarryChain` pass threads the inter-limb carry in
+the carry FLAG for add/sub chains with a dead terminal carry (rewrites the
+`_CO`/`_CIO`/`_BO`/`_BIO` pseudos to real `ADD_HL_rr`/`ADC_HL_rr`/`SBC_HL_rr`).
+add32 `sbc a,a` 2->0 / −5 instr; i64 add 4->0 / −11 instr.  Production
+byte-identical (BIOS 5462, autoload 1945/1481); lit 173+6; runtime 872 PASS;
+new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
+
+
 
 - **Status:** open, needs-root-cause (discovered in the dcc-corpus
   three-compiler comparison, `z80-utils/compiler-zoo/cpm_zoo.py`).
