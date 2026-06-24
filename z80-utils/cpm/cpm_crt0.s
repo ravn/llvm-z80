@@ -30,28 +30,16 @@ _start:
         dec     bc
         ldir
 .no_bss:
-        ; Call main(argc=1, argv={progname, NULL}).
-        ; sdcccall: first 16-bit arg in HL, second in DE.
-        ; argc=1 (not >1) so tests that read argv[1] only when argc>1 are safe,
-        ; and a valid argv pointer avoids crashes if argv[0] is read.
-        ld      hl, #1                  ; argc = 1
-        ld      de, #_argv              ; argv = &{progname, NULL}
-        call    _main
+        ; Parse the CP/M command tail (0x0080) into argc/argv and call main().
+        ; _cpm_start_main (cpm_stdlib.c) does the tokenizing and calls main
+        ; with the real argument vector, so programs that read argv[1] (e.g.
+        ; an iteration count) behave like they do under dcc/zsdcc.
+        call    _cpm_start_main
 
 _cpm_exit:
         ld      c, #0
         call    0x0005
         halt
-
-        ; argv table: argv[0] -> empty program name, argv[1] = NULL
-        .section .rodata.crt0,"a",@progbits
-_argprog:
-        .asciz  "PROG"
-        .section .data.crt0,"aw",@progbits
-        .p2align 1
-_argv:
-        .2byte  _argprog
-        .2byte  0
 
 ; -----------------------------------------------------------------------
 ; void cpm_conout(int c)  —  c in L

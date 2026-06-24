@@ -13,6 +13,41 @@ FILE *stderr = &_stderr_obj;
 
 int errno = 0;
 
+/* ---- CP/M command-line bootstrap ----
+   Parses the command tail at 0x0080 (byte 0 = length, bytes 1.. = the
+   space-separated arguments CP/M already uppercased) into argc/argv, then
+   calls main().  Called from cpm_crt0.s instead of calling main directly, so
+   programs that read argv behave as they do under dcc/zsdcc. */
+extern int main(int argc, char **argv);
+
+#define CPM_MAX_ARGS 32
+
+/* C name has no leading underscore so it mangles to the asm symbol
+   _cpm_start_main that cpm_crt0.s calls. */
+int cpm_start_main(void) {
+    static char tail[130];
+    static char *argv[CPM_MAX_ARGS + 1];
+    const unsigned char *cmd = (const unsigned char *)0x0080;
+    int len = cmd[0];
+    if (len < 0 || len > 128) len = 0;
+    int i;
+    for (i = 0; i < len; i++) tail[i] = (char)cmd[1 + i];
+    tail[len] = '\0';
+
+    int argc = 0;
+    argv[argc++] = "PROG";              /* argv[0] = program name */
+    char *p = tail;
+    while (*p && argc < CPM_MAX_ARGS) {
+        while (*p == ' ' || *p == '\t') p++;   /* skip separators */
+        if (!*p) break;
+        argv[argc++] = p;                      /* start of token */
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (*p) *p++ = '\0';                   /* NUL-terminate token */
+    }
+    argv[argc] = (char *)0;
+    return main(argc, argv);
+}
+
 /* ---- BDOS console I/O ---- */
 void cpm_conout(int c);
 
