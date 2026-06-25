@@ -528,6 +528,63 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
 - **Pointers:** `compiler-zoo/cpm_zoo.py` (the comparison that
   surfaced it); dcc `tests/{triangle,fact,e}.c`.
 
+### M5. Scale-1 char-array loops miss pointer strength reduction
+
+- **Status:** open, LSR won't fix it (cost model rejects the transform).
+- **Impact:** 16–40% slower inner loops on byte-array scan/modify benchmarks
+  (sieve −16%, e −22%, nqueens −21%, tqsort −43% T-states vs dcc).  Does not
+  affect production targets directly (rcbios/cpnos/autoload lack tight
+  char-array loop kernels); relevant for any future CP/M app with inner loops
+  over byte arrays.
+- **Pattern:** a loop `for (k = start; k <= size; k += prime) flags[k] = 0`
+  emits `ld hl, _flags; add hl, bc` on EVERY iteration — 21 T wasted
+  reloading the base address.  DCC keeps a running pointer in HL with
+  `add hl, de` (11 T stride advance only), reaching ~39 T vs ~90 T per
+  iteration.  The "pointer form" IR (manually verified) compiles to ~57 T
+  and requires no IY.
+- **Why LSR won't fix it:** `isLSRCostLess` weights `NumRegs` first.  The
+  pointer form needs 3 live pairs (ptr, stride, bound) vs the integer form's
+  2 (index, stride).  The 10-T `ld hl, _flags` reload is invisible to LSR's
+  cost model (treated as a zero-cost constant load per use, not a per-
+  iteration instruction cost).  Confirmed: `opt -passes=loop-reduce` on the
+  sieve IR is a no-op.  AVR (in-tree) has the same behaviour → middle-end
+  LSR issue, not Z80-specific.
+- **Revisit when:** (a) a Z80-specific `Z80GEPStrengthReduce` pre-RA pass
+  is written to recognise `gep global_gv, linear_iv` in loops; (b) or
+  `isLSRCostLess` is changed to weigh `NumBaseAdds` more heavily against
+  `NumRegs` when the base add is an illegal addressing mode (GV + HasBaseReg).
+- **Pointers:** dcc-corpus investigation 2026-06-25; repro:
+  `dcc/tests/sieve.c`, `dcc/tests/e.c`.
+
+### M6. Z80LowerSelect pre-compute forces IY in pointer-scan loops
+
+- **Status:** open, root-caused.
+- **Impact:** `strrchr` (cpm_stdlib.c) inner loop ~80 T vs optimal ~37 T
+  (2.2× slowdown).  Affects any "find last occurrence" / "conditional pointer
+  update" loop: `while (*s) { if (*s == c) last = s; s++; }`.  On tstring,
+  strrchr contributes ~316M of 3342M total T-states; fixing it saves ~170M
+  (~5%).
+- **Pattern:** `G_SELECT cond, new_ptr, old_ptr` in a back-edge loop is
+  lowered by Z80LowerSelect to a "pre-compute + restore" pattern:
+  `DE = s (true-value, always); if match: keep DE; else: DE = IY (save reg)`.
+  This forces `old_ptr` (last) into IY as a save register, causing
+  `push iy; pop de` + `push de; pop iy` (42 T wasted) per iteration.
+  Physical registers confirmed by `-print-after=virtregrewriter`: `$hl`=s,
+  `$b`=c_char, `$c`=cur_char, `$iy`=last, `$de`=temp.
+- **Optimal form:** hand-crafted IR with a "conditional update" CFG (branch
+  on match, only update DE=HL when match, fall-through unchanged) produces
+  `$bc`=s, `$l`=c, `$de`=last — NO IY.  Inner loop: 37 T (no match),
+  57 T (match).
+- **Why not fixed yet:** Z80LowerSelect lowers `G_SELECT` to a triangle CFG
+  without detecting the "conditional update" special case where
+  `false_val == incoming phi value`.  For that case the optimal lowering is:
+  test condition; if-true: `ld d,h; ld e,l`; fall-through unchanged.  No
+  pre-compute, no IY needed.
+- **Revisit when:** Z80LowerSelect is extended to detect
+  `select cond, new_val, phi_self` and emit the branch-to-update form.
+- **Pointers:** dcc-corpus strrchr investigation 2026-06-25; repro:
+  `/tmp/strrchr_mini.c`; optimal IR: `/tmp/strrchr_opt.ll`.
+
 ### Note — production `-disable-lsr` confirmed stale (relates to M3, #232/#234)
 
 The 2026-06-24 comparison independently reproduced #232's conclusion:
@@ -587,5 +644,6 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-06-09 (added B16 CPIR/CPDR ZeroYield entry +
-B15 Branch Folder PARKED + 2026-06-09 #7 umbrella close verification).
+**Last updated:** 2026-06-25 (added M5 scale-1 GEP strength reduction gap +
+M6 Z80LowerSelect IY-in-pointer-scan-loop; both root-caused from dcc-corpus
+investigation).

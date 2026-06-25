@@ -1413,7 +1413,34 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           return false;
         return Def->getOperand(1).getCImm()->isZero();
       };
-      if (isConstZero(RHS)) {
+      // SLT -1, X (from SGT X,-1) and SGE -1, X (from SLE X,-1) are *also* pure
+      // sign-bit tests: X > -1 ⇔ X >= 0 ⇔ sign clear; X <= -1 ⇔ X < 0 ⇔ sign set.
+      // The 8-bit path already handles this (the LC==-1 case above); the 16-bit
+      // path historically did not, so the natural `if (x & 0x8000)` /
+      // `x >= 0` idiom (canonicalised by the middle-end to `sgt x, -1`) fell
+      // through to a full `LD HL,0xFFFF; SBC HL,rr` 16-bit compare.  Recognise
+      // the LHS==-1 form and emit the same one-instruction sign test as
+      // `SLT/SGE against 0`.  ravn/llvm-z80: dcc-corpus CRC-16 inner loop.
+      auto isConstMinusOne = [&](Register R) -> bool {
+        MachineInstr *Def = MRI.getVRegDef(R);
+        if (!Def || Def->getOpcode() != TargetOpcode::G_CONSTANT)
+          return false;
+        return Def->getOperand(1).getCImm()->isMinusOne();
+      };
+      if (isConstMinusOne(LHS) &&
+          (Pred == CmpInst::ICMP_SLT || Pred == CmpInst::ICMP_SGE)) {
+        if (!RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+          return false;
+        Register HiByte = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiByte)
+            .addReg(RHS, RegState{}, Z80::sub_hi);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(HiByte);
+        // ADD A,A shifts bit 7 (the 16-bit sign bit) into carry.
+        BuildMI(MBB, MI, DL, TII.get(Z80::ADD_A_A));
+        // SLT -1, X (X >= 0): branch on no carry; SGE -1, X (X < 0): on carry.
+        JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_NC_nn : Z80::JP_C_nn;
+      } else if (isConstZero(RHS)) {
         // SLT X, 0: branch if sign bit set (bit 7 of high byte)
         // SGE X, 0: branch if sign bit clear
         if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI))
