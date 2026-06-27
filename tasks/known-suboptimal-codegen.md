@@ -92,6 +92,24 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   `tasks/issue184-wontfix-mechanism-2026-05-30.md`.
 - **Revisit when:** new Z80-specific A-shuttle elimination idea with
   positive A/B evidence on real production code.
+- **Benchmark data point (2026-06-27, dcc comparison sweep):** the
+  Byte `sieve` benchmark is a clean non-BIOS witness of this effect.
+  clang **33.0 M** tstates vs dcc **28.5 M** (clang **+14 %**); both
+  AGREE (identical output), and the hot loops contain NO runtime calls,
+  so the gap is pure codegen.  Suspected dominant cause (NOT yet
+  isolated by cycle-profiling — symptom verified, cause a hypothesis):
+  the static-stack scan loop spills/reloads its i16 counter to BSS
+  every iteration — `ld (__sfrend_main-2),bc` ... `ld bc,(__sfrend_main-2)`
+  over 81,910 scan iterations x 10 passes — the M2 mechanism on a
+  16-bit IV.  Secondary: the inner kill loop recomputes the element
+  address each iteration (`ld hl,_flags; add hl,bc`, no pointer
+  strength-reduction -> see M3) and shuffles `k` between BC and HL.
+  CAVEAT against over-claiming: dcc's code is *more* verbose here
+  (reloads `k` from its IX frame 3x/iter, uses 3-byte `jp` not `jr`)
+  yet still wins, so the 14 % is not cleanly attributable to a single
+  clang deficiency.  Repro: `cd dcc && scripts/compare3.sh sieve`.
+  Runtime-library speed gaps from the same sweep (e/tstring/tqsort,
+  NOT codegen) are tracked as ravn/llvm-z80 #244/#245/#246.
 
 ### M3. Loop strength reduction creates wider IVs harmful on Z80
 
