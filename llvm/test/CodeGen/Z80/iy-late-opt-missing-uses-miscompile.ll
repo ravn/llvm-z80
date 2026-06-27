@@ -12,8 +12,13 @@
 ;
 ; After the fix, IY is declared as a Use of all IX/IY-indexed instructions.
 ; The liveness check now sees IY as live after the end copy and the peephole
-; correctly skips the elimination.  The function body now initialises IY
-; via `pop iy` (loading buf+idx) before the `ld (iy+0), a` store.
+; correctly skips the elimination.  The store was then materialised via IY
+; (`push hl;pop iy ... push iy;pop hl ... ld 0(iy),a`).
+;
+; A FOLLOW-UP peephole (the "(IX/IY+0)->(HL)" fold in Z80LateOptimization.cpp)
+; now recognises that HL and IY hold the same address across that window and
+; rewrites the store back to (HL), dropping all IY traffic.  The function body
+; reduces to `and (hl); ld (hl),a` -- both correct AND optimal.
 ;
 ; Smallest C repro (trigger: -Os):
 ;   static unsigned char buf[16];
@@ -22,7 +27,7 @@
 ;       buf[idx] &= (unsigned char)~mask;
 ;   }
 ;
-; Wrong output before fix:
+; Wrong output before the #243 fix:
 ;   add  hl, de          ; HL = buf+idx
 ;   push hl              ; save HL for AND_HLind
 ;   cpl                  ; A = ~mask
@@ -30,18 +35,12 @@
 ;   and  (hl)            ; A = buf[idx] & ~mask
 ;   ld   (iy+0), a       ; WRONG: IY was never set to buf+idx
 ;
-; Correct output after fix (suboptimal but not a miscompile):
-;   push hl              ; HL = buf+idx saved
-;   pop  iy              ; IY = buf+idx  <-- IY is now initialised
+; Correct AND optimal output now (after the #243 fix + the (IX/IY+0)->(HL) fold):
+;   add  hl, de          ; HL = buf+idx
+;   ld   a, c            ; A = mask
 ;   cpl                  ; A = ~mask
-;   push iy
-;   pop  hl              ; HL = buf+idx restored for AND_HLind
 ;   and  (hl)            ; A = buf[idx] & ~mask
-;   ld   (iy+0), a       ; CORRECT: (IY+0) = buf+idx
-;
-; Future work: recognise HL and IY hold the same value and simplify to
-; `and (hl); ld (hl), a`.  That is a cost-model / peephole concern separate
-; from the correctness fix here.
+;   ld   (hl), a         ; CORRECT: (buf+idx) = A, no IX/IY traffic
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
@@ -66,10 +65,12 @@ define dso_local void @test(i8 noundef zeroext %0, i8 noundef zeroext %1) local_
 attributes #0 = { optsize "target-features"="+z80" }
 
 ; CHECK-LABEL: _test:
-; IY must be initialised in the function body before the store.
-; The old wrong output had no pop iy at all (IY was the caller's value).
-; CHECK:       pop iy
-; The store to (iy+0) is correct because IY = buf+idx at this point.
-; CHECK:       ld 0(iy),a
+; No IX/IY traffic: the address lives only in HL, and the load/store both
+; use (HL).  The old wrong output stored to the caller's (iy+0); the
+; intermediate (correct-but-suboptimal) output round-tripped through IY.
+; CHECK-NOT:   iy
+; CHECK:       and (hl)
+; CHECK-NEXT:  ld (hl),a
+; CHECK-NOT:   iy
 
 ;

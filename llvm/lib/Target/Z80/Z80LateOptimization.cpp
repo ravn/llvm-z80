@@ -520,6 +520,58 @@ static bool z80IsExplicitSPWrite(const MachineInstr &MI,
          MI.modifiesRegister(Z80::SP, TRI);
 }
 
+// Map a zero-displacement IX/IY-indexed load/store opcode to the equivalent
+// (HL)-indirect opcode, reporting which index register it uses (IdxReg) and
+// whether it carries a trailing 8-bit value immediate (HasValImm, true only
+// for `LD (IX+d),n` / `LD (IY+d),n`).  Returns 0 if the opcode is not a
+// foldable indexed memory access.
+//
+// H/L-destination LOADS (LD_H_IXd / LD_L_IXd and IY twins) are intentionally
+// excluded: rewriting them to `ld h,(hl)` / `ld l,(hl)` overwrites the HL
+// pointer, which would corrupt any later (HL) access in the same fold window.
+// Stores from H/L (LD_IXd_H / LD_IXd_L) are fine -- they only read H/L.
+//
+// The (HL) forms share the same low opcode byte as the indexed forms (the DD/
+// FD prefix and the +d displacement byte are simply dropped), so each foldable
+// indexed op has a 1:1 (HL) counterpart that is one byte shorter and needs no
+// index register.
+static unsigned z80IndexedZeroDispToHLIndirect(unsigned Opc, MCPhysReg &IdxReg,
+                                               bool &HasValImm) {
+  HasValImm = false;
+  switch (Opc) {
+  // Stores: (IX+0) <- r  ->  (HL) <- r
+  case Z80::LD_IXd_B: IdxReg = Z80::IX; return Z80::LD_HLind_B;
+  case Z80::LD_IXd_C: IdxReg = Z80::IX; return Z80::LD_HLind_C;
+  case Z80::LD_IXd_D: IdxReg = Z80::IX; return Z80::LD_HLind_D;
+  case Z80::LD_IXd_E: IdxReg = Z80::IX; return Z80::LD_HLind_E;
+  case Z80::LD_IXd_H: IdxReg = Z80::IX; return Z80::LD_HLind_H;
+  case Z80::LD_IXd_L: IdxReg = Z80::IX; return Z80::LD_HLind_L;
+  case Z80::LD_IXd_A: IdxReg = Z80::IX; return Z80::LD_HLind_A;
+  case Z80::LD_IYd_B: IdxReg = Z80::IY; return Z80::LD_HLind_B;
+  case Z80::LD_IYd_C: IdxReg = Z80::IY; return Z80::LD_HLind_C;
+  case Z80::LD_IYd_D: IdxReg = Z80::IY; return Z80::LD_HLind_D;
+  case Z80::LD_IYd_E: IdxReg = Z80::IY; return Z80::LD_HLind_E;
+  case Z80::LD_IYd_H: IdxReg = Z80::IY; return Z80::LD_HLind_H;
+  case Z80::LD_IYd_L: IdxReg = Z80::IY; return Z80::LD_HLind_L;
+  case Z80::LD_IYd_A: IdxReg = Z80::IY; return Z80::LD_HLind_A;
+  // Immediate stores: (IX+0) <- n  ->  (HL) <- n
+  case Z80::LD_IXd_n: IdxReg = Z80::IX; HasValImm = true; return Z80::LD_HLind_n;
+  case Z80::LD_IYd_n: IdxReg = Z80::IY; HasValImm = true; return Z80::LD_HLind_n;
+  // Loads: r <- (IX+0)  ->  r <- (HL)   (H/L destinations excluded above)
+  case Z80::LD_B_IXd: IdxReg = Z80::IX; return Z80::LD_B_HLind;
+  case Z80::LD_C_IXd: IdxReg = Z80::IX; return Z80::LD_C_HLind;
+  case Z80::LD_D_IXd: IdxReg = Z80::IX; return Z80::LD_D_HLind;
+  case Z80::LD_E_IXd: IdxReg = Z80::IX; return Z80::LD_E_HLind;
+  case Z80::LD_A_IXd: IdxReg = Z80::IX; return Z80::LD_A_HLind;
+  case Z80::LD_B_IYd: IdxReg = Z80::IY; return Z80::LD_B_HLind;
+  case Z80::LD_C_IYd: IdxReg = Z80::IY; return Z80::LD_C_HLind;
+  case Z80::LD_D_IYd: IdxReg = Z80::IY; return Z80::LD_D_HLind;
+  case Z80::LD_E_IYd: IdxReg = Z80::IY; return Z80::LD_E_HLind;
+  case Z80::LD_A_IYd: IdxReg = Z80::IY; return Z80::LD_A_HLind;
+  default: return 0;
+  }
+}
+
 bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -4649,7 +4701,134 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: fold (IX/IY+0) access back to (HL) when IX/IY mirrors HL ---
+  // ravn/llvm-z80#243 residual.  The `hli` register class lets the allocator
+  // place an HL-sized address (`STORE8_IND %addr:hli`) in IX/IY; when HL is
+  // also free it ends up holding the SAME address, so codegen materialises the
+  // index pointlessly and round-trips through HL:
+  //
+  //     push hl ; pop iy     ; COPY16_PUSHPOP $iy = $hl   (StartCopy: IY = HL)
+  //     ld a,c              ; ...A-only work, HL untouched...
+  //     cpl
+  //     push iy ; pop hl     ; COPY16_PUSHPOP $hl = $iy   (reverse copy, no-op:
+  //                          ;                             HL already == IY)
+  //     and (hl)            ; HL still holds buf+idx
+  //     ld 0(iy),a          ; -> can be ld (hl),a
+  //
+  // COPY16_PUSHPOP is opaque to machine-cp, so the round-trip survives to here.
+  // When StartCopy `$idx = $hl` is followed -- with HL never re-defined and
+  // $idx never re-defined -- only by the reverse copy `$hl = $idx` and/or
+  // displacement-0 indexed accesses through $idx, then HL == $idx throughout
+  // that window.  Rewrite each indexed access to its (HL) form, drop the
+  // reverse copies (pure no-ops: HL already holds the value), and drop the
+  // StartCopy materialisation.  The example above collapses to `and (hl);
+  // ld (hl),a` -- 4 instructions / 6 bytes removed, no IX/IY traffic.
+  if (STI.hasZ80()) {
+    for (auto &MBB : MF) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        // StartCopy must be `$ix/$iy = $hl`.
+        if (MII->getOpcode() != Z80::COPY16_PUSHPOP) { ++MII; continue; }
+        Register Dst = MII->getOperand(0).getReg();
+        Register Src = MII->getOperand(1).getReg();
+        if (Src != Z80::HL || !Z80::IR16RegClass.contains(Dst)) {
+          ++MII;
+          continue;
+        }
+        MCPhysReg Idx = Dst;
+        auto StartCopy = MII;
+
+        bool Ok = true;
+        bool SawRewritable = false;
+        SmallVector<MachineBasicBlock::iterator, 4> ReverseCopies;
+        // (instruction, new (HL) opcode, carries value immediate)
+        SmallVector<std::tuple<MachineBasicBlock::iterator, unsigned, bool>, 4>
+            Rewrites;
+        MachineBasicBlock::iterator LastTouch = StartCopy;
+
+        for (auto Scan = std::next(StartCopy); Scan != MIE; ++Scan) {
+          unsigned SOpc = Scan->getOpcode();
+
+          // The reverse copy `$hl = $idx` is a no-op here (HL already holds
+          // $idx's value) and is recognised BEFORE the HL-modification guard
+          // below, since it does write HL.  Record it for deletion.
+          if (SOpc == Z80::COPY16_PUSHPOP &&
+              Scan->getOperand(0).getReg() == Z80::HL &&
+              Scan->getOperand(1).getReg() == Idx) {
+            ReverseCopies.push_back(Scan);
+            LastTouch = Scan;
+            continue;
+          }
+
+          // A foldable displacement-0 indexed access through $idx.
+          MCPhysReg AccIdx = 0;
+          bool HasValImm = false;
+          unsigned HLOpc =
+              z80IndexedZeroDispToHLIndirect(SOpc, AccIdx, HasValImm);
+          if (HLOpc && AccIdx == Idx && Scan->getOperand(0).isImm() &&
+              Scan->getOperand(0).getImm() == 0) {
+            Rewrites.emplace_back(Scan, HLOpc, HasValImm);
+            SawRewritable = true;
+            LastTouch = Scan;
+            continue;
+          }
+
+          // Any re-definition of $idx that does NOT also read it closes the
+          // window cleanly: the StartCopy value is dead from here, and every
+          // use we needed to handle is already behind us.  (If it also reads
+          // $idx it is an unhandled use -- fall through to the bail below.)
+          bool ReadsIdx = Scan->readsRegister(Idx, TRI);
+          bool ModifiesIdx = Scan->modifiesRegister(Idx, TRI);
+          if (ModifiesIdx && !ReadsIdx)
+            break; // window closed; proceed with what we collected
+
+          // Any other read/modify of $idx is an unhandled use -> give up.
+          if (ReadsIdx || ModifiesIdx) { Ok = false; break; }
+
+          // Re-defining HL (full, H, or L) breaks the HL == $idx invariant for
+          // any subsequent indexed access -> give up.  (Plain reads of HL,
+          // e.g. `and (hl)`, are fine.)
+          if (Scan->modifiesRegister(Z80::HL, TRI)) { Ok = false; break; }
+        }
+
+        if (!Ok || !SawRewritable) { ++MII; continue; }
+
+        // The rewrite drops the StartCopy that defines $idx, so $idx must be
+        // dead after the last instruction we touched (a loop-carried index in
+        // IY, live out via a back-edge, would otherwise lose its value).
+        if (MBB.computeRegisterLiveness(TRI, Idx, std::next(LastTouch)) !=
+            MachineBasicBlock::LQR_Dead) {
+          ++MII;
+          continue;
+        }
+
+        LLVM_DEBUG(dbgs() << "  (IX/IY+0)->(HL) fold: dropping "
+                          << TRI->getName(Idx) << " materialisation, "
+                          << Rewrites.size() << " indexed access(es) rewritten\n");
+
+        // Rewrite each indexed access to its (HL) form.  The (HL) opcodes carry
+        // their HL use / register def as IMPLICIT operands in the MCInstrDesc,
+        // so BuildMI needs only the explicit value immediate (for LD (HL),n).
+        for (auto &R : Rewrites) {
+          MachineBasicBlock::iterator OldIt = std::get<0>(R);
+          unsigned NewOpc = std::get<1>(R);
+          bool HasValImm = std::get<2>(R);
+          DebugLoc DL = OldIt->getDebugLoc();
+          auto MIB = BuildMI(MBB, OldIt, DL, TII->get(NewOpc));
+          if (HasValImm)
+            MIB.addImm(OldIt->getOperand(1).getImm()); // the stored value n
+          OldIt->eraseFromParent();
+        }
+        for (auto &RC : ReverseCopies)
+          RC->eraseFromParent();
+        MII = MBB.erase(StartCopy);
+        Changed = true;
+      }
+    }
+  }
+
   // --- Peephole: IX/IY transfer elimination ---
+
   // The register allocator saves caller-saved registers across CALLs by
   // transferring to callee-saved IX/IY via PUSH rr; POP IX ... PUSH IX; POP rr.
   // This costs 6B (1+2+2+1) when a simple PUSH rr ... POP rr costs only 2B (1+1).
