@@ -1432,6 +1432,20 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
         if (It == MIE || It->getOpcode() != Z80::LD_A_L) continue;
         MachineInstr *LdA = &*It;
+        // Liveness guard (ravn/llvm-z80#242): this fold rewrites the sequence to
+        // a single `LD A,H` at the position of the original `LD L,H`, DELETING
+        // the `LD H,0` and the `LD L,H`.  That is only correct if both H and L
+        // are dead after the `LD A,L` — otherwise a later read sees the wrong
+        // value: H keeps its pre-zero contents (the zeroing is gone) and L keeps
+        // its old value (the copy is gone).  The historical comment claimed this
+        // precondition but never checked it; at -O0 a 16-bit compare/op with a
+        // zext-from-i8 operand expands to exactly `LD L,H; LD H,0; LD A,L; ...;
+        // LD A,H`, where the trailing `LD A,H` reads the zeroed high byte.
+        // Dropping the `LD H,0` then corrupts that read (e.g. 255u > 1u → false).
+        auto AfterLdA = std::next(MachineBasicBlock::iterator(LdA));
+        if (!isRegDeadAfter(AfterLdA, MBB, TRI, Z80::H) ||
+            !isRegDeadAfter(AfterLdA, MBB, TRI, Z80::L))
+          continue;
         LLVM_DEBUG(dbgs() << "  High-byte extract: LD L,H; LD H,0; LD A,L → "
                              "LD A,H\n");
         BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(Z80::LD_A_H));
