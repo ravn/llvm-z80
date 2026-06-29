@@ -261,17 +261,10 @@ void LiveVariables::HandlePhysRegUse(Register Reg, MachineInstr &MI) {
       // define the super-register; adding a spurious implicit-def corrupts
       // later liveness and copy propagation
       // (https://github.com/llvm/llvm-project/issues/156428).
-      bool AllSubRegsDefined = true;
-      for (MCPhysReg SubReg : TRI->subregs(Reg)) {
-        // Only require leaf sub-registers (those with no further
-        // sub-registers) to be defined.
-        if (TRI->subregs(SubReg).begin() == TRI->subregs(SubReg).end() &&
-            !PhysRegDef[SubReg]) {
-          AllSubRegsDefined = false;
-          break;
-        }
-      }
-      if (AllSubRegsDefined)
+      bool AllLeavesDefined = all_of(TRI->subregs(Reg), [&](MCPhysReg Sub) {
+        return !TRI->subregs(Sub).empty() || PhysRegDef[Sub];
+      });
+      if (AllLeavesDefined)
         LastPartialDef->addOperand(
             MachineOperand::CreateReg(Reg, /*IsDef=*/true, /*IsImp=*/true));
     }
