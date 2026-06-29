@@ -46,5 +46,5 @@ body: |
 
 # CHECK-LABEL: name: both_halves
 # CHECK:     LD_L_C implicit-def $l, implicit killed $c
-# CHECK:     LD_H_B implicit-def $h, implicit killed $b, implicit-def $hl
+# CHECK:     LD_H_B implicit-def $h, implicit killed $b, implicit $l, implicit-def $hl
 # CHECK:     RET implicit killed $hl

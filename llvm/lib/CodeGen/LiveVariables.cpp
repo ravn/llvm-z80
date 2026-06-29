@@ -256,17 +256,25 @@ void LiveVariables::HandlePhysRegUse(Register Reg, MachineInstr &MI) {
       // super-register if EVERY leaf sub-register has actually been defined.
       // The comment above asserts this ("All of the sub-registers must have
       // been defined") but the original code never verified it.  On targets
-      // with independent sub-registers -- e.g. Z80 register-pair halves, where
-      // writing L does not modify H -- a single sub-register def does NOT
-      // define the super-register; adding a spurious implicit-def corrupts
-      // later liveness and copy propagation
-      // (https://github.com/llvm/llvm-project/issues/156428).
+      // with independent sub-registers -- e.g. Z80/AVR register-pair halves,
+      // where writing L does not modify H -- a single sub-register def does
+      // NOT define the super-register; a spurious implicit-def corrupts later
+      // liveness (https://github.com/llvm/llvm-project/issues/156428).
       bool AllLeavesDefined = all_of(TRI->subregs(Reg), [&](MCPhysReg Sub) {
         return !TRI->subregs(Sub).empty() || PhysRegDef[Sub];
       });
-      if (AllLeavesDefined)
+      if (AllLeavesDefined) {
+        // The implicit-def claims LastPartialDef redefines the whole pair, so
+        // sibling halves defined by an EARLIER instruction (e.g. $al = COPY
+        // before $ah = ...) would look killed and be deleted by copy-prop.
+        // Keep them live with an implicit use on LastPartialDef.
+        for (MCPhysReg Sub : TRI->subregs(Reg))
+          if (PhysRegDef[Sub] && PhysRegDef[Sub] != LastPartialDef)
+            LastPartialDef->addOperand(
+                MachineOperand::CreateReg(Sub, /*IsDef=*/false, /*IsImp=*/true));
         LastPartialDef->addOperand(
             MachineOperand::CreateReg(Reg, /*IsDef=*/true, /*IsImp=*/true));
+      }
     }
   } else if (LastDef && !PhysRegUse[Reg.id()] &&
              !LastDef->findRegisterDefOperand(Reg, /*TRI=*/nullptr))
