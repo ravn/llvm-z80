@@ -15,19 +15,16 @@ The fix is verified on AVR.
 
 Correct on x86 (AL/AH cover AX); wrong where halves are independent.
 
-## Reproducers (`llc -run-pass=livevars`)
+## Reproducers (`llc -run-pass=livevars,dead-mi-elimination`)
 
-Lone half — must NOT gain `implicit-def $hl`:
+zlfn's exact AVR case from the issue: pristine deletes the still-live `$r25 = MOVRdRr` (miscompile); fix keeps it.
 ```
-LD_L_C implicit-def $l, implicit $c
-RET implicit $hl
+$r25 = MOVRdRr $r22
+$r24 = LDIRdK 42
+$r20 = MOVRdRr $r25
+RCALLk @use, implicit $r25r24, implicit $r20
 ```
-Both halves separately — later def keeps `implicit-def $hl` AND gains `implicit $l`:
-```
-LD_L_C implicit-def $l, implicit $c
-LD_H_B implicit-def $h, implicit $b
-RET implicit $hl
-```
+Pristine: `$r24 = LDIRdK 42, implicit-def $r25r24` → DeadMI deletes `$r25 = MOVRdRr`, later read undefined. Fix: `$r24 = LDIRdK 42, implicit $r25, implicit-def $r25r24` → copy survives.
 
 ## Fix (`LiveVariables.cpp`, two parts)
 
