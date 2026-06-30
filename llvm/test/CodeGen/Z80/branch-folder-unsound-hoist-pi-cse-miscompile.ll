@@ -1,10 +1,19 @@
 ; RUN: llc -mtriple=z80 -O2 -disable-lsr -z80-enable-cse < %s | FileCheck %s
 ;
-; XFAIL: *
+; MITIGATED 2026-06-30 by ravn/llvm-z80#248 (i32 divrem fusion) -- XFAIL
+; removed, now a regression guard.  #248 lowers the adjacent i32 udiv/urem
+; pair to one __udivmodsi4 whose remainder is loaded from a stack slot, so
+; the remainder no longer arrives in $de from a trailing __umodsi3 call.
+; That removes the "two consecutive DE stores sourced from constant loads"
+; MIR shape that Branch Folder unsoundly hoisted, so this pi-spigot witness
+; no longer miscompiles with CSE on.  The underlying Branch Folder
+; unsoundness (known-suboptimal B15) is NOT root-fixed -- only this
+; witness's trigger shape is broken -- so the test now guards that the
+; trigger does not reappear.
 ;
 ; Branch Folder unsound cross-block hoist exposed by MachineCSE -- pi spigot
-; miscompile.  PARKED 2026-06-09 user-directed; production unaffected (CSE
-; off by default; this XFAIL exercises the bug-on path).
+; miscompile.  Original analysis PARKED 2026-06-09 (production unaffected;
+; CSE off by default).
 ;
 ; Root cause (full writeup in
 ; tasks/session-2026-06-09-pi-cse-miscompile-investigation.md):
@@ -28,10 +37,10 @@
 ; in the loop header must NOT be `ld (__sfrend_bench_run-NN), de`, because
 ; on the back-edge entry $de holds `m` (the new c), not the new checksum.
 ;
-; Today (2026-06-09) this CHECK FAILS because Branch Folder hoists the store
-; into that slot.  When the upstream fix lands (or when a Z80-specific
-; mitigation breaks the trigger MIR shape), this test will start passing and
-; the XFAIL marker will become an unexpected-pass -- the cleanup signal.
+; Before #248 (pre 2026-06-30) this CHECK FAILED because Branch Folder
+; hoisted the store into that slot (the predicted "Z80-specific mitigation
+; breaks the trigger MIR shape" cleanup signal has now fired -- see the
+; MITIGATED note at the top).
 ;
 ; Confirmed via `-mllvm -disable-branch-fold` (with CSE on) -> pi PASS at
 ; 884 B / 58.87M ts (vs default CSE-on -> pi FAIL at 880 / 58.87M).
