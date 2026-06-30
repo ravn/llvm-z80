@@ -726,6 +726,51 @@ cost model, never a global LSR off-switch.
 
 ---
 
+### B20. Walking i16 pointer in a `*p++` loop allocated to IY (push/pop shuttle) even at the IY-reserved default
+
+- **Status:** open, tracked at **ravn/llvm-z80#249** (filed 2026-06-30).
+  (ravn/llvm-z80#99 is CLOSED and covered the *sibling* i16 BC-counter
+  ping-pong, not this IY pointer-walk; the bench's source comment still cites
+  #99 for the "sister reg-class" idea.)  Gap measured + reproduced; re-verified
+  2026-06-30.
+- **Impact:** compiler-comparison-corpus **`word_fill`** is the only corpus
+  *speed* loss after #248 — clang **+63 % slower than zsdcc** (210,147 vs
+  128,796 t-states; size still smallest, 178 vs 526 B).  Pure codegen (no
+  runtime calls in the loop).  Each iteration spends **three `push/pop` pairs
+  (~75 t-states)** shuttling the pointer IY↔BC↔HL.
+- **Pattern (re-verified 2026-06-30 on a minimal loop at the production
+  default, `Z80UnreserveIY=false`):**
+  ```c
+  for (unsigned int i = n; i; --i) *p++ = i;   /* i16 counter + walking i16 ptr */
+  ```
+  lowers to (the pointer is in IY):
+  ```
+      push hl / pop iy           ; iy = p
+  .L: ...counter test...
+      push iy / pop bc / inc bc / inc bc   ; bc = p+2
+      push iy / pop hl           ; hl = p ; ld (hl),e ; inc hl ; ld (hl),d
+      push bc / pop iy           ; iy = p+2  (advance)
+      jr .L
+  ```
+- **Why it happens:** with HL needed for the store address, DE for the
+  counter/value, and BC for `p+2`, the walking-pointer vreg is placed in IY and
+  copied in/out via the documented `COPY16_PUSHPOP` shuttle every iteration —
+  **despite IY being the reserved production default** (the pointer vreg's
+  reg-class still lets the allocator reach IY).  The bench was authored as the
+  witness for this: the proposed fix (sketched against the now-closed #99) is a
+  **sister single-register class for the pointer vreg** (sibling of the existing
+  `BCReg` counter class) so the coalescer/allocator can't drag the pointer off
+  HL into IY/BC.
+- **Revisit when:** the pointer reg-class lands (baseline doc estimates loop-1 →
+  parity with SDCC, `bench_run` −47 %); or a production hot loop shows the same
+  `*p++` i16-pointer-walk shape (none today — corpus-only).
+- **Repro / pointers:** `BENCH=word_fill ./sweep.sh`;
+  `rc700-gensmedet/tasks/compiler-comparison-corpus/bench_word_fill.c` (authored
+  as the #99 witness) + `word_fill_baseline_2026-06-08.md` (per-iteration
+  T-state breakdown + the −47 % fix sketch); ravn/llvm-z80#99.
+
+---
+
 ## Frontend — patterns blocked on clang AST/CodeGen work
 
 (See M4 above.  Frontend gaps tend to cascade to multiple middle-end
