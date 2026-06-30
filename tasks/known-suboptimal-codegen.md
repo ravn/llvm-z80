@@ -78,6 +78,55 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   `tasks/upstream-5bug/draft-cvp-strips-narrowness-marker.md`,
   memory note [[project_aes_kr_speed_gap_accepted]].
 
+- **Revalidation + `gf_log` decomposition (2026-06-28).**  Re-ran the
+  clang flag sweep on current HEAD (post CRC-sign-test, B17, #242/#243).
+  The gap is **unchanged** on equal footing: `09_Oz_prod_like` clang
+  **18.21 M** vs zsdcc **12.08 M** (+50.8 %), byte-for-byte the same
+  18.21 M as 2026-06-08.  (A separate plain-`-Oz` build is 17.02 M /
+  +41 %; the ~7 % delta is the production size knobs
+  `-disable-lsr/-machine-licm/-machine-cse`, NOT a narrowing change —
+  don't mistake the two configs for "the gap narrowed".)
+
+  Drilled the AES gap into **`gf_log`** (not just the `gf_alog`/`sb_inv`
+  Phase-2 root above) and decomposed its inner loop into TWO concrete
+  waste sources, **both** caused by the SAME i16 `atb` phi.  The phi
+  stays i16 because of the loop-top `if (atb == x)` test, lowered as
+  `icmp eq i16 atb, x`:
+
+  1. **20 T/iter — loop-invariant `x` spilled and reloaded.**  Greedy
+     emits `SPILL_GR16 $hl` in the preheader and places the
+     `RELOAD_GR16 %stack.0` (= `ld de,(__sfrend_gf_log-2)`, ED-prefix
+     extended addressing, 20 T) **inside** the loop.  Verified from the
+     post-greedy MIR.  Root mechanism: `x` is a `uint8_t` but is held as
+     a 16-bit `gr16noir` PAIR (it arrives in `$hl`), and `atb`=`$hl`
+     already pins one pair, so keeping `x` in a second pair across the
+     register-hungry body loses to spilling.  If `x` were an 8-bit
+     `gr8` (one of 7 single regs) the spill wouldn't happen.
+
+  2. **8 T/iter — redundant bit-7 carry recompute.**  `add a,a` (the
+     `atb<<1` shift) already leaves CY = bit 7, and the only intervening
+     op (`ld c,a`, saving the shift result) preserves flags — yet the
+     bit-7 test re-derives the same carry with `ld a,l; rlca` before
+     `jr nc`.  In ISOLATION the backend is optimal here (`add a,a;
+     jr c` — verified with a standalone repro); the recompute appears
+     ONLY because `atb` lives in `HL` (so the shift result must be
+     shuttled out to `C` and `A` reloaded), which is again the i16-phi
+     consequence.
+
+  Control: **`gf_alog`** has the identical bit-7 GF step but keeps
+  `atb` in a single 8-bit reg (`D`) because its loop counter is a
+  separate `while (x--)`, not an `atb == x` compare — and its codegen
+  is already OPTIMAL (`add a,a; jr nc; xor $1b; xor d`).  So the cause
+  is specifically "the i16 compare keeps `atb` wide", not the GF step.
+
+  Confirmed neither `instcombine` nor `aggressive-instcombine` narrows
+  the `%5 = phi i16` to i8 (it is provably `<= 255`: seeds at 1, only
+  ever XORed with `zext i8` values, so the high byte is always 0 — but
+  proving it needs the cyclic-phi width analysis of option (5)).  No
+  fresh cheaply-fixable cause; this stays accepted.  Repro:
+  `/tmp`-style minimal `gf_log` + `llc -mtriple=z80 -O2 -print-after-all`,
+  inspect MIR after `greedy`.
+
 ### M2. BSS load/store traffic dominant in 8-bit memory writes
 
 - **Status:** wontfix-mechanism (#74 production-density drill).
@@ -92,6 +141,24 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   `tasks/issue184-wontfix-mechanism-2026-05-30.md`.
 - **Revisit when:** new Z80-specific A-shuttle elimination idea with
   positive A/B evidence on real production code.
+- **#172 A-pin re-validated on current compiler (2026-06-28).**  Flipped
+  `-mllvm -enable-z80-pin-alu-accumulator=true` (the connected-component
+  pin, the 5th and most sophisticated #172 attempt) and re-measured:
+  AES `09_Oz_prod_like` `.text` **4502 -> 4503 B (+1 B)**; cpnos
+  prom1-lineprog **byte-identical** (no candidates fire — cpnos has no
+  tight ALU-accumulator loops); on `gf_log` the pin even PESSIMIZES
+  (adds a `push de`/`pop de`).  Confirms the parked verdict on fresh
+  binaries: **A-shuttle count is conserved** — A is the sole 8-bit ALU
+  destination AND the sole `IN`/`OUT`/`LD (nn),A` operand, so pinning the
+  carrier relocates the shuttle (plus a boundary `LD`) rather than
+  removing it.  CRUCIAL distinction: `gf_log`'s cost is **M1 (the i16
+  `atb` phi width)**, NOT the A-shuttle — Path C (#172) and M1 are
+  distinct root causes, and the A-pin addresses neither `gf_log` nor the
+  #173 8-bit BSS spills (spills come from register PRESSURE; pinning does
+  not create registers).  Only theoretical avenue left: an ISel
+  snapshot-rotate reshape (carrier as XOR *destination* + separate
+  snapshot vreg) — multi-week, payoff bounded because production AES
+  already beats SDCC.
 - **Benchmark data point (2026-06-27, dcc comparison sweep):** the
   Byte `sieve` benchmark is a clean non-BIOS witness of this effect.
   clang **33.0 M** tstates vs dcc **28.5 M** (clang **+14 %**); both
@@ -618,6 +685,45 @@ regresses vs plain clang.  The residual M3 concern is only the
 already mostly contain — the right long-term lever is finishing that
 cost model, never a global LSR off-switch.
 
+### B18. OTIR/OTDR/INIR/INDR block-I/O idiom not recognized — accepted ZeroYield 2026-06-28
+
+- **Status:** accepted (ZeroYield on the four production firmware
+  components).  Re-survey trigger only.  Filed at the user's request
+  after the autoload SIO-B debug skeleton was forced to hand-write the
+  `otir` in inline asm.
+- **Impact:** zero on shipping size today (the one production OTIR site,
+  rcbios `bios_hw_init.c` SIO programming, is already hand-written inline
+  asm; autoload's new debug-only SIO init likewise).  A C-source
+  fixed-count block-output loop `for (i=0;i<N;i++) port_out(C, tab[i])`
+  emits a 5-instruction loop body (`ld a,(de); out (c),a; inc de; dec hl;
+  jr`) ≈ 8 B + ~? T/byte, vs a single 2 B `otir` at 21 T/byte.  Saving is
+  ~6 B + the loop overhead per such site.
+- **Pattern (verified 2026-06-28):** with the live `build-macos` clang,
+  `--target=z80 -Oz` lowers
+  ```c
+  for (byte i = 0; i < sizeof seq; i++)
+      *(volatile __attribute__((address_space(2))) byte *)0x0B = seq[i];
+  ```
+  to a manual `ld a,(de); out (11),a; inc de; dec hl; jr` loop — NOT
+  `otir`.  Same applies to the input direction (`INIR`/`INDR`) and the
+  decrement variants (`OTDR`/`INDR`).
+- **Why we can't fix it (yet):** not a mechanism block — a GISel combiner
+  or a post-RA peephole could recognize the `{load (HL/DE++); OUT (C),A;
+  dec count; branch}` shape and emit the block-I/O pseudo, exactly as the
+  CPIR/CPDR case (B16).  But every real OTIR site in the four firmware
+  components is already hand-written inline asm (rcbios SIO init), so
+  there is no in-tree C-source witness whose size/speed would improve.
+  Per the session #74 production-density verdict, motivator-less ISel
+  coverage is not invested in.
+- **Revisit when:** a firmware component or corpus benchmark drives a
+  fixed-count port block-copy from C source (not inline asm) where the
+  open-coded loop measurably regresses vs an `otir`/`inir`; or a libc/HAL
+  layer wants portable `port_block_out()` helpers lowered natively rather
+  than per-target inline asm.
+- **Pointers:** sibling of B16 (CPIR/CPDR block-compare idiom);
+  hand-written model at `rc700-gensmedet/rcbios-in-c/bios_hw_init.c:174-186`
+  (`otir` ×2) and `rc700-gensmedet/autoload-in-c/rom.c` `sio_b_debug_init`.
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work
@@ -662,6 +768,8 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-06-25 (added M5 scale-1 GEP strength reduction gap +
-M6 Z80LowerSelect IY-in-pointer-scan-loop; both root-caused from dcc-corpus
-investigation).
+**Last updated:** 2026-06-28 (B18 added — OTIR/OTDR/INIR/INDR block-I/O
+idiom not recognized by ISel; verified a C `for`-loop over port_out emits
+a manual `ld a,(de); out (c),a; inc de; dec hl; jr` loop, not `otir`;
+accepted ZeroYield since every production OTIR site is hand-written inline
+asm).
