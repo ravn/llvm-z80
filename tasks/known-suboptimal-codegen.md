@@ -833,6 +833,39 @@ cost model, never a global LSR off-switch.
 
 ---
 
+### B22. Variable shift by a loop induction variable not strength-reduced to an incremental shift
+
+- **Status:** open, unfiled (documented 2026-07-01).  **ZeroYield on production
+  runtime** (witness is a boot-time status render), but measurable PROM size.
+- **Witness:** `autoload-in-c/rom.c` `display_sw1_status()` rendering the 8 SW1
+  bits:
+  ```c
+  for (i = 0; i < 8; i++) *p++ = '0' + ((sw >> i) & 1);   /* sw >> IV */
+  ```
+  Z80 has no variable shift, so `sw >> i` lowers to an `srl a; djnz` loop that
+  re-shifts **`i` times each iteration** — O(n²) over the 8 bits.
+- **Why it happens:** `sw >> i` with `i` a simple IV is a recurrence
+  (`sw>>i == (sw>>(i-1))>>1`) reducible to one `>> 1` per iteration by
+  maintaining a running shifted value.  LLVM's LSR/OSR only targets
+  multiply/GEP/address recurrences, **never shift-by-IV**, so nothing performs
+  this even with LSR enabled — and on Z80 LSR is disabled anyway (see CLAUDE.md
+  "LSR is Harmful").  There is **no cost on normal targets** (variable shift is
+  one cheap instruction), which is exactly why upstream LLVM has no incentive —
+  it is Z80-specific.
+- **Fix / workaround:** hand-rewrite to `*p++ = '0' + (sw & 1); sw >>= 1;`
+  (constant shift-by-1, no inner loop).  Measured **−5 B PROM** in autoload.
+- **Related:** same family as **B21** (stride-N index recurrence) and the
+  CLAUDE.md "LSR is Harmful — but there IS a beneficial use case" note.  Both are
+  IV-driven recurrences (`<<`/`>>`/`*k`) recomputed from scratch; the shared fix
+  is a **Z80-aware operator strength reduction that does not widen the counter**
+  (the thing that made generic LSR harmful).
+- **Revisit when:** a production hot loop shows a variable-shift-by-IV; or the
+  Z80-aware non-widening SR (B21/B22 shared fix) is taken up.
+- **Repro:** the pre-fix form is in git history of `display_sw1_status`;
+  `make clang_asm` on it shows the `srl a; djnz` inner shift loop.
+
+---
+
 ## Frontend — patterns blocked on clang AST/CodeGen work
 
 (See M4 above.  Frontend gaps tend to cascade to multiple middle-end
