@@ -771,6 +771,68 @@ cost model, never a global LSR off-switch.
 
 ---
 
+### B21. Inner-loop stride-N index not strength-reduced → recomputed shift-multiply, cascading to an IY invariant-shuttle + counter spill
+
+- **Status:** open, unfiled (documented here 2026-07-01).  **ZeroYield on
+  production runtime** — the witness is boot-only one-shot code — but the
+  *pattern class* (a stride-constant address inside an inner loop) is generic
+  and can appear in hotter code.
+- **Witness:** `autoload-in-c/rom.c` `define_sextants()` (inlined into
+  `_main_relocated`), the SEM702 font transpose-copy:
+  ```c
+  for (ch = 0; ch < 128; ch++) {
+      port_out(chargen_char, ch); port_out(chargen_dot, 0);
+      for (line = 0; line < 16; line++) {
+          port_out(chargen_data, sem702_font[((word) line << 7) | ch]);  /* stride +128 */
+          port_out(chargen_dot, (byte)((line + 1) & 0x0F));
+      }
+  }
+  ```
+  The inner index `&sem702_font[(line<<7)|ch]` advances by exactly **+128 per
+  iteration**, but clang recomputes it from scratch each time:
+  ```
+  ld l,c ; ld h,b
+  add hl,hl ×7          ; hl = line<<7   ← recomputed every iteration
+  ex de,hl
+  push iy ; pop hl      ; hl = &font[ch]  (the loop-invariant base, parked in IY)
+  add hl,de
+  ld a,(hl)
+  ```
+- **Cascade (this is the interesting part):** because `hl` is destroyed by the
+  `line<<7` shift-chain, the loop-invariant base `&font[ch]` has to be *saved*
+  across iterations.  The allocator parks it in **IY** and shuttles it back with
+  `push iy ; pop hl` (3 B) every iteration; and because IY + DE are both consumed
+  by that dance, the **outer `ch` counter is spilled to a BSS slot**
+  (`ld (__sfrend-2),de` / reload).  One missed strength-reduction thus produces
+  ~13 B/iter of address recompute **plus** an IY shuttle **plus** a memory spill.
+- **Strength-reduced target:** keep a running pointer in `hl`, `add hl,de`
+  (de=128 hoisted) each iteration.  Then `hl` simply *is* the pointer across
+  iterations — no `line<<7`, no IY invariant, no counter spill.  All three
+  wastes collapse together.
+- **SP-is-inviolable observation (user, 2026-07-01 — follow up later):** given
+  the current shape, even the IY shuttle is suboptimal — `pop hl ; push hl`
+  (peek top-of-stack, 2 B) would beat `push iy ; pop hl` (3 B) and free IY.  But
+  LLVM's codegen **treats `SP` as inviolable**: stack-resident SSA values are
+  reached only through fixed frame indices (`ld hl,(slot)`), never by peeking the
+  stack top with a pop/re-push idiom.  So the compiler will never emit that
+  hand-asm trick; it picks a callee reg (IY here) or a memory slot instead.
+  Inconsistently, it spilled the *counter* to a BSS slot but the *base* to IY.
+  **The user flagged the SP-inviolable modelling as a thing to revisit** — worth
+  a separate investigation into whether a Z80-aware stack-peek/`ld hl,(slot)`
+  choice could ever be cheaper than a callee-reg park.
+- **Related:** shares the IY-invariant-in-inner-loop shape with **B20**
+  (ravn/llvm-z80#249); the underlying miss is classic **IV strength reduction**,
+  which LSR would normally do but is disabled on Z80 (LSR widens 8-bit counters
+  → spills; see CLAUDE.md "Loop Strength Reduction is Harmful").  A *targeted*
+  stride-SR that does not widen counters is the shape that would help here.
+- **Revisit when:** a production *hot* loop shows a recomputed stride-N inner
+  index (none today — witness is boot-only); or the SP-inviolable follow-up is
+  taken up.
+- **Repro:** `cd rc700-gensmedet/autoload-in-c && make clang_asm` → search
+  `define_sextants` / `out (211)`.
+
+---
+
 ## Frontend — patterns blocked on clang AST/CodeGen work
 
 (See M4 above.  Frontend gaps tend to cascade to multiple middle-end
