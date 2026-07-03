@@ -124,6 +124,14 @@ the whole brief.
 - **Building is not behaving.** A clean compile / smaller binary is not proof of
   correctness. For behavior-affecting changes, run the runtime/value oracle before
   committing.
+- **Verify config/tooling fixes with the real artifact, not reasoning.** A CMake /
+  clangd / include-path fix is not done because the compiler resolves the header, or
+  because the `-I` "should" work. Generate the actual compile database
+  (`cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`) and confirm the **failing file's** real
+  flags, then run them. Relative `-I` in `.clangd` resolves from the source dir (not
+  the config dir), so it silently fails — prefer absolute `${CMAKE_CURRENT_SOURCE_DIR}`
+  paths in `target_include_directories` as the source of truth. "It resolves in the
+  compiler" is not the same as "CLion/clangd resolves it."
 - **When green looks too easy, check it.** Cross-check a PASS against elapsed time
   and plausibility; confirm setup steps actually ran. A suspiciously fast pass is a
   red flag.
