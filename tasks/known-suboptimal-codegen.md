@@ -893,7 +893,8 @@ cost model, never a global LSR off-switch.
   (de=128 hoisted) each iteration.  Then `hl` simply *is* the pointer across
   iterations — no `line<<7`, no IY invariant, no counter spill.  All three
   wastes collapse together.
-- **SP-is-inviolable observation (user, 2026-07-01 — follow up later):** given
+- **SP-is-inviolable observation (user, 2026-07-01 — follow-up filed as
+  ravn/llvm-z80#252 on 2026-07-04):** given
   the current shape, even the IY shuttle is suboptimal — `pop hl ; push hl`
   (peek top-of-stack, 2 B) would beat `push iy ; pop hl` (3 B) and free IY.  But
   LLVM's codegen **treats `SP` as inviolable**: stack-resident SSA values are
@@ -903,7 +904,13 @@ cost model, never a global LSR off-switch.
   Inconsistently, it spilled the *counter* to a BSS slot but the *base* to IY.
   **The user flagged the SP-inviolable modelling as a thing to revisit** — worth
   a separate investigation into whether a Z80-aware stack-peek/`ld hl,(slot)`
-  choice could ever be cheaper than a callee-reg park.
+  choice could ever be cheaper than a callee-reg park.  Investigated
+  2026-07-04: the existing spill->PUSH/POP peephole family
+  (`Z80LateOptimization.cpp:391-520`, #195/#198/#202/#203/#204) already
+  converts a store+matching-reload pair to a PUSH/POP bracket when safe, but
+  only as a late cleanup of a store/reload regalloc already emitted -- never
+  as a proactive "peek instead of shuttle" strategy.  Scoping issue filed:
+  ravn/llvm-z80#252.
 - **Related:** shares the IY-invariant-in-inner-loop shape with **B20**
   (ravn/llvm-z80#249); the underlying miss is classic **IV strength reduction**,
   which LSR would normally do but is disabled on Z80 (LSR widens 8-bit counters
