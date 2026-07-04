@@ -615,7 +615,9 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
 
 ### M5. Scale-1 char-array loops miss pointer strength reduction
 
-- **Status:** open, LSR won't fix it (cost model rejects the transform).
+- **Status:** open, root-caused to MIR level (2026-07-04).  IR-level fixes
+  (LSR cost tweak, pre-isel pointer-IV pass) are undone by canonicalization;
+  a pre-RA MachineFunction pointer-IV pass is the only viable lever.
 - **Impact:** 16–40% slower inner loops on byte-array scan/modify benchmarks
   (sieve −16%, e −22%, nqueens −21%, tqsort −43% T-states vs dcc).  Does not
   affect production targets directly (rcbios/cpnos/autoload lack tight
@@ -629,17 +631,86 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
   and requires no IY.
 - **Why LSR won't fix it:** `isLSRCostLess` weights `NumRegs` first.  The
   pointer form needs 3 live pairs (ptr, stride, bound) vs the integer form's
-  2 (index, stride).  The 10-T `ld hl, _flags` reload is invisible to LSR's
-  cost model (treated as a zero-cost constant load per use, not a per-
-  iteration instruction cost).  Confirmed: `opt -passes=loop-reduce` on the
-  sieve IR is a no-op.  AVR (in-tree) has the same behaviour → middle-end
-  LSR issue, not Z80-specific.
-- **Revisit when:** (a) a Z80-specific `Z80GEPStrengthReduce` pre-RA pass
-  is written to recognise `gep global_gv, linear_iv` in loops; (b) or
-  `isLSRCostLess` is changed to weigh `NumBaseAdds` more heavily against
-  `NumRegs` when the base add is an illegal addressing mode (GV + HasBaseReg).
+  2 (index, stride), so it loses at the first tiebreak.
+- **CORRECTED 2026-07-04 — the fix must be MIR-level, NOT IR-level.** Two
+  earlier hypotheses in this entry were wrong on the current backend:
+  (1) "`opt -passes=loop-reduce` on the sieve IR is a no-op" is now STALE —
+  LSR *does* transform, emitting an integer-IV `%lsr.iv` + `getelementptr
+  @flags, %lsr.iv` (verified `opt -mtriple=z80 -passes=loop-reduce`).
+  (2) The proposed IR-level fixes (a Z80GEPStrengthReduce *pre-isel* pass, or
+  an `isLSRCostLess`/`NumBaseAdds` tweak) would be UNDONE by canonicalization.
+  Proof: hand-writing the inner loop as a pure pointer IV in IR (`%p = phi
+  ptr [@flags+start], [%p+prime]`, compare `%p < @flags+8191`) still compiles
+  to `ld hl,_flags; add hl,bc` every iteration — and is even *larger*.  The IR
+  is canonicalized back to `offset-phi + gep(@flags, offset)` *before*
+  IRTranslator, and this persists with BOTH `-disable-lsr` AND `-disable-cgp`
+  (the rewrite rides in around the SCEV/LoopInfo-requiring passes; exact pass
+  not pinned but irrelevant).  `offset-phi + gep(base, offset)` is LLVM's
+  universal canonical IV form for `array[i]` loops — free on `[base+reg]`
+  targets, a per-iteration base reload on Z80 where `BaseGV + reg` is an
+  illegal addressing mode (`isLegalAddressingMode` correctly returns false;
+  the cost is real, LSR just can't spend the extra register to avoid it).
+- **CORRECTION 2026-07-04 (same day, follow-up):** "must be MIR-level" above
+  is TOO STRONG.  It was based on testing with `-disable-lsr`/`-disable-cgp`
+  and hand-writing the pointer IV in *clang-frontend* IR (before LSR/CGP run)
+  — that test is valid for that timing but doesn't generalize.  An IR-level
+  pass DOES survive if placed AFTER LSR in the pipeline.  Prior art in-tree:
+  `PPCLoopInstrFormPrep.cpp` ("update form" case) does exactly this rewrite
+  for PowerPC using `ScalarEvolution`+`SCEVExpander`, registered via
+  `addPreISel()` — which runs after `TargetPassConfig::addIRPasses()`
+  (LSR included) and right before ISel.  Z80 already has this exact slot
+  in use: `Z80PassConfig::addIRPasses()` calls the base `addIRPasses()`
+  (which runs LSR) and THEN adds `Z80PatternFillRecognize`/`Z80LoopRotate`
+  (`Z80TargetMachine.cpp:366-374`) — proven to survive to final asm.  Also
+  ruled out empirically: `-lsr-preferred-addressing-mode=postindexed` (the
+  TTI `getPreferredAddressingMode` hook) has ZERO effect on the repro — Z80
+  has no hardware post-increment addressing mode at all, so that hook (built
+  for ARM MVE/Hexagon/PowerPC update-form instructions) doesn't apply.  See
+  ravn/llvm-z80#250 comment (2026-07-04) for the full writeup and concrete
+  implementation plan (a `Z80LoopInstrFormPrep` FunctionPass modeled on
+  `Z80PatternFillRecognize`, registered in the same post-LSR slot).
+- **NOT Z80-specific — confirmed on AVR + MSP430 (2026-07-04).**  Same
+  `killidx` kernel via `llc -O2 -mtriple={avr,msp430,z80}`:
+    * **MSP430**: inner loop is `clr.b flags(r12); add r13,r12; cmp #8191,r12`
+      — the `symbol(reg)` indexed mode folds `flags+r12` for free, so the
+      integer-IV form is OPTIMAL.  LLVM's canonical form is correct here.
+    * **AVR**: inner loop `mov r26,r24; mov r27,r25; subi r26,lo8(-(flags));
+      sbci r27,hi8(-(flags)); st X,r1; add r24,r22; adc r25,r23; ...` — keeps
+      the integer index in r24:r25 and RE-ADDS the base every iteration into X.
+      IDENTICAL shape to Z80's `ld hl,_flags; add hl,bc`.
+    * **Z80**: `ld hl,_flags; add hl,bc; ...`.
+  Conclusion: this is a target-independent LLVM canonical-IV choice that
+  assumes `base+reg` addressing is cheap (true on MSP430/x86/ARM); it penalises
+  every target LACKING `symbol+reg` addressing (AVR, Z80).  AVR — a mature
+  in-tree target whose `isLegalAddressingMode` also rejects `symbol+reg` — does
+  NOT form a pointer IV either, strong evidence that LSR simply won't spend the
+  register regardless of addressing-mode info.  => a generic-LLVM improvement
+  (benefits AVR too) is conceivable; per upstream discipline that would route
+  to llvm/llvm-project with explain+go-ahead.  Pragmatic path stays a Z80 MIR
+  pass.
+- **Revisit when:** a **pre-RA MachineFunction pass** (or a very-late IR pass
+  immune to re-canonicalization) recognises the selected `LD HL,GV; ADD HL,rr`
+  (from `G_PTR_ADD(G_GLOBAL_VALUE, offset-IV)`) inside a loop and rewrites it
+  to a genuine pointer IV: materialise `GV` once in the preheader into a pair,
+  carry `HL = base+offset` across iterations advancing by the stride
+  (`add hl,de`), and rewrite the exit test to a pointer compare.  This is the
+  only lever that survives IR canonicalization.
 - **Pointers:** dcc-corpus investigation 2026-06-25; repro:
-  `dcc/tests/sieve.c`, `dcc/tests/e.c`.
+  `dcc/tests/sieve.c`, `dcc/tests/e.c`.  Tracking issue: ravn/llvm-z80#250
+  (filed 2026-07-04, full problem statement + repro + lit testcase).
+- **Re-verified 2026-07-04** (post upstream-dcc merge + backend gains): fresh
+  asm read of `sieve` confirms the mechanism unchanged.  clang inner loop
+  (`BB0_5`, the multiple-killing loop) keeps the *integer index* `k` in `bc`,
+  re-emits `ld hl,_flags; add hl,bc` every iteration, and shuffles `bc`↔`hl`
+  for the `k += prime` update (~13 insns); dcc walks a `char*` in `hl` with a
+  single `add hl,de` + pointer-vs-endpointer compare (~7 insns).  CAVEAT: of
+  the compare3 tests where dcc beats clang, only `sieve` is a *pure* M5 codegen
+  case.  `tqsort`/`tbsearch` are RUNTIME-LIBRARY confounds — dcc's qsort/bsearch
+  are hand-written asm in `DCCRTL.MAC` (Shell sort), clang links an O(n^2)
+  insertion-sort `qsort` in C (`z80-utils/cpm/cpm_stdlib.c`).  `tstring` clang
+  hits the 2e9-tstate ceiling (capped, not measured).  `e` is a mix of divide-
+  helper impl (clang 1× combined `___divhi3`; dcc 2× `__divs`+`__mods`) and
+  scale-2 array indexing — NOT isolated to M5, do not cite it as pure M5.
 
 ### M6. Z80LowerSelect pre-compute forces IY in pointer-scan loops
 
