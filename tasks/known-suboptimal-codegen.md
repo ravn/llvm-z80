@@ -469,17 +469,30 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   Phase 3 chapter 3 (CSE wiring is mentioned as "open design
   question"); session writeup for Phase 4 ch 1.
 
-### B15. Branch Folder unsound hoist exposed by MachineCSE — PARKED 2026-06-09
+### B15. Branch Folder unsound hoist exposed by MachineCSE — ROOT-CAUSED + FIXED 2026-07-01
 
-- **Status:** KNOWN BUG, PARKED 2026-06-09 (user-directed).  Root cause
-  in generic LLVM (Branch Folder), not the Z80 backend; production
-  builds are NOT affected because the trigger MIR shape requires
-  MachineCSE, which is OFF by default in our fork (Z80TargetMachine.cpp
-  `EnableMachineCSE` cl::opt default FALSE).  Upstream filing prepared
-  and explained; held for the user's per-filing go-ahead per HARD rule
-  `feedback_explain_before_filing`.  Production runtime suite (lit 149
-  PASS + 4 XFAIL, test-runner 854 PASS / 0 FAIL across O0..Oz, MAME
-  boot, polypascal-test) is clean under the mitigation.
+- **Status:** ROOT-CAUSED + FIXED 2026-07-01 (same mechanism as
+  ravn/llvm-z80#247, the clang -O2 fannkuch miscompile).  The fix is a
+  generic two-operand change in `llvm/lib/CodeGen/MachineOperand.cpp`:
+  `MO_MCSymbol` `isIdenticalTo`/`getHashValue` now also compare/hash
+  `getOffset()` (previously ignored, unlike MO_GlobalAddress etc.).  The
+  Z80 static-frame lowering attaches a nonzero offset to an MO_MCSymbol
+  via `setOffset()` (`Z80InstrInfo.cpp:1147,...`); branch-folder's
+  `isIdenticalTo` treated `__sfrend-2` and `__sfrend-4` stores as equal
+  and tail-merged them, dropping one -> wrong result.  Upstream filing to
+  `llvm/llvm-project` prepared, held for the user's per-filing go-ahead
+  per HARD rule `feedback_explain_before_filing`.  **Attribution VERIFIED
+  by A/B (2026-07-01):** reproducing the pi trigger via `llc -O2
+  -z80-enable-cse pi_o2.ll`, the fix-reverted baseline llc FAILS
+  (exit=1) and the fixed llc PASSES (exit=0) — so this change, not #248's
+  orthogonal shape-mitigation, is what root-fixes B15.  See
+  `rc700-gensmedet/tasks/clang-fannkuch-O1-backend-miscompile-2026-06-28.md`
+  and lit test `llvm/test/CodeGen/Z80/branch-folder-mcsymbol-offset-247.ll`.
+- **Original status (kept for history):** KNOWN BUG, PARKED 2026-06-09
+  (user-directed).  Root cause in generic LLVM (Branch Folder), not the
+  Z80 backend; production builds are NOT affected because the trigger MIR
+  shape requires MachineCSE, which is OFF by default in our fork
+  (Z80TargetMachine.cpp `EnableMachineCSE` cl::opt default FALSE).
 - **History:** #23 retirement (2026-06-08, earlier same day) defaulted
   both LICM and CSE to ON, citing "AES -Oz -8.9% tstates / -13 B"
   and "#198 -O2 miscompile no longer reproduces."  Same-day
