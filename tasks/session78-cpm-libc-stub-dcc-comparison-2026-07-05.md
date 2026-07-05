@@ -109,7 +109,7 @@ currently unreliable for this comparison — see below. `_CODE`-only sizes (clan
 unaffected by the bug) were measured for reference: sieve 1964 B, e 2345 B, ttt 2645 B,
 tm 3473 B. Total `.COM` sizes were NOT used for the size comparison — see the elf2rel finding.
 
-### elf2rel bug found (not yet filed as a GitHub issue — see "Follow-ups")
+### elf2rel bug found (filed as https://github.com/ravn/llvm-z80/issues/253, 2026-07-05)
 
 `z80-utils/elf2rel/src/main.rs`'s `section_to_area()` (~line 65–75) maps ELF `.bss`/`.bss.*`
 sections into the SDCC `"_DATA"` area — there is no dedicated `_BSS` area at all
@@ -213,10 +213,9 @@ part of the repo.
 1. Decide what "production-quality CP/M runtime" means in scope before resuming (ask the user
    — full libc port? z88dk libc reuse? a properly designed but still minimal from-scratch
    runtime?).
-2. File the elf2rel `_BSS`-into-`_DATA` bug (see above) as a GitHub issue against
-   `ravn/llvm-z80` — no permission needed (user's own repo), but per the user's upstream-filing
-   diligence preference, re-verify the exact line numbers and behavior immediately before
-   filing (code may have moved).
+2. ~~File the elf2rel `_BSS`-into-`_DATA` bug as a GitHub issue~~ — DONE 2026-07-05, filed as
+   [#253](https://github.com/ravn/llvm-z80/issues/253) after re-verifying `section_to_area()`
+   and the `SHT_NOBITS` zero-fill branch against current `main`.
 3. Re-run the full dcc-vs-clang comparison (size AND timing) once elf2rel's `_BSS` handling is
    fixed and/or a production runtime replaces the ad-hoc stub.
 4. Consider extending `heap.c`'s `malloc()` with coalescing (or a different structure) to cut
