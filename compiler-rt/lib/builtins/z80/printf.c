@@ -1,7 +1,7 @@
 /* printf.c — minimal printf for Z80
  *
- * Supports: %d, %u, %x, %s, %c, %%
- * No width/precision/padding. No %l (long).
+ * Supports: %d, %u, %x, %s, %c, %%, %lu (unsigned long)
+ * No width/precision/padding.
  */
 #include <stdarg.h>
 
@@ -31,6 +31,18 @@ static void pr_int(int n) {
     pr_uint((unsigned int)n);
 }
 
+/* Same digit-extraction loop as pr_uint, but on `unsigned long` (32-bit)
+ * so e.g. dcc/tests/ttt.c's `printf("%lu moves\n", g_Moves)` (g_Moves is
+ * uint32_t, can exceed 65535) prints correctly instead of truncating to
+ * 16 bits. buf[10] covers ULONG_MAX = "4294967295" (10 digits). */
+static void pr_ulong(unsigned long n) {
+    char buf[10];
+    int i = 0;
+    if (n == 0) { putchar('0'); return; }
+    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
+    while (i > 0) putchar(buf[--i]);
+}
+
 static void pr_hex(unsigned int n) {
     char buf[5];
     int i = 0;
@@ -53,6 +65,13 @@ int printf(const char *fmt, ...) {
         else if (c == 's') pr_str(va_arg(ap, const char *));
         else if (c == 'c') putchar((char)va_arg(ap, int));
         else if (c == '%') putchar('%');
+        else if (c == 'l') {
+            /* only %lu is needed by the current benchmark set; %ld can be
+             * added the same way (pr_long) if a caller needs it later. */
+            c = *fmt++;
+            if (c == 'u') pr_ulong(va_arg(ap, unsigned long));
+            else { putchar('%'); putchar('l'); putchar(c); }
+        }
         else { putchar('%'); putchar(c); }
         count++;
     }
