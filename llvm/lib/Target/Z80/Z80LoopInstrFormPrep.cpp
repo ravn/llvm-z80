@@ -1,0 +1,468 @@
+//===-- Z80LoopInstrFormPrep.cpp - Z80 pointer-IV strength reduction -----===//
+//
+// Part of LLVM-Z80, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Rewrite scale-1 byte-array loop address computations into a genuine
+// pointer induction variable (ravn/llvm-z80#250).
+//
+// LLVM's canonical IV form for `array[i]` loops is `offset-phi + gep(base,
+// offset)`: a plain integer IV plus a fresh `getelementptr` computed every
+// iteration.  That's free on targets with `[base+reg]` addressing (x86, ARM,
+// MSP430's `symbol(reg)` form), but on Z80 `BaseGV + reg` is not a legal
+// addressing mode at all (`Z80TargetLowering::isLegalAddressingMode` already
+// says so) -- so the backend has to re-derive `base+offset` from scratch
+// every iteration (`ld hl,base; add hl,offset`), where a hand-written loop
+// just walks a running pointer (`add hl,stride`).  See issue #250 for the
+// full repro, the AVR/MSP430 cross-target evidence, and why the cheaper
+// fixes (TTI `getPreferredAddressingMode`, `isLSRCostLess` tiebreak) don't
+// help: Z80 has no post-increment addressing mode for LSR to prefer, and
+// the register-pressure tiebreak in `isLSRCostLess` is exactly the tradeoff
+// this pass makes explicit and Z80-tuned (see registerPressureOK below).
+//
+// Before:
+//   for (k = start; k < N; k += stride)
+//     ... = *(i8*)(base + k);        // gep i8, base, k -- recomputed every iter
+// After (conceptually):
+//   ptr = base + start;              // computed once, in the preheader
+//   for (k = start; k < N; k += stride) {
+//     ... = *ptr;
+//     ptr += stride;                 // single pointer add per iteration
+//   }
+// The original integer IV `k` is left untouched -- it's still needed for the
+// loop's exit test -- only the per-iteration address GEPs are replaced with
+// the new pointer PHI.  This mirrors PowerPC's `PPCLoopInstrFormPrep` "update
+// form" case (`PPCLoopInstrFormPrep.cpp`, using `SCEVExpander` to build the
+// same shape), but is much simpler: Z80 has no scaled/offset addressing mode
+// worth preparing for, so only the single scale-1/single-base case is
+// handled -- no DS/DQ-offset forms, no multi-address bucket/commoning.
+//
+// Pipeline placement matters more than IR-vs-MIR: this MUST run strictly
+// after LoopStrengthReduce, or LSR's own canonicalization would simply
+// re-derive the offset-IV form we just rewrote away.  It is registered only
+// in `Z80PassConfig::addIRPasses()`, in the same slot already used by
+// `Z80PatternFillRecognize`/`Z80LoopRotate` -- immediately after the base
+// `TargetPassConfig::addIRPasses()` call, which is where LSR itself runs
+// (`TargetPassConfig.cpp`).  That slot is part of the codegen backend
+// pipeline that clang invokes internally after its own middle-end optimizer
+// runs, so it fires uniformly for `clang --target=z80` and `opt | llc`.
+// Unlike `Z80PatternFillRecognize`, this pass is deliberately NOT also
+// registered via a middle-end `PassBuilder` EP callback (e.g.
+// `registerVectorizerStartEPCallback`): pattern-fill's rewrite produces an
+// opaque intrinsic call that LSR can't touch, so an early middle-end copy is
+// harmless there.  Ours produces a plain PHI+GEP pointer IV that backend LSR
+// *would* re-canonicalize back to the offset form if it ran again after an
+// early rewrite -- so registering this pass before backend LSR would be
+// actively counterproductive, not just redundant.
+//
+//===----------------------------------------------------------------------===//
+
+#include "Z80LoopInstrFormPrep.h"
+#include "Z80.h"
+
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/Pass.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
+
+#define DEBUG_TYPE "z80-loop-instr-form-prep"
+
+using namespace llvm;
+
+// Register-pressure gate.  Z80 only has BC/DE/HL as general-purpose pairs;
+// adding a pointer IV per rewritten group costs one more live register pair
+// for the life of the loop.  If the loop already carries this many (or more)
+// PHI-resident values across the backedge, decline -- the extra pointer
+// would likely force a spill and net negative, a cost LSR's own
+// `isLSRCostLess` NumRegs tiebreak can't see either (ravn/llvm-z80#250).
+static cl::opt<unsigned> Z80MaxLoopCarriedPtrs(
+   "z80-loop-instr-form-prep-max-carried", cl::Hidden, cl::init(2),
+   cl::desc("Max pre-existing loop-carried PHIs before "
+            "Z80LoopInstrFormPrep declines to add another pointer IV"));
+
+// Default OFF: the register-pressure gate above (registerPressureOK) is a
+// coarse IR-level PHI count, not a real post-RA pressure estimate, and the
+// case that matters (a non-constant stride, so the old integer IV survives
+// solely for the exit test) leaves 3 live 16-bit values through the loop
+// (new pointer, old IV, stride) on a target with exactly 3 GP pairs and no
+// spare -- initial testing on the #250 repro showed the allocator spilling
+// to the static-stack scratch area rather than keeping all 3 in registers,
+// which can net WORSE than the un-rewritten form.  Keep opt-in
+// (-mllvm -z80-loop-instr-form-prep) until the register-pressure gate is
+// tightened or IndVarSimplify-style exit-test rewriting (converting the
+// exit test to compare pointers, eliminating the old IV entirely) is added.
+static cl::opt<bool> EnableZ80LoopInstrFormPrep(
+   "z80-loop-instr-form-prep", cl::init(false), cl::Hidden,
+   cl::desc("Enable Z80 pointer-IV strength reduction for scale-1 "
+            "byte-array loops (ravn/llvm-z80#250, experimental)"));
+
+bool llvm::isZ80LoopInstrFormPrepEnabled() {
+ return EnableZ80LoopInstrFormPrep;
+}
+
+namespace {
+
+// One recognised "base[k]"-shaped address computation: every Inst in
+// \c Addrs shares the same (Start, Step) SCEV pair, so they can all be
+// replaced by a single new pointer PHI.
+struct AddrGroup {
+ const SCEV *Start;
+ const SCEV *Step;
+ SmallVector<GetElementPtrInst *, 4> Addrs;
+};
+
+// Collect scale-1 byte-array address computations in \p L: GEPs with a
+// single index into an i8 source element type, whose SCEV is an affine
+// AddRec for \p L with a loop-invariant step and loop-invariant start, and
+// whose only use is the load/store that consumes them (never escapes the
+// loop, so replacing them with the header-resident PHI value -- the
+// address at the START of the current iteration -- is always sound).
+static bool collectAddrGroups(Loop &L, ScalarEvolution &SE,
+                             SmallVectorImpl<AddrGroup> &Groups) {
+ for (BasicBlock *BB : L.blocks()) {
+   for (Instruction &I : *BB) {
+     Value *PtrOp;
+     if (auto *LI = dyn_cast<LoadInst>(&I))
+       PtrOp = LI->getPointerOperand();
+     else if (auto *SI = dyn_cast<StoreInst>(&I))
+       PtrOp = SI->getPointerOperand();
+     else
+       continue;
+
+     auto *GEP = dyn_cast<GetElementPtrInst>(PtrOp);
+     // Only rewrite GEPs computed fresh in this block, used exactly once
+     // (by the load/store found above) -- guards against the address
+     // escaping the loop via some other user we'd silently mis-replace.
+     if (!GEP || GEP->getParent() != BB || !GEP->hasOneUse())
+       continue;
+     if (GEP->getNumIndices() != 1 ||
+         !GEP->getSourceElementType()->isIntegerTy(8))
+       continue;
+     if (!SE.isSCEVable(GEP->getType()))
+       continue;
+     auto *AR = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(GEP));
+     if (!AR || AR->getLoop() != &L || !AR->isAffine())
+       continue;
+     const SCEV *Step = AR->getStepRecurrence(SE);
+     const SCEV *Start = AR->getStart();
+     if (!SE.isLoopInvariant(Step, &L) || !SE.isLoopInvariant(Start, &L))
+       continue;
+
+     bool Found = false;
+     for (AddrGroup &G : Groups) {
+       if (G.Start == Start && G.Step == Step) {
+         G.Addrs.push_back(GEP);
+         Found = true;
+         break;
+       }
+     }
+     if (!Found)
+       Groups.push_back({Start, Step, {GEP}});
+   }
+ }
+ return !Groups.empty();
+}
+
+static bool registerPressureOK(Loop &L, unsigned NewGroups) {
+ unsigned ExistingPHIs = 0;
+ for (PHINode &PN : L.getHeader()->phis()) {
+   (void)PN;
+   ++ExistingPHIs;
+ }
+ return ExistingPHIs + NewGroups <= Z80MaxLoopCarriedPtrs;
+}
+
+// Try to eliminate the old integer IV entirely by rewriting the loop's
+// exit test to compare pointers instead of integers (an LFTR-style
+// transform, scoped to the one shape we need).
+//
+// WHY THIS STEP IS NOT OPTIONAL ON Z80: leaving the old IV alive (as a
+// first cut of this pass did) keeps 3 live 16-bit values through the loop
+// -- the new pointer, the loop-invariant stride, and the old IV chain used
+// only for the compare.  Z80 has exactly 3 GP register pairs (BC/DE/HL, no
+// spare with IX/IY reserved by default) and empirically this 3rd value
+// forced the allocator to spill to the static-stack scratch area, turning
+// the #250 repro from 508 to 680 bytes -- a regression, not a win.  This
+// step drops back to 2 live values (pointer, stride) by deleting the old
+// IV once nothing but the compare depends on it.
+//
+// Loop shape assumed: the loop's unique exiting block ends in
+// `br i1 %c, ...` where %c = `icmp pred %oldIV, %bound` (either operand
+// order), %oldIV is an AddRec for this loop sharing the SAME step as our
+// new pointer IV (\p G.Step) -- e.g. `%kn = %k + %prime` is one iteration
+// ahead of the GEP's own index `%k`, so its SCEV is
+// {G.Start + G.Step, +, G.Step}, matching \p IncGEP's phase exactly -- and
+// %bound is loop-invariant.  Bails (leaving the old IV alive, no regression
+// beyond the address rewrite itself) on anything that doesn't match this
+// precisely: non-relational predicates, an old-IV value used anywhere else,
+// or a phase that lines up with neither \p NewPHI's nor \p IncGEP's start.
+//
+// Worked example (continuing #250's `flags[k] = 0` for `k += prime`,
+// bound 8191): %kn's SCEV start is G.Start + G.Step, matching \p IncGEP, so
+// `icmp ult i16 %kn, 8191` becomes `icmp ult ptr %z80.ivptr.next, %endptr`
+// where `%endptr = getelementptr i8, ptr @flags, i16 8191` is materialised
+// once in the preheader.  `%kn` and the header phi `%k` are then dead (no
+// remaining uses) and are erased.
+static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
+                             const AddrGroup &G, PHINode *NewPHI,
+                             Instruction *IncGEP, Value *BaseVal) {
+ BasicBlock *Exiting = L.getExitingBlock();
+ if (!Exiting)
+   return false;
+ auto *Br = dyn_cast<CondBrInst>(Exiting->getTerminator());
+ if (!Br)
+   return false;
+ auto *Cmp = dyn_cast<ICmpInst>(Br->getCondition());
+ if (!Cmp || !Cmp->hasOneUse() || !Cmp->isRelational())
+   return false;
+
+ // Find the operand that is our old-IV chain: an AddRec for this loop
+ // sharing G.Step (SCEV nodes are uniqued by ScalarEvolution, so pointer
+ // equality is a valid identity check here, same as in collectAddrGroups).
+ Value *OldIVUse = nullptr;
+ bool OldIVIsLHS = false;
+ for (unsigned Idx = 0; Idx < 2; ++Idx) {
+   Value *Op = Cmp->getOperand(Idx);
+   if (!SE.isSCEVable(Op->getType()))
+     continue;
+   auto *AR = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(Op));
+   if (AR && AR->getLoop() == &L && AR->getStepRecurrence(SE) == G.Step) {
+     OldIVUse = Op;
+     OldIVIsLHS = (Idx == 0);
+     break;
+   }
+ }
+ if (!OldIVUse)
+   return false;
+ Value *BoundVal = Cmp->getOperand(OldIVIsLHS ? 1 : 0);
+ if (!SE.isLoopInvariant(SE.getSCEV(BoundVal), &L))
+   return false;
+ auto *OldIVInst = dyn_cast<Instruction>(OldIVUse);
+ if (!OldIVInst)
+   return false;
+
+ // The old header PHI (`%k`) feeding OldIVInst (`%kn = %k + %prime`).
+ PHINode *OldPHI = nullptr;
+ for (Use &U : OldIVInst->operands())
+   if (auto *PN = dyn_cast<PHINode>(U.get()))
+     if (PN->getParent() == L.getHeader())
+       OldPHI = PN;
+ if (!OldPHI)
+   return false;
+
+ // The old IV must have no uses beyond (a) this compare and (b) feeding
+ // its own header PHI's backedge -- i.e. it must be dead once both the
+ // compare and the PHI are gone.  Any other use means it survives
+ // regardless, so rewriting the compare alone wouldn't free a register.
+ for (User *U : OldIVInst->users()) {
+   if (U == Cmp)
+     continue;
+   if (U == OldPHI)
+     continue;
+   return false;
+ }
+
+ // Which phase does the old IV correspond to: the current-iteration
+ // pointer (NewPHI) or the next-iteration one (IncGEP)?  Bail if neither
+ // matches -- rewriting against the wrong phase would be a miscompile.
+ //
+ // The old IV is an INTEGER recurrence (e.g. {%start,+,%prime} for `%k` or
+ // {%start+%prime,+,%prime} for `%kn`); the pointer IVs are POINTER
+ // recurrences offset from the array base (NewPHI's start is
+ // G.Start = {@flags+%start}, IncGEP's is G.Start+G.Step).  So we can't
+ // compare the two starts directly -- they differ by the base.  Subtract
+ // the base SCEV from each pointer phase to get the integer offset it
+ // represents, and match THAT against the old IV's start:
+ //   NewPHI  <-> integer offset (G.Start        - base)  [= %start]
+ //   IncGEP  <-> integer offset (G.Start+G.Step - base)  [= %start+%prime]
+ // (getMinusSCEV of two pointer-typed SCEVs yields an integer SCEV.)
+ const SCEV *OldIVStart =
+     cast<SCEVAddRecExpr>(SE.getSCEV(OldIVUse))->getStart();
+ const SCEV *BaseSCEV = SE.getSCEV(BaseVal);
+ const SCEV *NewPhiOffset = SE.getMinusSCEV(G.Start, BaseSCEV);
+ const SCEV *IncGepOffset =
+     SE.getMinusSCEV(SE.getAddExpr(G.Start, G.Step), BaseSCEV);
+ Value *MatchingPtr;
+ if (OldIVStart == NewPhiOffset)
+   MatchingPtr = NewPHI;
+ else if (OldIVStart == IncGepOffset)
+   MatchingPtr = IncGEP;
+ else
+   return false;
+
+ BasicBlock *Preheader = L.getLoopPreheader();
+ Type *I8Ty = Type::getInt8Ty(L.getHeader()->getContext());
+ // BoundVal already dominates the preheader (any def used inside the loop
+ // must dominate the whole loop, hence its unique predecessor) -- no SCEV
+ // re-expansion needed, just reuse the existing Value as the GEP index.
+ IRBuilder<> PHBuilder(Preheader->getTerminator());
+ Value *EndPtr = PHBuilder.CreateGEP(I8Ty, BaseVal, BoundVal, "z80.ivptr.end");
+
+ // Place the new compare right before the branch terminator: when we match
+ // against IncGEP (the next-iteration pointer, defined near the end of the
+ // latch) the compare must be dominated by it, so it can't sit at the old
+ // compare's (earlier) position.  Just before the terminator is dominated by
+ // both NewPHI and IncGEP.
+ IRBuilder<> CmpBuilder(Br);
+ Value *NewCmp = CmpBuilder.CreateICmp(
+     Cmp->getPredicate(), OldIVIsLHS ? MatchingPtr : EndPtr,
+     OldIVIsLHS ? EndPtr : MatchingPtr, "z80.ivptr.cmp");
+ Cmp->replaceAllUsesWith(NewCmp);
+ Cmp->eraseFromParent();
+ OldIVInst->eraseFromParent();
+ if (OldPHI && OldPHI->use_empty())
+   OldPHI->eraseFromParent();
+ return true;
+}
+
+// Rewrite one recognised address group: materialise a start pointer once in
+// the preheader, thread a pointer PHI through the header, advance it once
+// per iteration in the latch, and replace every GEP in the group with the
+// PHI directly.  The original integer IV is left alone -- it's still needed
+// for the loop's exit test.
+//
+// Worked example (the ravn/llvm-z80#250 repro, `flags[k] = 0` for
+// `k += prime`): Start = SCEVUnknown(@flags) + <loop-invariant start>,
+// Step = SCEVUnknown(%prime) (not a compile-time constant -- confirmed
+// handled since we only require loop-invariance, not a SCEVConstant).  The
+// rewrite produces, in the preheader: `%ptr.init = getelementptr i8, ptr
+// @flags, i16 %start`; in the header: `%ptr = phi ptr [%ptr.init, %ph],
+// [%ptr.next, %latch]`; in the latch: `%ptr.next = getelementptr i8, ptr
+// %ptr, i16 %prime`.  Every `getelementptr i8, ptr @flags, i16 %k` in the
+// loop body is replaced by `%ptr`.
+static bool rewriteAddrGroup(Loop &L, SCEVExpander &SCEVE,
+                            const AddrGroup &G) {
+ BasicBlock *Preheader = L.getLoopPreheader();
+ BasicBlock *Header = L.getHeader();
+ BasicBlock *Latch = L.getLoopLatch();
+ if (!Preheader || !Header || !Latch)
+   return false;
+
+ LLVMContext &Ctx = Header->getContext();
+ Type *I8Ty = Type::getInt8Ty(Ctx);
+ PointerType *PtrTy = cast<PointerType>(G.Addrs.front()->getType());
+ // Capture the original base pointer Value before the GEPs that reference
+ // it are erased below -- needed both here (unused) and by
+ // tryEliminateOldIV to rebuild an end-pointer for the rewritten exit test.
+ Value *BaseVal = G.Addrs.front()->getPointerOperand();
+
+ Value *StartPtr =
+     SCEVE.expandCodeFor(G.Start, PtrTy, Preheader->getTerminator());
+ Value *StepVal =
+     SCEVE.expandCodeFor(G.Step, G.Step->getType(), Preheader->getTerminator());
+
+ PHINode *NewPHI =
+     PHINode::Create(PtrTy, 2, "z80.ivptr", Header->getFirstNonPHIIt());
+ NewPHI->addIncoming(StartPtr, Preheader);
+
+ auto *IncGEP = GetElementPtrInst::Create(
+     I8Ty, NewPHI, StepVal, "z80.ivptr.next",
+     Latch->getTerminator()->getIterator());
+ NewPHI->addIncoming(IncGEP, Latch);
+
+ LLVM_DEBUG(dbgs() << "z80-loop-instr-form-prep: rewrote " << G.Addrs.size()
+                   << " address(es) in " << Header->getParent()->getName()
+                   << " to pointer IV " << *NewPHI << "\n");
+
+ for (GetElementPtrInst *GEP : G.Addrs)
+   GEP->replaceAllUsesWith(NewPHI);
+ for (GetElementPtrInst *GEP : G.Addrs)
+   GEP->eraseFromParent();
+
+ if (tryEliminateOldIV(L, *SCEVE.getSE(), G, NewPHI, IncGEP, BaseVal))
+   LLVM_DEBUG(dbgs() << "z80-loop-instr-form-prep: eliminated old IV, exit "
+                        "test now compares pointers\n");
+
+ return true;
+}
+
+static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI) {
+ bool Changed = false;
+ SmallVector<Loop *, 8> Loops;
+ for (Loop *Outer : LI)
+   for (Loop *L : depth_first(Outer))
+     if (L->isInnermost())
+       Loops.push_back(L);
+
+ for (Loop *L : Loops) {
+   if (!L->getLoopPreheader() || !L->getLoopLatch())
+     continue;
+   SmallVector<AddrGroup, 4> Groups;
+   if (!collectAddrGroups(*L, SE, Groups))
+     continue;
+   if (!registerPressureOK(*L, Groups.size()))
+     continue;
+   SCEVExpander SCEVE(SE, "z80-loop-instr-form-prep");
+   for (AddrGroup &G : Groups)
+     if (rewriteAddrGroup(*L, SCEVE, G))
+       Changed = true;
+ }
+ return Changed;
+}
+
+// Legacy FunctionPass wrapper so llc's/clang's codegen addIRPasses pipeline
+// picks the pass up.
+class Z80LoopInstrFormPrepLegacyPass : public FunctionPass {
+public:
+ static char ID;
+ Z80LoopInstrFormPrepLegacyPass() : FunctionPass(ID) {
+   initializeZ80LoopInstrFormPrepLegacyPassPass(*PassRegistry::getPassRegistry());
+ }
+
+ bool runOnFunction(Function &F) override {
+   if (skipFunction(F))
+     return false;
+   auto &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
+   auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+   return runOnFunctionImpl(F, SE, LI);
+ }
+
+ void getAnalysisUsage(AnalysisUsage &AU) const override {
+   AU.addRequired<ScalarEvolutionWrapperPass>();
+   AU.addRequired<DominatorTreeWrapperPass>();
+   AU.addRequired<LoopInfoWrapperPass>();
+   AU.setPreservesCFG();
+ }
+
+ StringRef getPassName() const override {
+   return "Z80 Loop Instruction Form Prep (legacy)";
+ }
+};
+
+} // namespace
+
+char Z80LoopInstrFormPrepLegacyPass::ID = 0;
+
+INITIALIZE_PASS_BEGIN(Z80LoopInstrFormPrepLegacyPass, DEBUG_TYPE,
+                     "Z80 Loop Instruction Form Prep", false, false)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_END(Z80LoopInstrFormPrepLegacyPass, DEBUG_TYPE,
+                   "Z80 Loop Instruction Form Prep", false, false)
+
+FunctionPass *llvm::createZ80LoopInstrFormPrepLegacyPass() {
+ return new Z80LoopInstrFormPrepLegacyPass();
+}
+
+PreservedAnalyses Z80LoopInstrFormPrep::run(Function &F,
+                                          FunctionAnalysisManager &AM) {
+ auto &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
+ auto &LI = AM.getResult<LoopAnalysis>(F);
+ if (!runOnFunctionImpl(F, SE, LI))
+   return PreservedAnalyses::all();
+ PreservedAnalyses PA;
+ PA.preserveSet<CFGAnalyses>();
+ return PA;
+}

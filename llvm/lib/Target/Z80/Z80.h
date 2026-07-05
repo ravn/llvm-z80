@@ -28,6 +28,7 @@ void initializeZ80IndexIVPass(PassRegistry &);
 void initializeZ80LateOptimizationPass(PassRegistry &);
 void initializeZ80PatternFillRecognizeLegacyPassPass(PassRegistry &);
 void initializeZ80LoopRotateLegacyPassPass(PassRegistry &);
+void initializeZ80LoopInstrFormPrepLegacyPassPass(PassRegistry &);
 void initializeZ80AutoStaticStackPass(PassRegistry &);
 void initializeZ80LowerSelectPass(PassRegistry &);
 void initializeZ80NarrowNoIndexPass(PassRegistry &);

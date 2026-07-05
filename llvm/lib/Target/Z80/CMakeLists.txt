@@ -45,6 +45,7 @@ add_llvm_target(Z80CodeGen
   Z80AutoStaticStack.cpp
   Z80PatternFillRecognize.cpp
   Z80LoopRotate.cpp
+  Z80LoopInstrFormPrep.cpp
   Z80InlineAsmLowering.cpp
   Z80InstrCost.cpp
   Z80InstrInfo.cpp

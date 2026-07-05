@@ -49,6 +49,7 @@
 #include "Z80AutoStaticStack.h"
 #include "Z80PatternFillRecognize.h"
 #include "Z80LoopRotate.h"
+#include "Z80LoopInstrFormPrep.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -372,6 +373,13 @@ void Z80PassConfig::addIRPasses() {
     // Re-rotate head-test loops that LLVM's LoopRotate skipped at -Oz
     // due to the minsize gate (issue #77a).
     addPass(createZ80LoopRotateLegacyPass());
+    // Pointer-IV strength reduction for scale-1 byte-array loops
+    // (ravn/llvm-z80#250).  MUST run after the base addIRPasses() call
+    // above (which runs LSR) -- see Z80LoopInstrFormPrep.cpp's file
+    // comment for why an earlier placement would be re-undone by LSR.
+    // Experimental / opt-in (see the pass file comment for why).
+    if (isZ80LoopInstrFormPrepEnabled())
+      addPass(createZ80LoopInstrFormPrepLegacyPass());
   }
 }
 
