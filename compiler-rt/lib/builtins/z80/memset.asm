@@ -1,7 +1,7 @@
 ; SPDX-License-Identifier: Zlib OR Apache-2.0 WITH LLVM-exception OR MIT
 	.area _CODE
 	.globl _memset
-	.globl _memset_done
+	; _memset_done is local (no .globl) so `jr z` stays 2 bytes.
 
 ;===------------------------------------------------------------------------===;
 ; _memset - Fill memory block
@@ -9,14 +9,15 @@
 ; Input:  HL = dest, DE = value (E = byte), stack = size (i16)
 ; Output: DE = dest (original)
 ; Writes first byte, then uses LDIR to propagate to remaining bytes.
+;
+; The stack arg (size) is read via the `pop iy` idiom rather than an IX frame:
+; IY is caller-saved (Z80_CSR = CalleeSavedRegs<(add IX)>), so this trampoline
+; may clobber it freely. ~19 B tighter than the IX-frame prologue/epilogue.
 ;===------------------------------------------------------------------------===;
 _memset:
-	push	ix
-	ld	ix, #0
-	add	ix, sp
-	ld	c, 4(ix)	; BC = size
-	ld	b, 5(ix)
-	push	hl		; save dest for return value
+	pop	iy		; return address (IY is caller-saved)
+	pop	bc		; BC = size (callee-cleanup of the stack arg)
+	push	hl		; save original dest for return value
 	ld	a, b
 	or	c
 	jr	z, _memset_done
@@ -31,9 +32,4 @@ _memset:
 	ldir			; copy first byte to remaining
 _memset_done:
 	pop	de		; DE = original dest (return value)
-	pop	ix
-	pop	bc		; save return address
-	inc	sp
-	inc	sp		; callee-cleanup: skip 2 bytes of stack args
-	push	bc
-	ret
+	jp	(iy)
