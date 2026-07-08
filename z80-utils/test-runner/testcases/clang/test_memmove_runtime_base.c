@@ -1,9 +1,14 @@
 /* SKIP-IF: O0 */
-/* O0 is skipped: at O0 the memmove does NOT fold (0 lddr/ldir emitted, both
- * calls go to __memmove_rt), and the forward-overlap case then returns wrong
- * data — a PRE-EXISTING O0 + static-stack issue (ravn/llvm-z80 #192 class),
- * independent of the direction fold this test exercises.  This test's subject
- * is the fold, which happens at O1+; verified correct (both directions) there.
+/* O0 is skipped due to a PRE-EXISTING, unrelated O0 frame-size miscompile:
+ * at O0 the memmove does NOT fold (both calls go to __memmove_rt), and main's
+ * fixed frame (__sframe_main..__sfrend_main) is allocated too small — the
+ * codegen spills a pointer to `__sfrend_main-12`, which underflows BELOW
+ * __sframe_main into the adjacent global buffer, aliasing it and corrupting
+ * both the spill and the data.  (Confirmed by symbol addresses: __sfrend_main-12
+ * landed inside `bufb`.)  This is the ravn/llvm-z80 #192 static-frame-layout
+ * class and is INDEPENDENT of the direction fold under test — the fold only
+ * runs at O1+, where it emits inline LDIR/LDDR and never touches the frame.
+ * Both directions verified correct at O1-Oz.
  */
 /* Overlapping __builtin_memmove with a RUNTIME base pointer.
  *
