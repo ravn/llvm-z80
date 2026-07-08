@@ -1561,18 +1561,83 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
       };
 
+      // Runtime-Size cancellation: for the screen-scroll idiom
+      //   base = p + i;  memmove(base + K, base, C - i)   (K,C constants)
+      // the LDDR end pointer is start + Size - 1 = (p + i) + (C - i) - 1
+      // = p + C - 1: the runtime term i cancels between the pointer's +i
+      // and Size's -i, leaving a constant offset.  Detect Size = G_SUB(C, X)
+      // and a matching single +X in the pointer's G_PTR_ADD chain so the end
+      // pointer folds to `LD HL, base+const` instead of a runtime add.
+      // Modular 16-bit arithmetic makes X + (C - X) = C exact regardless of
+      // overflow.  Falls back to the runtime (Size-1) add when unmatched.
+      std::optional<int64_t> SubC;
+      Register SubX;
+      if (MachineInstr *SD = MRI.getVRegDef(Size);
+          SD && SD->getOpcode() == TargetOpcode::G_SUB) {
+        if (auto C = getIConstantVRegSExtVal(SD->getOperand(1).getReg(), MRI)) {
+          SubC = C;
+          SubX = SD->getOperand(2).getReg();
+        }
+      }
+      auto tryCancelEnd = [&](Register Ptr) -> Register {
+        if (!SubC)
+          return Register();
+        Register Base = Ptr;
+        int64_t Total = *SubC - 1; // + (Size - 1), with the -X cancelled below
+        bool FoundX = false;
+        while (true) {
+          MachineInstr *Def = MRI.getVRegDef(Base);
+          if (!Def || Def->getOpcode() != TargetOpcode::G_PTR_ADD)
+            break;
+          Register Off = Def->getOperand(2).getReg();
+          if (auto OffC = getIConstantVRegSExtVal(Off, MRI)) {
+            Total += *OffC;
+            Base = Def->getOperand(1).getReg();
+            continue;
+          }
+          if (!FoundX && Off == SubX) {
+            FoundX = true; // +X cancels the -X in Size
+            Base = Def->getOperand(1).getReg();
+            continue;
+          }
+          break;
+        }
+        if (!FoundX)
+          return Register();
+        if (Total == 0)
+          return Base;
+        auto Off = MIRBuilder.buildConstant(S16, Total);
+        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+      };
+
       Register SrcEnd, DstEnd;
       if (SizeC) {
         int64_t Off = *SizeC - 1;
         SrcEnd = buildEndPtr(SrcPtr, Off);
         DstEnd = buildEndPtr(DstPtr, Off);
       } else {
-        auto One = MIRBuilder.buildConstant(S16, 1);
-        auto SizeM1 = MIRBuilder.buildSub(S16, Size, One);
-        SrcEnd = MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr, SizeM1)
-                     .getReg(0);
-        DstEnd = MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, SizeM1)
-                     .getReg(0);
+        Register SrcC = tryCancelEnd(SrcPtr);
+        Register DstC = tryCancelEnd(DstPtr);
+        // Build a runtime (Size-1) add only for the pointer(s) that didn't
+        // cancel; share the one Size-1 sub if both need it.
+        Register SizeM1;
+        auto getSizeM1 = [&]() -> Register {
+          if (!SizeM1.isValid()) {
+            auto One = MIRBuilder.buildConstant(S16, 1);
+            SizeM1 = MIRBuilder.buildSub(S16, Size, One).getReg(0);
+          }
+          return SizeM1;
+        };
+        SrcEnd = SrcC.isValid()
+                     ? SrcC
+                     : MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr,
+                                              getSizeM1())
+                           .getReg(0);
+        DstEnd = DstC.isValid()
+                     ? DstC
+                     : MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr,
+                                              getSizeM1())
+                           .getReg(0);
       }
       MIRBuilder.buildCopy(Register(Z80::HL), SrcEnd);
       MIRBuilder.buildCopy(Register(Z80::DE), DstEnd);
