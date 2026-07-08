@@ -1540,6 +1540,29 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       LLT S16 = LLT::scalar(16);
       auto SizeC = getIConstantVRegSExtVal(Size, MRI);
 
+      // Materialize Base + Total (a constant).  If Base is a constant-address
+      // pointer G_INTTOPTR(G_CONSTANT C1), fold it into a single constant
+      // pointer G_INTTOPTR(C1 + Total) so ISel emits one `LD rr, imm` instead
+      // of `LD rr, C1; ADD rr, Total`.  (A G_GLOBAL_VALUE base already folds
+      // via the ISel G_PTR_ADD(GV, const) pattern, so only the constant-address
+      // case needs handling here.)  Used for the screen-scroll idiom where the
+      // display base is a fixed MMIO address like (byte *)0xF800.
+      auto finishEndPtr = [&](Register Ptr, Register Base,
+                              int64_t Total) -> Register {
+        if (Total == 0)
+          return Base;
+        if (MachineInstr *BDef = MRI.getVRegDef(Base);
+            BDef && BDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+          if (auto C1 =
+                  getIConstantVRegSExtVal(BDef->getOperand(1).getReg(), MRI)) {
+            auto NC = MIRBuilder.buildConstant(S16, (int16_t)(*C1 + Total));
+            return MIRBuilder.buildIntToPtr(MRI.getType(Ptr), NC).getReg(0);
+          }
+        }
+        auto Off = MIRBuilder.buildConstant(S16, Total);
+        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+      };
+
       auto buildEndPtr = [&](Register Ptr, int64_t ExtraOff) -> Register {
         // Walk Ptr back through chained G_PTR_ADD with constant offsets.
         Register Base = Ptr;
@@ -1555,10 +1578,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
           Total += *OffC;
           Base = Def->getOperand(1).getReg();
         }
-        if (Total == 0)
-          return Base;
-        auto Off = MIRBuilder.buildConstant(S16, Total);
-        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+        return finishEndPtr(Ptr, Base, Total);
       };
 
       // Runtime-Size cancellation: for the screen-scroll idiom
@@ -1604,10 +1624,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         }
         if (!FoundX)
           return Register();
-        if (Total == 0)
-          return Base;
-        auto Off = MIRBuilder.buildConstant(S16, Total);
-        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+        return finishEndPtr(Ptr, Base, Total);
       };
 
       Register SrcEnd, DstEnd;
