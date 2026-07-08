@@ -957,6 +957,55 @@ cost model, never a global LSR off-switch.
 
 ---
 
+### B23. Multi-site inline LDDR can't beat a hand-written shared memmove helper
+
+- **Status:** wontfix-mechanism (2026-07-08).  Inherent; documented.
+- **Impact:** rcbios `insert_line` 2-site screen scroll: `__builtin_memmove`
+  with all folds = 5947 B vs hand-written `lddr_copy` = 5908 B (**+39 B**).
+  Even hypothetical guard-elision (−8 B) leaves +31.
+- **Pattern:** `base = p + i; memmove(base + K, base, C - i)` at N≥2 sites.
+  After the three 2026-07-08 folds (direction / runtime-term cancellation /
+  constant-address-base immediate; see
+  `tasks/session-2026-07-08-memmove-lddr-lowering.md`) the inline form is
+  tight — `ld hl,$ff7f; ld de,$ffcf; <guard>; lddr` — but still loses.
+- **Why we can't fix it:** four structural mismatches between the flexible
+  `memmove` intrinsic (start pointers, size may be 0, arbitrary context) and
+  the rigid `LDDR` instruction (end pointers, `BC=0`→65536-byte copy, pins
+  HL+DE+BC).  Bridging costs "glue" paid **per site** when inlined; a shared
+  helper amortizes guard + count-pop + LDDR + return over all callers.  For
+  N≥2 sites of one shape the shared helper wins by construction.  This is the
+  general-contract-vs-hand-tuned tradeoff, not a missing optimization.
+- **Revisit when:** a single-site hot memmove where inline (no call/amortize
+  pressure) is the right call — there the folds already win.  Do NOT chase
+  multi-site parity.
+- **Repro / pointers:** `tasks/session-2026-07-08-memmove-lddr-lowering.md`
+  (full four-mismatch analysis); rc700 `rcbios-in-c/clang/runtime.s`
+  (`lddr_copy`) and `bios.c::insert_line`.
+
+### B24. Runtime-count LDDR keeps a `BC==0` guard even when count is provably non-zero
+
+- **Status:** accepted (2026-07-08) — needs a two-part fix, low value.
+- **Impact:** +4 B/site (`ld a,b; or c; jr z`) on every runtime-count inline
+  LDDR/LDIR, e.g. both `insert_line` sites.
+- **Pattern:** `if (count) memmove(dst, src, count);` — the `LDDR_GUARDED`
+  BC==0 guard is redundant with the C `if`, but emitted anyway.
+- **Why we can't fix it:** the G_MEMMOVE→LDDR lowering uses unguarded `LDDR`
+  only when `Size` is a compile-time **constant** (`SizeC ? LDDR :
+  LDDR_GUARDED`); it never checks *known-non-zero* for a runtime `Size`.
+  Verified: neither the dominating `if(count)` nor `__builtin_assume(count !=
+  0)` changes the choice.  A fix would need (a) the legalizer to query
+  `GISelKnownBits::isKnownNonZero(Size)`, AND (b) the non-zero fact to survive
+  to GISel — `llvm.assume` is typically dropped before GISel, so (b) is
+  uncertain.
+- **Revisit when:** a workload where runtime-count block copies dominate size
+  AND the callers reliably guard non-zero.  Otherwise leave it — correctness
+  (avoiding the 65536-byte BC=0 disaster) is worth 4 B.
+- **Repro / pointers:** `Z80LegalizerInfo.cpp` G_MEMMOVE case (`SizeC ? LDDR :
+  LDDR_GUARDED`); `tasks/session-2026-07-08-memmove-lddr-lowering.md` §"four
+  mismatches" #2.
+
+---
+
 ## Frontend — patterns blocked on clang AST/CodeGen work
 
 (See M4 above.  Frontend gaps tend to cascade to multiple middle-end
