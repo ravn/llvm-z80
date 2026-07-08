@@ -80,6 +80,41 @@ define void @memmove_noop(ptr %p) {
 ; CHECK:      ret
 
 
+; --- src is a RUNTIME base (itself a G_PTR_ADD), dst = src + 4 → LDDR ----
+; The common screen-scroll shape: base = p + runtime_idx, then
+; memmove(base + K, base, n) with K a positive constant.  dst = base + 4,
+; direction = sign(4) = LDDR, even though `base` is not a leaf pointer.
+; Regression: the direction analysis used to require src to be a leaf
+; (getPtrAddOff set SrcBase as a side effect, tripping a SrcBase==0 guard),
+; so this fell back to __memmove_rt.
+define void @memmove_dst_after_runtime_base(ptr %p, i16 %idx) {
+  %base = getelementptr inbounds i8, ptr %p, i16 %idx
+  %dst = getelementptr inbounds i8, ptr %base, i16 4
+  call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %base, i16 16, i1 false)
+  ret void
+}
+; CHECK-LABEL: _memmove_dst_after_runtime_base:
+; CHECK-NOT:  call _memmove
+; CHECK-NOT:  ___memmove_rt
+; CHECK:      lddr
+; CHECK:      ret
+
+
+; --- src is a RUNTIME base, dst = src - 4 → LDIR -------------------------
+define void @memmove_dst_before_runtime_base(ptr %p, i16 %idx) {
+  %base = getelementptr inbounds i8, ptr %p, i16 %idx
+  %dst = getelementptr inbounds i8, ptr %base, i16 -4
+  call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %base, i16 16, i1 false)
+  ret void
+}
+; CHECK-LABEL: _memmove_dst_before_runtime_base:
+; CHECK-NOT:  call _memmove
+; CHECK-NOT:  ___memmove_rt
+; CHECK-NOT:  lddr
+; CHECK:      ldir
+; CHECK:      ret
+
+
 ; --- runtime pointers, unknown direction → register-CC __memmove_rt (#126) -
 ; dst/src already in HL/DE, size in BC -> just `ld bc,16; jp ___memmove_rt`
 ; (tail call), not the heavy stack-ABI _memmove libcall.

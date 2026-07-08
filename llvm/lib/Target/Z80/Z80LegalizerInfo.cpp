@@ -1467,11 +1467,18 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
           Dir = Direction::LDDR;
       };
 
-      if (DstOff && SrcBase == Register() && SrcPtr == DstBase) {
-        // DstPtr = SrcPtr + DstOff
+      if (DstOff && SrcPtr == DstBase) {
+        // DstPtr = SrcPtr + DstOff.  The direction is sign(DstOff) regardless
+        // of what SrcPtr itself is: SrcPtr may be a leaf (load/param/global)
+        // OR itself a G_PTR_ADD with a *runtime* offset (e.g. screen+cury).
+        // Do NOT require SrcBase to be empty here -- getPtrAddOff() sets
+        // SrcBase as a side effect even when SrcPtr's offset is non-constant,
+        // which would spuriously block this (correct) case for the common
+        // screen-scroll shape memmove(base+K, base, n).
         setFromDelta(*DstOff);
-      } else if (SrcOff && DstBase == Register() && DstPtr == SrcBase) {
-        // SrcPtr = DstPtr + SrcOff -> DstPtr = SrcPtr - SrcOff
+      } else if (SrcOff && DstPtr == SrcBase) {
+        // SrcPtr = DstPtr + SrcOff -> DstPtr = SrcPtr - SrcOff.  Symmetric:
+        // DstPtr may itself be a runtime-offset G_PTR_ADD.
         setFromDelta(-*SrcOff);
       } else if (DstOff && SrcOff && DstBase == SrcBase) {
         // Both share a common base; direction is sign of DstOff-SrcOff.
