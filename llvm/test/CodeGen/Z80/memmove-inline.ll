@@ -151,6 +151,27 @@ define void @memmove_cancel_runtime_term(i16 %i) {
 ; CHECK:      ret
 
 
+; --- constant-address (inttoptr) base: end pointers fold to single immediates -
+; Screen scroll where the base is a fixed MMIO address (byte*)0xF800, not a
+; global symbol.  After cancellation the end offset is constant (1919/1999);
+; G_PTR_ADD(G_INTTOPTR(const), const) folds to G_INTTOPTR(const) so ISel emits
+; `ld hl,0xFF7F` (65407) as ONE immediate, not `ld hl,0xF800; add`.
+define void @memmove_cancel_const_base(i16 %i) {
+  %size = sub i16 1920, %i
+  %base = inttoptr i16 -2048 to ptr           ; 0xF800
+  %src = getelementptr i8, ptr %base, i16 %i
+  %dst = getelementptr i8, ptr %src, i16 80
+  call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %size, i1 false)
+  ret void
+}
+; CHECK-LABEL: _memmove_cancel_const_base:
+; CHECK-NOT:  ld hl,63488
+; CHECK:      ld hl,65407
+; CHECK:      ld de,65487
+; CHECK:      lddr
+; CHECK:      ret
+
+
 ; --- negative control: unrelated runtime size -> NO cancel, runtime add ------
 ; Size (%n) is not `C - i`, so the end pointer stays src + (Size-1) computed at
 ; runtime; it must NOT fold to a buf+const end pointer.
