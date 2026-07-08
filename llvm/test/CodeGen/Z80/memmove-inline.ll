@@ -127,4 +127,44 @@ define void @memmove_runtime(ptr %dst, ptr %src) {
 ; CHECK:      jp ___memmove_rt
 
 
+@sbuf = external dso_local global [4096 x i8]
+
+; --- runtime-count LDDR: cancel a common runtime term in the end pointer -----
+; The screen-scroll idiom:  base = sbuf + i;  memmove(base + 80, base, 1920 - i).
+; dst = src + 80 > src -> LDDR, whose end pointer is src + Size - 1 =
+; (sbuf + i) + (1920 - i) - 1 = buf + 1919: the runtime i cancels between the
+; pointer's +i and Size's -i, so both end pointers fold to buf+const
+; (`LD HL, _sbuf+1919` / `LD DE, _sbuf+1999`) with no runtime `add`.
+define void @memmove_cancel_runtime_term(i16 %i) {
+  %size = sub i16 1920, %i
+  %src = getelementptr [4096 x i8], ptr @sbuf, i16 0, i16 %i
+  %dst = getelementptr i8, ptr %src, i16 80
+  call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %size, i1 false)
+  ret void
+}
+; CHECK-LABEL: _memmove_cancel_runtime_term:
+; CHECK-NOT:  call _memmove
+; CHECK-NOT:  ___memmove_rt
+; CHECK:      ld hl,_sbuf+1919
+; CHECK:      ld de,_sbuf+1999
+; CHECK:      lddr
+; CHECK:      ret
+
+
+; --- negative control: unrelated runtime size -> NO cancel, runtime add ------
+; Size (%n) is not `C - i`, so the end pointer stays src + (Size-1) computed at
+; runtime; it must NOT fold to a buf+const end pointer.
+define void @memmove_no_cancel(i16 %i, i16 %n) {
+  %src = getelementptr [4096 x i8], ptr @sbuf, i16 0, i16 %i
+  %dst = getelementptr i8, ptr %src, i16 80
+  call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %n, i1 false)
+  ret void
+}
+; CHECK-LABEL: _memmove_no_cancel:
+; CHECK-NOT:  ld hl,_sbuf+1919
+; CHECK-NOT:  ld de,_sbuf+1999
+; CHECK:      lddr
+; CHECK:      ret
+
+
 declare void @llvm.memmove.p0.p0.i16(ptr, ptr, i16, i1 immarg)
