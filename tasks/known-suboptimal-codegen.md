@@ -982,7 +982,7 @@ cost model, never a global LSR off-switch.
   (full four-mismatch analysis); rc700 `rcbios-in-c/clang/runtime.s`
   (`lddr_copy`) and `bios.c::insert_line`.
 
-### B24. Runtime-count LDDR keeps a `BC==0` guard even when count is provably non-zero
+### B24. Runtime-count LDDR keeps a `BC==0` guard even when count is provably non-zero (ravn/llvm-z80#255)
 
 - **Status:** accepted (2026-07-08) — needs a two-part fix, low value.
 - **Impact:** +4 B/site (`ld a,b; or c; jr z`) on every runtime-count inline

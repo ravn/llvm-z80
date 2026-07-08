@@ -92,7 +92,7 @@ bridging them costs glue, paid **per site** when inlined.
 
 2. **Safety: size may be 0.**  `memmove(_, _, 0)` is a legal no-op; `LDDR`
    with `BC = 0` decrements to `0xFFFF` and copies 65536 bytes.  For a
-   **runtime** count the compiler MUST emit a guard (`LDDR_GUARDED`:
+   **runtime** count the compiler MUST emit a guard (ravn/llvm-z80#255) (`LDDR_GUARDED`:
    `ld a,b; or c; jr z`, +4 B/site).  It only drops the guard for a
    compile-time-**constant** Size; it does not propagate runtime
    known-non-zero facts — `if (count)` and even `__builtin_assume(count != 0)`

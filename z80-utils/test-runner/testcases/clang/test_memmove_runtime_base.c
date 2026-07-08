@@ -5,7 +5,7 @@
  * codegen spills a pointer to `__sfrend_main-12`, which underflows BELOW
  * __sframe_main into the adjacent global buffer, aliasing it and corrupting
  * both the spill and the data.  (Confirmed by symbol addresses: __sfrend_main-12
- * landed inside `bufb`.)  This is the ravn/llvm-z80 #192 static-frame-layout
+ * landed inside `bufb`.)  This is the ravn/llvm-z80 #254 (a #192-class) static-frame-layout
  * class and is INDEPENDENT of the direction fold under test — the fold only
  * runs at O1+, where it emits inline LDIR/LDDR and never touches the frame.
  * Both directions verified correct at O1-Oz.
