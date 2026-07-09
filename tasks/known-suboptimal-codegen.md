@@ -1004,6 +1004,41 @@ cost model, never a global LSR off-switch.
   LDDR_GUARDED`); `tasks/session-2026-07-08-memmove-lddr-lowering.md` §"four
   mismatches" #2.
 
+### B25. `-O1`/`-O2` slower than `-Os` on integer-loop benchmarks — loop rotation adds BSS spills (2026-07-09)
+
+- **Status:** accepted (2026-07-09) — root cause identified, no fix attempted.
+- **Impact:** `sieve.c` -O1 is 6.7% slower than -Os (28.03M vs 26.25M cycles).
+  `e.c` -O1 is 5.5% slower than -Os (29.78M vs 28.15M cycles).
+- **Pattern:** `-O1`'s loop canonicalization passes (likely LoopRotate + LICM)
+  restructure loop nests in a way that creates more simultaneously-live variables
+  across loop back-edges.  The Z80 regalloc runs out of the 4 general-purpose 16-bit
+  pairs (BC, DE, HL, and sometimes IX) and spills the excess to BSS.  Each BSS
+  spill/reload is ~32 T-states (16T store through A + 16T load through A) vs 0 extra
+  T-states for a register-held value.
+- **Concrete evidence (sieve.c):** diff of `-Os` vs `-O1` assembly shows 13 BSS
+  accesses (`ld r16,(sfrend-N)` / `ld (sfrend-N),r16`) at `-O1` vs 9 at `-Os` —
+  4 extra accesses.  At `-Os`, the hot inner loop (depth 3) has zero BSS accesses;
+  `de` holds the stride throughout.  At `-O1`, the restructured loop writes and
+  re-reads 2–3 extra BSS slots per outer iteration.  At 8191 inner iterations, 4
+  extra ×32 T-states ≈ 1M extra T-states ≈ 5–7% of the total, matching the
+  observed regression.
+- **Root cause classification:** M2 (middle-end, BSS-spill cost) — the cost model
+  doesn't know that increasing live-range width on Z80 is expensive because each
+  spill goes through the A-shuttle (16T load + 16T store).  `getRegisterSpillCost`
+  and the register pressure heuristics in LoopRotate/LICM are not Z80-calibrated.
+- **Why not fixed:** fixing requires either (a) TTI `getRegisterSpillCost` returning
+  a much higher value to suppress loop transformations that increase spills, or (b)
+  teaching the scheduler/regalloc to account for BSS spill cost being `~32 T-states`
+  vs `~0` for a register.  Both touch core LLVM infrastructure; (a) might help but
+  risks regressing other patterns.  The -Os flag is the correct default for Z80.
+- **Recommendation:** always use `-Os` for Z80 production builds.  Document the
+  `-O1`/`-O2` counter-productivity in user-facing docs when available.
+- **Repro:** `dcc/tests/sieve.c` and `dcc/tests/e.c`, compiled at `-Os` vs `-O1`
+  with the clang freestanding pipeline.  Assembly diff: `/tmp/sieve_Os.s` vs
+  `/tmp/sieve_O1.s` (scratch; regenerate with
+  `clang --target=z80 -{Os,O1} -ffreestanding -nostdlibinc ... -S sieve.c`).
+  See `tasks/session-2026-07-09-dcc-clang-comparison.md`.
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work
@@ -1048,8 +1083,7 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-06-28 (B18 added — OTIR/OTDR/INIR/INDR block-I/O
-idiom not recognized by ISel; verified a C `for`-loop over port_out emits
-a manual `ld a,(de); out (c),a; inc de; dec hl; jr` loop, not `otir`;
-accepted ZeroYield since every production OTIR site is hand-written inline
-asm).
+**Last updated:** 2026-07-09 (B25 added — `-O1`/`-O2` slower than `-Os` on
+integer-loop benchmarks; loop rotation adds BSS spills; root-caused via
+sieve.c/e.c assembly diff showing 4 extra BSS accesses per outer iteration
+at `-O1` vs zero inside the hot inner loop at `-Os`).
