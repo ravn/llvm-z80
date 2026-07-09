@@ -211,6 +211,25 @@ postpone — empty entries are fine if you don't have impact numbers yet.
     Parked with data; #250 passes stay opt-in.  Repro:
     `scratch/dcc-clang-bench/build_compare.sh` +
     `-mllvm -z80-loop-instr-form-prep -mllvm -z80-pin-loop-pointer`.
+- **UPDATE 2026-07-09 -- both fix directions implemented + measured**
+  (opt-in, default OFF; full writeup
+  `tasks/session-2026-07-09-sink-cold-loop-iv.md`):
+  * `Z80SinkColdLoopIV` (`-z80-sink-cold-loop-iv`) IMPLEMENTS the "sink
+    the recompute into the taken branch" fix: a post-LSR IR pass that
+    RAUWs cold-only seed-IV phis to a recompute at the cold NCD, deleting
+    the every-iteration `inc`.  Measured **sieve -2.3 %, E/TTT/TM +/-0 %,
+    all correct** (z88dk-ticks, -Os).  Only -2.3 % because the SCAN loop
+    it fixes is secondary -- profiling shows the KILL loop is ~65 % of
+    exec (M5, #250), the SCAN loop only ~26 %.
+  * `Z80PinLoopPointer` (`-z80-pin-loop-pointer`, + HLReg class) pins the
+    KILL-loop pointer to HL.  Kill loop becomes optimal (2.70M->1.65M
+    exec) but SCAN loop regresses 1.06M->2.38M (whole-function regalloc
+    cascade: HL pin + prep pointer-inits + IY spill in the hot scan
+    path), net **+1.4M T-states WORSE** than sink alone.  Stays opt-in.
+  * Net: sink is the shippable non-regressing partial win; the dominant
+    KILL-loop gap still needs the generic block-freq LSR +
+    pressure-aware M5 rewrite.  Both passes default OFF -> production
+    byte-identical (verified: pass absent from default -debug-pass).
 
 ### M3. Loop strength reduction creates wider IVs harmful on Z80
 
@@ -774,6 +793,22 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
   the IX-frame + IY-base pressure is why the multiplier is 4.7x here vs 1.2x
   on sieve (which has no frame pointer competing for regs).  Repro:
   `dcc/tests/tm.c`; measure via `scratch/dcc-clang-bench/ticks_cpm.py`.
+- **Fix ATTEMPTED 2026-07-09 — `Z80PinLoopPointer` implemented, net-regresses
+  sieve, kept opt-in (default OFF).**  The post-LSR IR machinery the #250
+  comment proposed exists: `-z80-loop-instr-form-prep` (forms the kill-loop
+  pointer IV) + `-z80-pin-loop-pointer` (pins it to HL via a new HLReg class).
+  In ISOLATION the kill loop reaches the optimal dcc form
+  (`ld (hl),a; add hl,rr; <ptr cmp>; jr c`, 18->11 insns, kill exec
+  2.70M->1.65M).  But NET sieve gets +1.4M T-states WORSE: the SCAN loop
+  regresses 1.06M->2.38M exec (whole-function regalloc cascade — pinning HL +
+  prep's SCEV-expanded pointer-inits + an IY spill all land in the hot scan
+  path).  On Z80's 3 pairs the enclosing loop pays for the inner loop's
+  registers.  So the M5 rewrite as built is correct but not net-positive on a
+  nested-loop kernel; a register-pressure-aware variant that does not steal the
+  parent loop's pairs is required before it can go default-on.  Full data +
+  per-region exec table: `tasks/session-2026-07-09-sink-cold-loop-iv.md`.  Note
+  the SCAN-loop half of the sieve gap is separately mitigated by
+  `Z80SinkColdLoopIV` (M2/M3, sieve -2.3 % clean) — see the M2 UPDATE entry.
 
 ### M6. Z80LowerSelect pre-compute forces IY in pointer-scan loops
 
@@ -1133,7 +1168,11 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-07-09 (B25 added — `-O1`/`-O2` slower than `-Os` on
+**Last updated:** 2026-07-09 (M2/M3 + M5 updated — Z80SinkColdLoopIV opt-in
+sieve -2.3 % clean partial win; Z80PinLoopPointer opt-in kill-loop fix
+net-regresses via scan-loop regalloc cascade; both default OFF. See
+`tasks/session-2026-07-09-sink-cold-loop-iv.md`. B25 added — `-O1`/`-O2`
+slower than `-Os` on
 integer-loop benchmarks; loop rotation adds BSS spills; root-caused via
 sieve.c/e.c assembly diff showing 4 extra BSS accesses per outer iteration
 at `-O1` vs zero inside the hot inner loop at `-Os`).
