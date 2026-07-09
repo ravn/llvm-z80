@@ -109,6 +109,11 @@ the whole brief.
   per paragraph and re-push with `gh pr edit <num> --body-file …`.
 - Exceptions that stay hard-wrapped: commit messages (50/72 convention) and
   source code comments (~70 cols).
+- **When a body mixes my prose and yours, split it and label who is speaking.**
+  Never blend human-authored and AI-authored text into one undifferentiated
+  block. Put my words under a `**From @ravn (human):**` header and yours under
+  `**From Copilot (AI):**`, separated by a `---` rule. The reader must always be
+  able to tell which sentences are mine and which are the agent's.
 
 ## Verification & commit discipline
 
