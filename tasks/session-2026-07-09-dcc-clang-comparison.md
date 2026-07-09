@@ -49,7 +49,7 @@ Notes:
 - `-O3` unrolls loops aggressively on Z80 (`sieve` +53%, `ttt` +47%) — counter-productive
   on a register-starved 8-bit target. `-Os` is the right default.
 
-## Timing table (Z80 cycles at 4 MHz, ntvcm -p -s:4000000)
+## Timing table (Z80 cycles, ntvcm -p at full speed)
 
 | program | dcc        | clang -Os        | clang -O1        | clang -O2        | clang -O3        |
 |---------|------------|------------------|------------------|------------------|------------------|
@@ -117,4 +117,5 @@ Session 78 timing was identical for `sieve`/`e`/`ttt` (same code). `tm` improved
 See `tasks/known-suboptimal-codegen.md` M2 entry (BSS-spill-via-A pattern).
 The `-Os`-beats-`-O1`/`-O2` finding for sieve/e is a new candidate entry — root cause
 investigation is item 2 (next session or later in this session).
+
 
