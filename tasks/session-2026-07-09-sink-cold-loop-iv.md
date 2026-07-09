@@ -142,3 +142,18 @@ registers (the classic 3-pair over-subscription). Stays opt-in.
 
 Commits (local, not pushed per merge-only rule):
 `[Z80] add opt-in Z80SinkColdLoopIV + Z80PinLoopPointer passes (#250)`.
+
+## Follow-ups filed (2026-07-09)
+
+- **ravn/llvm-z80#256** (NEW) — tracks the M3 scan-loop half: LSR strength-reduces
+  cold-only IVs into the hot scan loop → BSS spill on a register-starved target.
+  `Z80SinkColdLoopIV` is the Z80-side mitigation; the generic angle
+  (block-frequency-blind `AddRecCost`, verified same 8 `%lsr.iv` on
+  z80/x86_64/avr via `opt -passes=loop-reduce`) is held for eventual upstream
+  with go-ahead. Lists the default-on gate (broader corpus + production check).
+- **ravn/llvm-z80#250** comment — the M5 kill-loop rewrite (`Z80PinLoopPointer`)
+  is optimal in isolation but net-regresses sieve; per-region exec table + the
+  nested-loop register-pressure design constraint for a default-on M5 variant.
+- **ravn/llvm-z80#251** comment — the `HLReg` single-register class this session
+  added (for the pin pass) is exactly the sister class #251 predicted; noted as
+  landed raw material, NOT wired to #251's `bench_word_fill.c` case yet.

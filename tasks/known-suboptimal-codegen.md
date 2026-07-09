@@ -230,6 +230,10 @@ postpone — empty entries are fine if you don't have impact numbers yet.
     KILL-loop gap still needs the generic block-freq LSR +
     pressure-aware M5 rewrite.  Both passes default OFF -> production
     byte-identical (verified: pass absent from default -debug-pass).
+  * TRACKING: the M3 scan-loop half now has its own issue
+    **ravn/llvm-z80#256** (LSR hoists cold-only IVs -> BSS spill on a
+    register-starved target; Z80SinkColdLoopIV opt-in mitigation; generic
+    block-freq-blind AddRecCost angle held for upstream w/ go-ahead).
 
 ### M3. Loop strength reduction creates wider IVs harmful on Z80
 
