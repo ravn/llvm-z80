@@ -13,6 +13,7 @@
 #include "Z80TargetMachine.h"
 #include "Z80NarrowNoIndex.h"
 #include "Z80PinAluAccumulator.h"
+#include "Z80PinLoopPointer.h"
 #include "Z80PruneCallFrameDefs.h"
 #include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
@@ -50,6 +51,7 @@
 #include "Z80PatternFillRecognize.h"
 #include "Z80LoopRotate.h"
 #include "Z80LoopInstrFormPrep.h"
+#include "Z80SinkColdLoopIV.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -136,6 +138,8 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80ShiftRotateChainPass(PR);
   initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PinAluAccumulatorPass(PR);
+  initializeZ80PinLoopPointerPass(PR);
+  initializeZ80SinkColdLoopIVLegacyPassPass(PR);
   initializeZ80NarrowNoIndexPass(PR);
   initializeZ80PostRACompareMergePass(PR);
 }
@@ -373,6 +377,12 @@ void Z80PassConfig::addIRPasses() {
     // Re-rotate head-test loops that LLVM's LoopRotate skipped at -Oz
     // due to the minsize gate (issue #77a).
     addPass(createZ80LoopRotateLegacyPass());
+    // Sink enclosing-loop IVs that only seed a nested loop's cold path back
+    // into an on-demand recompute (ravn/llvm-z80#250, sieve scan loop).  Must
+    // run after the base addIRPasses() (LSR) so it can undo LSR's hoist.
+    // Experimental / opt-in.
+    if (isZ80SinkColdLoopIVEnabled())
+      addPass(createZ80SinkColdLoopIVLegacyPass());
     // Pointer-IV strength reduction for scale-1 byte-array loops
     // (ravn/llvm-z80#250).  MUST run after the base addIRPasses() call
     // above (which runs LSR) -- see Z80LoopInstrFormPrep.cpp's file
@@ -470,6 +480,14 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // ravn/llvm-z80#172.
     insertPass(&llvm::MachineSchedulerID,
                createZ80PinAluAccumulatorPass());
+
+    // Z80PinLoopPointer: pin a byte-array pointer-walk induction variable to
+    // HL (companion to Z80LoopInstrFormPrep, ravn/llvm-z80#250).  Same
+    // lifecycle as the pins above -- pre-RA, before the LiveIntervals re-run,
+    // so the HLReg class constraint is present when greedy runs.  Gated behind
+    // -z80-pin-loop-pointer (default off).
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80PinLoopPointerPass());
 
     // Keep IX/IY-incompatible GR16 values out of IX/IY (only when IY is
     // allocatable -- gated internally on -z80-unreserve-iy).  Narrows plain

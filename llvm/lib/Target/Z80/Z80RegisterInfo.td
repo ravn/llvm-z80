@@ -210,6 +210,16 @@ def GR16_BCDE : Z80Reg16Class<(add DE, BC)>;
 // HL for the loop's pointer.  Sister of BReg (8-bit version, #94).
 def BCReg : Z80Reg16Class<(add BC)>;
 
+// Single-register class containing only HL.  Used by Z80PinLoopPointer
+// (ravn/llvm-z80#250 companion) to pin a byte-array pointer-walk induction
+// variable to HL: the store (`ld (hl),v`), the advance (`add hl,stride`) and
+// the 16-bit exit compare (`ld a,l; sub e; ...`) all want the pointer in HL,
+// but greedy's copy-elimination heuristic otherwise parks it in BC and emits
+// a per-iteration bc<->hl shuttle plus a stride BSS spill.  Constraining the
+// pointer vreg to HLReg by class forces greedy past that heuristic, the same
+// way BCReg does for the DJNZ counter (#94/#99).
+def HLReg : Z80Reg16Class<(add HL)>;
+
 // GR16 minus IX/IY (#112).  Used by pseudo expansions whose lowering
 // path operates on the 8-bit halves via SRL/SRA/RR/etc., which only
 // have documented forms for {A,B,C,D,E,H,L} — no IXH/IXL/IYH/IYL

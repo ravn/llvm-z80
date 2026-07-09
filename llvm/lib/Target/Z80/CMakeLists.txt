@@ -46,6 +46,7 @@ add_llvm_target(Z80CodeGen
   Z80PatternFillRecognize.cpp
   Z80LoopRotate.cpp
   Z80LoopInstrFormPrep.cpp
+  Z80SinkColdLoopIV.cpp
   Z80InlineAsmLowering.cpp
   Z80InstrCost.cpp
   Z80InstrInfo.cpp
@@ -61,6 +62,7 @@ add_llvm_target(Z80CodeGen
   Z80RegisterInfo.cpp
   Z80ShiftRotateChain.cpp
   Z80PinAluAccumulator.cpp
+  Z80PinLoopPointer.cpp
   Z80PruneCallFrameDefs.cpp
   Z80ReorderTestDec.cpp
   Z80SplitDjnzCounters.cpp

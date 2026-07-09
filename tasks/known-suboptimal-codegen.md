@@ -177,6 +177,40 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   clang deficiency.  Repro: `cd dcc && scripts/compare3.sh sieve`.
   Runtime-library speed gaps from the same sweep (e/tstring/tqsort,
   NOT codegen) are tracked as ravn/llvm-z80 #244/#245/#246.
+- **Root cause ISOLATED by cycle-profiling (2026-07-09).**  The sieve gap
+  is NOT primarily the 8-bit A-only mechanism nor a bare static-stack
+  increment -- it is **M3 (LSR hoisting conditionally-used IVs) coupled
+  to register pressure**, and the two passes #250 add (loop-instr-form-prep
+  + pin-loop-pointer) only fix the INNER kill loop, not this scan loop.
+  Verified from asm + ntvcm/ticks profile:
+  * The middle SCAN loop (`for i: if(flags[i]) {...}`) runs 81,910 x 10
+    iterations.  LSR strength-reduces `prime = 2*i+3` and
+    `k_start = 3*i+3` -- values used ONLY inside the rarely-taken
+    `if(flags[i])` branch (~2 % of scans, the prime density) -- into
+    loop-carried IVs advanced EVERY scan iteration (`inc iy` x3 +
+    `inc de` x2 = ~42T) plus the scan counter `i` reloaded/stored to BSS
+    each iteration (`ld bc,(__sfrend_main-2); inc bc; ...`).
+  * dcc keeps `i` in an IX frame (`inc (ix-d)`, in place) and recomputes
+    `prime`/`k_start` on demand only when `flags[i]` is true.
+  * `-mllvm -lsr-complexity-limit={8,32}` does NOT remove the derived
+    IVs -- they are not a tunable LSR-formula choice, so TTI's NumRegs
+    penalty (already first in isLSRCostLess, getNumberOfRegisters()=3)
+    does not prevent the hoist.  The IVs are only USED under a
+    low-probability branch, but LSR advances them unconditionally.
+  * The inner kill loop IS fully fixable: with both #250 passes on it
+    becomes the optimal dcc form (`ld (hl),a; add hl,bc; <ptr cmp>;
+    jr c`, ptr=HL/stride=BC/end=DE, no spill).  But net sieve still
+    REGRESSES (+9.3 % ticks) because prep makes the scan loop carry an
+    extra flags-pointer, deepening the scan-loop spill cascade above.
+  * VERDICT: beating dcc on sieve needs a generic middle-end fix --
+    teach LSR not to strength-reduce an IV whose only uses are guarded
+    by a low-probability branch on a register-starved target (block-freq
+    aware AddRecCost), OR sink the `prime`/`k_start` recompute into the
+    taken branch.  This is multi-week, generic-LLVM-scoped, and the
+    payoff is benchmark-only (production firmware already beats SDCC).
+    Parked with data; #250 passes stay opt-in.  Repro:
+    `scratch/dcc-clang-bench/build_compare.sh` +
+    `-mllvm -z80-loop-instr-form-prep -mllvm -z80-pin-loop-pointer`.
 
 ### M3. Loop strength reduction creates wider IVs harmful on Z80
 
@@ -724,6 +758,22 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
   hits the 2e9-tstate ceiling (capped, not measured).  `e` is a mix of divide-
   helper impl (clang 1× combined `___divhi3`; dcc 2× `__divs`+`__mods`) and
   scale-2 array indexing — NOT isolated to M5, do not cite it as pure M5.
+- **New data point 2026-07-09 — `tm` (dcc malloc test) is the worst M5 case
+  seen: 4.27x slower (clang 339.4M vs dcc 79.4M T-states, ticks oracle).**
+  The gap is NOT the heap: per-PC profiling (`ntvcm -g`) attributes 22.3M of
+  the 32M instruction-executions to `_chkmem`, the byte-verify loop
+  `for (i=0;i<c;i++){ if (*pc!=val) err; pc++; }`.  Its inner loop `.LBB0_4`
+  (1,112,100 iters) is the canonical M5 shape AMPLIFIED by register pressure:
+  the base `p` is parked in IY and the frame is in IX, so the i16 counter `i`
+  spills to the IX frame and is reloaded every iteration, the loop-invariant
+  limit `c` is reloaded from the stack param `(ix+4/5)` every iteration, and
+  the address is recomputed `push iy / pop hl / add hl,bc` instead of `inc hl`.
+  Measured 234 T/iter (20 insns) vs ~50 T/iter (8 insns) for an optimal
+  pointer-walk = 4.68x; the ~205M wasted T-states account for essentially the
+  whole 260M gap.  Same root cause and same MIR-pass fix as the sieve case;
+  the IX-frame + IY-base pressure is why the multiplier is 4.7x here vs 1.2x
+  on sieve (which has no frame pointer competing for regs).  Repro:
+  `dcc/tests/tm.c`; measure via `scratch/dcc-clang-bench/ticks_cpm.py`.
 
 ### M6. Z80LowerSelect pre-compute forces IY in pointer-scan loops
 
