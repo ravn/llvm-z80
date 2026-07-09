@@ -14,6 +14,13 @@ on:
       - 'llvm/lib/Target/Z80/**'
       - 'llvm/test/CodeGen/Z80/**'
       - 'llvm/test/MC/Z80/**'
+      # The Z80/SM83 compiler-rt runtime (memcpy/memset/memchr/___umodqi3/...)
+      # is built + exercised by the runtime-tests job; gate it so a helper edit
+      # re-runs CI (2026-07-08: the pop-iy tightening slipped through un-gated).
+      - 'compiler-rt/lib/builtins/z80/**'
+      - 'compiler-rt/lib/builtins/sm83/**'
+      # The runtime oracle harness + its testcases (runtime-tests job).
+      - 'z80-utils/**'
       # ravn/llvm-z80#158: the TruncInstCombine "narrow through Argument" fix
       # lives in generic code; gate its regression test + the Z80 end-to-end
       # witness so drift in either re-runs CI.
