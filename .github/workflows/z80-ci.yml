@@ -5,38 +5,41 @@ name: Z80 backend CI
 # Once stable, propose for promotion to llvm-z80/llvm-z80 (engagement mode).
 
 on:
-  # Tests run on the main branch only (per maintainer direction).  Feature
-  # branches do not trigger CI; verify locally before merging.  workflow_dispatch
-  # is kept as a manual escape hatch.
-  push:
-    branches: [main]
-    paths:
-      - 'llvm/lib/Target/Z80/**'
-      - 'llvm/test/CodeGen/Z80/**'
-      - 'llvm/test/MC/Z80/**'
-      # The Z80/SM83 compiler-rt runtime (memcpy/memset/memchr/___umodqi3/...)
-      # is built + exercised by the runtime-tests job; gate it so a helper edit
-      # re-runs CI (2026-07-08: the pop-iy tightening slipped through un-gated).
-      - 'compiler-rt/lib/builtins/z80/**'
-      - 'compiler-rt/lib/builtins/sm83/**'
-      # The runtime oracle harness + its testcases (runtime-tests job).
-      - 'z80-utils/**'
-      # ravn/llvm-z80#158: the TruncInstCombine "narrow through Argument" fix
-      # lives in generic code; gate its regression test + the Z80 end-to-end
-      # witness so drift in either re-runs CI.
-      - 'llvm/lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp'
-      - 'llvm/test/Transforms/AggressiveInstCombine/narrow-through-argument.ll'
-      - 'clang/test/CodeGen/z80-knr-u8-rotate.c'
-      - 'clang/lib/Driver/ToolChains/SDCC.cpp'
-      - 'clang/lib/Driver/ToolChains/Z80.cpp'
-      - 'clang/lib/Driver/ToolChains/Z80.h'
-      - 'clang/lib/Basic/Targets/Z80.cpp'
-      - 'clang/lib/Basic/Targets/Z80.h'
-      - 'clang/include/clang/Basic/BuiltinsZ80.td'
-      - 'clang/test/Driver/z80-*'
-      - 'clang/test/CodeGen/z80-*'
-      - 'clang/cmake/caches/Z80.cmake'
-      - '.github/workflows/z80-ci.yml'
+  # CI DISABLED 2026-07-09 (maintainer: runs are expensive; keep off for now).
+  # Only manual runs via workflow_dispatch fire.  To RE-ENABLE automatic runs
+  # on merge to main, uncomment the `push:` block below (it is scoped to the
+  # main branch + the Z80-relevant paths, so feature branches never trigger and
+  # unrelated changes don't spend a run).
+  #
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'llvm/lib/Target/Z80/**'
+  #     - 'llvm/test/CodeGen/Z80/**'
+  #     - 'llvm/test/MC/Z80/**'
+  #     # The Z80/SM83 compiler-rt runtime (memcpy/memset/memchr/___umodqi3/...)
+  #     # is built + exercised by the runtime-tests job; gate it so a helper edit
+  #     # re-runs CI (2026-07-08: the pop-iy tightening slipped through un-gated).
+  #     - 'compiler-rt/lib/builtins/z80/**'
+  #     - 'compiler-rt/lib/builtins/sm83/**'
+  #     # The runtime oracle harness + its testcases (runtime-tests job).
+  #     - 'z80-utils/**'
+  #     # ravn/llvm-z80#158: the TruncInstCombine "narrow through Argument" fix
+  #     # lives in generic code; gate its regression test + the Z80 end-to-end
+  #     # witness so drift in either re-runs CI.
+  #     - 'llvm/lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp'
+  #     - 'llvm/test/Transforms/AggressiveInstCombine/narrow-through-argument.ll'
+  #     - 'clang/test/CodeGen/z80-knr-u8-rotate.c'
+  #     - 'clang/lib/Driver/ToolChains/SDCC.cpp'
+  #     - 'clang/lib/Driver/ToolChains/Z80.cpp'
+  #     - 'clang/lib/Driver/ToolChains/Z80.h'
+  #     - 'clang/lib/Basic/Targets/Z80.cpp'
+  #     - 'clang/lib/Basic/Targets/Z80.h'
+  #     - 'clang/include/clang/Basic/BuiltinsZ80.td'
+  #     - 'clang/test/Driver/z80-*'
+  #     - 'clang/test/CodeGen/z80-*'
+  #     - 'clang/cmake/caches/Z80.cmake'
+  #     - '.github/workflows/z80-ci.yml'
   workflow_dispatch:
 
 permissions:
