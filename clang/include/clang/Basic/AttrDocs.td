@@ -6759,6 +6759,29 @@ for Z80 targets. All arguments are passed in registers (HL, DE, BC, IX, IY
 for i16; A for i8), with no stack arguments. Nothing is callee-saved.}];
 }
 
+def Z80FastCallDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Heading = "clang::z80_fastcall";
+  let Content = [{
+The ``z80_fastcall`` attribute specifies the z88dk ``__z88dk_fastcall``
+calling convention for Z80 targets. A single argument is passed in a fixed
+register selected by width: ``i8`` in ``L``, ``i16`` in ``HL``, ``i32`` in
+``DE:HL`` (DE holds the high word, HL the low word). The return value uses
+the same registers. z88dk fastcall is single-argument by construction.}];
+}
+
+def Z80CalleeDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Heading = "clang::z80_callee";
+  let Content = [{
+The ``z80_callee`` attribute specifies the z88dk ``__z88dk_callee`` calling
+convention for Z80 targets. Arguments are passed on the stack exactly like
+``__sdcccall(0)``, but the callee cleans them up on return instead of the
+caller. The return value uses the z88dk classic registers (i8 in L, i16 in HL,
+i32 in DE:HL), the same as ``__sdcccall(0)``. Callee cleanup is forced for
+every non-variadic call, independent of the return size.}];
+}
+
 def Z80PreservesRegsDocs : Documentation {
   let Category = DocCatFunction;
   let Heading = "clang::z80_preserves_regs";

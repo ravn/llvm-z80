@@ -73,6 +73,11 @@ static bool isCalleeCleanup(bool IsVarArg, Type *RetTy, Type *FirstArgTy,
     return false;
   if (IsVarArg)
     return false;
+  // z88dk __z88dk_callee: callee cleanup is forced for every non-variadic call,
+  // independent of return size (unlike sdcccall(1) below, which caller-cleans
+  // for >16-bit returns).  Args are stack-passed like sdcccall(0).
+  if (CC == CallingConv::Z80_Z88dkCallee)
+    return true;
   if (IsSM83)
     return true;
   // Z80: return ≤16 bits → callee cleanup
@@ -147,6 +152,29 @@ static ArgAssignment classifyArgAllReg(unsigned &UsedMask, unsigned BitWidth) {
   return Result; // InReg = false → would go to stack
 }
 
+/// z88dk __z88dk_fastcall: a single argument in a fixed register.
+///   i8 -> First_I8 (L), i16 -> First_I16 (HL), i32 -> First_I32_Hi:_Lo (DE:HL).
+/// Only the first argument is register-passed.  z88dk fastcall is
+/// single-argument by construction; a 2nd+ argument is rejected by the
+/// frontend, but if one reaches here we leave it InReg=false (stack) rather
+/// than assert, so the backend degrades safely.
+static ArgAssignment classifyArgFastCall(const CallingConvRegs &Regs,
+                                         unsigned &RegParamCount,
+                                         unsigned BitWidth) {
+  ArgAssignment Result;
+  if (RegParamCount != 0)
+    return Result; // only the first argument is register-passed
+  if (BitWidth <= 8)
+    Result = {true, Regs.First_I8, Register(), FIRST_I8};
+  else if (BitWidth <= 16)
+    Result = {true, Regs.First_I16, Register(), FIRST_I16};
+  else if (BitWidth <= 32)
+    Result = {true, Regs.First_I32_Hi, Regs.First_I32_Lo, FIRST_I32};
+  if (Result.InReg)
+    RegParamCount++;
+  return Result;
+}
+
 /// Classify a single argument based on current register state.
 /// Uses CallingConvRegs to look up the correct physical registers.
 /// sdcccall(0): all args go on stack (returns empty result).
@@ -155,12 +183,20 @@ ArgAssignment classifyArg(const CallingConvRegs &Regs, unsigned &RegParamCount,
                           bool IsVarArg, CallingConv::ID CC = CallingConv::C) {
   ArgAssignment Result;
 
-  if (CC == CallingConv::Z80_SDCCCall0 || IsVarArg)
+  // sdcccall(0) and z88dk __z88dk_callee: all args go on the stack (returns
+  // empty result).  They share the stack layout; they differ only in who
+  // cleans it up (see isCalleeCleanup), which is handled elsewhere.
+  if (CC == CallingConv::Z80_SDCCCall0 || CC == CallingConv::Z80_Z88dkCallee ||
+      IsVarArg)
     return Result;
 
   // All-register convention: use all available registers, no stack args.
   if (CC == CallingConv::Z80_AllReg)
     return classifyArgAllReg(RegParamCount, BitWidth);
+
+  // z88dk-fastcall: single argument in a fixed register (L/HL/DE:HL).
+  if (CC == CallingConv::Z80_Z88dkFastCall)
+    return classifyArgFastCall(Regs, RegParamCount, BitWidth);
 
   if (RegParamCount == 0) {
     if (BitWidth <= 8) {
@@ -232,6 +268,25 @@ Z80CallLowering::Z80CallLowering(const TargetLowering *TL)
                                 /*Ret_I32_Lo=*/Z80::HL,
                                 /*IndirectCallReg=*/Z80::IY,
                                 /*IndirectCallOpc=*/Z80::CALL_IY,
+                            },
+                            // z88dk-fastcall registers.  Single argument in
+                            // L/HL/DE:HL; return in the same registers (same as
+                            // sdcccall(0) returns).  First_I8 (last field) = L.
+                            CallingConvRegs{
+                                /*First_I16=*/Z80::HL,
+                                /*First_I32_Hi=*/Z80::DE,
+                                /*First_I32_Lo=*/Z80::HL,
+                                /*Second_AfterI8_I8=*/Register(),
+                                /*Second_AfterI8_I16=*/Register(),
+                                /*Second_AfterI16_I8=*/Register(),
+                                /*Second_AfterI16_I16=*/Register(),
+                                /*Ret_I8=*/Z80::L,
+                                /*Ret_I16=*/Z80::HL,
+                                /*Ret_I32_Hi=*/Z80::DE,
+                                /*Ret_I32_Lo=*/Z80::HL,
+                                /*IndirectCallReg=*/Z80::IY,
+                                /*IndirectCallOpc=*/Z80::CALL_IY,
+                                /*First_I8=*/Z80::L,
                             }) {}
 
 //===----------------------------------------------------------------------===//

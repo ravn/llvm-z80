@@ -128,6 +128,10 @@ unsigned CodeGenTypes::ClangCallConvToLLVMCallConv(CallingConv CC) {
     return llvm::CallingConv::Z80_SDCCCall0;
   case CC_Z80AllReg:
     return llvm::CallingConv::Z80_AllReg;
+  case CC_Z80FastCall:
+    return llvm::CallingConv::Z80_Z88dkFastCall;
+  case CC_Z80Callee:
+    return llvm::CallingConv::Z80_Z88dkCallee;
   }
 }
 
@@ -349,6 +353,12 @@ static CallingConv getCallingConventionForDecl(const ObjCMethodDecl *D,
 
   if (D->hasAttr<Z80AllRegAttr>())
     return CC_Z80AllReg;
+
+  if (D->hasAttr<Z80FastCallAttr>())
+    return CC_Z80FastCall;
+
+  if (D->hasAttr<Z80CalleeAttr>())
+    return CC_Z80Callee;
 
   return CC_C;
 }
