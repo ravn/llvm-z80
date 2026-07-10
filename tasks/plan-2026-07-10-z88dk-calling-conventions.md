@@ -189,15 +189,34 @@ invariant is **exactly-once** stack cleanup: callee pops, caller does NOT.
     non-reentrant) — document, don't test-force.
 
 **Phase C — validate against the real clib + remove `__STDC_ABI_ONLY` gating.**
+
+### C.0 — clib register/stack/order contract validation.  ✅ DONE (2026-07-11)
+Confirmed the two new conventions match the ACTUAL z88dk newlib clib .asm
+(not the compiler-rt stubs — those are the rejected shim path):
+- **fastcall (cc130)**: `libsrc/newlib/stdio/c/sdcc_ix/feof_fastcall.asm` reads
+  its single FILE* arg from **HL** (`push hl; ex (sp),ix`) and returns in HL ->
+  matches cc130 i16 arg=HL / ret=HL.
+- **callee (cc131)**: `libsrc/newlib/stdio/c/sdcc_ix/fputc_callee.asm` does
+  `pop af; pop de; pop bc; push af` — it removes BOTH args (c in DE, stream in
+  BC = 4 bytes) and returns only the ret-addr -> CALLEE cleanup, ret in HL ->
+  matches cc131 forced callee-cleanup.
+- **PUSH order (was an open item)**: clib expects `pop de`=first arg `c` (top of
+  stack, pushed LAST) and `pop bc`=second arg `stream` (deeper, pushed FIRST);
+  clang cc131 emits `push arg2; push arg1; call` -> arg1 on top.  ORDER MATCHES.
+
+### C.1 — remaining (needs the zcc `ez80-clang` link toolchain, Docker)
 1. With both attributes real, the `#ifndef __STDC_ABI_ONLY` gates that hide
    `_callee`/`_fastcall` clib decls from clang can be dropped incrementally;
    re-expose and compile-test headers (stdio fileno/perror, fcntl readbyte,
    malloc.h Heap*) — these become correctly-lowered instead of hidden.
+   (NB: `include/stdio.h:279` has a dead `#ifdef __STDC_ABI_ONLYe` typo, empty
+   block — clean up when touching the gates.)
 2. Re-run the dcc benchmark migration (sieve/e/ttt/tm) end-to-end on official
    libs; confirm no regression.  Then extend to a broader clib surface.
 3. The earlier "poison tripwire" idea becomes unnecessary — the attributes now
    carry real meaning, so a mis-decl is a wrong-CC bug caught by tests, not a
    silent no-op.
+
 
 ## End state — this work is destined UPSTREAM (build it upstream-ready from day 1)
 
