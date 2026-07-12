@@ -74,6 +74,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Transforms/Utils.h"
 #include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
 
 #define DEBUG_TYPE "z80-loop-instr-form-prep"
@@ -429,6 +430,16 @@ public:
  }
 
  void getAnalysisUsage(AnalysisUsage &AU) const override {
+   // Requiring LoopSimplify form guarantees every candidate loop has a
+   // dedicated preheader.  Without it, a zero-trip-guarded loop
+   // (`if (c==0) skip`) enters via a conditional branch, so
+   // getLoopPreheader() is null and runOnFunctionImpl bails at its first
+   // guard -- the ravn/llvm-z80#250 base reload then survives.  This only
+   // bit the production pipeline because LSR (which pulls LoopSimplify in)
+   // is disabled there via -mllvm -disable-lsr; requiring it explicitly
+   // decouples us from LSR.  Mirrors LoopStrengthReduce's own declaration.
+   AU.addRequiredID(LoopSimplifyID);
+   AU.addPreservedID(LoopSimplifyID);
    AU.addRequired<ScalarEvolutionWrapperPass>();
    AU.addRequired<DominatorTreeWrapperPass>();
    AU.addRequired<LoopInfoWrapperPass>();
@@ -446,6 +457,7 @@ char Z80LoopInstrFormPrepLegacyPass::ID = 0;
 
 INITIALIZE_PASS_BEGIN(Z80LoopInstrFormPrepLegacyPass, DEBUG_TYPE,
                      "Z80 Loop Instruction Form Prep", false, false)
+INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
