@@ -74,7 +74,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Transforms/Utils.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
 
 #define DEBUG_TYPE "z80-loop-instr-form-prep"
@@ -407,7 +407,8 @@ static bool rewriteAddrGroup(Loop &L, SCEVExpander &SCEVE,
  return true;
 }
 
-static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI) {
+static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI,
+                             DominatorTree &DT) {
  bool Changed = false;
  SmallVector<Loop *, 8> Loops;
  for (Loop *Outer : LI)
@@ -416,12 +417,27 @@ static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI) {
        Loops.push_back(L);
 
  for (Loop *L : Loops) {
-   if (!L->getLoopPreheader() || !L->getLoopLatch())
+   // A single latch is required (we advance the pointer IV in it); a missing
+   // preheader is NOT fatal -- we insert one on demand below, but only after
+   // the loop has passed every gate, so loops we decline (and functions made
+   // entirely of them, e.g. the nested sieve kill loop) are left untouched.
+   if (!L->getLoopLatch())
      continue;
    SmallVector<AddrGroup, 4> Groups;
    if (!collectAddrGroups(*L, SE, Groups))
      continue;
    if (!registerPressureOK(*L, Groups.size()))
+     continue;
+   // Insert a dedicated preheader for THIS loop only if it lacks one.  A
+   // zero-trip-guarded loop (`if (c==0) skip`) enters via a conditional
+   // branch and has none until now (ravn/llvm-z80#250).  Doing it here --
+   // per rewritten loop, rather than requiring whole-function LoopSimplify --
+   // keeps declined functions byte-identical (whole-function LoopSimplify
+   // perturbed sieve's register allocation by +1 spill slot even though the
+   // pass rewrote nothing there).
+   if (!L->getLoopPreheader() &&
+       !InsertPreheaderForLoop(L, &DT, &LI, /*MSSAU=*/nullptr,
+                               /*PreserveLCSSA=*/false))
      continue;
    SCEVExpander SCEVE(SE, "z80-loop-instr-form-prep");
    for (AddrGroup &G : Groups)
@@ -445,24 +461,19 @@ public:
      return false;
    auto &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
    auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-   return runOnFunctionImpl(F, SE, LI);
+   auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+   return runOnFunctionImpl(F, SE, LI, DT);
  }
 
  void getAnalysisUsage(AnalysisUsage &AU) const override {
-   // Requiring LoopSimplify form guarantees every candidate loop has a
-   // dedicated preheader.  Without it, a zero-trip-guarded loop
-   // (`if (c==0) skip`) enters via a conditional branch, so
-   // getLoopPreheader() is null and runOnFunctionImpl bails at its first
-   // guard -- the ravn/llvm-z80#250 base reload then survives.  This only
-   // bit the production pipeline because LSR (which pulls LoopSimplify in)
-   // is disabled there via -mllvm -disable-lsr; requiring it explicitly
-   // decouples us from LSR.  Mirrors LoopStrengthReduce's own declaration.
-   AU.addRequiredID(LoopSimplifyID);
-   AU.addPreservedID(LoopSimplifyID);
+   // We insert a dedicated preheader on demand for the loops we rewrite
+   // (see runOnFunctionImpl), so we do NOT require whole-function
+   // LoopSimplify -- that perturbed the register allocation of functions we
+   // decline (ravn/llvm-z80#250, sieve).  On-demand insertion mutates the
+   // CFG, so this pass does NOT preserve it.
    AU.addRequired<ScalarEvolutionWrapperPass>();
    AU.addRequired<DominatorTreeWrapperPass>();
    AU.addRequired<LoopInfoWrapperPass>();
-   AU.setPreservesCFG();
  }
 
  StringRef getPassName() const override {
@@ -476,7 +487,6 @@ char Z80LoopInstrFormPrepLegacyPass::ID = 0;
 
 INITIALIZE_PASS_BEGIN(Z80LoopInstrFormPrepLegacyPass, DEBUG_TYPE,
                      "Z80 Loop Instruction Form Prep", false, false)
-INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
@@ -491,9 +501,9 @@ PreservedAnalyses Z80LoopInstrFormPrep::run(Function &F,
                                           FunctionAnalysisManager &AM) {
  auto &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
  auto &LI = AM.getResult<LoopAnalysis>(F);
- if (!runOnFunctionImpl(F, SE, LI))
+ auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
+ if (!runOnFunctionImpl(F, SE, LI, DT))
    return PreservedAnalyses::all();
  PreservedAnalyses PA;
- PA.preserveSet<CFGAnalyses>();
  return PA;
 }
