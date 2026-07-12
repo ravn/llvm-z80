@@ -79,7 +79,7 @@ using namespace llvm;
 #define DEBUG_TYPE "z80-pin-loop-pointer"
 
 static cl::opt<bool> EnableZ80PinLoopPointer(
-    "z80-pin-loop-pointer", cl::init(false), cl::Hidden,
+    "z80-enable-pin-loop-pointer", cl::init(false), cl::Hidden,
     cl::desc("Pin byte-array pointer-walk induction variables to HL "
              "(ravn/llvm-z80#250 companion; requires -z80-loop-instr-form-prep "
              "to have created the pointer walk)"));

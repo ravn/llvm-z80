@@ -1,4 +1,4 @@
-; RUN: llc -O2 -mtriple=z80 -z80-loop-instr-form-prep < %s | FileCheck %s
+; RUN: llc -O2 -mtriple=z80 -z80-enable-loop-instr-form-prep < %s | FileCheck %s
 ; RUN: llc -O2 -mtriple=z80 < %s | FileCheck %s --check-prefix=OFF
 
 ; ravn/llvm-z80#250: byte-array loops with a non-constant stride used to

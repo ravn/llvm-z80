@@ -105,7 +105,7 @@ static cl::opt<unsigned> Z80MaxLoopCarriedPtrs(
 // tightened or IndVarSimplify-style exit-test rewriting (converting the
 // exit test to compare pointers, eliminating the old IV entirely) is added.
 static cl::opt<bool> EnableZ80LoopInstrFormPrep(
-   "z80-loop-instr-form-prep", cl::init(false), cl::Hidden,
+   "z80-enable-loop-instr-form-prep", cl::init(false), cl::Hidden,
    cl::desc("Enable Z80 pointer-IV strength reduction for scale-1 "
             "byte-array loops (ravn/llvm-z80#250, experimental)"));
 
