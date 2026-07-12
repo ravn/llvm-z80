@@ -175,7 +175,26 @@ static bool collectAddrGroups(Loop &L, ScalarEvolution &SE,
  return !Groups.empty();
 }
 
+static cl::opt<bool> Z80AllowNestedLoopInstrFormPrep(
+   "z80-loop-instr-form-prep-allow-nested", cl::Hidden, cl::init(false),
+   cl::desc("Allow Z80LoopInstrFormPrep to rewrite loops nested inside "
+            "another loop (default off: nested rewrites add a 3rd live "
+            "16-bit value and empirically regress the sieve kill loop)"));
+
 static bool registerPressureOK(Loop &L, unsigned NewGroups) {
+ // Nesting gate (ravn/llvm-z80#250).  A loop nested inside another loop
+ // shares BC/DE/HL with the enclosing loop's live values; adding a pointer
+ // IV here is what regressed the sieve KILL loop
+ // (`for k in i_sq..SIZE step i: flags[k]`, nested in the `i` loop) by
+ // +1.31M T-states in prior measurements -- the new pointer starves the
+ // outer loop's IV and forces a spill.  Non-nested loops (e.g. sieve's
+ // `for i: flags[i] = 0` init loop, or a flat guarded scan) have the whole
+ // register file to themselves and are the safe, profitable case.  This is
+ // a coarse structural proxy, not a real post-RA pressure estimate; the
+ // escape hatch re-enables nested rewriting for experiments.
+ if (L.getParentLoop() && !Z80AllowNestedLoopInstrFormPrep)
+   return false;
+
  unsigned ExistingPHIs = 0;
  for (PHINode &PN : L.getHeader()->phis()) {
    (void)PN;
