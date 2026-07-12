@@ -4,10 +4,12 @@
 thoroughly and prepare a plan for a new session").
 
 **Scope note / model fit:** the *investigation* below is open-ended and was
-done on Opus. The *execution* (Phase 1 especially) is a targeted patch against
-an established pass with a clear fix pattern — Sonnet would be faster/cheaper
-for the mechanical parts; escalate to Opus only for the register-pressure model
-design (Phase 2) and any "why doesn't prep fire here" SCEV debugging.
+done on Opus. The *execution* splits: **Phase 1a (coverage spike) is an
+open-ended SCEV/LFTR debug of an unsolved unknown — keep it on Opus**; only once
+it hits GO does the mechanical patch work (Phase 1b) become a Sonnet-friendly
+targeted change against an established pass. Escalate to Opus for the
+register-pressure model design (Phase 2). Do NOT treat Phase 1 as a bounded
+"targeted patch" up front — its effort is unknown until the 1a spike resolves.
 
 ---
 
@@ -23,9 +25,10 @@ plus `Z80SinkColdLoopIV` (the separate #256/M3 scan-loop fix). Prior work (sessi
 **net-regress the nested `sieve` kernel** because the rewrite is
 register-pressure-blind and steals the enclosing scan loop's pairs. The blocker
 to default-on is therefore a **profitability/pressure model**, not new
-machinery. This session's job: (Phase 1) make the *non-nested* wins (tm/chkmem,
-ttt) actually fire and ship them default-on without regressing sieve/e; (Phase 2,
-harder) a real pressure model for the nested case.
+machinery. This session's job: (Phase 1a) spike the coverage unknown — root-cause
+why prep doesn't fire on the *non-nested* candidates (tm/chkmem, ttt) and return a
+GO/NO-GO; (Phase 1b, only on GO) ship those wins default-on without regressing
+sieve/e; (Phase 2, harder) a real pressure model for the nested case.
 
 ---
 
@@ -219,7 +222,14 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
   `dcc/tests/ttt.c` win-scan loop (ttt), the issue's `kill()` (sieve). Add each
   as an `.ll` under `llvm/test/CodeGen/Z80/` as you pin behavior.
 
-### Phase 1 — make the non-nested wins fire, ship default-on (high confidence)
+### Phase 1a — coverage spike (TIMEBOXED ~1 day, output = go/no-go, NOT a ship commitment)
+
+> **Why a spike, not a task.** Phase 1's headline wins (tm/chkmem, ttt) all
+> depend on an UNSOLVED unknown: why `prep` doesn't rewrite `chk` under
+> `-O2 -disable-lsr`. Until that is root-caused you cannot bound the effort or
+> know whether the fix is a clean one-liner or "SCEV isn't affine once LSR is
+> off" (which would make Phase 1 itself as hard as Phase 2). So Phase 1a's
+> deliverable is a **decision**, not code shipped.
 
 1. **Root-cause why `prep` doesn't rewrite `chk` under `-O2 -disable-lsr`.**
    Instrument with `-debug-only=z80-loop-instr-form-prep` (add `LLVM_DEBUG`
@@ -228,11 +238,27 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
    `tryEliminateOldIV` (the chkmem exit test is `i < c` with `c` a *parameter*
    bound, `i` the counter — should match, but the GEP index phase vs the
    counter phase may differ) OR the store GEP isn't recognized once LSR is off.
-2. **Fix the coverage gap** minimally and cleanly (no band-aids). Expected shape
-   of the fix is either: relax `tryEliminateOldIV` to the chkmem exit-test phase,
-   or handle the param-base start SCEV expansion path. Add a `LLVM_DEBUG` worked
-   example (chkmem concrete values) per the comment-style rules.
-3. **Re-gate for nesting instead of raw PHI count.** Replace/augment
+2. **Also confirm the load-bearing premises** while instrumented:
+   (a) chkmem(tm) and ttt hot loops are actually Depth-1 (`-print-after` the loop
+   info, or read the `Depth=N` asm annotations via the M5 scanner) — Phase 1's
+   entire reach rests on these being non-nested; and (b) an automatic prep+pin on
+   a *proven* non-nested loop does not itself regress (sanity that the nesting
+   gate, not something else, is what protects sieve).
+
+**GO/NO-GO GATE (end of Phase 1a — decide before writing any ship code):**
+- **GO** if the coverage gap is a clean, bounded relaxation (e.g. widen the
+  exit-test phase match in `tryEliminateOldIV`, or add the param-base start SCEV
+  expansion) AND premises (2a) hold → proceed to Phase 1b.
+- **NO-GO / re-scope** if the root cause is structural (SCEV non-affine without
+  LSR, or the "non-nested" targets are actually nested) → Phase 1 does NOT ship
+  this session; fold the finding into Phase 2 and report. Do not force a band-aid.
+
+### Phase 1b — ship the non-nested wins default-on (CONDITIONAL on Phase 1a GO)
+
+1. **Fix the coverage gap** minimally and cleanly (no band-aids), per the bounded
+   shape Phase 1a identified. Add a `LLVM_DEBUG` worked example (chkmem concrete
+   values) per the comment-style rules.
+2. **Re-gate for nesting instead of raw PHI count.** Replace/augment
    `registerPressureOK` so it declines when the loop is **nested inside another
    loop that is not provably cold** (the sieve case), and allows non-nested /
    cold-enclosing loops (tm/chkmem, ttt). Cheapest correct proxy for "will this
@@ -241,10 +267,10 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
    BlockFrequency relative to L. This is a heuristic, not a real pressure
    estimate — label it as such in the code comment, and lean on the corpus +
    production gate to catch mistakes.
-4. **Decide prep-only vs prep+pin default.** Test both: pin (`Z80PinLoopPointer`)
+3. **Decide prep-only vs prep+pin default.** Test both: pin (`Z80PinLoopPointer`)
    may be unnecessary if the allocator already keeps the pointer in a pair once
    the old IV is gone; if pin is needed, turn it on together. Measure.
-5. **Validate** on all four benchmarks (T-states must not regress sieve/e,
+4. **Validate** on all four benchmarks (T-states must not regress sieve/e,
    should improve ttt/tm — the confirmed non-nested targets), full corpus
    (`compiler-comparison-corpus/sweep.sh`), full lit, runtime suite
    (`cargo run -- clang`), and **production triplet byte-identical**
@@ -252,14 +278,15 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
    the nesting/cold gate is too loose). NOTE: fannkuch is Depth-3 nested (§3.1),
    so a correct Phase-1 nesting gate will DECLINE it — fannkuch staying at its
    baseline 36.2M is the *expected* Phase-1 outcome, not a failure.
-6. **Ship default-on** only if net-positive and production byte-identical.
+5. **Ship default-on** only if net-positive and production byte-identical.
    Every codegen change ships a **lit test** (FileCheck pins the loop: base
    materialized in preheader, `CHECK-NOT: add hl` / `ld hl,GV` inside the loop,
    `add hl,de` walk present) AND a **runtime fixture** for the chkmem over-read
    correctness (an `/* expect */` sum over an array with a sentinel).
 
-**Phase 1 success:** ttt and tm move to ≤ sdcc T-states; sieve/e unchanged;
-production byte-identical; lit+runtime green.
+**Phase 1b success:** ttt and tm move to ≤ sdcc T-states; sieve/e unchanged;
+production byte-identical; lit+runtime green. (Reachable only if Phase 1a
+returned GO; a NO-GO is a legitimate Phase-1 outcome, not a failure.)
 
 ### Phase 2 — pressure-aware model for the nested case (hard, optional, stretch)
 
