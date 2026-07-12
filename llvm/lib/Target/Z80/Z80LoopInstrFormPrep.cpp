@@ -68,6 +68,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -419,6 +420,14 @@ static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
      M.OldIVIsLHS ? EndPtr : MatchingPtr, "z80.ivptr.cmp");
  M.Cmp->replaceAllUsesWith(NewCmp);
  M.Cmp->eraseFromParent();
+ // OldIVInst (the increment `%kn = %k + step`) and OldPHI (`%k`) now form a
+ // DEAD CYCLE: the phi's backedge value is the increment, and the increment
+ // reads the phi.  Erasing the increment while the phi still references it
+ // trips "Uses remain when a value is destroyed" on an asserts build and leaves
+ // a dangling operand on a release build (ravn/llvm-z80#250 -- release codegen
+ // happened to survive it, but it is real UB).  Break the cycle first by
+ // poisoning the increment's remaining use (the phi backedge), then erase both.
+ M.OldIVInst->replaceAllUsesWith(PoisonValue::get(M.OldIVInst->getType()));
  M.OldIVInst->eraseFromParent();
  if (M.OldPHI && M.OldPHI->use_empty())
    M.OldPHI->eraseFromParent();
@@ -440,7 +449,64 @@ static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
 // [%ptr.next, %latch]`; in the latch: `%ptr.next = getelementptr i8, ptr
 // %ptr, i16 %prime`.  Every `getelementptr i8, ptr @flags, i16 %k` in the
 // loop body is replaced by `%ptr`.
-static bool rewriteAddrGroup(Loop &L, SCEVExpander &SCEVE,
+// SCEVExpander places an AddRec expansion at the header of the AddRec's OWN
+// loop, not at the requested insertion point.  For a kill loop nested inside a
+// scan loop, the start pointer `&base[k_start]` is a *scan-loop* AddRec, so the
+// expander drops `getelementptr base, k_start` into the scan-loop header --
+// computed unconditionally every scan iteration (before the `if (base[i])`
+// guard) and, since it is only consumed later in the kill preheader, spilled to
+// BSS and reloaded (~35 T per scan iteration; on the sieve benchmark this
+// +2.9M-cycle scan-loop leak is exactly what turned the otherwise dcc-quality
+// kill loop into a net regression -- ravn/llvm-z80#250).
+//
+// Sink the expanded StartPtr down into the actual kill preheader, where it is
+// (a) conditional -- only run when the guard passed -- and (b) register-adjacent
+// to the kill loop, so no BSS round-trip.  Legal because StartPtr's only use is
+// the pointer PHI's preheader-incoming edge (which the caller adds) and its
+// operands are all enclosing-loop IVs / loop-invariants that properly dominate
+// the preheader.  No-op when the expander already landed StartPtr in \p
+// Preheader (the flat, non-nested case).
+//
+// We move only the single terminal StartPtr instruction (typically one
+// `getelementptr base, idx` -> `ld hl,base; add hl,idx`), not its operand chain:
+// that is the expensive, per-scan-iteration + BSS-spilled part, and sinking just
+// it is provably SSA-safe.  Trying to cascade the index-computation operands too
+// risks reordering a def after its use inside the preheader; the residual index
+// arithmetic left in the enclosing header is cheap and register-resident.
+//
+// Uses BLOCK-level dominance deliberately: the instruction-level
+// dominates(SinkPt, User) query mishandles our case -- User is the pointer PHI
+// and its use of StartPtr is on the preheader->header edge, which the preheader
+// TERMINATOR (SinkPt) does not "dominate" under the PHI-edge rule even though
+// the sunk def plainly reaches it.
+static void sinkStartPtrToPreheader(Value *StartPtr, BasicBlock *Preheader,
+                                    const DominatorTree &DT) {
+ auto *I = dyn_cast<Instruction>(StartPtr);
+ if (!I || I->getParent() == Preheader || isa<PHINode>(I))
+   return;
+ // Every operand must be defined in a block that properly dominates the
+ // preheader (enclosing-loop IV or loop-invariant) so it is available there.
+ bool OperandsOK = all_of(I->operands(), [&](Value *Op) {
+   auto *OpI = dyn_cast<Instruction>(Op);
+   return !OpI || DT.properlyDominates(OpI->getParent(), Preheader);
+ });
+ if (!OperandsOK)
+   return;
+ // Every use must sit in a block the preheader dominates (so the sunk def still
+ // reaches it) -- or in the preheader itself (only the caller's pointer PHI,
+ // which reads StartPtr on the preheader edge; safe once StartPtr is in the
+ // preheader before its terminator).
+ bool UsesOK = all_of(I->users(), [&](User *U) {
+   auto *UI = dyn_cast<Instruction>(U);
+   return UI && (UI->getParent() == Preheader ||
+                 DT.properlyDominates(Preheader, UI->getParent()));
+ });
+ if (!UsesOK)
+   return;
+ I->moveBefore(Preheader->getTerminator()->getIterator());
+}
+
+static bool rewriteAddrGroup(Loop &L, SCEVExpander &SCEVE, const DominatorTree &DT,
                             const AddrGroup &G) {
  BasicBlock *Preheader = L.getLoopPreheader();
  BasicBlock *Header = L.getHeader();
@@ -464,6 +530,11 @@ static bool rewriteAddrGroup(Loop &L, SCEVExpander &SCEVE,
  PHINode *NewPHI =
      PHINode::Create(PtrTy, 2, "z80.ivptr", Header->getFirstNonPHIIt());
  NewPHI->addIncoming(StartPtr, Preheader);
+
+ // Pull the start-pointer expansion out of any enclosing loop header the
+ // SCEVExpander hoisted it to, down into this loop's preheader (see
+ // sinkStartPtrToPreheader -- kills the sieve scan-loop BSS leak).
+ sinkStartPtrToPreheader(StartPtr, Preheader, DT);
 
  auto *IncGEP = GetElementPtrInst::Create(
      I8Ty, NewPHI, StepVal, "z80.ivptr.next",
@@ -538,7 +609,7 @@ static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI,
      continue;
    SCEVExpander SCEVE(SE, "z80-loop-instr-form-prep");
    for (AddrGroup &G : Groups)
-     if (rewriteAddrGroup(*L, SCEVE, G))
+     if (rewriteAddrGroup(*L, SCEVE, DT, G))
        Changed = true;
  }
  return Changed;
