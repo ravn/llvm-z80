@@ -135,11 +135,12 @@ by construction. Full Z80 lit **189 PASS + 5 XFAIL**, 0 unexpected.
 NESTED prefix w/ hatch = rewritten).
 
 ### Still open for Phase 1b (NOT done here)
-- **Default-on decision.** With the collateral regression removed, the opt-in
-  pass is net-neutral on the corpus (sieve non-regressed). Flipping default-on
-  still needs the production triplet byte-identical validation
-  (autoload/cpnos/rcbios) + MAME boot — a larger cycle; present with data, do
-  not flip blind.
+- **Default-on decision = NO-GO** (measured 2026-07-12). Triplet: autoload
+  +12 B, cpnos +9 B, rcbios byte-identical. Production has no flat `base[i]`
+  beneficiaries (loops are `pc++`-walking or nested→declined), so enabling the
+  pass only adds pin/preheader overhead. Pass STAYS opt-in; production
+  byte-identical with it off. Details in the plan's "DEFAULT-ON DECISION"
+  section.
 - Beneficiary re-grounding (the tm caveat above) — user chose to SKIP; do not
   claim per-program wins for tm.
 - `tryEliminateOldIV` did not fire on the guarded repro (old counter survives

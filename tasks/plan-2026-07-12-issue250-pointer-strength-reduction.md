@@ -312,6 +312,32 @@ per-program wins.
 production byte-identical; lit+runtime green. (Reachable only if Phase 1a
 returned GO; a NO-GO is a legitimate Phase-1 outcome, not a failure.)
 
+### DEFAULT-ON DECISION = **NO-GO** (2026-07-12, triplet measured)
+
+The coverage fix + nesting gate + on-demand preheader are LANDED and correct as
+an **opt-in** pass (`-z80-loop-instr-form-prep [-z80-pin-loop-pointer]`);
+production is byte-identical by construction while the pass stays off. Flipping
+it default-on was measured on the production triplet (baseline = pass OFF, as
+today, vs pass ON = prep+pin):
+
+| component | baseline | pass ON | delta |
+|-----------|----------|---------|-------|
+| autoload (PROM, ZX0) | 2035 B | 2047 B | **+12 B** |
+| cpnos prom1-lineprog  | 2010 B | 2019 B | **+9 B** (payload byte-identical; `init.bin` 604→610) |
+| rcbios BIOS (.cim)    | 5918 B | 5918 B | **byte-identical** |
+
+Two of three regress; none improve. Root cause matches the Phase-1a beneficiary
+caveat: production has **no genuine flat `base[i]` beneficiaries** — its loops
+are `pc++`-style already-walking or nested (declined by the gate), so enabling
+the pass only adds pin/preheader overhead without eliminating any base reload.
+The wins are confined to the synthetic flat corpus loops (sieve-init shape),
+which production doesn't contain.
+
+**Verdict:** keep the pass **opt-in**; do NOT flip default-on. No MAME boot was
+needed (production output unchanged with pass off). Revisit only if/when a
+production component grows a genuine flat scale-1 `base[i]` scan hot enough to
+pay for the pin.
+
 ### Phase 2 — pressure-aware model for the nested case (hard, optional, stretch)
 
 Goal: also win the nested sieve KILL loop (the −1.05M that Phase 1 leaves on the
