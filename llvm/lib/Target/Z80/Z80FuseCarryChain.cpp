@@ -59,8 +59,15 @@ using namespace llvm;
 
 #define DEBUG_TYPE "z80-fuse-carry-chain"
 
+// NB: the flag name must differ from the pass's registration arg-name (also
+// "z80-fuse-carry-chain", see INITIALIZE_PASS below). `opt` statically links the
+// Z80 target and its legacy PassNameParser turns every registered pass arg-name
+// into a cl option; a same-named cl::opt makes opt abort at startup with
+// "Option 'z80-fuse-carry-chain' registered more than once". clang/llc use the
+// new PM and are unaffected, which is why this stayed latent.
 static cl::opt<bool>
-    EnableFuseCarryChain("z80-fuse-carry-chain", cl::init(true), cl::Hidden,
+    EnableFuseCarryChain("z80-enable-fuse-carry-chain", cl::init(true),
+                         cl::Hidden,
                          cl::desc("Keep multi-byte add/sub carry in the flag "
                                   "instead of round-tripping through A"));
 

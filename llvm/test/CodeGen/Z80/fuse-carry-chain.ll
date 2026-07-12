@@ -1,12 +1,12 @@
 ; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s --check-prefix=FUSE
-; RUN: llc -mtriple=z80 -O2 -z80-fuse-carry-chain=false < %s | FileCheck %s --check-prefix=CTRL
+; RUN: llc -mtriple=z80 -O2 -z80-enable-fuse-carry-chain=false < %s | FileCheck %s --check-prefix=CTRL
 ;
 ; add32g below carries debug info (#dbg_value -> DBG_VALUE between the carry
 ; pseudos); the pass skips debug instrs, so fusion must still fire under -g.
 ;
 ; B17: multi-byte add/sub should thread the inter-limb carry in the carry FLAG
 ; (ADD HL,rr; ADC HL,rr), not round-trip it through A (SBC A,A; AND 1 / RRCA).
-; The Z80FuseCarryChain pass performs this; -z80-fuse-carry-chain=false is the
+; The Z80FuseCarryChain pass performs this; -z80-enable-fuse-carry-chain=false is the
 ; no-op control that restores the original register-carry expansion.
 
 ; i32 add: one ADD + one ADC, carry stays in CF.

@@ -6060,12 +6060,63 @@ static Instruction *foldICmpEqualityWithOffset(ICmpInst &I,
   return nullptr;
 }
 
+// Recognize V as a sign-extension of its low SrcBits bits. Handles both a
+// literal `sext` and the `ashr(shl X, N), N` sext-inreg idiom (LLVM IR has no
+// sext-inreg instruction, so that shift pair is its canonical form). On success
+// sets Inner to the value carrying those bits and SrcBits to their count;
+// NeedTrunc is true when Inner is wider than SrcBits and must be truncated to
+// recover them (the idiom case) and false when Inner already has width SrcBits
+// (the literal-sext case).
+static bool matchSignExtLowBits(Value *V, Value *&Inner, unsigned &SrcBits,
+                                bool &NeedTrunc) {
+  if (match(V, m_SExt(m_Value(Inner)))) {
+    SrcBits = Inner->getType()->getScalarSizeInBits();
+    NeedTrunc = false;
+    return true;
+  }
+  const APInt *ShAmt;
+  Value *Shl;
+  if (match(V, m_AShr(m_Value(Shl), m_APInt(ShAmt))) &&
+      match(Shl, m_Shl(m_Value(Inner), m_SpecificInt(*ShAmt)))) {
+    unsigned W = V->getType()->getScalarSizeInBits();
+    uint64_t Sh = ShAmt->getZExtValue();
+    if (Sh == 0 || Sh >= W)
+      return false;
+    SrcBits = W - Sh;
+    NeedTrunc = true;
+    return true;
+  }
+  return false;
+}
+
 Instruction *InstCombinerImpl::foldICmpEquality(ICmpInst &I) {
   if (!I.isEquality())
     return nullptr;
 
   Value *Op0 = I.getOperand(0), *Op1 = I.getOperand(1);
   const CmpInst::Predicate Pred = I.getPredicate();
+
+  // sext(a) == sext(b)  <=>  a == b  (sext is injective). InstCombine already
+  // folds this when both operands are literal `sext` casts, but not when one is
+  // the `ashr(shl x,N),N` sext-inreg idiom, e.g. `*s == (char)c` from strrchr
+  // lowers to `icmp eq i16 (ashr(shl c,8),8), (sext i8 s to i16)`. Narrow that
+  // to an i8 compare so the loop-carried pointer is not forced 16-bit-wide.
+  {
+    Value *X0, *X1;
+    unsigned S0, S1;
+    bool T0, T1;
+    if (matchSignExtLowBits(Op0, X0, S0, T0) &&
+        matchSignExtLowBits(Op1, X1, S1, T1) && S0 == S1 &&
+        S0 < Op0->getType()->getScalarSizeInBits() &&
+        // Only fire once the wide shift chains can be removed, i.e. when each
+        // idiom operand is single-use; a literal sext adds no new instruction.
+        (!T0 || Op0->hasOneUse()) && (!T1 || Op1->hasOneUse())) {
+      Type *NTy = Op0->getType()->getWithNewBitWidth(S0);
+      Value *NX = T0 ? Builder.CreateTrunc(X0, NTy) : X0;
+      Value *NY = T1 ? Builder.CreateTrunc(X1, NTy) : X1;
+      return new ICmpInst(Pred, NX, NY);
+    }
+  }
   Value *A, *B, *C, *D;
   if (match(Op0, m_Xor(m_Value(A), m_Value(B)))) {
     if (A == Op1 || B == Op1) { // (A^B) == A  ->  B == 0

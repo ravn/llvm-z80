@@ -1,5 +1,5 @@
 ; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack \
-; RUN:     -z80-loop-instr-form-prep < %s \
+; RUN:     -z80-enable-loop-instr-form-prep < %s \
 ; RUN:   | FileCheck %s
 ; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack < %s \
 ; RUN:   | FileCheck %s --check-prefix=OFF

@@ -1,4 +1,4 @@
-; RUN: llc -O2 -mtriple=z80 -z80-sink-cold-loop-iv < %s | FileCheck %s
+; RUN: llc -O2 -mtriple=z80 -z80-enable-sink-cold-loop-iv < %s | FileCheck %s
 ; RUN: llc -O2 -mtriple=z80 < %s | FileCheck %s --check-prefix=OFF
 
 ; ravn/llvm-z80#250 (sieve scan loop): LSR strength-reduces the kill-loop

@@ -1,7 +1,7 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-auto-static-stack=false < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-auto-static-stack=false < %s | FileCheck %s --check-prefix=FP
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-enable-auto-static-stack=false < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-enable-auto-static-stack=false < %s | FileCheck %s --check-prefix=FP
 ;
-; -z80-auto-static-stack=false: these functions exercise the dynamic IX-frame
+; -z80-enable-auto-static-stack=false: these functions exercise the dynamic IX-frame
 ; and SP-relative addressing paths, which auto-static-stack (#176, default on)
 ; would bypass by routing their locals to BSS.  Pin the dynamic-frame path.
 

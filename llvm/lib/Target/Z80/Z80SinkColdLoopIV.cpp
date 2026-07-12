@@ -60,7 +60,7 @@ using namespace llvm;
 #define DEBUG_TYPE "z80-sink-cold-loop-iv"
 
 static cl::opt<bool> EnableZ80SinkColdLoopIV(
-    "z80-sink-cold-loop-iv", cl::init(false), cl::Hidden,
+    "z80-enable-sink-cold-loop-iv", cl::init(false), cl::Hidden,
     cl::desc("Z80: rewrite enclosing-loop IVs that only seed a nested loop's "
              "cold path back into an on-demand recompute (ravn/llvm-z80#250)."));
 

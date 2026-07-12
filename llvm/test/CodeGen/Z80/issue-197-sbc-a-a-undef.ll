@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O2 -verify-machineinstrs -z80-fuse-carry-chain=false %s -o - | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -verify-machineinstrs -z80-enable-fuse-carry-chain=false %s -o - | FileCheck %s
 ;
 ; ravn/llvm-z80 #197: the carry/borrow-materialize idiom `SBC A,A` (A = -carry)
 ; reads A only to satisfy the encoding -- its result is independent of A's

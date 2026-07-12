@@ -844,8 +844,57 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
   aware pointer-IV rewrite" as the real fix (the isolated-loop rewrite already
   reaches optimal; the blocker is the nested-loop regalloc cascade above).
 
-### M6. Z80LowerSelect pre-compute forces IY in pointer-scan loops
+### M6. Pointer-scan loops force IY — ROOT CAUSE CORRECTED 2026-07-12
 
+- **Status:** open. **Prior "Z80LowerSelect triangle" root cause REFUTED
+  2026-07-12** — the IY shuttle is a *downstream symptom* of an
+  un-narrowed 16-bit compare (register pressure), not the select lowering.
+- **REAL root cause (verified):** the loop compare `*s == (char)c` is left
+  as `icmp eq i16 (ashr(shl %c,8),8), (sext i8 %s to i16)` — a `sext == sext`
+  equality that is provably an i8 compare (`sext(a)==sext(b) <=> a==b`).
+  Upstream InstCombine *does* narrow the canonical `icmp eq (sext a),(sext b)`
+  to i8, but does NOT recognize the `ashr(shl x,8),8` sign-extend-inreg idiom
+  (LLVM's canonical form for `(char)c` = `sext(trunc c)`) as a sext, so the
+  compare stays i16. The i16 compare consumes HL+DE+BC, leaving only IY to
+  hold `last` -> `push iy/pop de` + `push de/pop iy` shuttle each iteration.
+  **Proof:** hand-narrowing the icmp to i8 in IR (`/tmp/strrchr_narrowed.ll`)
+  eliminates IY entirely (`llc -O2`). Minimal missed fold reproduces
+  target-independently (no triple) on ravn/llvm-z80 `opt -passes=instcombine`;
+  `both_sext` narrows, `shlashr_vs_sext` does not (`/tmp/icmp_canon.ll`).
+- **Routing:** target-independent InstCombine gap -> generic LLVM issue
+  (llvm/llvm-project, needs upstream-pristine verify + go-ahead), OR a
+  Z80-local narrowing (precedent: #150/#165 icmp-narrow). NOT the
+  Z80LowerSelect change previously proposed. NEEDS UPSTREAM-VERIFY before filing.
+- **FIX IMPLEMENTED 2026-07-12 (approach 2, IR-level InstCombine):**
+  `foldICmpEquality` now recognizes the `ashr(shl x,N),N` sext-inreg idiom as a
+  sign-extension (`matchSignExtLowBits` in InstCombineCompares.cpp) and narrows
+  `sext(a) == sext(b)` to the low-bit compare for both the literal-sext and idiom
+  forms. Guards: equal src-bit-widths, narrower than the compare width, and the
+  idiom operand(s) single-use (so the wide shift chain actually goes away).
+  - **Verified (this session):** narrowing fires at ALL opt levels (`-Oz/-Os/-O2`
+    IR all show `icmp eq i8`, `strrchr.c`). Red-green on the fold via the new
+    `llvm/test/Transforms/InstCombine/icmp-eq-sext-inreg-narrow.ll` (FAILs on the
+    reverted compiler, PASSes with the fix). Value oracle 6/6 PASS at O0..Oz
+    (`test_50_strrchr.c`, DE=0x007F). Z80 lit suite 194 PASS.
+  - **Codegen effect (known, measured):** the IY shuttle is GONE at `-O2/-O3`
+    (0 `iy` refs). At `-Oz/-Os` a residual `push iy/pop iy` remains — regalloc
+    parks `last` in IY even though the compare is now i8. That residual is the
+    SEPARATE regalloc issue noted below (walk/last pointer placement), not the
+    compare width; approach 2 does not clear it at size-opt levels.
+  - **Incidental (systemic) fix required to test this:** `opt` was aborting at
+    startup on ANY input ("Option '<name>' registered more than once") because
+    five Z80 passes gave a `cl::opt` the same string as their INITIALIZE_PASS
+    arg-name (`opt`'s legacy PassNameParser registers each pass arg-name as a cl
+    option). clang/llc (new PM) were unaffected, so it stayed latent and only
+    bit `opt`-based (e.g. InstCombine) testing. Renamed the five colliding flags
+    to `z80-enable-*` (fuse-carry-chain, auto-static-stack, loop-instr-form-prep,
+    pin-loop-pointer, sink-cold-loop-iv) + updated their lit-test references.
+    This is the same class session 75 fixed once for AutoStaticStack; new passes
+    reintroduced it. Candidate own-repo tracker.
+- **NOT yet filed upstream** (per user directive: no upstream bug reports until a
+  verified fix is in place, and no fixes filed upstream ever — issues only).
+
+  --- prior (refuted) analysis retained below for history ---
 - **Status:** open, root-caused.
 - **Impact:** `strrchr` (cpm_stdlib.c) inner loop ~80 T vs optimal ~37 T
   (2.2× slowdown).  Affects any "find last occurrence" / "conditional pointer

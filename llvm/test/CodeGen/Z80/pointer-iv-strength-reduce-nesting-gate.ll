@@ -1,5 +1,5 @@
 ; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack \
-; RUN:     -z80-loop-instr-form-prep < %s | FileCheck %s
+; RUN:     -z80-enable-loop-instr-form-prep < %s | FileCheck %s
 
 ; ravn/llvm-z80#250 nesting gate + cost gate.  Rewriting a loop that is NESTED
 ; inside another loop adds a 3rd live 16-bit value (new pointer + enclosing
