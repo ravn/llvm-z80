@@ -338,6 +338,28 @@ needed (production output unchanged with pass off). Revisit only if/when a
 production component grows a genuine flat scale-1 `base[i]` scan hot enough to
 pay for the pin.
 
+### COST GATE LANDED — re-verdict (2026-07-12, commit ffc4867c)
+
+The NO-GO above was the **un-gated** pass. Making it cost-aware changes the
+picture (full detail in the spike note's "COST GATE LANDED" section):
+
+- **Cost gate:** only rewrite when the old integer IV can be eliminated
+  (`canEliminateOldIV`). This declines every production regressor (their old
+  IVs survive). Re-measured with the CURRENT clang, the triplet is now
+  **byte-identical** with the pass on: autoload 2035, cpnos 2013, rcbios 5918
+  (== OFF). The prior +12/+9 was the un-gated pass; the +3 cpnos figure was a
+  stale 2010 baseline (older clang) — current OFF is 2013.
+- **`-z80-pin-loop-pointer` is the sole -O2 regressor**, not the prep pass.
+  prep-only sieve = 261/3498167 (== OFF at every opt level); pin-only sieve =
+  269/4087139 (+17% ts at -O2). Pin is a separate pre-RA machine pass.
+
+**Re-verdict:** the **cost-gated prep pass** is now genuinely default-on-able
+(byte-identical production + corpus, wins only on eliminable synthetic loops);
+**pin stays opt-in**. But since prep adds ZERO production value (no eliminable
+flat `base[i]` loops in the firmware), flipping it default-on is safe-but-inert.
+Recommendation: leave both opt-in until a production component grows a real
+beneficiary; the pass is ready to flip the moment one appears.
+
 ### Phase 2 — pressure-aware model for the nested case (hard, optional, stretch)
 
 Goal: also win the nested sieve KILL loop (the −1.05M that Phase 1 leaves on the

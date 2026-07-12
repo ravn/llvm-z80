@@ -145,3 +145,60 @@ NESTED prefix w/ hatch = rewritten).
   claim per-program wins for tm.
 - `tryEliminateOldIV` did not fire on the guarded repro (old counter survives
   for the exit test) — secondary LFTR opportunity, separate from the base reload.
+
+## COST GATE LANDED (2026-07-12, commit ffc4867c)
+
+Made the pass **cost-aware** so a size-minimum build never picks the larger
+form. The gate: only rewrite a group when `canEliminateOldIV` holds — i.e. the
+loop's exit test can be rephrased as a pointer compare so the old integer IV
+dies, dropping the loop back to {pointer[,stride]} on Z80's 3 GP pairs. A
+rewrite that leaves the old IV alive was the common thread in every regressor.
+
+**Refactor:** `matchOldIV` (pure predicate; now matches BOTH the LSR post-inc
+`icmp %kn,N` and the `-disable-lsr` phi-direct `icmp %k,N` exit shapes) +
+`canEliminateOldIV` (the gate, run before any mutation via `erase_if` on the
+group list) + slimmed `tryEliminateOldIV` (mutator). Hatch
+`-z80-loop-instr-form-prep-no-cost-gate` re-exposes the ungated behaviour.
+
+**Production triplet byte-identical under the cost gate** (prep-only AND
+prep+pin), measured with the CURRENT clang:
+
+| target   | OFF baseline | cost-gated ON | delta |
+|----------|--------------|---------------|-------|
+| autoload | 2035 B       | 2035 B        | 0     |
+| cpnos    | 2013 B       | 2013 B        | 0     |
+| rcbios   | 5918 B       | 5918 B        | 0     |
+
+(The earlier NO-GO's +12/+9 were the UN-gated pass. The transient +3/-1 were a
+stale 2010/2035 baseline from an older clang — re-measuring OFF with the
+current clang gives 2013/2035, i.e. the gated pass changes nothing.)
+
+**-O2 sieve regression root-caused to `-z80-pin-loop-pointer`, NOT the prep
+pass.** Isolated by running each flag alone through the corpus sweep:
+
+| flags               | sieve size  | sieve speed (-O2) |
+|---------------------|-------------|-------------------|
+| OFF (baseline)      | 198/3204513 | 261/3498167       |
+| prep only (gated)   | 198/3204513 | 261/3498167       | ← byte-identical
+| pin only            | 198/3204513 | 269/4087139       | ← +17% ts
+| prep + pin          | 198/3204513 | 269/4087139       |
+
+`Z80PinLoopPointer` is a *separate* pre-RA machine pass that pins the walking
+pointer to HL. Its doc-comment reasoning was for the `-disable-lsr` shape; at
+-O2 with LSR on, LSR has already built its own pointer IV and pin perturbs a
+sound allocation. So **prep (cost-gated) is the production-safe half and a
+default-on candidate; pin STAYS opt-in** as the sole -O2 regressor.
+
+**Tests reworked:** `guarded` → simple eliminable guarded fill (prep-only;
+exercises on-demand preheader + cost gate; walking pointer in DE, no `ld
+hl,_arr` reload in body). `nesting-gate` → declined nested inner loop (base
+reload kept) + a flat positive control (rewritten), prep-only, dropping the
+brittle pin-flagged NESTED hatch. Full Z80 lit **189 PASS + 5 XFAIL**, 0
+unexpected.
+
+**Honest scope:** the cost-gated pass produces ZERO measured wins on real
+corpus/production code (their loops are `pc++`-walking, nested→declined, or
+non-eliminable) — it only strength-reduces synthetic eliminable shapes. So
+"cost-aware" here means "safe: byte-identical in production, wins only where it
+provably helps". That makes prep default-on-able without risk, but not
+value-adding on the current firmware.
