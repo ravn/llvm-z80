@@ -15,6 +15,7 @@
 #include "Z80NarrowNoIndex.h"
 #include "Z80PinAluAccumulator.h"
 #include "Z80PinLoopPointer.h"
+#include "Z80HighByteFirstBranch.h"
 #include "Z80PruneCallFrameDefs.h"
 #include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
@@ -140,6 +141,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PinAluAccumulatorPass(PR);
   initializeZ80PinLoopPointerPass(PR);
+  initializeZ80HighByteFirstBranchPass(PR);
   initializeZ80KeepLoopPointerInPairPass(PR);
   initializeZ80SinkColdLoopIVLegacyPassPass(PR);
   initializeZ80NarrowNoIndexPass(PR);
@@ -549,6 +551,12 @@ void Z80PassConfig::addPreEmitPass() {
   addPass(&BranchRelaxationPassID);
   // Collapse JR_CC+JP trampolines from BranchRelaxation into JP_CC.
   addPass(createZ80BranchCleanupPass());
+  // High-byte-first rewrite of hot 16-bit loop exit tests (ravn/llvm-z80#250
+  // lever 2).  Runs after branch cleanup (conditional exit is a documented
+  // JP_cc) and before ExpandPseudo (CMP16_FLAGS still a single pseudo to
+  // match).  Emits only absolute JPs, so post-relaxation placement is safe.
+  // Gated behind -z80-enable-hbf-branch (default off; size-negative).
+  addPass(createZ80HighByteFirstBranchPass());
   // Expand pseudos that split MBBs (variable shift loops) after branch
   // relaxation. The generated JR/DJNZ branches are always short-range.
   addPass(createZ80ExpandPseudoPass());
