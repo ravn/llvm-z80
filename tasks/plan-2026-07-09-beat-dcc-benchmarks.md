@@ -129,20 +129,21 @@ JP (10 T backedge vs 12 T JR). Measured: **31.05M → 29.72M** (+10 B),
 `1899 primes.`, verifier-clean, lit `high-byte-first-loop-exit.ll`. SIZE-NEGATIVE
 → opt-in + loop-back-edge gated; production byte-identical.
 
-**Lever 3 — scan-index spill (M2 class) — NOT DONE; ISA-fundamental.**
+**Lever 3 — scan-index spill (M2 class) — NOT DONE; filed as #261.**
 The scan loop spills its IV `ld (__sfrend-2),de` (20 T) every iteration (≈1.6M,
-the whole residual gap to dcc). Root cause is irreducible on stock Z80: the scan
-load needs `i` in an HL-addable pair (`ld hl,_flags; add hl,de`), the kill loop
-clobbers all three GP pairs (HL=ptr, BC=stride, DE=end), AND the kill-loop SETUP
-(bb.3 `3i+3`, bb.4 pointer/end materialise) reuses DE too — so `i` can't stay in
-BC/DE across the inner region. IX is free but `ADD HL,IX` does not exist, so a
-scan IV parked in IX still needs a `push ix/pop de` shuttle (≈ the spill cost).
-The `cp`-immediate idea (end is the constant `_flags+8191`, so compare against
-immediates and free DE) only frees the KILL LOOP's DE — the setup still reuses
-it, so the spill survives. This is exactly the "BSS load/store traffic —
-ISA-fundamental" class in CLAUDE.md's density table; beating dcc's last 6.2%
-would need a deeper loop-restructuring (match dcc's scan-pointer-walk shape),
-not a bounded pass. Off the production critical path.
+the whole residual gap to dcc). **Reframed after disassembling dcc's actual
+`SIEVE.COM`: this is a spill-PLACEMENT problem, not ISA-fundamental.** dcc ALSO
+keeps the scan IV frame-resident (`(ix-2)`, never long-term in a register) — the
+difference is dcc pays the spill/reload only in the COLD prime path, while clang
+pays it in the HOT scan header. On clang's `flags[i]==0` fast path (the common
+case) DE is never clobbered between the header store and the `.LBB0_7` reload, so
+both are dead there; LLVM placed the spill at the loop header (common dominator)
+instead of sinking it into the cold clobbering block (bb.3). Candidate fix: a
+Z80-aware spill-sink / tuned spill weights (keep DE live on the guard-false edge,
+spill only where the kill loop actually clobbers it). Non-trivial (`.LBB0_7` is a
+fast/slow merge) but tractable — NOT the loop-restructuring I first assumed. Full
+asm evidence + candidate fixes + reproduction in #261. Off the production
+critical path (no firmware kernel has this scan+nested shape).
 
 **Bottom line (2026-07-12):** three levers analysed; **1 + 2 shipped**
 (33.03M → **29.72M**, −10% vs clang baseline, within **+6.2%** of dcc). Lever 3
