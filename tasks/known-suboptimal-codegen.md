@@ -813,6 +813,36 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
   per-region exec table: `tasks/session-2026-07-09-sink-cold-loop-iv.md`.  Note
   the SCAN-loop half of the sieve gap is separately mitigated by
   `Z80SinkColdLoopIV` (M2/M3, sieve -2.3 % clean) — see the M2 UPDATE entry.
+- **Systematic sweep 2026-07-12 — the pattern is broader than the dcc
+  benchmarks, and it costs where the loop is hot (fannkuch −20 % verified).**
+  Built a repeatable detector (`tasks/tools/m5-loop-reload-scan.py`) that
+  flags every in-loop `add hl/ix/iy` and tags `GLOBAL-BASE(sym)` per-iteration
+  base reloads.  Ran it over the compiler-comparison corpus + production
+  firmware (each with its real flags).  New / confirmed instances:
+    * **fannkuch** `_perm` (hot reversal-swap loop) + `_count` (colder
+      bookkeeping) — NOT previously cited in #250.  Red/green: rewriting the
+      hot `perm[i] <-> perm[k-i]` loop as two running pointers (`*lo`/`*hi`)
+      drops fannkuch from **36,203,397 → 28,949,757 T-states (−20.0 %) and
+      584 → 536 B (−48 B)**, both PASS (result 0x10E4).  So the reload cost is
+      real and large even though clang still WINS the fannkuch lane
+      (competitors pay it too) — corrects the earlier hunch that fannkuch's
+      loop "isn't hot enough to matter."  Measured with the SIZE cell flags
+      (`-Oz -disable-lsr`, the shipping/correct config; note fannkuch's -O1/-O2
+      SPEED cell is a separate verified backend miscompile, returns 0).
+    * **production autoload `rom.c`**: `_fdc_result` and `_fdc_cmd` are genuine
+      per-iteration `ld hl,<global>; add hl,de` reloads — so #250's literal
+      "rcbios/cpnos/autoload lack tight char-array kernels" is imprecise.  BUT
+      both are cold, ≤7-iteration, call-bounded FDC loops (each iter does a
+      `call _fdc_read/write_when_ready`), so the 21 T reload is noise: the
+      practical "no production perf impact" claim HOLDS.
+    * cpnos/rcbios: a `transport_pio.c` apparent hit was a false positive (the
+      `add` was in the fall-through EXIT block, not the loop) — fixed the
+      detector's block attribution (read `in_loop` off the block-start line,
+      not accumulated over the body); re-scan clean.
+  Upshot: M5 is not a benchmark curiosity — any CP/M app with a hot byte/word
+  array reversal or scan loop pays ~20 %.  Reinforces the "register-pressure-
+  aware pointer-IV rewrite" as the real fix (the isolated-loop rewrite already
+  reaches optimal; the blocker is the nested-loop regalloc cascade above).
 
 ### M6. Z80LowerSelect pre-compute forces IY in pointer-scan loops
 
