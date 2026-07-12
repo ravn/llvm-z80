@@ -148,9 +148,9 @@ repeatable detector (`tasks/tools/m5-loop-reload-scan.py`) — flags every in-lo
 over the whole compiler-comparison corpus + production firmware. Two findings
 that change this plan's scope:
 
-1. **fannkuch — the first M5 case with a measured per-loop cost.** Its hot
-   reversal-swap loop (`perm[i] <-> perm[k-i]`) reloads `_perm` every iteration
-   (colder `_count` too). Red/green: rewriting it as two running pointers
+1. **fannkuch — a measured per-loop cost, but a NESTED (Phase-2) target, not
+   Phase-1.** Its hot reversal-swap loop (`perm[i] <-> perm[k-i]`) reloads
+   `_perm` every iteration. Red/green by SOURCE rewrite to two running pointers
    (`*lo`/`*hi`), all else identical, both PASS (0x10E4):
 
    | fannkuch (`-Oz -disable-lsr`, shipping config) | T-states | size |
@@ -160,9 +160,18 @@ that change this plan's scope:
    | delta | **−20.0%** | **−48 B** |
 
    (fannkuch's `-O1`/`-O2` cell is a separate verified backend miscompile → 0;
-   `-Oz` is correct and is what the corpus measures.) Add fannkuch to the
-   Phase-1 validation set — it is a clean, non-nested-hot target with a known
-   target number, alongside ttt/tm.
+   `-Oz` is correct and is what the corpus measures.) IMPORTANT CAVEAT
+   (verified 2026-07-12 from the asm loop-depth annotations): the `_perm` swap
+   loop is at **Depth=3** (`BB0_14` inside `BB0_10` Depth=2 inside `BB0_4`
+   Depth=1). The −20% was achieved by a *source-level* rewrite, which bypasses
+   the register allocator's pressure constraints. An AUTOMATIC prep+pin on this
+   loop faces the SAME (worse — 3-deep) register-pressure cascade that makes
+   sieve net-negative. So fannkuch is a **Phase-2 opportunity marker** (proof
+   the win is real, −20%), NOT a Phase-1 validation target. Do not expect the
+   Phase-1 "decline nested loops" gate to capture it. This also means the only
+   confirmed non-nested Phase-1 targets remain tm/chkmem and ttt — verify their
+   loop depth is 1 before counting on them (chkmem's `for(i<c)` is a single
+   loop; ttt's win-scan needs checking).
 
 2. **`_perm`/`_count` are `int` arrays → scale-2 (word) indexing, NOT scale-1.**
    `collectAddrGroups` (`Z80LoopInstrFormPrep.cpp:130`) currently keys on
@@ -236,14 +245,13 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
    may be unnecessary if the allocator already keeps the pointer in a pair once
    the old IV is gone; if pin is needed, turn it on together. Measure.
 5. **Validate** on all four benchmarks (T-states must not regress sieve/e,
-   should improve ttt/tm) **plus fannkuch** (target: recover the −20% / −48 B the
-   red/green in §3 proved is available — but only if the scale-2 scope decision
-   §3.2(b) is taken; a scale-1-only Phase 1 leaves fannkuch untouched and that is
-   an acceptable smaller ship), full corpus
+   should improve ttt/tm — the confirmed non-nested targets), full corpus
    (`compiler-comparison-corpus/sweep.sh`), full lit, runtime suite
    (`cargo run -- clang`), and **production triplet byte-identical**
    (rcbios/cpnos/autoload — the FDC loops in §3.3 must stay identical; any diff =
-   the nesting/cold gate is too loose).
+   the nesting/cold gate is too loose). NOTE: fannkuch is Depth-3 nested (§3.1),
+   so a correct Phase-1 nesting gate will DECLINE it — fannkuch staying at its
+   baseline 36.2M is the *expected* Phase-1 outcome, not a failure.
 6. **Ship default-on** only if net-positive and production byte-identical.
    Every codegen change ships a **lit test** (FileCheck pins the loop: base
    materialized in preheader, `CHECK-NOT: add hl` / `ld hl,GV` inside the loop,
