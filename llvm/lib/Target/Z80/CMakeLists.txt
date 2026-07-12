@@ -64,6 +64,7 @@ add_llvm_target(Z80CodeGen
   Z80PinAluAccumulator.cpp
   Z80KeepLoopPointerInPair.cpp
   Z80PinLoopPointer.cpp
+  Z80HighByteFirstBranch.cpp
   Z80PruneCallFrameDefs.cpp
   Z80ReorderTestDec.cpp
   Z80SplitDjnzCounters.cpp

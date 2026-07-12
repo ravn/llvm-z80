@@ -44,6 +44,75 @@ inline int gr8RegToIndex(Register Reg) {
   }
 }
 
+/// Get CP (compare A with reg) opcode for an 8-bit register. Returns 0 for
+/// unsupported registers.  Mirrors the file-static getCPOpcode in
+/// Z80InstrInfo.cpp; public here so Z80HighByteFirstBranch can build CP r.
+inline unsigned getCPOpcode(Register Reg) {
+  static const unsigned T[] = {Z80::CP_A, Z80::CP_B, Z80::CP_C, Z80::CP_D,
+                               Z80::CP_E, Z80::CP_H, Z80::CP_L};
+  int I = gr8RegToIndex(Reg);
+  if (I >= 0)
+    return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH:
+    return Z80::CP_IXH;
+  case Z80::IXL:
+    return Z80::CP_IXL;
+  case Z80::IYH:
+    return Z80::CP_IYH;
+  case Z80::IYL:
+    return Z80::CP_IYL;
+  default:
+    return 0;
+  }
+}
+
+/// Get SUB (A -= reg) opcode for an 8-bit register.  Mirrors the file-static
+/// getSUBOpcode in Z80InstrInfo.cpp; public so Z80HighByteFirstBranch can
+/// recognise the expanded CMP16_FLAGS chain.
+inline unsigned getSUBOpcode(Register Reg) {
+  static const unsigned T[] = {Z80::SUB_A, Z80::SUB_B, Z80::SUB_C, Z80::SUB_D,
+                               Z80::SUB_E, Z80::SUB_H, Z80::SUB_L};
+  int I = gr8RegToIndex(Reg);
+  if (I >= 0)
+    return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH:
+    return Z80::SUB_IXH;
+  case Z80::IXL:
+    return Z80::SUB_IXL;
+  case Z80::IYH:
+    return Z80::SUB_IYH;
+  case Z80::IYL:
+    return Z80::SUB_IYL;
+  default:
+    return 0;
+  }
+}
+
+/// Get SBC (A -= reg + carry) opcode for an 8-bit register.  Mirrors the
+/// file-static getSBCOpcode in Z80InstrInfo.cpp.
+inline unsigned getSBCOpcode(Register Reg) {
+  static const unsigned T[] = {Z80::SBC_A_A, Z80::SBC_A_B, Z80::SBC_A_C,
+                               Z80::SBC_A_D, Z80::SBC_A_E, Z80::SBC_A_H,
+                               Z80::SBC_A_L};
+  int I = gr8RegToIndex(Reg);
+  if (I >= 0)
+    return T[I];
+  switch (Reg.id()) {
+  case Z80::IXH:
+    return Z80::SBC_A_IXH;
+  case Z80::IXL:
+    return Z80::SBC_A_IXL;
+  case Z80::IYH:
+    return Z80::SBC_A_IYH;
+  case Z80::IYL:
+    return Z80::SBC_A_IYL;
+  default:
+    return 0;
+  }
+}
+
 /// Get PUSH opcode for a 16-bit register. Returns 0 for unsupported registers.
 inline unsigned getPushOpcode(Register Reg) {
   switch (Reg.id()) {
