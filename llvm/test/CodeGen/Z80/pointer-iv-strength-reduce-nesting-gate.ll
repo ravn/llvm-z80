@@ -1,73 +1,104 @@
 ; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack \
-; RUN:     -z80-loop-instr-form-prep -z80-pin-loop-pointer < %s \
-; RUN:   | FileCheck %s
-; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack \
-; RUN:     -z80-loop-instr-form-prep -z80-pin-loop-pointer \
-; RUN:     -z80-loop-instr-form-prep-allow-nested < %s \
-; RUN:   | FileCheck %s --check-prefix=NESTED
+; RUN:     -z80-loop-instr-form-prep < %s | FileCheck %s
 
-; ravn/llvm-z80#250 nesting gate.  Rewriting a loop that is NESTED inside
-; another loop adds a 3rd live 16-bit value (new pointer + enclosing loop's
-; IV + stride) to a target with exactly 3 GP pairs and no spare, which
-; empirically regresses the sieve KILL loop (+1.31M T-states).  So by default
-; the pass DECLINES nested loops and only rewrites flat / outermost ones.  The
-; hidden -z80-loop-instr-form-prep-allow-nested hatch re-enables the rewrite
-; for experiments.  See tasks/session-2026-07-12-issue250-phase1a-spike.md.
+; ravn/llvm-z80#250 nesting gate + cost gate.  Rewriting a loop that is NESTED
+; inside another loop adds a 3rd live 16-bit value (new pointer + enclosing
+; loop's IV + stride) to a target with exactly BC/DE/HL and no spare, which
+; empirically regresses the sieve KILL loop.  So the pass DECLINES nested loops
+; and only strength-reduces flat / outermost ones.  This test pins BOTH sides:
+;   * @nested  -- an inner (Depth=2) loop that is otherwise fully eliminable
+;                 (single relational exit `icmp ult %kn, %n`); the ONLY reason
+;                 it is declined is the nesting gate, so its base is still
+;                 reloaded every iteration -- the #250 pattern left in place.
+;   * @flat    -- the SAME loop body at Depth=1; the pass rewrites it into a
+;                 walking pointer (positive control), so no base reload remains.
+; Both run under prep only (no -z80-pin-loop-pointer): the prep pass is the
+; cost-gated, production-safe half; pin is a separate opt-in machine pass that
+; regresses -O2 code and is not exercised here.
+; See tasks/session-2026-07-12-issue250-phase1a-spike.md.
 
 @arr = external dso_local global [256 x i8]
 
-; Default: the inner (Depth=2) loop is NESTED, so the pass declines it and the
-; base is reconstructed every iteration -- `ld hl,_arr; add hl,<idx>`:
+; ---------------------------------------------------------------------------
+; @nested: the inner loop is NESTED, so the gate declines it and the base @arr
+; is reconstructed every iteration -- `ld hl,_arr; add hl,bc` inside Depth=2:
 ;
-;   .LBB0_?:              ; inner, Depth=2
-;       ld  hl,_arr       ; reload base
-;       add hl,bc         ; hl = arr + k   <-- reload kept (nested, declined)
+;   .LBB0_5:              ; %inner, Depth=2
+;       ld  hl,_arr       ; \ base reloaded ...
+;       add hl,bc         ; / hl = &arr[k]   <-- #250 reload kept (nested)
 ;       ld  (hl),d
 ;       ...
-;
+; ---------------------------------------------------------------------------
+
 ; CHECK-LABEL: _nested:
-; CHECK: Depth=2
+; CHECK: This Inner Loop Header: Depth=2
 ; CHECK: ld hl,_arr
 ; CHECK: add hl,bc
-
-; With the escape hatch the nested loop IS rewritten to a walking pointer, so
-; no base is reloaded inside the inner loop (the store becomes `ld (bc),d`):
-;
-; NESTED-LABEL: _nested:
-; NESTED: Depth=2
-; NESTED-NOT: ld hl,_arr
-; NESTED-NOT: add hl,bc
 
 define dso_local void @nested(i16 %n, i16 %m) {
 entry:
   %mz = icmp eq i16 %m, 0
   br i1 %mz, label %exit, label %oload
-
 oload:
   %nz = icmp eq i16 %n, 0
   br label %outer
-
 outer:
   %j = phi i16 [ 0, %oload ], [ %jn, %latch ]
   br i1 %nz, label %latch, label %ipre
-
 ipre:
   %jb = trunc i16 %j to i8
   br label %inner
-
 inner:
   %k = phi i16 [ 0, %ipre ], [ %kn, %inner ]
   %addr = getelementptr inbounds nuw i8, ptr @arr, i16 %k
   store i8 %jb, ptr %addr, align 1
   %kn = add nuw i16 %k, 1
-  %kdone = icmp eq i16 %kn, %n
-  br i1 %kdone, label %latch, label %inner
-
+  ; Relational exit -> the inner loop is eliminable; only the nesting gate
+  ; (not the cost gate) declines it.
+  %kcont = icmp ult i16 %kn, %n
+  br i1 %kcont, label %inner, label %latch
 latch:
   %jn = add nuw i16 %j, 1
   %jdone = icmp eq i16 %jn, %m
   br i1 %jdone, label %exit, label %outer
+exit:
+  ret void
+}
 
+; ---------------------------------------------------------------------------
+; @flat: identical loop body, NOT nested.  The pass rewrites it: the base @arr
+; is materialised once in the preheader and the loop walks a running pointer in
+; DE (`ld (de),a; inc de`), so NO `ld hl,_arr` reload appears inside the loop
+; body -- the positive control proving the gate declines nesting, not this
+; shape.
+;
+;   ; %bb.1:              ; %loop.preheader
+;       ld  de,_arr       ; walking pointer start
+;       ld  hl,_arr       ; \ end pointer (loop-invariant, in preheader ONLY)
+;       add hl,bc         ; /
+;   .LBB1_2:              ; %loop, Depth=1
+;       ld  a,9
+;       ld  (de),a        ; *p = 9
+;       inc de            ; p++          <-- no base recompute in the body
+;       ...
+; ---------------------------------------------------------------------------
+
+; CHECK-LABEL: _flat:
+; CHECK: This Inner Loop Header
+; CHECK-NOT: ld hl,_arr
+; CHECK: ret
+
+define dso_local void @flat(i16 %n) {
+entry:
+  %z = icmp eq i16 %n, 0
+  br i1 %z, label %exit, label %loop
+loop:
+  %k = phi i16 [ 0, %entry ], [ %kn, %loop ]
+  %addr = getelementptr inbounds nuw i8, ptr @arr, i16 %k
+  store volatile i8 9, ptr %addr, align 1
+  %kn = add nuw i16 %k, 1
+  %kcont = icmp ult i16 %kn, %n
+  br i1 %kcont, label %loop, label %exit
 exit:
   ret void
 }

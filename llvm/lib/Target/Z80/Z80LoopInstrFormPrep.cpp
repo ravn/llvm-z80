@@ -63,6 +63,7 @@
 #include "Z80LoopInstrFormPrep.h"
 #include "Z80.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -181,6 +182,12 @@ static cl::opt<bool> Z80AllowNestedLoopInstrFormPrep(
             "another loop (default off: nested rewrites add a 3rd live "
             "16-bit value and empirically regress the sieve kill loop)"));
 
+static cl::opt<bool> Z80LoopInstrFormPrepNoCostGate(
+   "z80-loop-instr-form-prep-no-cost-gate", cl::Hidden, cl::init(false),
+   cl::desc("Disable the profitability gate that only rewrites loops whose "
+            "old integer IV can be eliminated (for experiments only: without "
+            "it the pass regresses real loops, see ravn/llvm-z80#250)"));
+
 static bool registerPressureOK(Loop &L, unsigned NewGroups) {
  // Nesting gate (ravn/llvm-z80#250).  A loop nested inside another loop
  // shares BC/DE/HL with the enclosing loop's live values; adding a pointer
@@ -234,9 +241,27 @@ static bool registerPressureOK(Loop &L, unsigned NewGroups) {
 // where `%endptr = getelementptr i8, ptr @flags, i16 8191` is materialised
 // once in the preheader.  `%kn` and the header phi `%k` are then dead (no
 // remaining uses) and are erased.
-static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
-                             const AddrGroup &G, PHINode *NewPHI,
-                             Instruction *IncGEP, Value *BaseVal) {
+// Pieces of the loop's exit test that matched an address group -- what
+// tryEliminateOldIV needs to rewrite the compare into pointer form, and what
+// canEliminateOldIV inspects (without mutating) as the profitability gate.
+struct OldIVMatch {
+ CondBrInst *Br;
+ ICmpInst *Cmp;
+ Instruction *OldIVInst; // old integer IV chain value (`%kn`)
+ PHINode *OldPHI;        // its header phi (`%k`)
+ Value *BoundVal;        // loop-invariant compare bound
+ bool OldIVIsLHS;        // old IV is the compare's LHS operand
+ bool MatchesInc;        // old IV lines up with IncGEP (next iter) vs NewPHI
+};
+
+// Match \p L's exit test against address group \p G without mutating IR: does
+// the unique exiting block's `icmp` compare an integer IV chain that shares
+// G.Step and is dead once the address GEPs are gone?  \p BaseVal is the array
+// base (passed in, since the GEPs may already be erased by the time the
+// mutating tryEliminateOldIV runs).  Being pure, it doubles as the pass's
+// profitability gate (canEliminateOldIV) run BEFORE any rewrite.
+static bool matchOldIV(Loop &L, ScalarEvolution &SE, const AddrGroup &G,
+                      Value *BaseVal, OldIVMatch &M) {
  BasicBlock *Exiting = L.getExitingBlock();
  if (!Exiting)
    return false;
@@ -268,30 +293,57 @@ static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
  Value *BoundVal = Cmp->getOperand(OldIVIsLHS ? 1 : 0);
  if (!SE.isLoopInvariant(SE.getSCEV(BoundVal), &L))
    return false;
- auto *OldIVInst = dyn_cast<Instruction>(OldIVUse);
- if (!OldIVInst)
+ auto *OldIVUseInst = dyn_cast<Instruction>(OldIVUse);
+ if (!OldIVUseInst)
    return false;
 
- // The old header PHI (`%k`) feeding OldIVInst (`%kn = %k + %prime`).
+ // Resolve the old IV into its header phi (`%k`) and its increment
+ // (`%kn = %k + step`), whichever operand the compare used:
+ //   * exit test on the INCREMENT (`icmp %kn, N`, LSR's post-inc form) --
+ //     OldIVUse is `%kn`, and `%k` is its header-phi operand;
+ //   * exit test on the PHI itself (`icmp %k, N`, the canonical
+ //     `for (i…) base[i]` form under -disable-lsr) -- OldIVUse is `%k`, and
+ //     the increment is `%k`'s backedge value.
+ // Both are eliminable: once the address GEPs and the compare are gone the
+ // phi/increment pair is dead.  (The first cut of this pass only handled the
+ // post-inc form, which is why guarded `base[i]` loops -- ravn/llvm-z80#250's
+ // own shape -- were declined by the cost gate and stayed un-strength-reduced.)
  PHINode *OldPHI = nullptr;
- for (Use &U : OldIVInst->operands())
-   if (auto *PN = dyn_cast<PHINode>(U.get()))
-     if (PN->getParent() == L.getHeader())
-       OldPHI = PN;
- if (!OldPHI)
-   return false;
-
- // The old IV must have no uses beyond (a) this compare and (b) feeding
- // its own header PHI's backedge -- i.e. it must be dead once both the
- // compare and the PHI are gone.  Any other use means it survives
- // regardless, so rewriting the compare alone wouldn't free a register.
- for (User *U : OldIVInst->users()) {
-   if (U == Cmp)
-     continue;
-   if (U == OldPHI)
-     continue;
-   return false;
+ Instruction *OldInc = nullptr;
+ if (auto *PN = dyn_cast<PHINode>(OldIVUseInst)) {
+   if (PN->getParent() != L.getHeader())
+     return false;
+   OldPHI = PN;
+   OldInc = dyn_cast<Instruction>(PN->getIncomingValueForBlock(L.getLoopLatch()));
+   if (!OldInc)
+     return false;
+ } else {
+   OldInc = OldIVUseInst;
+   for (Use &U : OldInc->operands())
+     if (auto *PN = dyn_cast<PHINode>(U.get()))
+       if (PN->getParent() == L.getHeader())
+         OldPHI = PN;
+   if (!OldPHI)
+     return false;
  }
+
+ // The phi/increment pair must be dead once the address GEPs and the compare
+ // are gone -- otherwise the old IV survives regardless and rewriting the
+ // exit test wouldn't free a register.  `%kn` (OldInc) may only be used by
+ // `%k` (its backedge) and the compare; `%k` (OldPHI) may only be used by
+ // `%kn`, the compare, and the address GEPs we are about to erase (G.Addrs).
+ auto isGroupAddr = [&](const User *U) {
+   for (const GetElementPtrInst *A : G.Addrs)
+     if (A == U)
+       return true;
+   return false;
+ };
+ for (User *U : OldInc->users())
+   if (U != OldPHI && U != Cmp)
+     return false;
+ for (User *U : OldPHI->users())
+   if (U != OldInc && U != Cmp && !isGroupAddr(U))
+     return false;
 
  // Which phase does the old IV correspond to: the current-iteration
  // pointer (NewPHI) or the next-iteration one (IncGEP)?  Bail if neither
@@ -313,36 +365,63 @@ static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
  const SCEV *NewPhiOffset = SE.getMinusSCEV(G.Start, BaseSCEV);
  const SCEV *IncGepOffset =
      SE.getMinusSCEV(SE.getAddExpr(G.Start, G.Step), BaseSCEV);
- Value *MatchingPtr;
+ bool MatchesInc;
  if (OldIVStart == NewPhiOffset)
-   MatchingPtr = NewPHI;
+   MatchesInc = false;
  else if (OldIVStart == IncGepOffset)
-   MatchingPtr = IncGEP;
+   MatchesInc = true;
  else
    return false;
 
+ M = {Br, Cmp, OldInc, OldPHI, BoundVal, OldIVIsLHS, MatchesInc};
+ return true;
+}
+
+// Non-mutating profitability gate: can the old integer IV be eliminated
+// entirely if we rewrite \p G?  If not, the rewrite would leave the old IV
+// live alongside the new pointer (+ stride), and on Z80's 3 GP pairs that
+// added pressure costs setup bytes or a spill in every measured real loop
+// while never producing a win -- so the pass declines the group.
+static bool canEliminateOldIV(Loop &L, ScalarEvolution &SE,
+                             const AddrGroup &G) {
+ OldIVMatch M;
+ return matchOldIV(L, SE, G, G.Addrs.front()->getPointerOperand(), M);
+}
+
+// Rewrite the loop's exit test to compare pointers, deleting the old integer
+// IV.  Assumes matchOldIV succeeds (the pass only rewrites groups that passed
+// canEliminateOldIV); returns false defensively if it no longer matches.
+static bool tryEliminateOldIV(Loop &L, ScalarEvolution &SE,
+                             const AddrGroup &G, PHINode *NewPHI,
+                             Instruction *IncGEP, Value *BaseVal) {
+ OldIVMatch M;
+ if (!matchOldIV(L, SE, G, BaseVal, M))
+   return false;
+
+ Value *MatchingPtr = M.MatchesInc ? IncGEP : NewPHI;
  BasicBlock *Preheader = L.getLoopPreheader();
  Type *I8Ty = Type::getInt8Ty(L.getHeader()->getContext());
  // BoundVal already dominates the preheader (any def used inside the loop
  // must dominate the whole loop, hence its unique predecessor) -- no SCEV
  // re-expansion needed, just reuse the existing Value as the GEP index.
  IRBuilder<> PHBuilder(Preheader->getTerminator());
- Value *EndPtr = PHBuilder.CreateGEP(I8Ty, BaseVal, BoundVal, "z80.ivptr.end");
+ Value *EndPtr =
+     PHBuilder.CreateGEP(I8Ty, BaseVal, M.BoundVal, "z80.ivptr.end");
 
  // Place the new compare right before the branch terminator: when we match
  // against IncGEP (the next-iteration pointer, defined near the end of the
  // latch) the compare must be dominated by it, so it can't sit at the old
  // compare's (earlier) position.  Just before the terminator is dominated by
  // both NewPHI and IncGEP.
- IRBuilder<> CmpBuilder(Br);
+ IRBuilder<> CmpBuilder(M.Br);
  Value *NewCmp = CmpBuilder.CreateICmp(
-     Cmp->getPredicate(), OldIVIsLHS ? MatchingPtr : EndPtr,
-     OldIVIsLHS ? EndPtr : MatchingPtr, "z80.ivptr.cmp");
- Cmp->replaceAllUsesWith(NewCmp);
- Cmp->eraseFromParent();
- OldIVInst->eraseFromParent();
- if (OldPHI && OldPHI->use_empty())
-   OldPHI->eraseFromParent();
+     M.Cmp->getPredicate(), M.OldIVIsLHS ? MatchingPtr : EndPtr,
+     M.OldIVIsLHS ? EndPtr : MatchingPtr, "z80.ivptr.cmp");
+ M.Cmp->replaceAllUsesWith(NewCmp);
+ M.Cmp->eraseFromParent();
+ M.OldIVInst->eraseFromParent();
+ if (M.OldPHI && M.OldPHI->use_empty())
+   M.OldPHI->eraseFromParent();
  return true;
 }
 
@@ -427,6 +506,24 @@ static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI,
    if (!collectAddrGroups(*L, SE, Groups))
      continue;
    if (!registerPressureOK(*L, Groups.size()))
+     continue;
+   // COST GATE (ravn/llvm-z80#250).  Keep only groups whose rewrite also lets
+   // the old integer IV die (canEliminateOldIV).  A rewrite that leaves the
+   // old IV alive adds a 2nd/3rd loop-carried 16-bit value (new pointer +
+   // surviving counter [+ stride]) on a target with exactly BC/DE/HL and no
+   // spare -- measured to add setup bytes (cpnos init.c:603) or force the
+   // pointer to spill to the static-stack scratch (cpnos init.c:488), and to
+   // slow sieve at -O2, while NEVER shrinking any real corpus/production loop.
+   // Only the fully-eliminable shape (exit test rephrased as a pointer
+   // compare, dropping back to {pointer[,stride]}) is profitable, so it is the
+   // only shape we rewrite.  This is what makes the pass safe to run
+   // unconditionally; -z80-loop-instr-form-prep-no-cost-gate bypasses it for
+   // experiments (and re-exposes the regressions above).
+   if (!Z80LoopInstrFormPrepNoCostGate)
+     llvm::erase_if(Groups, [&](const AddrGroup &G) {
+       return !canEliminateOldIV(*L, SE, G);
+     });
+   if (Groups.empty())
      continue;
    // Insert a dedicated preheader for THIS loop only if it lacks one.  A
    // zero-trip-guarded loop (`if (c==0) skip`) enters via a conditional
