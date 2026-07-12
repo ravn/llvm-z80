@@ -118,22 +118,35 @@ reorder hazard). Measured: **fp+nest+pin 36.1M → 31.05M** — beats clang's ow
 `pointer-iv-strength-reduce-sink-startptr.ll`. Pass still default-OFF →
 production byte-identical. Writeup: `session-2026-07-12-issue250-sink-startptr.md`.
 
-**To actually BEAT dcc (27.98M) — two more levers, NOT done:**
+**Lever 2 — high-byte-first inner exit test — DONE 2026-07-12 (merged).**
+`Z80HighByteFirstBranch` (new post-RA pass, default-OFF `-z80-enable-hbf-branch`)
+rewrites the inner 16-bit compare `ld a,l; sub c; ld a,h; sbc a,b; jr c` (16 T)
+into `ld a,h; cp b; jp c; jp nz; ld a,l; cp c; jp c` (8 T fast path) by splitting
+the latch into a hi-compare block + a lo-compare block. Matches the already-
+expanded CMP16_FLAGS chain (ExpandPostRAPseudos ran earlier), handles both the
+explicit two-terminator exit and the `jr c` + fall-through shape, emits absolute
+JP (10 T backedge vs 12 T JR). Measured: **31.05M → 29.72M** (+10 B),
+`1899 primes.`, verifier-clean, lit `high-byte-first-loop-exit.ll`. SIZE-NEGATIVE
+→ opt-in + loop-back-edge gated; production byte-identical.
 
-- **Lever 2 — high-byte-first inner exit test** (hand-proven): rewrite the inner
-  16-bit compare `ld a,l; sub e; ld a,h; sbc a,d; jr c` (16 T) into dcc's
-  `ld a,h; cp d; jp c; jr nz; ld a,l; cp e; jp c` (8 T fast path). Hand-edited
-  asm → **29.56M**. SIZE-NEGATIVE (extra branches) → conflicts with the
-  size-first mandate; would need speed-gating. Reaches ~parity, not a win alone.
+**Lever 3 — scan-index spill (M2 class) — NOT DONE; ISA-fundamental.**
+The scan loop spills its IV `ld (__sfrend-2),de` (20 T) every iteration (≈1.6M,
+the whole residual gap to dcc). Root cause is irreducible on stock Z80: the scan
+load needs `i` in an HL-addable pair (`ld hl,_flags; add hl,de`), the kill loop
+clobbers all three GP pairs (HL=ptr, BC=stride, DE=end), AND the kill-loop SETUP
+(bb.3 `3i+3`, bb.4 pointer/end materialise) reuses DE too — so `i` can't stay in
+BC/DE across the inner region. IX is free but `ADD HL,IX` does not exist, so a
+scan IV parked in IX still needs a `push ix/pop de` shuttle (≈ the spill cost).
+The `cp`-immediate idea (end is the constant `_flags+8191`, so compare against
+immediates and free DE) only frees the KILL LOOP's DE — the setup still reuses
+it, so the spill survives. This is exactly the "BSS load/store traffic —
+ISA-fundamental" class in CLAUDE.md's density table; beating dcc's last 6.2%
+would need a deeper loop-restructuring (match dcc's scan-pointer-walk shape),
+not a bounded pass. Off the production critical path.
 
-- **Lever 3 — scan-index spill** (M2 class): the scan loop spills its IV
-  `ld (nn),de` (20 T) every iteration because the kill loop clobbers all 3 GP
-  pairs (HL=ptr, BC=stride, DE=end). 20 T × ~82k ≈ 1.6M — the rest of the gap.
-  Hard greedy-regalloc problem; size-NEUTRAL. Lever 2 + lever 3 together land
-  ~27.9M and beat dcc.
-
-The earlier "~20M achievable" estimate was optimistic (assumed the whole scan
-loop stayed baseline-cheap). Realistic: lever 1 alone = 31.05M; all three = sub-28M.
+**Bottom line (2026-07-12):** three levers analysed; **1 + 2 shipped**
+(33.03M → **29.72M**, −10% vs clang baseline, within **+6.2%** of dcc). Lever 3
+is the ISA-fundamental scan-IV spill — the residual gap, no clean fix.
 
 ---
 
