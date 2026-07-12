@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Z80TargetMachine.h"
+#include "Z80KeepLoopPointerInPair.h"
 #include "Z80NarrowNoIndex.h"
 #include "Z80PinAluAccumulator.h"
 #include "Z80PinLoopPointer.h"
@@ -139,6 +140,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PinAluAccumulatorPass(PR);
   initializeZ80PinLoopPointerPass(PR);
+  initializeZ80KeepLoopPointerInPairPass(PR);
   initializeZ80SinkColdLoopIVLegacyPassPass(PR);
   initializeZ80NarrowNoIndexPass(PR);
   initializeZ80PostRACompareMergePass(PR);
@@ -488,6 +490,15 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // -z80-pin-loop-pointer (default off).
     insertPass(&llvm::MachineSchedulerID,
                createZ80PinLoopPointerPass());
+
+    // Z80KeepLoopPointerInPair: keep the loop-carried pointer of an i16 `*p++`
+    // store loop out of IX/IY by constraining it to GR16NoIR (sibling of the
+    // pin above for the WORD walk -- ravn/llvm-z80#249 / #251, where pinning to
+    // HL is impossible because the 2-byte store walks HL).  Same lifecycle --
+    // pre-RA, before the LiveIntervals re-run.  Gated behind
+    // -z80-enable-keep-loop-pointer-in-pair (default off).
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80KeepLoopPointerInPairPass());
 
     // Keep IX/IY-incompatible GR16 values out of IX/IY (only when IY is
     // allocatable -- gated internally on -z80-unreserve-iy).  Narrows plain
