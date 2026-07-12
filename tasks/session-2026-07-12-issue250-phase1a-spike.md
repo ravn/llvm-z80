@@ -106,22 +106,41 @@ shape before claiming per-program wins; the *mechanism* fix is sound regardless.
   opportunity, separate from the base-reload fix). ✓
 - fannkuch remains Depth-3 nested (see plan §3.1) → correctly out of Phase 1.
 
-## FIX LANDED (2026-07-12, commit e4895cd5)
+## FIX LANDED (2026-07-12, commits e4895cd5 → 16324269)
 
-`AU.addRequiredID(LoopSimplifyID)` + `addPreservedID` +
-`INITIALIZE_PASS_DEPENDENCY(LoopSimplify)` added to
-`Z80LoopInstrFormPrepLegacyPass` (mirrors LoopStrengthReduce). New lit test
-`llvm/test/CodeGen/Z80/pointer-iv-strength-reduce-guarded.ll` — a zero-trip
-guarded loop under `-disable-lsr`, CHECK (pass ON) = no `add hl,de` in the
-loop / OFF control = reload present. Red/green archived: pre-fix `llc` FAILs
-(reload survives), post-fix PASSes. Full Z80 lit 188 PASS + 5 XFAIL, 0
-unexpected. Pass stays opt-in → production byte-identical by construction.
+**Coverage fix (final form, commit 16324269):** insert a dedicated preheader
+**on demand** via `InsertPreheaderForLoop(L, DT, LI, nullptr, false)`, called
+per loop **only after** it passes `collectAddrGroups` + `registerPressureOK`.
+The first attempt (e4895cd5) instead required whole-function LoopSimplify
+(`AU.addRequiredID(LoopSimplifyID)`, mirroring LoopStrengthReduce); that pulled
+LoopSimplify into every function whenever the opt-in pass was enabled and
+perturbed regalloc even where prep rewrote nothing — sieve regressed +8 B /
++408K t-states (extra spill slot) though its only (nested, innermost) loop was
+declined. The on-demand form confines CFG mutation to loops actually rewritten,
+so declined functions stay byte-identical; **sieve returned to baseline 198 B /
+3204513 ts** (corpus sweep, verified). Dropped `setPreservesCFG` /
+`preserveSet<CFGAnalyses>` (we now mutate the CFG) and threaded DominatorTree
+into `runOnFunctionImpl` for both legacy and NewPM.
+
+New lit test `llvm/test/CodeGen/Z80/pointer-iv-strength-reduce-guarded.ll` — a
+zero-trip guarded loop under `-disable-lsr`, CHECK (pass ON) = no `add hl,de` in
+the loop / OFF control = reload present. Red/green archived: pre-fix `llc` FAILs
+(reload survives), post-fix PASSes. Pass stays opt-in → production byte-identical
+by construction. Full Z80 lit **189 PASS + 5 XFAIL**, 0 unexpected.
+
+### Nesting re-gate LANDED (commit 2616e242)
+`registerPressureOK` declines `L.getParentLoop() != nullptr`; hidden hatch
+`-z80-loop-instr-form-prep-allow-nested` re-enables. Test
+`pointer-iv-strength-reduce-nesting-gate.ll` (declined nested keeps reload;
+NESTED prefix w/ hatch = rewritten).
 
 ### Still open for Phase 1b (NOT done here)
-- Default-on decision + nesting re-gate (`getParentLoop()`-based) so it can ship
-  without the -z80-loop-instr-form-prep flag and without regressing nested sieve.
-- Beneficiary re-grounding (the tm caveat above): sweep real corpus/production
-  for genuine `base[i]` loops before claiming per-program wins.
+- **Default-on decision.** With the collateral regression removed, the opt-in
+  pass is net-neutral on the corpus (sieve non-regressed). Flipping default-on
+  still needs the production triplet byte-identical validation
+  (autoload/cpnos/rcbios) + MAME boot — a larger cycle; present with data, do
+  not flip blind.
+- Beneficiary re-grounding (the tm caveat above) — user chose to SKIP; do not
+  claim per-program wins for tm.
 - `tryEliminateOldIV` did not fire on the guarded repro (old counter survives
   for the exit test) — secondary LFTR opportunity, separate from the base reload.
-- Production triplet byte-identical only matters once default-on; N/A while opt-in.
