@@ -222,14 +222,36 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
   `dcc/tests/ttt.c` win-scan loop (ttt), the issue's `kill()` (sieve). Add each
   as an `.ll` under `llvm/test/CodeGen/Z80/` as you pin behavior.
 
-### Phase 1a — coverage spike (TIMEBOXED ~1 day, output = go/no-go, NOT a ship commitment)
+### Phase 1a — coverage spike — **DONE 2026-07-12, verdict GO**
 
-> **Why a spike, not a task.** Phase 1's headline wins (tm/chkmem, ttt) all
-> depend on an UNSOLVED unknown: why `prep` doesn't rewrite `chk` under
-> `-O2 -disable-lsr`. Until that is root-caused you cannot bound the effort or
-> know whether the fix is a clean one-liner or "SCEV isn't affine once LSR is
-> off" (which would make Phase 1 itself as hard as Phase 2). So Phase 1a's
-> deliverable is a **decision**, not code shipped.
+> **RESOLVED.** Root cause found and verified — see
+> `session-2026-07-12-issue250-phase1a-spike.md`. It is a clean, bounded,
+> standard-LLVM fix, so the gate returns **GO**. Summary below; the guessed
+> candidates in the original spike text (kept for the record) were all wrong.
+
+**ROOT CAUSE (verified):** `runOnFunctionImpl` bails at its FIRST guard —
+`if (!L->getLoopPreheader() || !L->getLoopLatch()) continue;`. A zero-trip
+guard (`if (c==0) skip`) makes loop entry a *conditional* branch, so there is
+**no dedicated preheader** and the pass declines before ever inspecting the
+(perfectly matching `{%0,+,1}`) GEP. It only reproduces under `-disable-lsr`
+because LSR is what pulls **LoopSimplify** (preheader insertion) into the
+pre-codegen IR pipeline; drop LSR and guarded loops lose their preheader.
+Proof: `opt -passes=loop-simplify` before prep → base reload eliminated,
+running pointer walks in `bc`.
+
+**FIX (Phase 1b):** make the pass require loop-simplified form the way LSR does
+(`AU.addRequiredID(LoopSimplifyID)` + `INITIALIZE_PASS_DEPENDENCY`, and ensure
+the codegen path has LoopSimplify ahead of it). Not a band-aid.
+
+**CAVEAT that revises the beneficiary story (verified):** the real
+`dcc/tests/tm.c` `chkmem` walks `*pc; pc++` in C — NOT `base[i]` — so it has NO
+base reload (its waste is `val`-spill + a redundant counter; tm's runtime is
+malloc-dominated anyway). tm is therefore NOT a base-reload beneficiary.
+Genuine `base[i]` beneficiaries are `sieve` and index-shaped loops. Phase 1b
+must re-confirm which real loops carry the `base[i]` shape before claiming
+per-program wins.
+
+<details><summary>Original spike plan (superseded — kept for record)</summary>
 
 1. **Root-cause why `prep` doesn't rewrite `chk` under `-O2 -disable-lsr`.**
    Instrument with `-debug-only=z80-loop-instr-form-prep` (add `LLVM_DEBUG`
@@ -244,6 +266,8 @@ Phase 1 attacks (1); Phase 2 attacks (2). Ship Phase 1 alone if Phase 2 stalls.
    entire reach rests on these being non-nested; and (b) an automatic prep+pin on
    a *proven* non-nested loop does not itself regress (sanity that the nesting
    gate, not something else, is what protects sieve).
+
+</details>
 
 **GO/NO-GO GATE (end of Phase 1a — decide before writing any ship code):**
 - **GO** if the coverage gap is a clean, bounded relaxation (e.g. widen the
