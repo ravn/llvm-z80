@@ -77,14 +77,63 @@ loop; HL walks the array, DE holds the stride, BC holds the end pointer — all
 loaded ONCE. Clang reloads the base address and the limit every iteration and
 uses an integer index shuffled bc<->hl for address computation.
 
-`Z80LoopInstrFormPrep` (#250) is the incomplete fix: it strength-reduces the
-store pointer but still reloads stride and end-pointer constants per iteration
-and increases register pressure; the net effect is SLOWER and LARGER. It is not
-the solution as-is.
+**UPDATE 2026-07-12 — root cause of the residual regression is now pinned.**
+The two-pass machinery (`Z80LoopInstrFormPrep` + `Z80PinLoopPointer`, both
+default-OFF) already produces a **dcc-quality inner kill loop** when all three
+flags are on (`-z80-enable-loop-instr-form-prep`
+`-z80-loop-instr-form-prep-allow-nested` `-z80-enable-pin-loop-pointer`):
 
-**Achievable:** 149,990 iterations × 39T + (33.2M − hot_cycles) ≈ **~20M
-cycles → beats dcc's 28M.** A correct pointer-walk fix is the single highest
-ROI lever.
+```asm
+LBB0_4:                 ; the pinned, old-IV-eliminated kill loop
+    xor  a              ;  4T
+    ld   (hl),a         ;  7T   HL IS the walking pointer (pinned)
+    add  hl,bc          ; 11T   advance by stride (bc = prime)
+    ld   a,l ; sub e    ;  8T   pointer compare hl vs de(end)
+    ld   a,h ; sbc a,d  ;  8T
+    jr   c,LBB0_4       ; 12T
+```
+
+= **50 T/iter** (vs baseline's 97 T). The IR after form-prep is *perfect*: a
+clean pointer PHI, store-through, `gep %ptr, stride`, exit test
+`icmp ult ptr %next, gep(@flags, 8191)` — the old integer IV is fully
+eliminated. Measured: sieve 44.9M (fp+nest) → **36.1M (fp+nest+pin)**.
+
+But 36.1M is still WORSE than baseline 33.0M, for one reason: the kill-loop
+**start pointer leaks into the scan loop and is BSS-spilled every scan
+iteration**. `SCEVExpander.expandCodeFor(G.Start)` recognises `&flags[k_start]`
+as a *scan-loop* AddRec (`{@flags+3, +, 3}`) and — per its invariant of placing
+AddRec expansions at the AddRec loop's header — hoists `ld hl,_flags; add hl,de;
+ld (__sfrend-6),hl` into the scan header (block 3), computed unconditionally
+BEFORE the `if (flags[i])` test and round-tripped through BSS because it is only
+consumed later, in the kill-loop preheader (block 17). That ~35 T × ~82k scan
+iterations ≈ **+2.9M** — exactly the 36.1M − 33.0M gap.
+
+**The fix — DONE 2026-07-12 (lever 1 of 3).** `sinkStartPtrToPreheader` in
+`Z80LoopInstrFormPrep` moves the terminal start-pointer instruction down into
+the kill preheader (past the guard, register-adjacent to the kill loop) after
+SCEVExpander hoists it to the enclosing scan header. Block-level dominance
+checks keep it SSA-safe; only the terminal GEP is moved (no operand-chain
+reorder hazard). Measured: **fp+nest+pin 36.1M → 31.05M** — beats clang's own
+33.03M baseline, correct output (`1899 primes.`). Lit:
+`pointer-iv-strength-reduce-sink-startptr.ll`. Pass still default-OFF →
+production byte-identical. Writeup: `session-2026-07-12-issue250-sink-startptr.md`.
+
+**To actually BEAT dcc (27.98M) — two more levers, NOT done:**
+
+- **Lever 2 — high-byte-first inner exit test** (hand-proven): rewrite the inner
+  16-bit compare `ld a,l; sub e; ld a,h; sbc a,d; jr c` (16 T) into dcc's
+  `ld a,h; cp d; jp c; jr nz; ld a,l; cp e; jp c` (8 T fast path). Hand-edited
+  asm → **29.56M**. SIZE-NEGATIVE (extra branches) → conflicts with the
+  size-first mandate; would need speed-gating. Reaches ~parity, not a win alone.
+
+- **Lever 3 — scan-index spill** (M2 class): the scan loop spills its IV
+  `ld (nn),de` (20 T) every iteration because the kill loop clobbers all 3 GP
+  pairs (HL=ptr, BC=stride, DE=end). 20 T × ~82k ≈ 1.6M — the rest of the gap.
+  Hard greedy-regalloc problem; size-NEUTRAL. Lever 2 + lever 3 together land
+  ~27.9M and beat dcc.
+
+The earlier "~20M achievable" estimate was optimistic (assumed the whole scan
+loop stayed baseline-cheap). Realistic: lever 1 alone = 31.05M; all three = sub-28M.
 
 ---
 
