@@ -234,6 +234,21 @@ postpone — empty entries are fine if you don't have impact numbers yet.
     **ravn/llvm-z80#256** (LSR hoists cold-only IVs -> BSS spill on a
     register-starved target; Z80SinkColdLoopIV opt-in mitigation; generic
     block-freq-blind AddRecCost angle held for upstream w/ go-ahead).
+- **`e` benchmark: 16-bit BSS access overhead (2026-07-12).** Distinct from
+  the 8-bit A-shuttle mechanism above and potentially MORE ADDRESSABLE.  In
+  \`e\` (computes digits of e), every local variable (\`x\`, \`n\`, \`a[n]\`,
+  loop counter) is BSS-resident.  Each 16-bit load costs ~51 T-states:
+  \`ld hl,__sfrend_main\` (10T) + \`ld de,offset\` (10T) + \`add hl,de\` (11T)
+  + \`ld e,(hl)\` (7T) + \`inc hl\` (6T) + \`ld d,(hl)\` (7T).  The inner loop
+  has 6–8 such sequences = 300–400T spill traffic per iteration vs ~50T of
+  actual arithmetic.  dcc keeps \`x\` and the accumulator in registers.
+  This is NOT ISA-fundamental (unlike the 8-bit A-shuttle): the 16-bit
+  indirect form is expensive because the TTI cost model assigns zero cost to
+  BSS-resident locals, so the register allocator never fights to keep
+  short-lived values register-resident.  Fix angle: \`getMemoryOpCost\` /
+  frame-slot cost charging.  Measured gap: dcc 25.4M vs zcc+llvmz80 40.3M
+  (+59% at -Os, z88dk-ticks 2026-07-12).  Tracked via #244 (corrected
+  root-cause comment 2026-07-12; old diagnosis "divhi3 speed" was wrong).
 
 ### M3. Loop strength reduction creates wider IVs harmful on Z80
 
