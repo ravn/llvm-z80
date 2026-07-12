@@ -105,3 +105,23 @@ shape before claiming per-program wins; the *mechanism* fix is sound regardless.
   for the exit test — `tryEliminateOldIV` did NOT fire here; a secondary
   opportunity, separate from the base-reload fix). ✓
 - fannkuch remains Depth-3 nested (see plan §3.1) → correctly out of Phase 1.
+
+## FIX LANDED (2026-07-12, commit e4895cd5)
+
+`AU.addRequiredID(LoopSimplifyID)` + `addPreservedID` +
+`INITIALIZE_PASS_DEPENDENCY(LoopSimplify)` added to
+`Z80LoopInstrFormPrepLegacyPass` (mirrors LoopStrengthReduce). New lit test
+`llvm/test/CodeGen/Z80/pointer-iv-strength-reduce-guarded.ll` — a zero-trip
+guarded loop under `-disable-lsr`, CHECK (pass ON) = no `add hl,de` in the
+loop / OFF control = reload present. Red/green archived: pre-fix `llc` FAILs
+(reload survives), post-fix PASSes. Full Z80 lit 188 PASS + 5 XFAIL, 0
+unexpected. Pass stays opt-in → production byte-identical by construction.
+
+### Still open for Phase 1b (NOT done here)
+- Default-on decision + nesting re-gate (`getParentLoop()`-based) so it can ship
+  without the -z80-loop-instr-form-prep flag and without regressing nested sieve.
+- Beneficiary re-grounding (the tm caveat above): sweep real corpus/production
+  for genuine `base[i]` loops before claiming per-program wins.
+- `tryEliminateOldIV` did not fire on the guarded repro (old counter survives
+  for the exit test) — secondary LFTR opportunity, separate from the base reload.
+- Production triplet byte-identical only matters once default-on; N/A while opt-in.
