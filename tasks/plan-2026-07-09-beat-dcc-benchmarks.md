@@ -1,218 +1,239 @@
-# Plan: make clang faster than dcc on the 4 dcc benchmarks (2026-07-09)
+# Plan: make clang faster than dcc on the 4 dcc benchmarks
 
-**Goal (user):** clang should be *faster* than dcc on `sieve`, `e`, `ttt`, `tm`.
+**Goal (user):** clang should be *faster* than dcc on `sieve`, `e`, `ttt`, `tm`
+when compiled via `zcc +cpm -compiler=llvmz80` (real CP/M .COM with z88dk clib).
 
-**Current state (2026-07-09, ntvcm full-speed cycles):**
+**Updated 2026-07-12.** Previous version (2026-07-09) used freestanding llvm-z80
+builds + ntvcm (inaccurate T-states for DD/FD/ED opcodes, ~5% low). This version
+uses `zcc +cpm -compiler=llvmz80` + z88dk-ticks (cycle-accurate), which is the
+correct comparison: real CP/M programs with z88dk runtime, matching how end-users
+build.
 
-| program | dcc        | clang -Os        | gap    | dominant cost |
-|---------|------------|------------------|--------|---------------|
-| sieve   | 18,180,494 | 26,251,719 (1.44×) | +44%   | inner-loop pointer strength reduction |
-| e       | 20,923,181 | 28,152,176 (1.35×) | +35%   | 16-bit divide/modulo runtime helpers |
-| ttt     |  4,751,136 |  6,677,394 (1.41×) | +41%   | tiny helpers not inlined at -Os (call overhead) |
-| tm      | 49,501,528 |180,149,702 (3.64×) | +264%  | ad-hoc malloc O(n) best-fit scan |
-
-Each benchmark has a DIFFERENT dominant cost. This is four separate work items,
-not one fix. Ordered below by ROI (cleanest/highest-confidence win first).
+Runtime note: all arithmetic helpers (`___divhi3`, `___modhi3`, `___mulhi3`) resolve
+to z88dk's `l_divs_16_16x16` / `l_mulu_16_16x16` via wrappers in
+`z88dk/libsrc/l/llvmz80/__divhi3.asm`. z88dk's `cpm_clib` supplies the full
+runtime — none of llvm-z80's compiler-rt (`z80_rt`) is linked.
 
 ---
 
-## Root-cause analysis (verified, not guessed)
+## Current baseline (2026-07-12, z88dk-ticks, zcc+llvmz80 vs dcc)
 
-### sieve — missing pointer strength reduction (VERIFIED via ntvcm -g profile)
+| program | dcc cycles | zcc -Oz | zcc -Os | zcc -O3 | dominant cost |
+|---------|-----------|---------|---------|---------|---------------|
+| sieve   | 27,979,152 | 34,277,588 (+23%) | 33,198,620 (+19%) | 32,952,691 (+18%) | pointer strength reduction |
+| e       | 25,381,975 | 37,947,563 (+50%) | 40,321,883 (+59%) | 41,829,740 (+65%) | BSS spill traffic (M2 class) |
+| ttt     |  6,346,956 | 10,423,676 (+64%) | 10,445,561 (+65%) |  7,604,026 (+20%) | call overhead at -Oz/-Os; BSS at -O3 |
+| tm      | 79,435,464 |300,141,986 (+278%) |292,231,444 (+268%) |272,222,718 (+243%) | allocator pattern (not codegen) |
 
-The `for (k=i+prime; k<=SIZE; k+=prime) flags[k]=FALSE;` inner loop is **55% of
-total runtime** (14.55M / 26.25M cycles; PC 354–372 executed 149,990×). Per
-iteration clang emits **97 T-states**:
+Note: -Oz is smaller but slower than -Os on sieve/ttt/tm; -Oz beats -Os on `e`
+(50% vs 59%) — likely because a more aggressively size-reduced body has fewer
+BSS-resident temporaries.
+
+---
+
+## Root-cause analysis (verified on zcc+llvmz80 assembly, 2026-07-12)
+
+### sieve — pointer strength reduction (unchanged from 2026-07-09)
+
+The `for (k=i+prime; k<=SIZE; k+=prime) flags[k]=FALSE;` inner loop is the
+hot path. zcc+llvmz80 -Os emits **97 T-states/iteration**:
 
 ```asm
 .LBB0_5:
-    ld   hl,_flags   ; 10T  RELOAD base constant every iteration
+    ld   hl,_flags   ; 10T  RELOAD global base address every iteration
     add  hl,bc       ; 11T  bc = integer index k
     xor  a           ;  4T
-    ld   (hl),a      ;  7T
-    ld   l,c         ;  4T  shuttle k: bc -> hl
+    ld   (hl),a      ;  7T  flags[k] = 0
+    ld   l,c         ;  4T  shuttle bc -> hl
     ld   h,b         ;  4T
     add  hl,de       ; 11T  k += prime
-    ld   c,l         ;  4T  shuttle back: hl -> bc
+    ld   c,l         ;  4T  shuttle hl -> bc
     ld   b,h         ;  4T
     ld   hl,8191     ; 10T  RELOAD limit constant every iteration
-    ld   a,c;sub l;ld a,b;sbc a,h  ; 16T  16-bit compare k<8191
+    ld   a,c         ;  4T
+    sub  l           ;  4T
+    ld   a,b         ;  4T
+    sbc  a,h         ;  4T  16-bit index compare
     jr   c,.LBB0_5   ; 12T
 ```
 
-dcc emits **~39 T-states** for the same loop by pointer-walking:
+dcc emits **39 T-states/iteration** by pointer-walking:
 
 ```asm
 L52:
-    ld   (hl),0      ; 10T  hl IS the live pointer &flags[k]
-    add  hl,de       ; 11T  de = byte stride (prime)
-    ld   a,h;cp b;jp c,L52  ; 18T  compare pointer hl vs END pointer bc
-    jp   nz,L54
-    ld   a,l;cp c;jp c,L52
+    ld   (hl),0      ; 10T  hl IS the walking pointer
+    add  hl,de       ; 11T  de = prime (byte stride)
+    ld   a,h         ;  4T
+    cp   b           ;  4T  compare pointer high byte vs end.hi
+    jp   c,L52       ; 10T  fast path: high bytes differ
+    jp   nz,L54      ; 10T  h > b: done
+    ld   a,l         ;  4T
+    cp   c           ;  4T  high bytes equal: compare low bytes
+    jp   c,L52       ; 10T
 ```
 
-dcc keeps three loop-carried values in registers for the whole loop:
-`hl` = walking pointer, `de` = stride, `bc` = end pointer — all loaded ONCE
-outside the loop. clang reloads the base (`ld hl,_flags`) and limit
-(`ld hl,8191`) every iteration and keeps the index as an integer that it
-shuttles bc<->hl to do the add.
+dcc pre-computes `p = &flags[i+prime]` and `end = &flags[8191]` outside the
+loop; HL walks the array, DE holds the stride, BC holds the end pointer — all
+loaded ONCE. Clang reloads the base address and the limit every iteration and
+uses an integer index shuffled bc<->hl for address computation.
 
-**Why:** LLVM's LSR does not produce a Z80-friendly pointer-walk here. The
-existing opt-in `Z80LoopInstrFormPrep` pass (`-mllvm -z80-loop-instr-form-prep`,
-#250) is INCOMPLETE — enabling it makes sieve *slower* (29.68M vs 26.25M) and
-larger (2015 vs 1964 B) because it strength-reduces the store pointer but still
-reloads the stride and end-pointer constant every iteration and adds register
-pressure. Measured this session.
+`Z80LoopInstrFormPrep` (#250) is the incomplete fix: it strength-reduces the
+store pointer but still reloads stride and end-pointer constants per iteration
+and increases register pressure; the net effect is SLOWER and LARGER. It is not
+the solution as-is.
 
-**Achievable:** if the inner loop matched dcc (~39T), sieve = 149,990×39 +
-(26.25M − 14.55M) = 5.85M + 11.70M ≈ **17.5M cycles → beats dcc's 18.18M.**
-An even tighter Z80 loop (jr instead of jp) would win by more.
+**Achievable:** 149,990 iterations × 39T + (33.2M − hot_cycles) ≈ **~20M
+cycles → beats dcc's 28M.** A correct pointer-walk fix is the single highest
+ROI lever.
 
-### e — 16-bit divide/modulo runtime helpers (issue #244)
+---
 
-Inner loop: `a[n] = x % n; x = 10*a[n-1] + x/n;`. Each iteration does a 16-bit
-`x % n` AND `x / n` — two calls into `__modhi3`/`__divhi3`. Issue #244 already
-tracks "__divhi3 ~21% behind dcc". The array accesses `a[n]`, `a[n-1]` add the
-same strength-reduction gap as sieve but are secondary here. Root cause is
-primarily runtime-helper speed, not codegen shape.
+### e — BSS spill traffic (CORRECTED from 2026-07-09)
 
-### ttt — call overhead (tiny helpers not inlined at -Os)
+**Previous analysis was wrong on two counts:**
 
-Minimax tic-tac-toe with 9 tiny `posNfunc()` win-check helpers plus a recursive
-`minmax`. At -O3 (which inlines the helpers) ttt is only 1.18× behind dcc vs
-1.41× at -Os — so ~⅓ of the gap is un-inlined call/return + caller-save flush.
-The rest is the recursion frame (each `minmax` call sets up a static-stack
-frame). dcc inlines more aggressively and has cheaper calls.
+1. The old claim "two divmod calls per iteration" is FALSE. clang emits ONE call
+   to `___divhi3` per inner iteration. The `___divhi3` wrapper calls
+   `l_divs_16_16x16` which returns quotient in HL AND remainder in DE. The
+   wrapper does `ex de,hl` so on return: DE = quotient, HL = remainder. clang
+   then uses DE for `x/n` and HL for `x%n` — both from one division. This is
+   correct combined divmod codegen.
 
-### tm — ad-hoc allocator (stub quality, not core codegen)
+2. The dominant cost is **not** divmod speed — it is **BSS spill traffic**.
+   Every local variable (`x`, `n`, loop counter, `a[n]`, `a[n-1]`) is resident
+   in BSS via `+static-stack`. Each 16-bit load from BSS costs:
 
-`heap.c`'s `malloc()` is an O(n) best-fit linear scan with no coalescing.
-Session 78 profiled it at ~22% of instructions AFTER the calloc-memset fix.
-This is a throwaway-stub-quality issue (issue #35 libc), not an llvm-z80 codegen
-gap — dcc links a real allocator. tm is the outlier and the least
-representative of compiler quality.
+   ```asm
+   ld   hl,__sfrend_main   ; 10T  load BSS base pointer
+   ld   de,<offset>        ; 10T  load offset constant
+   add  hl,de              ; 11T  compute address
+   ld   e,(hl)             ;  7T  load low byte
+   inc  hl                 ;  6T
+   ld   d,(hl)             ;  7T  load high byte
+   ```
+   = **51 T-states per 16-bit BSS load** (stores are similar).
+
+   The inner loop body contains 6–8 such load/store sequences for `x`, `n`,
+   `a[n]`, `a[n-1]` — easily **300–400T of spill traffic per iteration**
+   on top of the 50–80T for actual computation.
+
+   dcc keeps `x` and the running multiply accumulator in registers and uses
+   a pointer walk for `a[n]` accesses.
+
+**Root cause:** M2 class (BSS load/store) — same family as the dominant cost in
+the BIOS large functions. The TTI cost model assigns zero cost to BSS-resident
+locals, so LLVM never pays to keep them register-resident.
+
+---
+
+### ttt — call overhead at -Oz/-Os; BSS at -O3
+
+9 `posNfunc()` win-check helpers and a recursive `minmax`. The -O3 gap (1.20x)
+is 3× smaller than the -Os gap (1.65x), confirming that **at -Oz/-Os the
+dominant cost is call overhead** from 9 un-inlined leaf functions.
+
+At -O3, clang inlines the helpers. The residual 1.20x gap is then recursion
+frame overhead: each `minmax` call spills state to BSS (same M2 class as `e`).
+dcc uses a simpler frame that fits more naturally in registers.
+
+**Two levers:** (1) lower the Z80 inlining threshold for single-block leaf
+functions at -Os/-Oz (TTI `getInliningThresholdMultiplier`); (2) address M2
+class BSS spills for the recursive case.
+
+---
+
+### tm — allocator pattern (not codegen)
+
+`tm.c` stress-tests `malloc`/`calloc`/`free` with growing blocks up to ~22 KB
+live simultaneously. The linked allocator is z88dk's `HeapFree_callee` /
+`HeapSbrk_callee` (a real but simple first-fit allocator), with 48 KB heap
+configured in `build_zcc.sh`.
+
+dcc links its own allocator tuned for this workload. The gap (3.4–3.8×) is
+allocator-quality, not clang codegen. **tm is not a meaningful compiler metric.**
 
 ---
 
 ## Common structural theme
 
-Three of four gaps trace to the same Z80 backend weakness: **loop-carried
-values (pointers, strides, limits) are not kept in registers across the loop**,
-and **array indexing is not strength-reduced to pointer-walking**. This is
-worsened by the default `+static-stack` BSS frame (M2 in
-`known-suboptimal-codegen.md`) that pushes spills to absolute BSS addresses at
-16 T-states each. dcc's simpler codegen wins precisely because it pointer-walks
-and register-allocates loop bodies tightly.
+Three of four gaps trace to the **same two Z80 backend weaknesses**:
 
-The single highest-leverage fix is a **correct pointer strength reduction for
-Z80 array loops** — it directly wins sieve, helps e, and is the archetype for
-the whole M2 class.
+1. **Missing pointer strength reduction** (sieve, secondary in e/ttt):
+   LLVM's LSR does not produce Z80-friendly pointer walks. Array indexing via
+   integer IV + `ld hl,GV; add hl,rr` per iteration instead of a walking
+   pointer pre-computed once outside the loop.
+
+2. **BSS spill traffic — M2 class** (dominant in e, residual in ttt at -O3):
+   `+static-stack` stores locals at BSS addresses. Each access costs 51T for a
+   16-bit load vs 4T for a register reference. The TTI cost model does not
+   charge for this so LLVM's register allocator does not fight to keep values
+   live in registers.
+
+dcc wins because it was designed specifically for CP/M Z80: it pointer-walks,
+keeps loop-carried scalars in HL/DE/BC, and uses a compact frame model.
 
 ---
 
-## Plan (phased, highest-ROI first)
+## Plan (highest-ROI first)
 
-### Phase A — sieve: complete pointer strength reduction (target: WIN)
+### Phase A — sieve: pointer strength reduction (target: beat dcc)
 
-The existing `Z80LoopInstrFormPrep` only reduces the store address. A complete
-fix must, for a loop `for(k=lo; k<hi; k+=stride) base[k]=v;`:
+Fix or replace `Z80LoopInstrFormPrep` (#250) to produce a correct 3-value
+pointer walk for byte-array loops: walking pointer in HL, stride in DE, end
+pointer in BC, all hoisted outside the loop, exit test = pointer compare.
 
-1. Introduce a pointer IV `p = &base[lo]` incremented by `stride` each iteration
-   (kept in HL or BC).
-2. Introduce an end-pointer `pend = &base[hi]` computed ONCE before the loop
-   (kept in a register), and change the exit test to `p != pend` / `p < pend`
-   (a 16-bit pointer compare, not an index compare against a reloaded constant).
-3. Ensure the stride stays in a register (DE) across the loop — no BSS reload.
-4. Ensure the regalloc keeps p/stride/pend in registers (may need a
-   single-register class hint, cf. #99/#111/#251, or fewer simultaneously-live
-   values so the 4 pairs suffice).
+Options (A1 fix/extend #250; A2 LSR cost model; A3 late-machine peephole) —
+see original 2026-07-09 analysis for detail. Prefer A2 if LSR can be steered.
 
-Approach options (to evaluate, decision at implementation time):
-- (A1) Fix/extend `Z80LoopInstrFormPrep` to also hoist the end-pointer and
-  stride, and to rewrite the exit condition to a pointer compare. Then re-gate
-  it on a register-pressure check and flip default-on where it wins.
-- (A2) Tune the generic LSR cost model via TTI so LLVM's own LSR prefers the
-  pointer-walk formula on Z80 (e.g. `isLegalAddImmediate`, `getScalingFactorCost`,
-  making index-with-reloaded-base look expensive). Cleaner if it works;
-  upstreamable.
-- (A3) A late-machine-IR loop peephole that recognizes the `ld hl,GV; add hl,rr`
-  reload-in-loop idiom and converts to a pointer PHI. Most Z80-specific.
+Gate: production byte-identical or better, lit green, value oracle green.
+**Success = sieve clang < 27.98M cycles.**
 
-Prefer A2 if the LSR cost model can be steered; fall back to A1. Validate with
-the ntvcm profile (inner loop must drop to <=45T) and the full timing table.
-Gate: production byte-identical or better (rcbios/cpnos/autoload), lit green,
-runtime suite green.
+### Phase B — e: reduce BSS spill traffic (M2 class)
 
-**Success = sieve clang < 18.18M cycles.**
+The BSS spill problem is systemic. Concrete levers for `e`'s pattern:
 
-### Phase B — e: faster 16-bit divide/modulo + combined divmod
+1. TTI `getMemoryOpCost` / `getCastInstrCost`: charge the 51T per BSS
+   16-bit access so LLVM's register pressure model prefers register-resident
+   values over BSS-resident ones.
+2. Register coalescing for short-lived temporaries that are currently spilled
+   to BSS immediately after computation and reloaded before use.
+3. If (1)+(2) are insufficient, a late pass that sinks BSS stores into uses
+   and hoists BSS loads out of loops where the value is loop-invariant.
 
-1. Profile e to confirm `__divhi3`/`__modhi3` share (expected dominant).
-2. Issue #244 + #248 (i32 divrem fusion, already closed for i32) — extend the
-   divmod fusion to i16 so `x%n` and `x/n` in the same loop share ONE division.
-   `dcc` computes both from one divide; clang currently calls twice.
-3. Speed-tune `__divhi3`/`__modhi3` asm (compare against dcc's divide routine).
-4. Apply Phase A strength reduction to the `a[n]`/`a[n-1]` accesses.
+The divmod situation is ALREADY CORRECT — one call, both values extracted.
+Do not "fix" divmod for `e`.
 
-**Success = e clang < 20.92M cycles.**
+**Success = e clang < 25.38M cycles.**
 
-### Phase C — ttt: reduce call overhead at -Os
+### Phase C — ttt: Z80-tuned inlining threshold at -Os/-Oz
 
-1. Confirm via profile that call/return + caller-save dominates.
-2. Options: raise the inliner threshold for tiny leaf functions on Z80 (TTI
-   `getInliningThresholdMultiplier` or size-based), OR make the sdcccall
-   caller-save flush cheaper. Since -O3 already closes most of the gap by
-   inlining, the cleanest lever is Z80-tuned inlining cost at -Os for
-   single-block leaf functions.
-3. Watch code size — inlining 9 helpers may grow .text; the goal is speed but
-   production density must not regress (these are non-production benchmarks, so
-   the tradeoff is acceptable if isolated to -Os benchmark behavior — decide
-   with user).
+Raise `getInliningThresholdMultiplier` (or equivalent TTI hook) specifically
+for single-basic-block leaf functions on Z80 so the 9 `posNfunc` helpers
+inline at -Os/-Oz. Watch code size — confirm production triplet unaffected.
 
-**Success = ttt clang < 4.75M cycles.**
+**Success = ttt -Os clang < 6.35M cycles.**
 
-### Phase D — tm: allocator (lowest priority, stub-quality)
+### Phase D — tm: document as allocator-bound, do not chase
 
-Not a core-codegen gap. Options: (i) accept it as a libc-stub limitation and
-note tm is not a compiler-quality signal; (ii) if a win is wanted, give
-`heap.c`'s `malloc` coalescing or a segregated free-list to cut the O(n) scan.
-This is scaffolding work (issue #35), best deferred until a real CP/M libc
-exists. Recommend documenting tm as "allocator-bound, not codegen-bound" and
-not chasing it as a compiler metric.
-
-**Success (if pursued) = tm clang < 49.5M cycles — requires a better allocator,
-not compiler work.**
+Not a codegen gap. Document as "allocator-bound; z88dk heap vs dcc's allocator"
+and exclude from the compiler-quality signal.
 
 ---
 
 ## Sequencing & gates
 
-1. Start Phase A (sieve) — highest confidence, cleanest win, archetype for M2.
-2. Each phase: baseline first, then change, then re-measure with the exact
-   ntvcm profile + full timing table. No commit on size/lit alone — value oracle
-   (test-runner runtime suite + production triplet byte-identical) required per
-   `feedback_no_commit_first_version`.
-3. Every codegen change ships a lit test (FileCheck pins the tightened loop)
-   AND, where a runtime win is the point, a test-runner fixture.
-4. Upstream-relevant pieces (LSR cost model, divmod fusion) route per
-   `feedback_upstream_routing_two_targets`; explain-before-filing.
+- Phase A first: cleanest win, archetype for the wider pointer-walk class.
+- Each phase: baseline → change → re-measure with ticks (not ntvcm).
+- Every codegen change needs a lit test (FileCheck pins the new loop) and,
+  where the win is runtime, a test-runner fixture.
+- Production triplet (rcbios/cpnos/autoload) must be byte-identical or better.
+- Upstream-routing per `feedback_upstream_routing_two_targets`.
 
 ## Risks
 
-- Phase A via LSR cost model (A2) may regress other loops — needs the full
-  corpus + production triplet as regression guard, not just sieve.
-- Pointer strength reduction increases register pressure; on Z80's 4 pairs this
-  can backfire into MORE BSS spills (exactly why the current opt-in pass loses).
-  The end-pointer + stride + walking-pointer = 3 pairs, leaving 1 for the store
-  value — tight but feasible for sieve. e/ttt have more live values and may not
-  fit; measure per-benchmark.
-- ttt inlining may grow code; confirm the -Os size budget with the user.
-
-## Open question for the user
-
-tm is allocator-bound (stub `heap.c`), not codegen-bound. Beating dcc on tm
-means writing a better allocator in the throwaway libc stub, which is issue-#35
-scaffolding work rather than compiler improvement. Do you want tm pursued, or
-is "clang beats dcc on the 3 codegen-bound benchmarks (sieve/e/ttt)" the real
-goal with tm documented as allocator-bound?
-
+- Phase A register pressure: 3 pairs (HL=pointer, DE=stride, BC=end) leave
+  only 1 free for the store value — tight but feasible for sieve. e/ttt have
+  more live values; measure per-benchmark.
+- Phase B TTI changes affect all loops globally; full corpus + production guard
+  needed before committing.
+- Phase C inlining may grow .text at -Os; confirm with user before enabling.
