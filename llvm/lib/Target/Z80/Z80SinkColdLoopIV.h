@@ -10,6 +10,7 @@
 #define LLVM_LIB_TARGET_Z80_Z80SINKCOLDLOOPIV_H
 
 #include "llvm/IR/PassManager.h"
+#include "llvm/Support/CodeGen.h"
 
 namespace llvm {
 
@@ -24,7 +25,9 @@ public:
 
 FunctionPass *createZ80SinkColdLoopIVLegacyPass();
 void initializeZ80SinkColdLoopIVLegacyPassPass(PassRegistry &);
-bool isZ80SinkColdLoopIVEnabled();
+// Auto-on at -O2 (== Default opt level), overridable with the -mllvm flag
+// (ravn/llvm-z80#250).  Per-function -Os/-Oz exclusion is inside the pass.
+bool isZ80SinkColdLoopIVEnabled(CodeGenOptLevel OptLevel);
 
 } // namespace llvm
 

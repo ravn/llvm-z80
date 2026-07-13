@@ -46,25 +46,34 @@
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "z80-high-byte-first-branch"
 
+// Auto-on at -O2 only (ravn/llvm-z80#250 lever 2), same rule as the pointer-walk
+// stack it complements.  If explicitly forced on at another level, branch width
+// still adapts (jr at -Os/-Oz, hybrid at -O2, jp at -O3).  Override with
+// `-z80-enable-hbf-branch[=false]`.
 static cl::opt<bool> EnableZ80HighByteFirstBranch(
     "z80-enable-hbf-branch", cl::init(false), cl::Hidden,
-    cl::desc("Rewrite hot 16-bit unsigned loop exit tests into high-byte-first "
-             "form (ravn/llvm-z80#250 lever 2; size-negative, speed-only)"));
+    cl::desc("Force Z80 high-byte-first loop exit tests on/off (default: auto "
+             "at -O2 only; ravn/llvm-z80#250 lever 2)"));
 
 namespace {
 
@@ -222,7 +231,13 @@ static void emitByteCompare(MachineBasicBlock &BB, const DebugLoc &DL,
 }
 
 bool Z80HighByteFirstBranch::runOnMachineFunction(MachineFunction &MF) {
-  if (!EnableZ80HighByteFirstBranch)
+  // -O2-only default (ravn/llvm-z80#250): auto-on at -O2 (== Default opt level,
+  // not opt-size); explicit -mllvm flag overrides at any level.
+  bool Enabled = EnableZ80HighByteFirstBranch.getNumOccurrences() > 0
+                     ? EnableZ80HighByteFirstBranch.getValue()
+                     : (MF.getTarget().getOptLevel() == CodeGenOptLevel::Default &&
+                        !MF.getFunction().hasOptSize());
+  if (!Enabled)
     return false;
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   if (!STI.hasZ80())
@@ -231,6 +246,41 @@ bool Z80HighByteFirstBranch::runOnMachineFunction(MachineFunction &MF) {
   const TargetInstrInfo &TII = *STI.getInstrInfo();
   const TargetRegisterInfo &TRI = *STI.getRegisterInfo();
   auto &MDT = getAnalysis<MachineDominatorTreeWrapperPass>().getDomTree();
+
+  // Branch-width policy by opt level (ravn/llvm-z80#250 lever 2):
+  //   -Os/-Oz (size)  : all JR  (2 B, 12 T)          -- hbf ~+4 B
+  //   -O2     (balance): JP only on the hot backedge  -- hbf ~+5 B
+  //   -O3     (speed) : all JP (3 B, 10 T)           -- hbf ~+7 B
+  const Function &F = MF.getFunction();
+  bool Size = F.hasOptSize(); // -Os OR -Oz
+  bool Aggressive = MF.getTarget().getOptLevel() == CodeGenOptLevel::Aggressive;
+
+  // Precompute a running byte offset per block (conservative -- CMP16 etc. in
+  // other blocks are not expanded yet, so this UNDER-estimates, which only makes
+  // us prefer JP; safe).  Used to keep every JR we emit inside its +/-127 range.
+  DenseMap<const MachineBasicBlock *, int64_t> BlockOff;
+  int64_t Off = 0;
+  for (MachineBasicBlock &B : MF) {
+    BlockOff[&B] = Off;
+    for (MachineInstr &I : B)
+      Off += TII.getInstSizeInBytes(I);
+  }
+  auto JRInRange = [&](const MachineBasicBlock *Src,
+                       const MachineBasicBlock *Dst) {
+    // Distance from end-ish of Src to start of Dst; +32 slack for the not-yet-
+    // expanded pseudos between them.  JR displacement is a signed 8-bit (+/-127).
+    int64_t D = BlockOff[Dst] - BlockOff[Src];
+    return D >= -100 && D <= 100;
+  };
+  // Pick the branch opcode: `Hot` = the fast backedge (JP at -O2/-O3);
+  // everything else is JP only at -O3.  Fall back to the JP form when the JR
+  // would be out of range.
+  auto condBr = [&](MachineBasicBlock *Src, MachineBasicBlock *Dst, bool Hot,
+                    unsigned JpOpc, unsigned JrOpc) {
+    bool WantJp = Aggressive || (Hot && !Size);
+    unsigned Opc = (WantJp || !JRInRange(Src, Dst)) ? JpOpc : JrOpc;
+    BuildMI(Src, DebugLoc(), TII.get(Opc)).addMBB(Dst);
+  };
 
   // Collect matches first (the rewrite creates new blocks / mutates the CFG).
   SmallVector<std::pair<MachineBasicBlock *, Match>, 4> Work;
@@ -261,15 +311,22 @@ bool Z80HighByteFirstBranch::runOnMachineFunction(MachineFunction &MF) {
     if (M.UncondBr)
       M.UncondBr->eraseFromParent();
 
-    // MBB: high byte.  ld a,lhs.hi ; cp rhs.hi ; jp c,Loop ; jp nz,Exit ; (->LoBB)
+    // MBB: high byte.  ld a,lhs.hi ; cp rhs.hi ; j c,Loop ; j nz,Exit ; (->LoBB)
     emitByteCompare(*MBB, DL, TII, LhsHi, RhsHi);
-    BuildMI(MBB, DL, TII.get(Z80::JP_C_nn)).addMBB(M.Loop);
-    BuildMI(MBB, DL, TII.get(Z80::JP_NZ_nn)).addMBB(M.Exit);
+    condBr(MBB, M.Loop, /*Hot=*/true, Z80::JP_C_nn, Z80::JR_C_e);
+    condBr(MBB, M.Exit, /*Hot=*/false, Z80::JP_NZ_nn, Z80::JR_NZ_e);
 
-    // LoBB: low byte.  ld a,lhs.lo ; cp rhs.lo ; jp c,Loop ; jp Exit
+    // LoBB: low byte.  ld a,lhs.lo ; cp rhs.lo ; j c,Loop ; j Exit
+    // (the unconditional Exit branch is dropped by Z80RemoveJumpToNext when Exit
+    // is the fall-through block; otherwise it survives as a real cold exit.)
     emitByteCompare(*LoBB, DL, TII, LhsLo, RhsLo);
-    BuildMI(LoBB, DL, TII.get(Z80::JP_C_nn)).addMBB(M.Loop);
-    BuildMI(LoBB, DL, TII.get(Z80::JP_nn)).addMBB(M.Exit);
+    condBr(LoBB, M.Loop, /*Hot=*/false, Z80::JP_C_nn, Z80::JR_C_e);
+    {
+      bool WantJp = Aggressive;
+      unsigned Opc =
+          (WantJp || !JRInRange(LoBB, M.Exit)) ? Z80::JP_nn : Z80::JR_e;
+      BuildMI(LoBB, DL, TII.get(Opc)).addMBB(M.Exit);
+    }
 
     // Fix up the CFG.  MBB used to go to {Loop, Exit}; now it also falls
     // through to LoBB, and LoBB goes to {Loop, Exit}.
