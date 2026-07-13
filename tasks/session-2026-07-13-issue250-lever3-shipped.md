@@ -54,9 +54,30 @@ optimisation pass was needed — the work was shipping it safely.
   just form-prep's), and on some simple loops (e.g. issue-177's `zero3` memset)
   it adds a `push` (register pressure).  Bounded, small, only at -O2 (production
   is -Oz).  The dcc benchmarks e/ttt/tm are unaffected (no matching loop shape).
-- **Not yet run:** compiler-comparison corpus + AES corpus at -O2 (gate #4/#5) —
-  to confirm -O2 default-on is net-positive across many programs, not just sieve.
-  Follow-up; the flags allow per-file disable if a regression surfaces.
+## Net-positivity check (done 2026-07-13)
+
+| corpus | opt | result |
+|--------|-----|--------|
+| compiler-comparison (fannkuch, licm_pessimize, pi, sieve, word_fill) | -O2 | **byte + cycle IDENTICAL** on/off — stack does not fire |
+| AES (aes256) | -Oz | **byte-identical** (stack off at opt-size) — production unchanged |
+| dcc sieve | -O2 | **34.3M → 27.2M (−21%)** — form-prep-driven |
+
+**Verdict: the shipped -O2 default-on stack is net-neutral-to-positive.** Big win
+on the dcc-sieve shape; completely neutral (byte + cycle identical) on the whole
+compiler-comparison corpus AND AES. No regression across the corpora.
+
+Why the corpus is neutral (not a bug):
+- form-prep needs a SINGLE-USE byte-array address (`GEP->hasOneUse()`). The dcc
+  sieve kill loop only STORES (`flags[k]=FALSE`) -> fires. The corpus sieve does
+  read-modify-write (`count -= !flags[k]; flags[k]=1`) -> the GEP has 2 uses ->
+  declined. Extending to read-modify loops is possible future work.
+- Other corpus loops are already pointer-walked by LSR (on at -O2), so form-prep
+  has nothing to add.
+- AES builds -Oz -> the stack skips opt-size functions. (Forced on at -Oz it
+  DOES change AES, but that is not the shipped config.)
+
+Only regression seen anywhere: issue-177's `zero3` (a pure-store memset where
+pin adds a push on the LSR walk) — an isolated lit test, not in the corpora.
 
 ## Verification done
 
