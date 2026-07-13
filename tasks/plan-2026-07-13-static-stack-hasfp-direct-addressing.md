@@ -181,3 +181,30 @@ REMAINING before default-ON (separate user decision): MAME B2/#12 hang gate with
 the flag enabled on autoload/cpnos/BIOS; a production-density measurement of the
 WIN (build production WITH the flag) since production functions with local
 arrays/allocas are where the lever pays off.
+
+## 9. Gate results (2026-07-13, both gates CLEARED)
+
+PRODUCTION-DENSITY (build production WITH the flag vs without):
+  - cpnos-in-c prom1 clang: 2014/2048 B, payload 1986/1384 -- byte-identical ON vs OFF.
+  - autoload-in-c PROM0 clang: 2036/2048 B -- byte-identical ON vs OFF.
+  - rcbios-in-c clang: 5918 B -- byte-identical ON vs OFF.
+  => The flag is INERT on ALL production firmware: these targets use file-scope
+     BSS buffers, not local-array allocas, so hasFP stays false and the lever
+     never fires.  #263 is a benchmark/`e`-shape lever, NOT a production-density
+     lever.  Zero production win AND zero production risk.
+
+B2/#12 HANG GATE:
+  - Production binaries are byte-identical ON vs OFF, so no new runtime behavior
+    to hang.  autoload `make floppy-boot-test` with the flag-ON build: boots to
+    `A>` in MAME (PASS).
+  - The flag-ON codegen where it DOES fire (local arrays) is runtime-validated
+    by the clang oracle (912/0 under z88dk-ticks) -- no hang, no miscompile.
+
+NET VALUE OF THIS SESSION:
+  - Primary deliverable = the TWO unconditional latent-miscompile fixes
+    (RMW->bitset MCSymbol offset drop; POP_AF setsZForA), shipped and
+    production-neutral.  These were the real bugs; the #263 flag was the probe
+    that surfaced them.
+  - #263 itself stays default-OFF.  Enabling it buys nothing on current firmware;
+    revisit only if/when production code grows local-array allocas or to close
+    the `e` benchmark gap specifically.
