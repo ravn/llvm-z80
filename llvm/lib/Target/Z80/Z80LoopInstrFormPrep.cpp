@@ -74,6 +74,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
@@ -105,13 +106,26 @@ static cl::opt<unsigned> Z80MaxLoopCarriedPtrs(
 // (-mllvm -z80-loop-instr-form-prep) until the register-pressure gate is
 // tightened or IndVarSimplify-style exit-test rewriting (converting the
 // exit test to compare pointers, eliminating the old IV entirely) is added.
+// Auto-enabled at -O2 only (ravn/llvm-z80#250): the pointer-walk stack is a
+// clear win on the tight nested scan+kill shape at -O2 (beats dcc on sieve),
+// but -O3 UNROLLS loops into Z80's 3-pair register file (heavy BSS spilling --
+// sieve balloons 77->591 instrs), and size levels (-Os/-Oz, incl. the 2 KB
+// production PROMs) must stay lean.  So the default fires only at -O2 (==Default
+// opt level, not opt-size).  An explicit `-mllvm -z80-enable-loop-instr-form-prep`
+// / `=false` overrides at any level.  The nested gate and the companion passes
+// (pin / hbf / sink-cold-iv) follow the same -O2-only rule.
 static cl::opt<bool> EnableZ80LoopInstrFormPrep(
    "z80-enable-loop-instr-form-prep", cl::init(false), cl::Hidden,
-   cl::desc("Enable Z80 pointer-IV strength reduction for scale-1 "
-            "byte-array loops (ravn/llvm-z80#250, experimental)"));
+   cl::desc("Force Z80 pointer-IV strength reduction on/off (default: auto at "
+            "-O2 only; ravn/llvm-z80#250)"));
 
-bool llvm::isZ80LoopInstrFormPrepEnabled() {
- return EnableZ80LoopInstrFormPrep;
+// addPass-time gate (opt level known): explicit flag wins, else -O2/-Os/-Oz
+// (== Default level).  The per-function opt-size exclusion happens inside
+// runOnFunctionImpl so only -O2 actually runs by default.
+bool llvm::isZ80LoopInstrFormPrepEnabled(CodeGenOptLevel OptLevel) {
+ if (EnableZ80LoopInstrFormPrep.getNumOccurrences() > 0)
+   return EnableZ80LoopInstrFormPrep;
+ return OptLevel == CodeGenOptLevel::Default;
 }
 
 namespace {
@@ -177,11 +191,14 @@ static bool collectAddrGroups(Loop &L, ScalarEvolution &SE,
  return !Groups.empty();
 }
 
+// Default ON now (ravn/llvm-z80#250): nested rewriting used to regress the sieve
+// kill loop by adding a 3rd live 16-bit value, but Z80SinkColdLoopIV sinks the
+// enclosing scan loop's cold-only IVs and frees those pairs, so the nested case
+// is now a net win.  Override with `…-allow-nested=false` for A/B tests.
 static cl::opt<bool> Z80AllowNestedLoopInstrFormPrep(
-   "z80-loop-instr-form-prep-allow-nested", cl::Hidden, cl::init(false),
+   "z80-loop-instr-form-prep-allow-nested", cl::Hidden, cl::init(true),
    cl::desc("Allow Z80LoopInstrFormPrep to rewrite loops nested inside "
-            "another loop (default off: nested rewrites add a 3rd live "
-            "16-bit value and empirically regress the sieve kill loop)"));
+            "another loop (ravn/llvm-z80#250)"));
 
 static cl::opt<bool> Z80LoopInstrFormPrepNoCostGate(
    "z80-loop-instr-form-prep-no-cost-gate", cl::Hidden, cl::init(false),
@@ -559,6 +576,12 @@ static bool rewriteAddrGroup(Loop &L, SCEVExpander &SCEVE, const DominatorTree &
 
 static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI,
                              DominatorTree &DT) {
+ // -O2-only default (ravn/llvm-z80#250): the addPass gate already excluded
+ // -O3/-O0/-O1; here we also skip size-optimized functions (-Os/-Oz, which are
+ // still opt level Default) so the production PROMs stay byte-identical.  An
+ // explicit flag overrides.
+ if (EnableZ80LoopInstrFormPrep.getNumOccurrences() == 0 && F.hasOptSize())
+   return false;
  bool Changed = false;
  SmallVector<Loop *, 8> Loops;
  for (Loop *Outer : LI)

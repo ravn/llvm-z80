@@ -16,6 +16,7 @@
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/CodeGen.h"
 
 namespace llvm {
 
@@ -31,9 +32,10 @@ struct Z80LoopInstrFormPrep : public PassInfoMixin<Z80LoopInstrFormPrep> {
 FunctionPass *createZ80LoopInstrFormPrepLegacyPass();
 void initializeZ80LoopInstrFormPrepLegacyPassPass(PassRegistry &);
 
-// Opt-in gate (-mllvm -z80-loop-instr-form-prep, default OFF).  See the
-// file comment in Z80LoopInstrFormPrep.cpp for why this stays experimental.
-bool isZ80LoopInstrFormPrepEnabled();
+// addPass-time gate: auto-on at -O2 (== Default opt level), off elsewhere,
+// overridable with -mllvm -z80-enable-loop-instr-form-prep[=false]
+// (ravn/llvm-z80#250).  Per-function -Os/-Oz exclusion is inside the pass.
+bool isZ80LoopInstrFormPrepEnabled(CodeGenOptLevel OptLevel);
 
 } // end namespace llvm
 

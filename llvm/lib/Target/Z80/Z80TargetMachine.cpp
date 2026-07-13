@@ -16,6 +16,7 @@
 #include "Z80PinAluAccumulator.h"
 #include "Z80PinLoopPointer.h"
 #include "Z80HighByteFirstBranch.h"
+#include "Z80RemoveJumpToNext.h"
 #include "Z80PruneCallFrameDefs.h"
 #include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
@@ -142,6 +143,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80PinAluAccumulatorPass(PR);
   initializeZ80PinLoopPointerPass(PR);
   initializeZ80HighByteFirstBranchPass(PR);
+  initializeZ80RemoveJumpToNextPass(PR);
   initializeZ80KeepLoopPointerInPairPass(PR);
   initializeZ80SinkColdLoopIVLegacyPassPass(PR);
   initializeZ80NarrowNoIndexPass(PR);
@@ -385,14 +387,16 @@ void Z80PassConfig::addIRPasses() {
     // into an on-demand recompute (ravn/llvm-z80#250, sieve scan loop).  Must
     // run after the base addIRPasses() (LSR) so it can undo LSR's hoist.
     // Experimental / opt-in.
-    if (isZ80SinkColdLoopIVEnabled())
+    // Auto-on at -O2 only (ravn/llvm-z80#250); the pass skips -Os/-Oz functions
+    // internally, and an explicit -mllvm flag overrides.
+    if (isZ80SinkColdLoopIVEnabled(getOptLevel()))
       addPass(createZ80SinkColdLoopIVLegacyPass());
     // Pointer-IV strength reduction for scale-1 byte-array loops
     // (ravn/llvm-z80#250).  MUST run after the base addIRPasses() call
     // above (which runs LSR) -- see Z80LoopInstrFormPrep.cpp's file
     // comment for why an earlier placement would be re-undone by LSR.
-    // Experimental / opt-in (see the pass file comment for why).
-    if (isZ80LoopInstrFormPrepEnabled())
+    // Auto-on at -O2 only (opt-size functions skipped inside the pass).
+    if (isZ80LoopInstrFormPrepEnabled(getOptLevel()))
       addPass(createZ80LoopInstrFormPrepLegacyPass());
   }
 }
@@ -560,4 +564,9 @@ void Z80PassConfig::addPreEmitPass() {
   // Expand pseudos that split MBBs (variable shift loops) after branch
   // relaxation. The generated JR/DJNZ branches are always short-range.
   addPass(createZ80ExpandPseudoPass());
+  // General late peephole: drop any unconditional branch to the fall-through
+  // block (a jump-to-next-address).  Runs LAST so it catches redundant jumps
+  // from ANY source (hbf split blocks, pseudo expansion, cleanup) -- BranchFold
+  // ran too early to see them.
+  addPass(createZ80RemoveJumpToNextPass());
 }

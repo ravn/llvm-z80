@@ -1,5 +1,11 @@
-; RUN: llc -O2 -mtriple=z80 -z80-enable-loop-instr-form-prep < %s | FileCheck %s
-; RUN: llc -O2 -mtriple=z80 < %s | FileCheck %s --check-prefix=OFF
+; Isolate Z80LoopInstrFormPrep (the companion pin/hbf/sink-cold-iv passes are now
+; auto-on at -O2; disable them so this test pins just the form-prep rewrite).
+; RUN: llc -O2 -mtriple=z80 -z80-enable-pin-loop-pointer=false \
+; RUN:     -z80-enable-hbf-branch=false -z80-enable-sink-cold-loop-iv=false < %s \
+; RUN:   | FileCheck %s
+; OFF control: force the whole stack off (it is otherwise auto-on at -O2).
+; RUN: llc -O2 -mtriple=z80 -z80-enable-loop-instr-form-prep=false < %s \
+; RUN:   | FileCheck %s --check-prefix=OFF
 
 ; ravn/llvm-z80#250: byte-array loops with a non-constant stride used to
 ; recompute the base address every iteration (`ld hl,_flags; add hl, ...`)
@@ -17,8 +23,8 @@
 ; CHECK: add hl,de
 ; CHECK: jr
 
-; With the pass OFF (the shipping default) the base is reloaded every
-; iteration -- the #250 pattern this pass is designed to remove.
+; With the pass forced OFF the base is reloaded every iteration -- the #250
+; pattern this pass removes (auto-on at -O2 since it now beats dcc on sieve).
 ; OFF-LABEL: kill:
 ; OFF-LABEL: .LBB0_1:
 ; OFF: ld hl,_flags

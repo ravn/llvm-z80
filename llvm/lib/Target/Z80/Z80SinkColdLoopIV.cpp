@@ -52,6 +52,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 
@@ -59,12 +60,20 @@ using namespace llvm;
 
 #define DEBUG_TYPE "z80-sink-cold-loop-iv"
 
+// Auto-on at -O2 only (ravn/llvm-z80#250): frees the register pairs that let
+// regalloc keep the scan-loop IV resident (what makes the nested pointer-walk
+// stack beat dcc on sieve).  Off at -O3 (loop unrolling) and -Os/-Oz (size);
+// explicit `-mllvm -z80-enable-sink-cold-loop-iv[=false]` overrides.
 static cl::opt<bool> EnableZ80SinkColdLoopIV(
     "z80-enable-sink-cold-loop-iv", cl::init(false), cl::Hidden,
-    cl::desc("Z80: rewrite enclosing-loop IVs that only seed a nested loop's "
-             "cold path back into an on-demand recompute (ravn/llvm-z80#250)."));
+    cl::desc("Force Z80 cold-loop-IV sinking on/off (default: auto at -O2 only; "
+             "ravn/llvm-z80#250)."));
 
-bool llvm::isZ80SinkColdLoopIVEnabled() { return EnableZ80SinkColdLoopIV; }
+bool llvm::isZ80SinkColdLoopIVEnabled(CodeGenOptLevel OptLevel) {
+  if (EnableZ80SinkColdLoopIV.getNumOccurrences() > 0)
+    return EnableZ80SinkColdLoopIV;
+  return OptLevel == CodeGenOptLevel::Default;
+}
 
 namespace {
 
@@ -232,6 +241,10 @@ static bool runOnLoop(Loop *L, ScalarEvolution &SE, LoopInfo &LI,
 
 static bool runImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI,
                    DominatorTree &DT) {
+  // -O2-only default (ravn/llvm-z80#250): the addPass gate excluded
+  // -O3/-O0/-O1; skip size-optimized functions here so production stays lean.
+  if (EnableZ80SinkColdLoopIV.getNumOccurrences() == 0 && F.hasOptSize())
+    return false;
   bool Changed = false;
   SmallVector<Loop *, 8> Loops;
   for (Loop *Outer : LI)

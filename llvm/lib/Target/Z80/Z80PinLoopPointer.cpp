@@ -71,18 +71,23 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "z80-pin-loop-pointer"
 
+// Auto-on at -O2 only (ravn/llvm-z80#250): only meaningful when
+// Z80LoopInstrFormPrep produced the pointer walk, which follows the same -O2
+// rule.  Override with `-z80-enable-pin-loop-pointer[=false]`.
 static cl::opt<bool> EnableZ80PinLoopPointer(
     "z80-enable-pin-loop-pointer", cl::init(false), cl::Hidden,
-    cl::desc("Pin byte-array pointer-walk induction variables to HL "
-             "(ravn/llvm-z80#250 companion; requires -z80-loop-instr-form-prep "
-             "to have created the pointer walk)"));
+    cl::desc("Force Z80 pointer-walk HL-pinning on/off (default: auto at -O2 "
+             "only; ravn/llvm-z80#250 companion)"));
 
 namespace {
 
@@ -211,7 +216,13 @@ static bool findPointerWalk(MachineBasicBlock &MBB,
 }
 
 bool Z80PinLoopPointer::runOnMachineFunction(MachineFunction &MF) {
-  if (!EnableZ80PinLoopPointer)
+  // -O2-only default (ravn/llvm-z80#250): auto-on at -O2 (== Default opt level,
+  // not opt-size); explicit -mllvm flag overrides at any level.
+  bool Enabled = EnableZ80PinLoopPointer.getNumOccurrences() > 0
+                     ? EnableZ80PinLoopPointer.getValue()
+                     : (MF.getTarget().getOptLevel() == CodeGenOptLevel::Default &&
+                        !MF.getFunction().hasOptSize());
+  if (!Enabled)
     return false;
 
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
