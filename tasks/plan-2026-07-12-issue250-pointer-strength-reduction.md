@@ -473,3 +473,55 @@ Next concrete step (2C): capture the dcc-vs-clang baseline on the read-modify
 kernels (corpus sieve, plus a reduced 2-use-GEP repro), then relax the
 single-use gate in `Z80LoopInstrFormPrep::collectAddrGroups` behind the existing
 flag and re-measure with the same z88dk-ticks oracle.
+
+---
+
+## 10. Phase-2 2C result (2026-07-13): premise FALSIFIED — LSR pre-empts it
+
+Implemented 2C (relaxed `collectAddrGroups`'s `GEP->hasOneUse()` gate to admit
+the 2-use read-modify-write GEP with a dedup; made `registerPressureOK` credit
+the old integer IVs that `canEliminateOldIV` deletes against the new pointer
+PHIs, running the cost gate BEFORE the pressure gate).
+
+**Verified correct (known):** on a flat synthetic RMW loop, `llc -O2` now hoists
+`ld hl,_flags` out of the loop and walks a pointer (before: reloaded every iter).
+
+**Verified INERT on the real corpus (known):** baseline-vs-after full
+compiler-comparison sweep (llvm-z80, SIZE+SPEED) is **byte + cycle IDENTICAL**
+on all five benchmarks. Reason: at -O2 (the ONLY config the #250 stack runs;
+-Oz skips opt-size) **LSR is on and already strength-reduces the corpus RMW
+loops** — the sieve kill loop walks its running pointer in BC (`ld a,(bc)` ...
+`add hl,bc`), no `ld hl,_flags` base reload (confirmed via `-O2 -S` dump). The
+prior "corpus RMW sieve declined by hasOneUse -> future work" note conflated
+"form-prep declines" with "therefore base-reloaded"; LSR covers those loops.
+2C only helps flat RMW loops LSR itself declines; none found in the corpus.
+**Change reverted (not shipped)** — sound but inert.
+
+## 11. Sieve SPEED gap investigated (2026-07-13): no real backend gap
+
+Full six-lane sieve SPEED sweep (z88dk-ticks, -O2/speed cell):
+
+| lane | ts | note |
+|------|---:|------|
+| **llvm-z80 (freestanding)** | **3,957,029** | our backend, +static-stack, clang+lld |
+| llvm-z88dk (z88clang) | 3,303,343 | SAME backend, zcc +cpm clib harness |
+| zsdcc | 5,084,573 | real competitor |
+| ez80clang | 7,310,081 | real competitor |
+| xcc | 7,533,589 | real competitor |
+| dcc | 8,251,160 | real competitor |
+
+**Findings (known):**
+- Among GENUINE competitors, llvm-z80 clang is ALREADY fastest on the corpus
+  sieve (2.09x faster than dcc, 1.28x than zsdcc). The "beat dcc" target is met.
+- The only faster number (llvm-z88dk 3.30M) is OUR OWN backend via a different
+  harness (single-TU bench+main, z88dk CP/M clib, different measurement scope).
+- A/B'd the obvious suspect: `+static-stack` vs normal stack on the freestanding
+  sieve is NEUTRAL (3,957,029 vs 3,961,036 ts). The 657k delta is harness/
+  measurement scope, NOT backend codegen.
+
+**Conclusion:** the corpus sieve SPEED "gap" is not a real backend codegen
+opportunity. Both Phase-2 sub-premises (2C RMW base-reloads; a fixable sieve
+SPEED gap) are falsified. #250's shipped dcc-beating win (the -O2 stack on the
+zcc +cpm full sieve) stands; no cheap remaining Phase-2 lever on this corpus.
+Recommend stopping Phase 2 unless a NEW hot loop with the flat-RMW-LSR-declines
+shape shows up in real firmware/app code.
