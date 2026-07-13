@@ -140,3 +140,44 @@ addressing) with the `near_e` repro + the 51T-vs-20T comparison, cross-linked to
   fast direct form) — regenerate with the corpus `+static-stack -O2` flags.
 - Symptom tracker: #244. Distinct parked hang: B2 / #12.
 - known-suboptimal-codegen.md: add a Bnn entry once filed.
+
+## 8. Outcome (2026-07-13, branch ravn/static-stack-hasfp-direct-addr)
+
+IMPLEMENTED as the eliminateFrameIndex broadening (not a peephole): when the
+UseStaticFrame invariant holds (IX == __sfrend_<fn>), the fixed-offset accesses
+take the existing direct-BSS emission path with the identical displacement, so
+the absolute address is byte-identical to the IX-relative access. Gated behind
+`-z80-static-stack-fp-direct-addr` (Hidden, default OFF).
+
+The runtime oracle (clang suite, 912 cases) FALSIFIED the initial
+"byte-identical by construction is sufficient" assumption: with the flag ON it
+flagged 4 miscompiles, which localised TWO pre-existing latent backend bugs the
+lever merely makes common (both now fixed unconditionally, red-green):
+
+  1. Z80LateOptimization RMW->bit-set peephole: `addSym(sym, getOffset())` --
+     addSym's 2nd arg is TargetFlags, so a non-zero MCSymbol offset
+     (__sfrend_f-3) was dropped -> wrong-address write. Fixed by setting the
+     offset on the operand. Test: late-opt-bitset-mcsymbol-offset.ll.
+  2. Z80PostRACompareMerge::setsZForA treated POP_AF as Z-reflects-A, deleting a
+     needed `or a` after a reload-via-A that preserved A with push af/pop af.
+     POP_AF restores SAVED flags, not flags-of-A. Fixed by excluding POP_AF.
+     Test: postra-compare-merge-pop-af.mir.
+
+Validation (all green):
+  - Full Z80 lit: 196 PASS + 5 XFAIL (3 new tests incl. the #263 feature test).
+  - clang runtime oracle: 912/0 with the flag ON AND with it OFF (default).
+  - Corpus sweep: byte-identical to baseline (inert -- corpus uses file-scope
+    arrays -> hasFP=false).
+  - Production density (unconditional fixes, flag OFF): cpnos prom1 clang
+    2014/2048 B, payload 1986/1384 -- byte-identical to baseline. Fixes never
+    fire in shipping code.
+  - Address identity: __sfrend_f+65334 == -202 mod 2^16 == ld (__sfrend_f-202).
+  - `e`-shape proxy: 43 add-hl -> 7, ~57% fewer asm lines with the flag on.
+
+Runtime-oracle A/B hook added: test-runner `Z80_TR_EXTRA_MLLVM` env var injects
+extra -mllvm flags into the clang suite (commit).
+
+REMAINING before default-ON (separate user decision): MAME B2/#12 hang gate with
+the flag enabled on autoload/cpnos/BIOS; a production-density measurement of the
+WIN (build production WITH the flag) since production functions with local
+arrays/allocas are where the lever pays off.
