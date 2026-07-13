@@ -858,6 +858,40 @@ new `fuse-carry-chain.ll` + `test_224_carry_chain.c`.  Original analysis below.
   array reversal or scan loop pays ~20 %.  Reinforces the "register-pressure-
   aware pointer-IV rewrite" as the real fix (the isolated-loop rewrite already
   reaches optimal; the blocker is the nested-loop regalloc cascade above).
+- **Phase-2 2C attempt 2026-07-13 — read-modify-write gate relaxation is SOUND
+  but INERT on the corpus; LSR pre-empts it at -O2.**  Relaxed
+  `Z80LoopInstrFormPrep::collectAddrGroups`'s `GEP->hasOneUse()` gate to admit
+  the 2-use RMW GEP (load+store of one element, e.g. sieve's
+  `count -= !flags[k]; flags[k] = 1`) + credited eliminated old IVs in the
+  register-pressure gate.  Verified CORRECT on a flat synthetic RMW loop (base
+  reload hoisted, pointer walked) but **byte + cycle IDENTICAL across the whole
+  compiler-comparison corpus** (baseline-vs-after llvm-z80 sweep, SIZE+SPEED).
+  Reason: at -O2 — the ONLY config the #250 stack runs (-Oz skips opt-size) —
+  **LSR is on and already strength-reduces the corpus RMW loops**: the sieve
+  kill loop walks its running pointer in BC (`ld a,(bc)` … `add hl,bc`), no
+  `ld hl,_flags` base reload.  The earlier "corpus RMW sieve declined by
+  hasOneUse → future work" note conflated *form-prep declines* with *therefore
+  base-reloaded*; LSR covers those loops.  2C only helps flat RMW loops LSR
+  itself declines — none in the corpus, so the change was reverted (not
+  shipped).  Detail: `tasks/plan-2026-07-12-issue250-pointer-strength-
+  reduction.md` §10.
+- **Sieve SPEED is NOT a real backend gap (2026-07-13).**  Six-lane sieve SPEED
+  sweep: llvm-z80 3.957M ts already beats every GENUINE competitor (zsdcc 5.08M,
+  ez80clang 7.31M, xcc 7.53M, dcc 8.25M — clang 2.09× faster than dcc, target
+  met).  The only faster figure (llvm-z88dk 3.30M) is OUR OWN backend via a
+  different harness (single-TU + z88dk clib + different measurement scope);
+  `+static-stack` vs stack A/B is NEUTRAL (3,957,029 vs 3,961,036), so the delta
+  is harness, not codegen.  #250 CLOSED on this basis.  Detail: same plan §11.
+
+**SPEED-CHECK PROTOCOL (institutionalized 2026-07-13, #250 close):** whenever
+evaluating a speed change or a new benchmark/app, RUN THE M5 DETECTOR as part of
+the check — `python3 tasks/tools/m5-loop-reload-scan.py <clang/llc -S output>`
+flags every in-loop `add hl/ix/iy` and tags `GLOBAL-BASE(sym)` per-iteration base
+reloads (the M5 pattern) vs `PAIR-RECON` (the #99 IY family).  A `GLOBAL-BASE` hit
+in a HOT loop is the signal that pointer strength reduction is being missed.
+Caveat learned here: at -O2 LSR already covers most such loops, so only a hit
+that SURVIVES the shipping opt level is actionable — check the real config, not a
+synthetic `llc -O2 -disable-lsr` view.
 
 ### M6. Pointer-scan loops force IY — ROOT CAUSE CORRECTED 2026-07-12
 
