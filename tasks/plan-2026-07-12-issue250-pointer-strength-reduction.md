@@ -450,3 +450,26 @@ main pair" goal. If Phase-1's pin path generalizes, wire it to the
   (benchmark tracking), #244 (`e` i16 divide).
 - Bench harness: `scratch/dcc-clang-bench/{build_compare.sh,ticks_cpm.py}`;
   corpus: `rc700-gensmedet/tasks/compiler-comparison-corpus/sweep.sh`.
+
+---
+
+## 9. Phase-2 decisions (@ravn, 2026-07-13)
+
+Answers to §7:
+1. **Target baseline: beat dcc** (harder). The `e` kernel also needs the #244
+   i16-divide work to close its lane.
+2. **Pursue Phase 2** — benchmark/CP/M-app speed is worth the complexity, even
+   though production firmware impact is ~zero (M5 loops there are cold/call-bounded).
+3. **Approach 2C first** — extend the shipped form-prep / sink-cold-iv stack to
+   read-modify-write loops (the `GEP->hasOneUse()` gate that currently declines the
+   corpus sieve's `count -= !flags[k]; flags[k]=1` shape). Escalate to **2A**
+   (MIR register-pressure gate) only if 2C leaves measurable dcc gaps.
+
+Also filed **#262** — watch-item: at -O2 `Z80PinLoopPointer` adds an in-loop
+`push hl`/`pop hl` on LSR pointer-walk loops (zero3). Bounded, -O2-only,
+production unaffected (-Oz skips the passes).
+
+Next concrete step (2C): capture the dcc-vs-clang baseline on the read-modify
+kernels (corpus sieve, plus a reduced 2-use-GEP repro), then relax the
+single-use gate in `Z80LoopInstrFormPrep::collectAddrGroups` behind the existing
+flag and re-measure with the same z88dk-ticks oracle.
