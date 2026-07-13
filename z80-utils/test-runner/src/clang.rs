@@ -8,6 +8,29 @@ use crate::suite::*;
 
 const COMPILE_TIMEOUT: u64 = 30;
 
+/// Temporary A/B hook: parse `Z80_TR_EXTRA_MLLVM` once into a leaked 'static
+/// vector of `-mllvm <flag>` pairs, so the runtime oracle can validate an
+/// experimental backend flag against the default codegen without editing each
+/// suite config. Example: `Z80_TR_EXTRA_MLLVM=-z80-static-stack-fp-direct-addr`.
+pub fn extra_mllvm() -> Option<&'static Vec<&'static str>> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Option<Vec<&'static str>>> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let raw = std::env::var("Z80_TR_EXTRA_MLLVM").ok()?;
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let mut out: Vec<&'static str> = Vec::new();
+        for tok in raw.split_whitespace() {
+            out.push("-mllvm");
+            out.push(Box::leak(tok.to_string().into_boxed_str()));
+        }
+        Some(out)
+    })
+    .as_ref()
+}
+
 pub struct ClangConfig {
     pub target: Target,
     pub opt_levels: Vec<OptLevel>,
@@ -67,6 +90,14 @@ impl ClangConfig {
         if self.verify {
             flags.push("-mllvm");
             flags.push("-verify-machineinstrs");
+        }
+        // Temporary hook: inject extra -mllvm flags from the environment so the
+        // runtime oracle can A/B an experimental backend flag (e.g.
+        // -z80-static-stack-fp-direct-addr) without touching each suite config.
+        if let Some(extra) = crate::clang::extra_mllvm() {
+            for f in extra {
+                flags.push(f);
+            }
         }
         flags
     }

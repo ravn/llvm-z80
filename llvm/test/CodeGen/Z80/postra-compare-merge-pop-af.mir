@@ -1,0 +1,53 @@
+# RUN: llc -mtriple=z80 -run-pass=z80-post-ra-compare-merge \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# ravn/llvm-z80#265 (found via the #263 static-stack direct-addressing lever):
+# Z80PostRACompareMerge removed an `OR A` as "redundant" whenever the
+# preceding instruction defined both $a and $flags -- treating POP_AF as such a
+# producer.  But POP_AF restores the flags SAVED earlier by PUSH_AF; its Z flag
+# does NOT reflect (A == 0).  The removal is therefore a miscompile.
+#
+# Worked example (static-stack reload-via-A that preserves A around the clobber):
+#   call __umodqi3      ; A = i % 7, flags set by the call
+#   push af             ; save A (= i%7) and the call's flags
+#   ld a,(slot)         ; A = i   -- clobbers A
+#   ld d,a              ; d = i
+#   pop af              ; restore A = i%7 AND the saved (call) flags
+#   or a                ; re-derive Z from A = i%7   <-- MUST SURVIVE
+#   jr nz, ...
+# Deleting the `or a` leaves `jr nz` reading the call's stale flags.
+#
+# The pass runs under -verify-machineinstrs; the CHECK asserts OR_A survives
+# after POP_AF.
+
+--- |
+  target triple = "z80"
+  define i8 @f() { ret i8 0 }
+...
+---
+name:            f
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $a, $flags
+    ; A is clobbered and then A + flags restored from the stack.
+    PUSH_AF implicit $a, implicit $flags
+    LD_A_n 42, implicit-def $a
+    LD_D_A implicit-def $d, implicit $a
+    POP_AF implicit-def $a, implicit-def $flags
+    ; CHECK: POP_AF
+    ; CHECK-NEXT: OR_A
+    ; CHECK-NEXT: JR_NZ_e
+    OR_A implicit-def dead $a, implicit-def $flags, implicit $a
+    JR_NZ_e %bb.2, implicit $flags
+
+  bb.1:
+    successors: %bb.2
+    liveins: $d
+    LD_A_D implicit-def $a, implicit $d
+
+  bb.2:
+    liveins: $a
+    RET implicit $a
+...

@@ -88,6 +88,14 @@ static bool modifiesAWithoutFlags(const MachineInstr &MI) {
 static bool setsZForA(const MachineInstr &MI) {
   if (!definesFlags(MI))
     return false;
+  // POP_AF defines both $a and $flags, but the flags are the value RESTORED
+  // from the stack (whatever PUSH_AF saved earlier), NOT a Z-reflects-(A==0)
+  // result.  A subsequent `OR A` is therefore NOT redundant after POP_AF.
+  // #265.  Example (from a static-stack reload-via-A that preserves A around
+  // the clobber):  call __umodqi3 (A=i%7); push af; ld a,(slot); ld d,a;
+  // pop af; or a; jr nz  -- the `or a` re-derives Z from A=i%7 and must survive.
+  if (MI.getOpcode() == Z80::POP_AF)
+    return false;
   for (const MachineOperand &MO : MI.operands()) {
     if (MO.isReg() && MO.isDef() && MO.getReg() == Z80::A)
       return true;

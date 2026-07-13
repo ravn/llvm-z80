@@ -47,6 +47,20 @@ static llvm::cl::opt<bool> Z80LogRegallocHints(
     "z80-log-regalloc-hints", llvm::cl::Hidden, llvm::cl::init(false),
     llvm::cl::desc("Log every getRegAllocationHints query (Z80 #115/#27 S1)"));
 
+// ravn/llvm-z80#263: under +static-stack, a local array/alloca forces
+// hasFP=true, so the prologue loads IX with the link-time-constant frame base
+// __sfrend_<fn> (Z80FunctionInfo::UseStaticFrame).  Every fixed-offset frame
+// slot access then goes IX-relative (ld hl,__sfrend; ld de,off; add hl,de;
+// indirect ~51T) even though the address __sfrend+off is a compile-time
+// constant that direct absolute addressing (ld de,(nn) ~20T) can name in one
+// instruction.  This flag routes those accesses through the same direct-BSS
+// path already used when hasFP is false.  Default OFF pending the corpus +
+// production-density + PROM-boot (B2/#12) validation gate.
+static llvm::cl::opt<bool> Z80StaticStackFPDirectAddr(
+    "z80-static-stack-fp-direct-addr", llvm::cl::Hidden, llvm::cl::init(false),
+    llvm::cl::desc("Use direct absolute addressing for constant-base frame "
+                   "slots under +static-stack + hasFP (Z80 #263)"));
+
 // #112: un-reserve IY so it becomes an allocatable 4th 16-bit pair.
 // Default OFF.  Three blockers are now resolved -- the encoder opcode-0 crash
 // (GR16NoIR/GR16_BCDE discipline), the LEA_IX_FI missing-IY silent no-op (fixed
@@ -1394,8 +1408,24 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
   bool UseFP = TFI->hasFP(MF);
 
-  // Z80 stack frame layout (with frame pointer):
-  //   [parameters]     (IX+4, IX+5, ...)  - passed by caller
+  // #263: does IX hold the link-time-constant frame base __sfrend_<fn>?  This
+  // mirrors the UseStaticFrame predicate computed in Z80FrameLowering::
+  // emitPrologue exactly (recomputed here rather than read from
+  // Z80FunctionInfo to avoid any pass-ordering dependency on the prologue
+  // having run first).  When true, IX == __sfrend_<fn> and there are no stack
+  // arguments (NumFixedObjects == 0) or var-sized objects, so EVERY frame slot
+  // lives at the constant address __sfrend_<fn> + displacement and can use
+  // direct absolute addressing with the identical displacement the IX-relative
+  // path would use.
+  const Z80FunctionInfo *Z80FI = MF.getInfo<Z80FunctionInfo>();
+  bool ConstBaseFrame =
+      UseFP && STI2.staticStack() &&
+      MFI.getStackSize() > (uint64_t)Z80FI->getCalleeSavedFrameSize() &&
+      MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
+  // Gated behind the #263 flag until the validation gate clears.
+  bool StaticStackDirect = ConstBaseFrame && Z80StaticStackFPDirectAddr;
+
+
   //   [return address] (IX+2, IX+3)       - pushed by CALL
   //   [saved IX]       (IX+0, IX+1)       - pushed in prologue, IX points here
   //   [local var 1]    (IX-2, IX-1)       - allocated in prologue
@@ -1480,7 +1510,13 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   // When +static-stack and IX is not the frame pointer, resolve frame
   // indices to BSS addresses (__sfrend_funcname + offset) directly.
   // This allows IX/IY to be used as allocatable data registers.
-  if (STI2.staticStack() && !UseFP) {
+  //
+  // #263: also taken when IX *is* the frame pointer but holds the constant
+  // base __sfrend_<fn> (StaticStackDirect) -- the address is still
+  // __sfrend_<fn> + Offset, and Offset here is the same displacement the
+  // IX-relative path (else-if UseFP: Offset += 2) would use, so the emitted
+  // absolute address is byte-identical to the IX-relative access it replaces.
+  if ((STI2.staticStack() && !UseFP) || StaticStackDirect) {
     MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
         "__sfrend_" + MF.getName());
 

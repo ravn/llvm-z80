@@ -6289,9 +6289,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         const MachineOperand &Addr = LdIt->getOperand(0);
         if (Addr.isGlobal())
           NewLd.addGlobalAddress(Addr.getGlobal(), Addr.getOffset());
-        else if (Addr.isMCSymbol())
-          NewLd.addSym(Addr.getMCSymbol(), Addr.getOffset());
-        else {
+        else if (Addr.isMCSymbol()) {
+          // #264: addSym's second arg is TargetFlags, NOT an offset -- passing
+          // the offset there silently drops it (address becomes __sfrend_f+0
+          // instead of __sfrend_f-3).  Set the offset on the operand
+          // explicitly, mirroring how eliminateFrameIndex's addBSSAddr does it.
+          auto *I = NewLd.addSym(Addr.getMCSymbol()).getInstr();
+          I->getOperand(I->getNumExplicitOperands() - 1)
+              .setOffset(Addr.getOffset());
+        } else {
           // Shouldn't happen given the sameAddrOp guard, but bail safely.
           NewLd.getInstr()->eraseFromParent();
           continue;
