@@ -208,3 +208,13 @@ NET VALUE OF THIS SESSION:
   - #263 itself stays default-OFF.  Enabling it buys nothing on current firmware;
     revisit only if/when production code grows local-array allocas or to close
     the `e` benchmark gap specifically.
+
+## 10. Filed issues (2026-07-13)
+
+- ravn/llvm-z80#264 -- Z80LateOptimization RMW->bit-set peephole drops MCSymbol
+  offset (wrong-address store).  Fixed here; lit late-opt-bitset-mcsymbol-offset.ll.
+- ravn/llvm-z80#265 -- Z80PostRACompareMerge deletes needed OR A after POP_AF
+  (setsZForA treats POP_AF as Z-reflects-A).  Fixed here; mir
+  postra-compare-merge-pop-af.mir.
+- Both found via the #263 direct-addressing probe + the clang runtime oracle;
+  both pre-existing and latent, independent of the #263 flag.

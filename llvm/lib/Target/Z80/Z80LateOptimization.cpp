@@ -6290,8 +6290,8 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         if (Addr.isGlobal())
           NewLd.addGlobalAddress(Addr.getGlobal(), Addr.getOffset());
         else if (Addr.isMCSymbol()) {
-          // addSym's second arg is TargetFlags, NOT an offset -- passing the
-          // offset there silently drops it (address becomes __sfrend_f+0
+          // #264: addSym's second arg is TargetFlags, NOT an offset -- passing
+          // the offset there silently drops it (address becomes __sfrend_f+0
           // instead of __sfrend_f-3).  Set the offset on the operand
           // explicitly, mirroring how eliminateFrameIndex's addBSSAddr does it.
           auto *I = NewLd.addSym(Addr.getMCSymbol()).getInstr();

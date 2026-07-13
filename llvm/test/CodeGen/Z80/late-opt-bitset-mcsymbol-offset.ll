@@ -1,8 +1,8 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O0 -verify-machineinstrs \
 ; RUN:     -z80-static-stack-fp-direct-addr < %s | FileCheck %s
 ;
-; ravn/llvm-z80#263 (latent bug exposed by the static-stack direct-addressing
-; lever): the RMW->bit-set peephole in Z80LateOptimization rewrites
+; ravn/llvm-z80#264 (found via the #263 static-stack direct-addressing lever):
+; the RMW->bit-set peephole in Z80LateOptimization rewrites
 ;   ld a,(mem) ; or <1<<n> ; ld (mem),a   ==>   ld hl,mem ; set n,(hl)
 ; but it built the `ld hl,mem` address with
 ;   NewLd.addSym(Addr.getMCSymbol(), Addr.getOffset())

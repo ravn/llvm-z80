@@ -1,8 +1,8 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-post-ra-compare-merge \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 #
-# ravn/llvm-z80#263 (latent bug exposed by the static-stack direct-addressing
-# lever): Z80PostRACompareMerge removed an `OR A` as "redundant" whenever the
+# ravn/llvm-z80#265 (found via the #263 static-stack direct-addressing lever):
+# Z80PostRACompareMerge removed an `OR A` as "redundant" whenever the
 # preceding instruction defined both $a and $flags -- treating POP_AF as such a
 # producer.  But POP_AF restores the flags SAVED earlier by PUSH_AF; its Z flag
 # does NOT reflect (A == 0).  The removal is therefore a miscompile.
