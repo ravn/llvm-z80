@@ -57,9 +57,13 @@ static llvm::cl::opt<bool> Z80LogRegallocHints(
 // path already used when hasFP is false.  Default OFF pending the corpus +
 // production-density + PROM-boot (B2/#12) validation gate.
 static llvm::cl::opt<bool> Z80StaticStackFPDirectAddr(
-    "z80-static-stack-fp-direct-addr", llvm::cl::Hidden, llvm::cl::init(false),
+    "z80-static-stack-fp-direct-addr", llvm::cl::Hidden, llvm::cl::init(true),
     llvm::cl::desc("Use direct absolute addressing for constant-base frame "
-                   "slots under +static-stack + hasFP (Z80 #263)"));
+                   "slots under +static-stack + hasFP (Z80 #263). Default ON: "
+                   "byte-identical/inert on file-scope-BSS firmware, and on "
+                   "local-array CP/M code it turns ~51T IX-relative slot loads "
+                   "into ~20T direct absolute loads (e benchmark -25% T-states, "
+                   "-233 B). Pass =false to restore IX-relative addressing."));
 
 // #112: un-reserve IY so it becomes an allocatable 4th 16-bit pair.
 // Default OFF.  Three blockers are now resolved -- the encoder opcode-0 crash

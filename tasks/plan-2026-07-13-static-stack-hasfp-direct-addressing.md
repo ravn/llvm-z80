@@ -218,3 +218,34 @@ NET VALUE OF THIS SESSION:
   postra-compare-merge-pop-af.mir.
 - Both found via the #263 direct-addressing probe + the clang runtime oracle;
   both pre-existing and latent, independent of the #263 flag.
+
+## 11. Default flipped to ON (2026-07-13)
+
+User directive: "slå den til.  det er også et mål at lave gode .COM cp/m binære
+programmer" -- good CP/M `.COM` binaries are an explicit goal, not just RC700
+firmware density.  The lever makes local-array CP/M code both faster AND smaller
+and is byte-identical/inert on all production firmware, so default ON is
+strictly net-positive.
+
+  Z80RegisterInfo.cpp: cl::init(false) -> cl::init(true).  Flag retained; pass
+  `-z80-static-stack-fp-direct-addr=false` to restore IX-relative addressing.
+
+Quantified on the `e` benchmark (z88dk-ticks, clang -Os, output verified via
+VirtualCpm -- digits identical):
+
+  | build          | T-states   | size   | vs dcc (25,381,975) |
+  | flag OFF       | 38,835,076 | 3747 B | +53.0%              |
+  | flag ON (dflt) | 28,973,115 | 3514 B | +14.1%              |
+
+  => -25.4% T-states and -233 B, closing most of the dcc speed gap.
+
+Gates after flipping default (all PASS):
+  - Z80 lit: 196 PASS + 5 XFAIL.  Two mechanism-guard tests pinned to
+    `=false` (they guard the IX/IY spill path the lever bypasses):
+    issue-28-large-offset-iy-spill.ll, issue-200-spill-gr16-offset-operand-count.mir.
+    Feature test static-stack-fp-direct-addr.ll now asserts default-ON + an OFF
+    prefix.
+  - clang runtime oracle (default-ON): 912 Pass / 0 Fail / 0 Fatal.
+  - cpnos-in-c prom1-lineprog: 2014 B (payload 1986 raw / 1384 ZX0) -- baseline.
+  - autoload PROM: default-ON binary BYTE-IDENTICAL to explicit-OFF (lever inert
+    on file-scope-BSS firmware); `make floppy-boot-test` boots to `A>` in MAME.

@@ -1,5 +1,13 @@
+; Default is ON (#263 lever enabled by default), so the bare RUN with no flag
+; must already produce direct addressing:
+; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs \
+; RUN:     < %s | FileCheck %s
+; Explicitly enabling it is equivalent:
 ; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs \
 ; RUN:     -z80-static-stack-fp-direct-addr < %s | FileCheck %s
+; Passing =false restores the old IX-relative addressing (base + runtime add):
+; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs \
+; RUN:     -z80-static-stack-fp-direct-addr=false < %s | FileCheck %s --check-prefix=OFF
 ;
 ; ravn/llvm-z80#263: a local array (`int a[100]`) lowers to an `alloca`, which
 ; forces `hasFP=true` under +static-stack.  The prologue then loads IX with the
@@ -24,6 +32,13 @@ define dso_local i16 @f() {
 ; CHECK: ld (__sfrend_f{{[-+][0-9]+}}),{{de|bc|hl}}
 ; ... and at least one volatile reload of n uses direct addressing too:
 ; CHECK: ld {{de|bc|hl}},(__sfrend_f{{[-+][0-9]+}})
+;
+; With the lever OFF the same slot is reached via base materialization + add
+; (the old ~51T IX-relative sequence), and NO direct absolute slot access is
+; emitted for the frame base:
+; OFF-LABEL: f:
+; OFF: ld hl,__sfrend_f
+; OFF-NOT: ld {{.*}},(__sfrend_f{{[-+][0-9]+}})
   %a = alloca [100 x i16], align 1
   %n = alloca i16, align 1
   store volatile i16 90, ptr %n, align 1
