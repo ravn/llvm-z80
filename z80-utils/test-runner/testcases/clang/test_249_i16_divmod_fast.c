@@ -1,11 +1,13 @@
 /* Test 249: i16 signed/unsigned div+mod correctness (ravn/llvm-z80 #244).
  *
- * At -O3 the backend routes these to the fully-unrolled __*hi3_fast runtime
- * variants; every other opt level uses the small default routines.  Running
- * this fixture under -full (which includes O3) proves the unrolled routines
- * return bit-identical results to the small ones across the algorithm's two
- * internal paths: the 8-bit-divisor fast path (divisor < 256) and the general
- * 16-bit path (divisor >= 256), plus every sign combination.
+ * At -O3 the backend routes these to the __*hi3_fast runtime variants; every
+ * other opt level uses the small default routines.  Running this fixture under
+ * -full (which includes O3) proves the fast routines return bit-identical
+ * results to the small ones.  The fast routine is repeated-subtraction with a
+ * cap of 40, falling back to the general 16-step bit divider when the quotient
+ * reaches the cap, so the cases below deliberately span both regimes: small
+ * quotients (< 40, repeated-subtraction) AND the cap boundary 39/40/41, plus
+ * large quotients (fallback), 16-bit divisors, and every sign combination.
  */
 typedef unsigned short uint16_t;
 typedef short int16_t;
@@ -67,5 +69,23 @@ int main() {
         if (a / b == -30 && a % b == 0) status |= (1 << 8);
     }
 
-    return status; /* expect 0x01FF = 511 */
+    /* Bit 9: cap boundary, quotient 39 (repeated-subtraction): 276/7==39 r3 */
+    {
+        volatile uint16_t a = 276, b = 7;
+        if (a / b == 39 && a % b == 3) status |= (1 << 9);
+    }
+
+    /* Bit 10: cap boundary, quotient 40 (fallback to bit divider): 283/7==40 r3 */
+    {
+        volatile uint16_t a = 283, b = 7;
+        if (a / b == 40 && a % b == 3) status |= (1 << 10);
+    }
+
+    /* Bit 11: cap boundary, quotient 41 (fallback to bit divider): 290/7==41 r3 */
+    {
+        volatile uint16_t a = 290, b = 7;
+        if (a / b == 41 && a % b == 3) status |= (1 << 11);
+    }
+
+    return status; /* expect 0x0FFF */
 }
