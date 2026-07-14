@@ -1454,6 +1454,19 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     Offset += FI->getCalleeSavedFrameSize();
   } else if (UseFP) {
     Offset += 2; // Skip saved IX (also needed for static stack: IX = base+size)
+    // #254: static-stack + frame-pointer (IX == __sfrend_<fn>).  The CSR saves
+    // (e.g. the caller's IX) live on the REAL stack via PUSH and are excluded
+    // from the BSS frame (Z80AsmPrinter: BSSSize = StackSize - CalleeSavedFrame
+    // Size).  PEI still folds CalleeSavedFrameSize into the object offsets, so
+    // without skipping it here the deepest local underflows below __sframe_<fn>
+    // into the adjacent global (silent corruption).  Mirrors the !UseFP static
+    // branch above, which adds the same term.  Worked example (bug254 main):
+    // StackSize=8, CSR=2 -> BSS=[__sfrend-6,__sfrend); FI#3 ObjOff=-10 must map
+    // to __sfrend-6 (=__sframe), i.e. -10 + 2 + 2 = -6, not -8 (underflow).
+    if (STI2.staticStack()) {
+      const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+      Offset += FI->getCalleeSavedFrameSize();
+    }
   } else {
     // For callee-cleanup calls, if regalloc inserted this frame-index
     // instruction between CALL and ADJCALLSTACKUP, PEI's SPAdj still
