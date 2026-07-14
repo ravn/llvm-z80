@@ -21,15 +21,59 @@
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #define DEBUG_TYPE "z80-expand-pseudo"
 
 using namespace llvm;
+
+// #240: CI drift-guard for the inline-runtime pseudos whose hand-maintained
+// getInstSizeInBytes entries (Z80InstrInfo.cpp) are load-bearing -- they are
+// alive during BranchRelaxation (which sizes branches jumping *over* them) and
+// only expanded here, right after.  When enabled we sum the whole function's
+// getInstSizeInBytes immediately before and after each such expansion: the sum
+// is invariant iff the pseudo's reported size equals the real byte count of
+// its expansion (the pseudo contributed `Reported` before; the expansion
+// contributes its real bytes after; every other instruction is unchanged and
+// cancels).  A mismatch means the reported size has desynced from the
+// expansion -> BranchRelaxation would mis-size branches -> report_fatal_error.
+// Default off; the lit test test/CodeGen/Z80/inline-runtime-size-verify.mir
+// turns it on so CI catches the drift.
+static cl::opt<bool> VerifyInlineRuntimeSize(
+    "z80-verify-inline-runtime-size", cl::Hidden, cl::init(false),
+    cl::desc("Assert each inline-runtime pseudo's getInstSizeInBytes matches "
+             "the real byte count of its expansion (#240 drift guard)"));
+
+// The inline-runtime pseudos with hand-maintained, load-bearing sizes.
+static bool isInlineRuntimeSizedPseudo(unsigned Opcode) {
+  switch (Opcode) {
+  case Z80::MUL16:
+  case Z80::UDIV16:
+  case Z80::UMOD16:
+  case Z80::SDIV16:
+  case Z80::SMOD16:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Sum getInstSizeInBytes over every instruction in the function.
+static unsigned sumFunctionSizeBytes(const MachineFunction &MF,
+                                     const Z80InstrInfo &TII) {
+  unsigned Total = 0;
+  for (const MachineBasicBlock &MBB : MF)
+    for (const MachineInstr &MI : MBB)
+      Total += TII.getInstSizeInBytes(MI);
+  return Total;
+}
 
 // #27: pick the `LD <dst>,(IX/IY+d)` opcode for an allocated GR8 dst and an
 // index base (IX or IY).  GR8 = {A,B,C,D,E,H,L}; every member has both an IXd
@@ -112,6 +156,17 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
     for (auto MI = MBB.begin(), ME = MBB.end(); MI != ME;) {
       MachineInstr &Inst = *MI;
       ++MI; // Advance before potential erase
+
+      // #240 drift guard: snapshot the reported size + whole-function byte sum
+      // before expanding an inline-runtime pseudo (see isInlineRuntimeSizedPseudo
+      // and the flag comment above).  Checked after the switch expands it.
+      unsigned VerifyOpc = 0, VerifyReported = 0, VerifyBefore = 0;
+      if (VerifyInlineRuntimeSize &&
+          isInlineRuntimeSizedPseudo(Inst.getOpcode())) {
+        VerifyOpc = Inst.getOpcode();
+        VerifyReported = TII.getInstSizeInBytes(Inst);
+        VerifyBefore = sumFunctionSizeBytes(MF, TII);
+      }
 
       switch (Inst.getOpcode()) {
       case Z80::SHL8_VAR:
@@ -234,6 +289,22 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
       }
       default:
         break;
+      }
+
+      // #240 drift guard: the pseudo has now been expanded to real
+      // instructions.  Before-sum counted it as VerifyReported; after-sum
+      // counts its expansion.  They are equal iff the two agree.
+      if (VerifyOpc) {
+        unsigned VerifyAfter = sumFunctionSizeBytes(MF, TII);
+        if (VerifyAfter != VerifyBefore) {
+          int Actual =
+              (int)VerifyReported + ((int)VerifyAfter - (int)VerifyBefore);
+          report_fatal_error(
+              Twine("Z80 inline-runtime pseudo ") + TII.getName(VerifyOpc) +
+              " getInstSizeInBytes reports " + Twine(VerifyReported) +
+              " bytes but its expansion is " + Twine(Actual) +
+              " bytes -- update Z80InstrInfo::getInstSizeInBytes (#240)");
+        }
       }
     }
   }
