@@ -1269,6 +1269,33 @@ cost model, never a global LSR off-switch.
   `clang --target=z80 -{Os,O1} -ffreestanding -nostdlibinc ... -S sieve.c`).
   See `tasks/session-2026-07-09-dcc-clang-comparison.md`.
 
+### B26. `-O3` `_fast` division regresses vs `-Os` on large quotients (speculative repeated-subtraction tax)
+
+- **Status:** accepted (2026-07-14); mitigation planned (see pointers).
+- **Impact:** on the `-O3`-only `___udivhi3_fast` routine, a large quotient
+  (large dividend / small divisor) is ~1.6× slower than `-Os` (measured 7.88 M
+  vs 4.96 M T on a `num/3`≈20000 loop).  `e` and small-quotient code are
+  big wins (`e` 34.73 M→17.54 M, −49.5 %).  Only `-O3` non-optsize i16 div/mod
+  is affected; `-Os`/`-Oz`/production firmware never use `_fast`.
+- **Pattern:** repeated subtraction is speculative — for a large quotient it
+  wastes up to `cap`(=16) `sbc hl,de` steps (~690 T) before falling back to the
+  same bounded divider `-Os` uses.  The backend does not strength-reduce
+  `x/const` (even `x/10` calls the routine), and `__builtin_assume(x<16*n)` is
+  not consumed at ISel, so the tax cannot be dodged by the frontend today.
+- **Why we can't fix it (yet):** eliminating the tax needs *per-call-site*
+  routine choice from statically provable operand ranges (GISelKnownBits), which
+  the selector does not yet query.  `e`'s own win is unprovable (its small
+  quotients come from a runtime data invariant `x<~11·n`), so no pure-static
+  policy both keeps `e` and removes the tax — only a hybrid (speculate on
+  unknown, static-route the provably-large) does.
+- **Revisit when:** implementing the static div-select plan (removes the tax for
+  provably-large sites while keeping the speculative `_fast` for unknown sites,
+  incl. `e`).
+- **Pointers:** design doc `tasks/plan-2026-07-14-issue244-static-divselect.md`;
+  routine `compiler-rt/lib/builtins/z80/udivhi3_fast.asm`; selector hook
+  `selectDivModRuntimeName` in `llvm/lib/Target/Z80/Z80InstructionSelector.cpp`;
+  precedent `tryNarrowSDivMod16` (same file:655).
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work
@@ -1313,7 +1340,10 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-07-09 (M2/M3 + M5 updated — Z80SinkColdLoopIV opt-in
+**Last updated:** 2026-07-14 (B26 added — `-O3` `_fast` division's speculative
+repeated-subtraction regresses vs `-Os` on large quotients; static div-select
+mitigation designed in `tasks/plan-2026-07-14-issue244-static-divselect.md`).
+Prior: 2026-07-09 (M2/M3 + M5 updated — Z80SinkColdLoopIV opt-in
 sieve -2.3 % clean partial win; Z80PinLoopPointer opt-in kill-loop fix
 net-regresses via scan-loop regalloc cascade; both default OFF. See
 `tasks/session-2026-07-09-sink-cold-loop-iv.md`. B25 added — `-O1`/`-O2`
