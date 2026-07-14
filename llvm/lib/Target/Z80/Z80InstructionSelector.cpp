@@ -365,13 +365,20 @@ Z80InstructionSelector::countFoldablePatternsInBB(MachineBasicBlock &MBB,
 
 // Emit a runtime library call for 16-bit binary ops.
 // ravn/llvm-z80 #244: at -O3 (CodeGenOptLevel::Aggressive), route i16 div/mod
-// runtime calls to the fully-unrolled variants (__divhi3_fast, __udivhi3_fast,
-// __modhi3_fast, __umodhi3_fast).  Those drop the 16-iteration `djnz` loop in
-// __udivhi3's 8-bit fast path, saving ~207 T-states per call (~14% faster on
-// division-heavy code such as the `e` benchmark).  Every other opt level
-// (-O0/-O1/-O2/-Os/-Oz) and any function marked optsize keep the small default
-// routines, so the size cost is paid only by -O3 code that actually divides.
-// Z80 only -- SM83's __udivhi3 has a different register ABI and no unrolled
+// runtime calls to the speed variants (__divhi3_fast, __udivhi3_fast,
+// __modhi3_fast, __umodhi3_fast).  Those use repeated subtraction (dcc's
+// DRSU/D16U shape): a handful of 16-bit `sbc hl,de` steps for the common
+// small-quotient case (e.g. the digits-of-e kernel, quotients ~<=11), with a
+// cap-16 fallback tail-calling the bounded __udivhi3.  On `e` this is ~2x
+// faster than the small routine and ~31% faster than dcc.  Every other opt
+// level (-O0/-O1/-O2/-Os/-Oz) and any function marked optsize keep the small
+// default routines, so no production firmware (which builds at -Os) is touched.
+// NOTE: speculative — a large quotient wastes up to 16 subtractions before the
+// fallback, making -O3 ~1.6x slower than -Os on that (uncommon) shape; the
+// planned per-call-site static selection (see
+// tasks/plan-2026-07-14-issue244-static-divselect.md, index B26) will route
+// provably-large sites to the bounded routine.
+// Z80 only -- SM83's __udivhi3 has a different register ABI and no _fast
 // variant, so it is left untouched.
 static const char *selectDivModRuntimeName(const MachineFunction &MF,
                                            const Z80Subtarget &STI,
