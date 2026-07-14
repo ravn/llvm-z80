@@ -409,3 +409,47 @@ that the user owns.  Phases land sequentially; no time-budget cap.
 
 Next session: Phase 0 (infrastructure).  Likely deliverable: docker
 snapshot workflow + per-target measurement TSV harness.
+
+---
+
+## Phase 2 VERDICT — PARKED (2026-07-14, data-driven)
+
+Phase 2 (split GR16 into cheap/index cost tiers with separate pressure sets)
+was re-examined before starting and **parked as not data-justified**.
+
+**Premise falsified:** IX is always reserved; IY is reserved by default
+(`-z80-unreserve-iy`, default off; also the size-opt+static-stack path). So in
+the shipping config the only allocatable GR16 members are DE/HL/BC — a single
+tier. The proposed index tier (IX/IY) is reserved out, i.e. inert in production.
+The cheap/index split already exists in raw form (`GR16NoIR = DE,HL,BC` vs
+`IR16 = IX,IY`), and `getSpillCost` already encodes HL(6) vs DE/BC(8).
+
+**Measured ceiling of the index tier** (measure-all.sh, clang 96394df,
+baseline vs `-mllvm -z80-unreserve-iy`; TSVs in `tasks/measurements/`):
+
+| target        | Δ text | Δ tstates    | correctness      |
+|---------------|--------|--------------|------------------|
+| AES -Oz       |  0     | 0            | verify PASS      |
+| AES -O2       | -123 B | +13119 (+0.08%) | verify PASS   |
+| autoload PROM | -1 B   | —            | boot intact      |
+| cpnos PROM1   |  0     | —            | —                |
+| rcbios BIOS   |  0     | —            | —                |
+| runtime       | —      | —            | 924 PASS/0 FAIL  |
+
+So the index tier is worth ~**0 on every production target** and only -123 B on
+AES-O2 (off the production critical path, at a small speed cost). The old
+BIOS-23 / autoload-11 / cpnos-10 / AES-145 win (recorded ~2026-05 in
+Z80RegisterInfo.cpp) has been absorbed by the tiered #23 cost model + backend
+gains landed since. A large, risky TableGen reshuffle to expose a gradient
+worth ~0 in production is the wrong prioritization.
+
+Stale claims corrected the same day: `Z80RegisterInfo.cpp` comment and
+workspace `CLAUDE.md` IX/IY note now carry the 2026-07-14 re-measurement.
+
+**Consequence:** #23 Phases 2–5 are parked. The live Phase-1 hooks
+(`getRematCost`/`getSpillCost`, `-z80-use-tiered-cost-model` default ON) stay.
+This matches the CLAUDE.md standing assessment that cheap codegen + regalloc
+levers are exhausted on production; the remaining high-value work is upstream
+packaging, not further cost-model tuning. Unpark trigger: a production target
+becomes cap-tight AND a specific tier decision is shown (by measurement) to
+recover bytes there.

@@ -86,13 +86,19 @@ cl::opt<bool> Z80UnreserveIY(
 
 // #38/#112: IY is allocatable as a 4th 16-bit pair when the bring-up flag forces
 // it, OR when this function is compiled for SIZE (-Os/-Oz) AND +static-stack is
-// active.  Un-reserving IY is a measured size win (BIOS -23 B, autoload -11,
-// cpnos -10, AES -145 B) at a small speed cost (~+0.1% tstates: an IY-held value
-// is read via push iy; pop hl), so it is gated to size-opt and kept reserved for
-// speed (-O2/-O3).  +static-stack is required for correctness (the byte-decompose
-// legality fixes #112/#189/#201 are verified only under +static-stack).  Threaded
-// through getReservedRegs, getLargestLegalSuperClass, and Z80NarrowNoIndex so all
-// the leak-prevention engages together.
+// active.  Un-reserving IY USED to be a sizable win (BIOS -23 B, autoload -11,
+// cpnos -10, AES -145 B, ~2026-05).  RE-MEASURED 2026-07-14 (measure-all.sh,
+// clang 96394df): the tiered #23 cost model + backend gains since have absorbed
+// almost all of it -- baseline vs -z80-unreserve-iy is now BIOS 0, autoload -1,
+// cpnos 0, AES -Oz 0, AES -O2 -123 B (only AES-O2, off the production critical
+// path, at +0.08% tstates).  So the index tier is worth ~0 on production; a
+// GR16->cheap/index cost-tier split is NOT justified by data (see
+// tasks/plan-z80-cost-model-refinement-2026-06-08.md Phase 2 verdict).  Kept
+// gated to size-opt and reserved for speed (-O2/-O3).  +static-stack is required
+// for correctness (the byte-decompose legality fixes #112/#189/#201 are verified
+// only under +static-stack).  Threaded through getReservedRegs,
+// getLargestLegalSuperClass, and Z80NarrowNoIndex so all the leak-prevention
+// engages together.
 bool z80IsIYAllocatable(const MachineFunction &MF);
 } // namespace llvm
 
