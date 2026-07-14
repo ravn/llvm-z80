@@ -4978,6 +4978,67 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: dead BSS store-back (LD R,(X); LD (X),R) ---
+  // A frame-slot store `LD (X),R` whose immediately-preceding real
+  // instruction is the matching-register load `LD R,(X)` of the SAME slot
+  // writes back exactly what memory already holds: the load established
+  // R == mem[X] and, because the two are adjacent, R is unmodified between.
+  // The store is a provable no-op on memory and is removed.
+  //
+  // Unlike the spill->PUSH/POP peephole below, this DROPS NOTHING from memory
+  // (the slot keeps its value), so it needs none of the loop-carried /
+  // address-taken / used-elsewhere guards those transforms require: any later
+  // reader of X (in any block, via any alias) sees the identical value whether
+  // or not the store runs.  Restricting to __sfrend/__sframe frame symbols
+  // (compiler-generated spill slots, never volatile) also avoids touching a
+  // volatile memory-mapped global that might use the same LD (nn),R encoding.
+  //
+  // Worked example -- dcc/tests/e.c inner loop, __sfrend_main-402 holds &a[n]:
+  //   LD_BC_nnind  __sfrend_main-402  ; bc = &a[n]                 (load)
+  //   LD_nnind_BC  __sfrend_main-402  ; (&a[n] slot) = bc  <-- DEAD, removed
+  // bc is untouched between; the slot already holds bc.  ED-prefixed
+  // LD (nn),BC is 4 B / 20 T saved every loop iteration -- regalloc emitted a
+  // redundant respill of a reloaded-but-unmodified value.
+  if (STI.staticStack()) {
+    // Store opcode -> the matching same-register load opcode.
+    auto matchingLoadForStore = [](unsigned StoreOpc) -> unsigned {
+      switch (StoreOpc) {
+      case Z80::LD_nnind_A:  return Z80::LD_A_nnind;
+      case Z80::LD_nnind_HL: return Z80::LD_HL_nnind;
+      case Z80::LD_nnind_DE: return Z80::LD_DE_nnind;
+      case Z80::LD_nnind_BC: return Z80::LD_BC_nnind;
+      default:               return 0;
+      }
+    };
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        MachineInstr &Store = *MII++;
+        unsigned WantLoad = matchingLoadForStore(Store.getOpcode());
+        if (!WantLoad)
+          continue;
+        // Only compiler-generated frame slots (never volatile).
+        const MachineOperand &Addr = Store.getOperand(0);
+        if (!Addr.isMCSymbol())
+          continue;
+        StringRef Name = Addr.getMCSymbol()->getName();
+        if (!Name.starts_with("__sfrend") && !Name.starts_with("__sframe"))
+          continue;
+        // Immediately-preceding real instruction must be the matching load of
+        // the same slot.  Adjacency guarantees R is unmodified between, so the
+        // store-back cannot change memory.
+        MachineInstr *Prev = Store.getPrevNode();
+        while (Prev && Prev->isDebugInstr())
+          Prev = Prev->getPrevNode();
+        if (!Prev || Prev->getOpcode() != WantLoad ||
+            !z80SameBssAddr(*Prev, Store))
+          continue;
+        LLVM_DEBUG(dbgs() << "Removing dead BSS store-back: " << Store);
+        Store.eraseFromParent();
+        Changed = true;
+      }
+    }
+  }
+
   // --- Peephole: BSS spill/reload → PUSH/POP across CALLs ---
   // With static-stack, register allocator spills use BSS direct addressing:
   //   LD (bss),A  (3B/13T)  +  LD A,(bss)  (3B/13T)  =  6B/26T per pair

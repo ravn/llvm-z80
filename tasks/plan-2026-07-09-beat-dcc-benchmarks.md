@@ -16,7 +16,74 @@ runtime — none of llvm-z80's compiler-rt (`z80_rt`) is linked.
 
 ---
 
-## Current baseline (2026-07-12, z88dk-ticks, zcc+llvmz80 vs dcc)
+## STATUS UPDATE 2026-07-14 (Opus 4.8) — sieve WON; re-baselined
+
+Re-measured all four fair-and-same-harness (both dcc and zcc+llvmz80 under
+z88dk-ticks) on the CURRENT build (llvm-z80 `bb4a40d`, after #250/#244/#263
+landed). Best zcc opt per benchmark:
+
+| program | dcc cycles | zcc best     | opt  | ratio  | status                         |
+|---------|-----------|--------------|------|--------|--------------------------------|
+| sieve   | 27,979,152 | **27,464,244** | -O2  | **0.98x WIN** | DONE — #250 default-on at -O2 (`b59770c`) |
+| e       | 25,381,975 | 30,455,092   | -O2  | 1.20x  | OPEN — M2 BSS spill (verified this session) |
+| ttt     |  6,346,956 |  7,604,026   | -O3  | 1.20x  | OPEN — inlining/frame (-Os = 1.65x) |
+| tm      | 79,435,464 | 272,275,536  | any  | 3.43x  | allocator-bound; DO NOT chase  |
+
+Full per-opt-level table (zcc+llvmz80, ticks):
+
+| program | -Os        | -O2        | -O3        |
+|---------|-----------|------------|------------|
+| sieve   | 33,198,620 | **27,464,244** | 32,952,691 |
+| e       | 30,459,922 | 30,455,092 | 30,455,092 |
+| ttt     | 10,445,561 | 10,375,144 | **7,604,026** |
+| tm      | 292,284,244 | 272,275,536 | 272,275,518 |
+
+**Verified findings this session (known, not inherited):**
+
+1. **sieve now BEATS dcc at -O2** (0.98x, correct output `1899 primes.`). The
+   #250 pointer-walk stack shipped **default-ON at -O2** (`b59770c`). Phase A is
+   COMPLETE. `-O3` regresses sieve (32.95M) — do not use it for this shape.
+2. **B25 "always use -Os" is STALE.** Best opt is now per-workload: sieve wants
+   -O2 (27.46M vs -Os 33.20M), ttt wants -O3 (7.60M vs -Os 10.45M), e is flat
+   across -O2/-O3. There is no single best level; pick per-loop-shape. (Update
+   `known-suboptimal-codegen.md` B25 accordingly.)
+3. **e gap = BSS spill traffic (M2), NOT division.** Both compilers pay the same
+   16-bit divmod; the ~5M gap is clang's inner-loop BSS round-trips. Verified in
+   the current `-O2` asm inner loop (BB0_4): a redundant
+   `ld bc,(__sfrend-402); ld (__sfrend-402),bc` load-then-store-back (dead
+   store), the `a[]` base pointer reloaded AND re-stored to BSS every iteration
+   instead of pointer-walking, and `n` spilled to BSS (`-404`) each iteration.
+4. **ttt**: -O3 (7.60M) is 3x closer than -Os (10.45M). **Mechanism CONFIRMED
+   this session (was mis-stated as leaf-inlining):** -O3 **unrolls the fixed-trip
+   `for(p=0;p<9;p++)` move loop inside the hot recursive `MinMax`**. Evidence:
+   `MinMax` grows 183 -> 911 lines; `_board` refs 1 -> 53 (constant offsets, no
+   `cp 9`/back-edge at -O3). The `winner_functions[move]()` indirect win-check is
+   NOT devirtualized at either level (`call __call_iy` count = 1 both), and the
+   9 `posNfunc` are NOT inlined. `MinMax` uses a real IX stack frame (`(ix+d)`),
+   NOT static-stack BSS (backend disables static-stack for the recursive fn -> no
+   reentrancy bug). So the -O3 win is a generic LLVM opt-level policy (unrolling
+   is on at -O3, off at -Os/-O2 for size), not a Z80 backend deficiency; the
+   residual -O3 1.20x is IX-frame recursive spill traffic (M2/IX class).
+5. **zcc-llvmz80 uses no explicit `+static-stack`** (`--target=z80 -S
+   -ffreestanding`), but freestanding clang-z80 emits `__sfrend`-relative BSS
+   locals by DEFAULT — confirmed in the emitted asm. So the M2 BSS analysis
+   below applies to the zcc path.
+
+**Zoom-out (systemic cause):** e's dead BSS round-trips (#3), sieve lever-3's
+scan-IV spill placement (#261), and ttt's recursion-frame spills are the SAME
+M2 class — LLVM emits/keeps BSS traffic on the hot path that a Z80-aware
+dead-BSS-store + spill-sink would remove. That MIR-level lever (not a TTI cost
+tweak) is the real Phase-B target; `e` is the archetype.
+
+**Risk on the original Phase-B (TTI getMemoryOpCost):** likely INERT on
+GISel-Z80. Per CLAUDE.md, #227/#228/#229 each fired their IR consumer correctly
+but downstream Z80 machinery already produced the shape → zero codegen change.
+Prefer a concrete MIR peephole (dead-BSS-store elimination + spill-sink) over
+TTI cost model changes.
+
+---
+
+## Original baseline (2026-07-12, z88dk-ticks, zcc+llvmz80 vs dcc) — superseded above
 
 | program | dcc cycles | zcc -Oz | zcc -Os | zcc -O3 | dominant cost |
 |---------|-----------|---------|---------|---------|---------------|
@@ -237,21 +304,62 @@ keeps loop-carried scalars in HL/DE/BC, and uses a compact frame model.
 
 ---
 
-## Plan (highest-ROI first)
+## Plan (revised 2026-07-14 — highest-ROI first)
 
-### Phase A — sieve: pointer strength reduction (target: beat dcc)
+### Phase A — sieve pointer strength reduction — ✅ DONE (shipped default-on -O2)
 
-Fix or replace `Z80LoopInstrFormPrep` (#250) to produce a correct 3-value
-pointer walk for byte-array loops: walking pointer in HL, stride in DE, end
-pointer in BC, all hoisted outside the loop, exit test = pointer compare.
+#250 pointer-walk stack landed default-ON at -O2 (`b59770c`); sieve = 27.46M
+< dcc 27.98M (0.98x), correct output. No further work. (Detailed root-cause
+kept below for reference.) Do NOT use -O3 on sieve-shaped loops (regresses).
 
-Options (A1 fix/extend #250; A2 LSR cost model; A3 late-machine peephole) —
-see original 2026-07-09 analysis for detail. Prefer A2 if LSR can be steered.
+### Phase B — e: kill inner-loop BSS spill traffic (M2) — HIGHEST ROI, systemic
 
-Gate: production byte-identical or better, lit green, value oracle green.
-**Success = sieve clang < 27.98M cycles.**
+The `e` gap is BSS round-trips, not divmod. Attack in low-risk-first order,
+each with a lit test pinning the tightened loop + a runtime fixture, and the
+production triplet (rcbios/cpnos/autoload) byte-identical-or-better:
 
-### Phase B — e: reduce BSS spill traffic (M2 class)
+- **B1 — dead BSS store-back elimination (cleanest, do first).** Eliminate the
+  `ld rr,(addr); ld (addr),rr` load-then-store-back pair (verified in e's BB0_4
+  at `__sfrend-402`) when `rr` is unmodified between and no other MBB aliases
+  the address (reuse the existing BSS-load-forwarding guards in
+  `Z80LateOptimization.cpp`). Pure win, no register-pressure risk.
+- **B2 — pointer-walk `a[]` (extend #250 to indexed-store loops).** The `a[n]`
+  store + `a[n-1]` load recompute the base pointer and round-trip it through BSS
+  each iteration; make it a walking pointer like sieve. Reuses the
+  `Z80LoopInstrFormPrep` / pointer-IV machinery.
+- **B3 — keep loop-carried scalars register-resident (spill-sink, = #261).**
+  `n` and `x` are spilled to BSS every iteration; sink the spills into the cold
+  path / keep them in a pair on the hot path. Same lever as sieve lever-3
+  (#261) — solving it once helps e, sieve, ttt-recursion, and BIOS.
+
+Do NOT pursue the TTI `getMemoryOpCost` route first — likely inert on GISel-Z80
+(see Risk note above). **Success = e clang < 25.38M cycles.**
+
+### Phase C — ttt: -O3 mechanism CONFIRMED — recommend -O3; residual = M2
+
+**Investigated this session; no Z80 lever needed.** The -Os->-O3 win is generic
+loop unrolling of the fixed-trip `for(p=0;p<9;p++)` move loop inside recursive
+`MinMax` (see finding #4). Decision:
+- **Ship guidance, not a backend patch:** use `-O3` for recursion-heavy code with
+  small fixed-count inner loops (ttt shape). Cost: +size (ttt 8251 B @ -O2 ->
+  9532 B @ -O3) and -O3 REGRESSES sieve — so this is per-workload, reinforcing
+  that B25 "always -Os" is dead.
+- Optional Z80-specific follow-up (LOW priority, only if a *production* kernel
+  shows this shape): teach the unroller/`Z80TTI` to unroll tiny fixed-trip loops
+  at -O2 without the global -O3 size cost. Not justified by ttt alone (a
+  benchmark, not firmware).
+- The residual -O3 1.20x is IX-frame recursive spill (M2/IX class) — folds into
+  Phase B's systemic spill work; not a separate effort.
+
+**Verdict: ttt is opt-level-policy-bound, not backend-bound.** Do not spend
+backend effort on ttt; document the -O3 recommendation.
+
+### Phase D — tm: document as allocator-bound, do not chase
+
+Not a codegen gap (z88dk heap vs dcc's allocator). Document and exclude from
+the compiler-quality signal.
+
+### Original Phase A/B/C detail (kept for reference)
 
 The BSS spill problem is systemic. Concrete levers for `e`'s pattern:
 

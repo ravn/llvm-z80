@@ -1,0 +1,103 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# Dead BSS store-back elimination.
+#
+# A frame-slot store `LD (X),R` whose IMMEDIATELY-preceding real instruction
+# is the matching-register load `LD R,(X)` of the SAME slot writes back
+# exactly what memory already holds: the load established R == mem[X] and,
+# because the two are adjacent, R is unmodified in between.  The store is a
+# provable no-op on memory and is removed.
+#
+# This differs from the spill->PUSH/POP peephole: it drops NOTHING from
+# memory (the slot keeps its value), so it needs none of the loop-carried /
+# address-taken / used-elsewhere guards those transforms require.  It only
+# fires on __sfrend/__sframe frame symbols (compiler-generated, never
+# volatile) and only on the ADJACENT load;store shape.
+#
+# Worked example -- dcc/tests/e.c inner loop, __sfrend_main-402 holds &a[n]:
+#     LD_BC_nnind  __sfrend_main-402   ; bc = &a[n]                 (load)
+#     LD_nnind_BC  __sfrend_main-402   ; (&a[n] slot) = bc  <-- DEAD, removed
+# ED-prefixed LD (nn),BC is 4 B / 20 T, saved every loop iteration.
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  @__sfrend_dead_bc     = global i8 0
+  @__sfrend_dead_hl     = global i8 0
+  @__sfrend_nonadjacent = global i8 0
+  @__sfrend_addr_a      = global i8 0
+  @__sfrend_addr_b      = global i8 0
+  @__sfrend_other       = global i8 0
+
+  ; The dead adjacent store-back is removed; only the load remains.
+  ; CHECK-LABEL: name: dead_bc
+  ; CHECK:     LD_BC_nnind
+  ; CHECK-NOT: LD_nnind_BC
+  ; CHECK:     RET
+  define void @dead_bc() { ret void }
+
+  ; CHECK-LABEL: name: dead_hl
+  ; CHECK:     LD_HL_nnind
+  ; CHECK-NOT: LD_nnind_HL
+  ; CHECK:     RET
+  define void @dead_hl() { ret void }
+
+  ; A non-adjacent store (an unrelated load sits between) must be KEPT --
+  ; the register may have been reloaded from a different slot in between.
+  ; CHECK-LABEL: name: kept_nonadjacent
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     LD_nnind_BC
+  define void @kept_nonadjacent() { ret void }
+
+  ; A store to a DIFFERENT slot than the preceding load must be KEPT.
+  ; CHECK-LABEL: name: kept_diff_addr
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     LD_nnind_BC
+  define void @kept_diff_addr() { ret void }
+...
+---
+name:            dead_bc
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_dead_bc>, implicit-def $bc
+    LD_nnind_BC <mcsymbol __sfrend_dead_bc>, implicit $bc
+    RET implicit $bc
+
+...
+---
+name:            dead_hl
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_HL_nnind <mcsymbol __sfrend_dead_hl>, implicit-def $hl
+    LD_nnind_HL <mcsymbol __sfrend_dead_hl>, implicit $hl
+    RET implicit $hl
+
+...
+---
+name:            kept_nonadjacent
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_nonadjacent>, implicit-def $bc
+    LD_HL_nnind <mcsymbol __sfrend_other>, implicit-def $hl
+    LD_nnind_BC <mcsymbol __sfrend_nonadjacent>, implicit $bc
+    RET implicit $bc, implicit $hl
+
+...
+---
+name:            kept_diff_addr
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_addr_a>, implicit-def $bc
+    LD_nnind_BC <mcsymbol __sfrend_addr_b>, implicit $bc
+    RET implicit $bc
+
+...
