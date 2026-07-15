@@ -1469,7 +1469,19 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     // branch above, which adds the same term.  Worked example (bug254 main):
     // StackSize=8, CSR=2 -> BSS=[__sfrend-6,__sfrend); FI#3 ObjOff=-10 must map
     // to __sfrend-6 (=__sframe), i.e. -10 + 2 + 2 = -6, not -8 (underflow).
-    if (STI2.staticStack()) {
+    //
+    // #268: apply the CSR term ONLY to BSS-resident locals (Idx >= 0).  Fixed
+    // objects (Idx < 0) are incoming stack arguments and the sret return
+    // pointer; the CALLER pushed them onto the REAL stack ABOVE IX (positive
+    // offsets [ix+4], [ix+6], ...), while the CSR saves live BELOW IX.  Adding
+    // CalleeSavedFrameSize to a fixed object shifts it up by CSR bytes, so a
+    // sret pointer at [ix+4] is misread as [ix+6] (== arg 0's slot).  This
+    // miscompiles any function that returns double/aggregate via sret whose
+    // value comes from another sret-returning call (the __memmove_rt copying
+    // the callee result into our sret buffer loads its dest from the wrong
+    // slot).  Worked example (bug, CSR=2): sret FI ObjOff=2 must map to [ix+4]
+    // (=2+2), NOT [ix+6] (=2+2+2); control fn ok (CSR=0) was correct either way.
+    if (STI2.staticStack() && Idx >= 0) {
       const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
       Offset += FI->getCalleeSavedFrameSize();
     }
