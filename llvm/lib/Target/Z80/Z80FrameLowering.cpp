@@ -113,33 +113,33 @@ MachineBasicBlock::iterator Z80FrameLowering::eliminateCallFramePseudoInstr(
 
   assert(Opc == Z80::ADJCALLSTACKUP && "Expected ADJCALLSTACKUP");
 
-  // Operand 0 = total stack bytes (used by PEI for SPAdj tracking).
-  // Operand 1 = bytes already cleaned up by callee (callee-cleanup convention).
-  // Actual caller SP adjustment = op0 - op1.
   int64_t Amount = MI->getOperand(0).getImm();
   int64_t CalleeAmount = MI->getOperand(1).getImm();
   Amount -= CalleeAmount;
-  if (Amount == 0)
-    return MBB.erase(MI);
 
   // Clean up stack after call: restore SP by adding Amount.
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
-  if (STI.hasSM83() && Amount <= 127) {
+  switch (classifyACSU(Amount, STI.hasSM83())) {
+  case ACSU_Erase:
+    break;
+  case ACSU_AddSPe:
     // SM83: ADD SP,e (2 bytes, doesn't clobber HL)
     BuildMI(MBB, MI, DL, TII.get(Z80::ADD_SP_e)).addImm(Amount & 0xFF);
-  } else if (Amount <= 16) {
+    break;
+  case ACSU_PopAF:
     // Small amounts: use POP AF (each pops 2 bytes, clobbers A but not HL).
     // More compact than INC SP (1 byte per 2 bytes vs 1 byte per 1 byte).
-    unsigned PopCount = Amount / 2;
-    for (unsigned i = 0; i < PopCount; ++i)
+    for (unsigned i = 0, n = Amount / 2; i < n; ++i)
       BuildMI(MBB, MI, DL, TII.get(Z80::POP_AF));
     if (Amount % 2)
       BuildMI(MBB, MI, DL, TII.get(Z80::INC_SP));
-  } else {
+    break;
+  case ACSU_AddHLSP:
     // Larger amounts: LD HL, Amount; ADD HL, SP; LD SP, HL
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_HL_nn)).addImm(Amount);
     BuildMI(MBB, MI, DL, TII.get(Z80::ADD_HL_SP));
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_SP_HL));
+    break;
   }
 
   return MBB.erase(MI);

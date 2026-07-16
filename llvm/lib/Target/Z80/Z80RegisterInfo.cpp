@@ -534,37 +534,29 @@ static void emitLargeOffsetAddr(MachineBasicBlock &MBB,
 // Check whether ADJCALLSTACKUP will actually clobber Reg when expanded.
 //
 // ADJCALLSTACKUP carries implicit-def annotations for HL, A, SP, but the
-// actual register side-effects depend on the expansion path chosen in
-// Z80FrameLowering::eliminateCallFramePseudoInstr (which runs AFTER frame
-// index elimination within PEI). The expansion paths are:
-//
-//   AdjAmount == 0         → erased entirely (no register effects)
-//   SM83 && AdjAmount≤127  → ADD SP,e     (only SP/flags modified)
-//   AdjAmount ≤ 16         → POP AF × N   (A/flags modified, HL untouched)
-//   AdjAmount > 16         → LD HL,n; ADD HL,SP; LD SP,HL (HL/flags modified)
-//
-// If we naively trust the implicit-defs, isRegLiveAt() may conclude a
-// register (e.g. HL) is dead when the pseudo won't actually modify it,
-// causing SPILL/RELOAD expansion to skip saving the register.
+// adjCallStackUpClobbersReg: return true if the ADJCALLSTACKUP pseudo's
+// expansion will clobber Reg. Uses classifyACSU (Z80FrameLowering.h) to mirror
+// exactly the path chosen by eliminateCallFramePseudoInstr — keeping the two
+// sides in sync via a single shared decision point.
 static bool adjCallStackUpClobbersReg(const MachineInstr &MI, Register Reg,
                                       const TargetRegisterInfo *TRI) {
   assert(MI.getOpcode() == Z80::ADJCALLSTACKUP);
   int64_t AdjAmount = MI.getOperand(0).getImm() - MI.getOperand(1).getImm();
-
-  if (AdjAmount == 0)
-    return false;
-
   const auto &STI = MI.getMF()->getSubtarget<Z80Subtarget>();
-  if (STI.hasSM83() && AdjAmount <= 127)
-    // ADD SP,e: only SP and flags modified.
-    return false;
 
-  if (AdjAmount <= 16)
+  switch (classifyACSU(AdjAmount, STI.hasSM83())) {
+  case ACSU_Erase:
+  case ACSU_AddSPe:
+    // Erased or ADD SP,e: only SP/flags modified, Reg is untouched.
+    return false;
+  case ACSU_PopAF:
     // POP AF: clobbers A and flags; HL is untouched.
     return TRI->regsOverlap(Reg, Z80::A);
-
-  // LD HL,n; ADD HL,SP; LD SP,HL: clobbers HL and flags.
-  return TRI->regsOverlap(Reg, Z80::HL);
+  case ACSU_AddHLSP:
+    // LD HL,n; ADD HL,SP; LD SP,HL: clobbers HL and flags.
+    return TRI->regsOverlap(Reg, Z80::HL);
+  }
+  llvm_unreachable("unhandled AdjCallStackUpPath");
 }
 
 static bool isRegLiveAt(Register Reg, MachineBasicBlock &MBB,
