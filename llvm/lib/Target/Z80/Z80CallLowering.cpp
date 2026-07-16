@@ -583,7 +583,14 @@ bool Z80CallLoweringCommon::lowerFormalArguments(
   bool IsVarArg = F.isVarArg();
   CallingConv::ID CC = F.getCallingConv();
 
-  if (F.arg_empty() && !IsVarArg)
+  // Only skip the whole routine when there is genuinely nothing to lower.
+  // A function with no formal arguments can still need the hidden sret
+  // pointer set up (return value > 4 bytes, e.g. double/i64/large struct):
+  // FLI.CanLowerReturn is false in that case and the sret demotion block
+  // below must run, otherwise FLI.DemoteRegister stays $noreg and the
+  // return store lowers to a store through a null base (legalizer crash /
+  // corrupt sret).
+  if (F.arg_empty() && !IsVarArg && FLI.CanLowerReturn)
     return true;
 
   const CallingConvRegs &Regs = getRegsForCC(CC);
