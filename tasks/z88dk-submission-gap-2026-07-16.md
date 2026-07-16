@@ -81,24 +81,25 @@ written to handle DE in the meantime.
 
 ---
 
-## Gap 3 (BLOCKER): Float library not in z88dk
+## Gap 3 — Float library shipping strategy (DECIDED 2026-07-16)
 
-`llvmz80-softfloat` (Berkeley SoftFloat 3 + nanoprintf) is a standalone project.
-For z88dk to "officially support" float under `-compiler=llvmz80`, either:
+**Decision:** `softfloat_cpm_z80.lib` ships WITH llvm-z80 (alongside the clang
+binary), NOT inside z88dk. This keeps the z88dk submission text-only.
 
-**Option A:** Ship the compiled softfloat `.lib` in z88dk under `lib/llvmz80/`
-(analogous to how z88dk ships `genmath_ez80_z80.lib`, `math32_ez80_z80.lib` etc.
-for ez80-clang). zcc auto-links it when float ops are present.
+Rationale: the float runtime belongs with the compiler (same as compiler-rt).
+`compiler-rt/lib/builtins/z80/` already contains single-precision ops (addsf3.asm,
+mulsf3.asm, divsf3.asm …). The double-precision Berkeley SoftFloat from
+`llvmz80-softfloat` completes the runtime. Both should be in the llvm-z80
+distribution.
 
-**Option B:** Document it as a separately-installed package (user downloads
-`llvmz80-softfloat` and adds `-Llib/llvmz80 -lsoftfloat` to zcc invocation).
+**llvmz80-softfloat side:** add `make-lib` target: compile Berkeley SoftFloat +
+nanoprintf via `zcc +cpm -compiler=llvmz80 -c`, archive into
+`softfloat_cpm_z80.lib` using z80asm library tool. Distribute with llvm-z80.
+(`s_roundPackToF64.c` already has -O0 workaround for #267 — lib build is safe.)
 
-Option A is better for "officially supported". Requires building the `.lib` from
-`llvmz80-softfloat/src/` targeting z80 and committing the artefact.
-
-Without this, `printf("%f")` and any runtime float are documented as unavailable
-unless the user installs softfloat separately. This is an acceptable v1 limitation
-if clearly documented.
+**z88dk side:** add `LLVMZ80RTLIB` config var to `zcc.c` (default: derived from
+`LLVMZ80EXE` sibling path). Auto-link when float libcalls are present. No lib
+binary in z88dk — only the config variable that points to it.
 
 ---
 
