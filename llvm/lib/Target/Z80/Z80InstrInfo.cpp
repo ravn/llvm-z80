@@ -2293,6 +2293,18 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     case Z80::UMOD16: return IsSM83 ? 45 : 31;
     case Z80::SDIV16: return IsSM83 ? 79 : 66;
     case Z80::SMOD16: return IsSM83 ? 78 : 64;
+    // Z80: AND A(1)+SBC HL,rr(2)+SBC A,A(1)+AND n(2) = 6
+    // SM83: LD A,L(1)+SUB lo(1)+LD L,A(1)+LD A,H(1)+SBC hi(1)+LD H,A(1)
+    //       +SBC A,A(1)+AND n(2) = 9
+    case Z80::SUB_HL_rr_BO: return IsSM83 ? 9 : 6;
+    // Z80: LD A,r(1)+RRCA(1)+ADC HL,rr(2)+SBC A,A(1)+AND n(2) = 7
+    // SM83: LD A,r(1)+RRCA(1)+LD A,L(1)+ADC lo(1)+LD L,A(1)+LD A,H(1)+ADC hi(1)
+    //       +LD H,A(1)+SBC A,A(1)+AND n(2) = 11
+    case Z80::ADC_HL_rr_CIO: return IsSM83 ? 11 : 7;
+    // Z80: LD A,r(1)+RRCA(1)+SBC HL,rr(2)+SBC A,A(1)+AND n(2) = 7
+    // SM83: LD A,r(1)+RRCA(1)+LD A,L(1)+SBC lo(1)+LD L,A(1)+LD A,H(1)+SBC hi(1)
+    //       +LD H,A(1)+SBC A,A(1)+AND n(2) = 11
+    case Z80::SBC_HL_rr_BIO: return IsSM83 ? 11 : 7;
     default: break;
     }
   }
@@ -2555,20 +2567,13 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   case Z80::ADD_HL_rr_CO: // ADD HL,rr(1) + SBC A,A(1) + AND n(2) = 4
     return 4;
 
-  case Z80::SUB_HL_rr_BO: // AND A(1) + SBC HL,rr(2) + SBC A,A(1) + AND n(2) = 6
-    return 6;
-
   case Z80::CMP16_ULT: // LD A,lo(1) + SUB lo(1) + LD A,hi(1) + SBC A,hi(1) +
                        // SBC A,A(1) + AND 1(2) = 7
     return 7;
 
   // CAPTURE_PV: PUSH AF(1) + POP HL(1) + LD A,L(1) + RRCA(1) + RRCA(1) + AND
-  // n(2) = 7
+  // n(2) = 7 (same on both targets)
   case Z80::CAPTURE_PV:
-  case Z80::ADC_HL_rr_CIO: // LD A,r(1) + RRCA(1) + ADC HL,rr(2) + SBC A,A(1) +
-                           // AND n(2) = 7
-  case Z80::SBC_HL_rr_BIO: // LD A,r(1) + RRCA(1) + SBC HL,rr(2) + SBC A,A(1) +
-                           // AND n(2) = 7
     return 7;
 
   // Zero test pseudo
