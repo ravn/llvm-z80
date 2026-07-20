@@ -15,17 +15,19 @@
 ;   error: integer range: $8e   ; -> .LBB0_22  (142 B)
 ;   error: integer range: $84   ; -> .LBB0_21  (132 B)
 ;
-; The fix must emit `jp` for these far branches in the textual output too.  This
-; test is XFAIL until #267 is fixed; when fixed it XPASSes -- remove the XFAIL
-; line then.  The .LBB labels below reflect llc at filing time; if they renumber
-; when the bug is fixed, refresh them.
+; FIXED (ravn/llvm-z80#267): the variable-shift pseudos (SHL16_VAR /
+; LSHR16_VAR etc.) were sized as 0 B in Z80InstrInfo::getInstSizeInBytes, so
+; BranchRelaxation under-counted the function and left these branches as `jr`.
+; Giving those pseudos their real expanded sizes (7-11 B) lets BranchRelaxation
+; see they are out of range and emit `jp` in the textual output too.
 ;
-; XFAIL: *
+; The four far branches below must now be `jp`, never a range-overflowing `jr`.
 ;
 ; CHECK-LABEL: sf_fix:
-; CHECK-NOT: jr nc,.LBB0_15
-; CHECK-NOT: jr z,.LBB0_22
-; CHECK-NOT: jr .LBB0_21
+; CHECK: jp nc,.LBB0_14
+; CHECK: jp nc,.LBB0_15
+; CHECK: jp z,.LBB0_22
+; CHECK: jp .LBB0_21
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"

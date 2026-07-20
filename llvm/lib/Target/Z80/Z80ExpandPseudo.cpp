@@ -59,6 +59,33 @@ static bool isInlineRuntimeSizedPseudo(unsigned Opcode) {
   case Z80::UMOD16:
   case Z80::SDIV16:
   case Z80::SMOD16:
+  // #267 systemic: every other block-splitting / multi-byte pseudo that
+  // Z80ExpandPseudo expands AFTER BranchRelaxation must also carry a real size
+  // in getInstSizeInBytes, or a far `jr` spanning it is under-relaxed.
+  case Z80::MUL8:
+  case Z80::UDIV8:
+  case Z80::UMOD8:
+  case Z80::SDIV8:
+  case Z80::SMOD8:
+  case Z80::UADDSAT8:
+  case Z80::USUBSAT8:
+  case Z80::SADDSAT8:
+  case Z80::SSUBSAT8:
+  case Z80::LDIR_GUARDED:
+  case Z80::LDDR_GUARDED:
+  case Z80::MEMSET_LDIR_GUARDED:
+  case Z80::LOAD_IDX8:
+  case Z80::STORE_IDX8:
+  // The variable-shift pseudos are already sized in getInstSizeInBytes (#267);
+  // list them here too so the #240 drift guard covers them.
+  case Z80::SHL8_VAR:
+  case Z80::LSHR8_VAR:
+  case Z80::ASHR8_VAR:
+  case Z80::ROTL8_VAR:
+  case Z80::ROTR8_VAR:
+  case Z80::SHL16_VAR:
+  case Z80::LSHR16_VAR:
+  case Z80::ASHR16_VAR:
     return true;
   default:
     return false;
