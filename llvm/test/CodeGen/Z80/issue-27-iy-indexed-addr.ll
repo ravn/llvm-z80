@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-stack -z80-idx-addr < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-stack -z80-idx-addr -z80-verify-inline-runtime-size < %s | FileCheck %s --check-prefix=ON
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-stack < %s | FileCheck %s --check-prefix=OFF
 
 ; ravn/llvm-z80#27: a call-free function that dereferences a pointer at a
