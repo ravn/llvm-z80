@@ -4978,12 +4978,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
-  // --- Peephole: dead BSS store-back (LD R,(X); LD (X),R) ---
-  // A frame-slot store `LD (X),R` whose immediately-preceding real
-  // instruction is the matching-register load `LD R,(X)` of the SAME slot
-  // writes back exactly what memory already holds: the load established
-  // R == mem[X] and, because the two are adjacent, R is unmodified between.
-  // The store is a provable no-op on memory and is removed.
+  // --- Peephole: dead BSS store-back (LD R,(X); ... LD (X),R) ---
+  // A frame-slot store `LD (X),R` whose value R was loaded from the SAME slot
+  // X — and R has not been modified nor has X been written between — is a
+  // provable no-op on memory (the slot already holds R's value) and is removed.
   //
   // Unlike the spill->PUSH/POP peephole below, this DROPS NOTHING from memory
   // (the slot keeps its value), so it needs none of the loop-carried /
@@ -4993,12 +4991,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   // (compiler-generated spill slots, never volatile) also avoids touching a
   // volatile memory-mapped global that might use the same LD (nn),R encoding.
   //
-  // Worked example -- dcc/tests/e.c inner loop, __sfrend_main-402 holds &a[n]:
-  //   LD_BC_nnind  __sfrend_main-402  ; bc = &a[n]                 (load)
-  //   LD_nnind_BC  __sfrend_main-402  ; (&a[n] slot) = bc  <-- DEAD, removed
-  // bc is untouched between; the slot already holds bc.  ED-prefixed
-  // LD (nn),BC is 4 B / 20 T saved every loop iteration -- regalloc emitted a
-  // redundant respill of a reloaded-but-unmodified value.
+  // The scan is backward from the store (up to MaxBSSStoreBackScan real
+  // instructions).  Stops early on: CALL (R is caller-saved), block
+  // terminator, another store to X (value changed), or R being defined
+  // (register modified).  The matching load must be found before any stopper.
+  //
+  // Example -- a loaded pointer used read-only then redundantly respilled:
+  //   LD_BC_nnind  __sfrend_main-402  ; bc = ptr           (load)
+  //   LD L,C ; LD H,B ; LD (HL),E    ; read-only uses of bc
+  //   LD_nnind_BC  __sfrend_main-402  ; ptr slot = bc <-- DEAD, removed
   if (STI.staticStack()) {
     // Store opcode -> the matching same-register load opcode.
     auto matchingLoadForStore = [](unsigned StoreOpc) -> unsigned {
@@ -5010,6 +5011,19 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
       default:               return 0;
       }
     };
+    // Store opcode -> the register being stored (implicit Use).
+    auto storedReg = [](unsigned StoreOpc) -> Register {
+      switch (StoreOpc) {
+      case Z80::LD_nnind_A:  return Z80::A;
+      case Z80::LD_nnind_HL: return Z80::HL;
+      case Z80::LD_nnind_DE: return Z80::DE;
+      case Z80::LD_nnind_BC: return Z80::BC;
+      default:               return Register();
+      }
+    };
+    // Maximum number of non-debug instructions to scan backward.
+    static constexpr unsigned MaxBSSStoreBackScan = 32;
+
     for (MachineBasicBlock &MBB : MF) {
       for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
         MachineInstr &Store = *MII++;
@@ -5023,14 +5037,37 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         StringRef Name = Addr.getMCSymbol()->getName();
         if (!Name.starts_with("__sfrend") && !Name.starts_with("__sframe"))
           continue;
-        // Immediately-preceding real instruction must be the matching load of
-        // the same slot.  Adjacency guarantees R is unmodified between, so the
-        // store-back cannot change memory.
-        MachineInstr *Prev = Store.getPrevNode();
-        while (Prev && Prev->isDebugInstr())
-          Prev = Prev->getPrevNode();
-        if (!Prev || Prev->getOpcode() != WantLoad ||
-            !z80SameBssAddr(*Prev, Store))
+
+        Register Reg = storedReg(Store.getOpcode());
+
+        // Scan backward from Store looking for the matching load.
+        bool Found = false;
+        unsigned Scanned = 0;
+        for (MachineInstr *Prev = Store.getPrevNode(); Prev; Prev = Prev->getPrevNode()) {
+          if (Prev->isDebugInstr())
+            continue; // debug instructions don't count
+          if (++Scanned > MaxBSSStoreBackScan)
+            break;
+          // Stop at block terminators (can't scan past MBB boundary).
+          if (Prev->isTerminator())
+            break;
+          // Stop at calls: the stored register is caller-saved.
+          if (Prev->isCall())
+            break;
+          // Stop if another instruction stores to the same slot (value changed).
+          if (z80IsAnyBssStore(Prev->getOpcode()) && z80SameBssAddr(*Prev, Store))
+            break;
+          // Found the matching load before any stopper: store-back is dead.
+          if (Prev->getOpcode() == WantLoad && z80SameBssAddr(*Prev, Store)) {
+            Found = true;
+            break;
+          }
+          // Stop if this instruction modifies the stored register.
+          // (Check after the matching-load test because the load defines Reg.)
+          if (Prev->modifiesRegister(Reg, TRI))
+            break;
+        }
+        if (!Found)
           continue;
         LLVM_DEBUG(dbgs() << "Removing dead BSS store-back: " << Store);
         Store.eraseFromParent();
