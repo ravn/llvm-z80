@@ -2471,8 +2471,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           ++MII; continue;
         }
         int64_t Limit = It->getOperand(0).getImm();
-        // Limit must fit in 8 bits for `CP n` to be equivalent.
-        if (Limit < 0 || Limit > 255) { ++MII; continue; }
+        // The 8-bit rewrite compares against (Limit + 1) (see the flag
+        // analysis at the CP_n emission below), so Limit + 1 must fit in the
+        // `CP n` immediate.  Limit == 255 (a 256-entry table whose bound is
+        // vacuously false for a u8 offset) bails to the 16-bit path.
+        if (Limit < 0 || Limit > 254) { ++MII; continue; }
         auto LdDE = It; ++It;
         if (It == MBB.end() || It->getOpcode() != Z80::LD_A_E) {
           ++MII; continue;
@@ -2508,11 +2511,18 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Same with HL -- after the rewrite, LD_L_A and LD_H_n 0
         // remain for jump-table indexing on the fall-through path.
 
-        // The 16-bit chain computes `DE - HL = limit - offset`, so
-        // carry-out is set iff offset > limit (out of range).
-        // `CP_n limit` computes `A - limit`, so carry-out is set iff
-        // offset < limit (in range).  These are *inverse* flags, so
-        // the branch condition must flip.
+        // The 16-bit chain computes `DE - HL = limit - offset`, so carry-out
+        // is set iff `offset > limit` (STRICT).  We rewrite to `CP_n (limit+1)`
+        // (`A - (limit+1)`), whose carry-out is set iff `offset < limit+1` i.e.
+        // `offset <= limit`.  Since `offset > limit` and `offset <= limit` are
+        // exact complements, flipping the branch condition reproduces the
+        // original test at EVERY value, including `offset == limit`.
+        //
+        // (An earlier version used `CP_n limit`; but `offset > limit` and
+        // `offset < limit` are NOT complements — they differ at
+        // `offset == limit` — so the max in-range index was wrongly sent to
+        // the default block.  Exposed by a switch whose highest case value maps
+        // to the last dense jump-table slot, e.g. nanoprintf's `%x`.)
         unsigned NewBrOpc;
         switch (BrOpc) {
         case Z80::JR_NC_e: NewBrOpc = Z80::JR_C_e; break;
@@ -2532,9 +2542,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
 
         DebugLoc DL = LdLA->getDebugLoc();
-        // Insert CP_n Limit before LdLA, then keep LD_L_A / LD_H_n 0
-        // after (they preserve A / set H, neither touches flags).
-        BuildMI(MBB, LdLA, DL, TII->get(Z80::CP_n)).addImm(Limit);
+        // Insert CP_n (Limit+1) before LdLA (see the flag analysis above for
+        // the +1), then keep LD_L_A / LD_H_n 0 after (they preserve A / set H,
+        // neither touches flags).
+        BuildMI(MBB, LdLA, DL, TII->get(Z80::CP_n)).addImm(Limit + 1);
         LdDE->eraseFromParent();
         LdAE->eraseFromParent();
         SubL->eraseFromParent();
