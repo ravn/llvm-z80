@@ -46,9 +46,13 @@ default: ret void
 ; The 16-bit subtract chain must NOT appear:
 ; CHECK-NOT:   sub l
 ; CHECK-NOT:   sbc a,h
-; The bound check is `cp N` + a single carry branch (NC = out of
-; range = take exit; the IR's switch range here is 1..30 with stride
-; 1, so the limit after `dec a` is 29 = max_offset).
+; The bound check is `cp N` + a single carry branch (NC = out of range =
+; take exit).  The switch range is 1..30 stride 1, so after `dec a` the
+; offset is in [0,29] and the strict bound is `offset > 29 -> default`.
+; That is `cp 30` (offset >= 30 -> NC -> default), NOT `cp 29`: the
+; original peephole used `cp max_offset`, which wrongly sent offset 29
+; (case 30) to the default block — the jump-table off-by-one fixed in
+; Z80LateOptimization (CP_n Limit+1).  See bugs/switchbug.c.
 ; CHECK:       dec a
-; CHECK:       cp 29
+; CHECK:       cp 30
 ; CHECK:       {{ret|jr|jp}} nc
