@@ -11,8 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "Z80TargetMachine.h"
+#include "Z80KeepLoopPointerInPair.h"
 #include "Z80NarrowNoIndex.h"
 #include "Z80PinAluAccumulator.h"
+#include "Z80PinLoopPointer.h"
+#include "Z80HighByteFirstBranch.h"
+#include "Z80RemoveJumpToNext.h"
 #include "Z80PruneCallFrameDefs.h"
 #include "Z80ReorderTestDec.h"
 #include "Z80SplitDjnzCounters.h"
@@ -49,6 +53,8 @@
 #include "Z80AutoStaticStack.h"
 #include "Z80PatternFillRecognize.h"
 #include "Z80LoopRotate.h"
+#include "Z80LoopInstrFormPrep.h"
+#include "Z80SinkColdLoopIV.h"
 #include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
@@ -135,6 +141,11 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80ShiftRotateChainPass(PR);
   initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80PinAluAccumulatorPass(PR);
+  initializeZ80PinLoopPointerPass(PR);
+  initializeZ80HighByteFirstBranchPass(PR);
+  initializeZ80RemoveJumpToNextPass(PR);
+  initializeZ80KeepLoopPointerInPairPass(PR);
+  initializeZ80SinkColdLoopIVLegacyPassPass(PR);
   initializeZ80NarrowNoIndexPass(PR);
   initializeZ80PostRACompareMergePass(PR);
 }
@@ -372,6 +383,21 @@ void Z80PassConfig::addIRPasses() {
     // Re-rotate head-test loops that LLVM's LoopRotate skipped at -Oz
     // due to the minsize gate (issue #77a).
     addPass(createZ80LoopRotateLegacyPass());
+    // Sink enclosing-loop IVs that only seed a nested loop's cold path back
+    // into an on-demand recompute (ravn/llvm-z80#250, sieve scan loop).  Must
+    // run after the base addIRPasses() (LSR) so it can undo LSR's hoist.
+    // Experimental / opt-in.
+    // Auto-on at -O2 only (ravn/llvm-z80#250); the pass skips -Os/-Oz functions
+    // internally, and an explicit -mllvm flag overrides.
+    if (isZ80SinkColdLoopIVEnabled(getOptLevel()))
+      addPass(createZ80SinkColdLoopIVLegacyPass());
+    // Pointer-IV strength reduction for scale-1 byte-array loops
+    // (ravn/llvm-z80#250).  MUST run after the base addIRPasses() call
+    // above (which runs LSR) -- see Z80LoopInstrFormPrep.cpp's file
+    // comment for why an earlier placement would be re-undone by LSR.
+    // Auto-on at -O2 only (opt-size functions skipped inside the pass).
+    if (isZ80LoopInstrFormPrepEnabled(getOptLevel()))
+      addPass(createZ80LoopInstrFormPrepLegacyPass());
   }
 }
 
@@ -463,6 +489,23 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     insertPass(&llvm::MachineSchedulerID,
                createZ80PinAluAccumulatorPass());
 
+    // Z80PinLoopPointer: pin a byte-array pointer-walk induction variable to
+    // HL (companion to Z80LoopInstrFormPrep, ravn/llvm-z80#250).  Same
+    // lifecycle as the pins above -- pre-RA, before the LiveIntervals re-run,
+    // so the HLReg class constraint is present when greedy runs.  Gated behind
+    // -z80-pin-loop-pointer (default off).
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80PinLoopPointerPass());
+
+    // Z80KeepLoopPointerInPair: keep the loop-carried pointer of an i16 `*p++`
+    // store loop out of IX/IY by constraining it to GR16NoIR (sibling of the
+    // pin above for the WORD walk -- ravn/llvm-z80#249 / #251, where pinning to
+    // HL is impossible because the 2-byte store walks HL).  Same lifecycle --
+    // pre-RA, before the LiveIntervals re-run.  Gated behind
+    // -z80-enable-keep-loop-pointer-in-pair (default off).
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80KeepLoopPointerInPairPass());
+
     // Keep IX/IY-incompatible GR16 values out of IX/IY (only when IY is
     // allocatable -- gated internally on -z80-unreserve-iy).  Narrows plain
     // GR16 vregs that are byte-decomposed (sub_lo/sub_hi) or used where
@@ -512,7 +555,18 @@ void Z80PassConfig::addPreEmitPass() {
   addPass(&BranchRelaxationPassID);
   // Collapse JR_CC+JP trampolines from BranchRelaxation into JP_CC.
   addPass(createZ80BranchCleanupPass());
+  // High-byte-first rewrite of hot 16-bit loop exit tests (ravn/llvm-z80#250
+  // lever 2).  Runs after branch cleanup (conditional exit is a documented
+  // JP_cc) and before ExpandPseudo (CMP16_FLAGS still a single pseudo to
+  // match).  Emits only absolute JPs, so post-relaxation placement is safe.
+  // Gated behind -z80-enable-hbf-branch (default off; size-negative).
+  addPass(createZ80HighByteFirstBranchPass());
   // Expand pseudos that split MBBs (variable shift loops) after branch
   // relaxation. The generated JR/DJNZ branches are always short-range.
   addPass(createZ80ExpandPseudoPass());
+  // General late peephole: drop any unconditional branch to the fall-through
+  // block (a jump-to-next-address).  Runs LAST so it catches redundant jumps
+  // from ANY source (hbf split blocks, pseudo expansion, cleanup) -- BranchFold
+  // ran too early to see them.
+  addPass(createZ80RemoveJumpToNextPass());
 }

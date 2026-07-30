@@ -55,6 +55,29 @@ private:
   bool hasFPImpl(const MachineFunction &MF) const override;
 };
 
+// Classify the expansion path that eliminateCallFramePseudoInstr will choose
+// for an ADJCALLSTACKUP with the given net adjustment and SM83 flag.
+// adjCallStackUpClobbersReg (Z80RegisterInfo.cpp) must use the same logic to
+// determine which registers the pseudo will modify; sharing this helper keeps
+// the two sides in sync.
+//
+// Paths:
+//   ACSU_Erase   - amount == 0: pseudo is erased, no register effects.
+//   ACSU_AddSPe  - SM83 + amount <= 127: ADD SP,e (clobbers only SP/flags).
+//   ACSU_PopAF   - amount <= 16: POP AF × N (clobbers A/flags, not HL).
+//   ACSU_AddHLSP - amount > 16: LD HL,n; ADD HL,SP; LD SP,HL (clobbers HL/flags).
+enum AdjCallStackUpPath { ACSU_Erase, ACSU_AddSPe, ACSU_PopAF, ACSU_AddHLSP };
+
+inline AdjCallStackUpPath classifyACSU(int64_t Amount, bool IsSM83) {
+  if (Amount == 0)
+    return ACSU_Erase;
+  if (IsSM83 && Amount <= 127)
+    return ACSU_AddSPe;
+  if (Amount <= 16)
+    return ACSU_PopAF;
+  return ACSU_AddHLSP;
+}
+
 } // namespace llvm
 
 #endif // not LLVM_LIB_TARGET_Z80_Z80FRAMELOWERING_H

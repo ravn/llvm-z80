@@ -3552,6 +3552,8 @@ StringRef CXXNameMangler::getCallingConvQualifierName(CallingConv CC) {
 #undef CC_VLS_CASE
   case CC_Z80SDCCCall0:
   case CC_Z80AllReg:
+  case CC_Z80FastCall:
+  case CC_Z80Callee:
     // FIXME: we should be mangling all of the above.
     return "";
 

@@ -217,10 +217,15 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   // Z80's division runtime returns both quotient and remainder in one call:
   //   Z80:  __udivhi3: HL÷DE → DE=quot, HL=rem
   //   SM83: __udivhi3: DE÷BC → BC=quot, HL=rem
-  // Custom-lower i16 G_UDIVREM/G_SDIVREM to a single runtime call.
+  // Custom-lower G_UDIVREM/G_SDIVREM to a single runtime call.
   // i8 and others fall back to separate div+rem.
+  //
+  // i16 is selected directly in ISel (register-only ABI).  i32 is routed by
+  // legalizeCustom to the fused __udivmodsi4 / __divmodsi4 (quotient returned,
+  // remainder via a caller pointer) so an adjacent x/y, x%y pair costs one
+  // 32-bit division instead of two (ravn/llvm-z80#248).
   getActionDefinitionsBuilder({G_UDIVREM, G_SDIVREM})
-      .customFor({S16})
+      .customFor({S16, S32})
       .lower();
 
   // Comparisons
@@ -881,9 +886,49 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_UDIVREM:
-  case TargetOpcode::G_SDIVREM:
-    // Pass through to ISel — the runtime call returns both quot and rem.
+  case TargetOpcode::G_SDIVREM: {
+    Register QuotReg = MI.getOperand(0).getReg();
+    if (MRI.getType(QuotReg).getSizeInBits() != 32)
+      // i16: the register-only fused divrem is selected directly in ISel.
+      return true;
+
+    // i32: fuse into the compiler-rt __udivmodsi4 / __divmodsi4 ABI
+    // (ravn/llvm-z80#248).  One runtime division returns the quotient (in
+    // registers) and writes the remainder through a caller-provided 4-byte
+    // stack buffer, instead of the two separate __[u]divsi3 + __[u]modsi3
+    // calls the split-and-lower path emits (each re-running the full 32-bit
+    // division core).
+    bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
+    const char *FuncName = IsSigned ? "__divmodsi4" : "__udivmodsi4";
+    Register RemReg = MI.getOperand(1).getReg();
+    Register LHSReg = MI.getOperand(2).getReg();
+    Register RHSReg = MI.getOperand(3).getReg();
+
+    MachineFunction &MF = MIRBuilder.getMF();
+    LLVMContext &Ctx = MF.getFunction().getContext();
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    Type *PtrTy = PointerType::getUnqual(Ctx);
+
+    // Stack slot that receives the remainder.
+    int FI = MF.getFrameInfo().CreateStackObject(4, Align(2), false);
+    auto RemPtr = MIRBuilder.buildFrameIndex(LLT::pointer(0, 16), FI);
+
+    // quotient = __[u]divmodsi4(dividend, divisor, &rem_slot)
+    auto Status = Helper.createLibcall(
+        FuncName, {QuotReg, I32Ty, 0},
+        {{LHSReg, I32Ty, 0}, {RHSReg, I32Ty, 1}, {RemPtr.getReg(0), PtrTy, 2}},
+        CallingConv::C, LocObserver, &MI);
+    if (Status != LegalizerHelper::Legalized)
+      return false;
+
+    // Load the remainder the callee stored into the slot.
+    auto *MMO = MF.getMachineMemOperand(MachinePointerInfo::getFixedStack(MF, FI),
+                                        MachineMemOperand::MOLoad, 4, Align(2));
+    MIRBuilder.buildLoad(RemReg, RemPtr, *MMO);
+
+    MI.eraseFromParent();
     return true;
+  }
 
   case TargetOpcode::G_VASTART: {
     // Store the address of the first vararg into the va_list pointer.
@@ -1422,11 +1467,18 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
           Dir = Direction::LDDR;
       };
 
-      if (DstOff && SrcBase == Register() && SrcPtr == DstBase) {
-        // DstPtr = SrcPtr + DstOff
+      if (DstOff && SrcPtr == DstBase) {
+        // DstPtr = SrcPtr + DstOff.  The direction is sign(DstOff) regardless
+        // of what SrcPtr itself is: SrcPtr may be a leaf (load/param/global)
+        // OR itself a G_PTR_ADD with a *runtime* offset (e.g. screen+cury).
+        // Do NOT require SrcBase to be empty here -- getPtrAddOff() sets
+        // SrcBase as a side effect even when SrcPtr's offset is non-constant,
+        // which would spuriously block this (correct) case for the common
+        // screen-scroll shape memmove(base+K, base, n).
         setFromDelta(*DstOff);
-      } else if (SrcOff && DstBase == Register() && DstPtr == SrcBase) {
-        // SrcPtr = DstPtr + SrcOff -> DstPtr = SrcPtr - SrcOff
+      } else if (SrcOff && DstPtr == SrcBase) {
+        // SrcPtr = DstPtr + SrcOff -> DstPtr = SrcPtr - SrcOff.  Symmetric:
+        // DstPtr may itself be a runtime-offset G_PTR_ADD.
         setFromDelta(-*SrcOff);
       } else if (DstOff && SrcOff && DstBase == SrcBase) {
         // Both share a common base; direction is sign of DstOff-SrcOff.
@@ -1488,6 +1540,29 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       LLT S16 = LLT::scalar(16);
       auto SizeC = getIConstantVRegSExtVal(Size, MRI);
 
+      // Materialize Base + Total (a constant).  If Base is a constant-address
+      // pointer G_INTTOPTR(G_CONSTANT C1), fold it into a single constant
+      // pointer G_INTTOPTR(C1 + Total) so ISel emits one `LD rr, imm` instead
+      // of `LD rr, C1; ADD rr, Total`.  (A G_GLOBAL_VALUE base already folds
+      // via the ISel G_PTR_ADD(GV, const) pattern, so only the constant-address
+      // case needs handling here.)  Used for the screen-scroll idiom where the
+      // display base is a fixed MMIO address like (byte *)0xF800.
+      auto finishEndPtr = [&](Register Ptr, Register Base,
+                              int64_t Total) -> Register {
+        if (Total == 0)
+          return Base;
+        if (MachineInstr *BDef = MRI.getVRegDef(Base);
+            BDef && BDef->getOpcode() == TargetOpcode::G_INTTOPTR) {
+          if (auto C1 =
+                  getIConstantVRegSExtVal(BDef->getOperand(1).getReg(), MRI)) {
+            auto NC = MIRBuilder.buildConstant(S16, (int16_t)(*C1 + Total));
+            return MIRBuilder.buildIntToPtr(MRI.getType(Ptr), NC).getReg(0);
+          }
+        }
+        auto Off = MIRBuilder.buildConstant(S16, Total);
+        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+      };
+
       auto buildEndPtr = [&](Register Ptr, int64_t ExtraOff) -> Register {
         // Walk Ptr back through chained G_PTR_ADD with constant offsets.
         Register Base = Ptr;
@@ -1503,10 +1578,53 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
           Total += *OffC;
           Base = Def->getOperand(1).getReg();
         }
-        if (Total == 0)
-          return Base;
-        auto Off = MIRBuilder.buildConstant(S16, Total);
-        return MIRBuilder.buildPtrAdd(MRI.getType(Ptr), Base, Off).getReg(0);
+        return finishEndPtr(Ptr, Base, Total);
+      };
+
+      // Runtime-Size cancellation: for the screen-scroll idiom
+      //   base = p + i;  memmove(base + K, base, C - i)   (K,C constants)
+      // the LDDR end pointer is start + Size - 1 = (p + i) + (C - i) - 1
+      // = p + C - 1: the runtime term i cancels between the pointer's +i
+      // and Size's -i, leaving a constant offset.  Detect Size = G_SUB(C, X)
+      // and a matching single +X in the pointer's G_PTR_ADD chain so the end
+      // pointer folds to `LD HL, base+const` instead of a runtime add.
+      // Modular 16-bit arithmetic makes X + (C - X) = C exact regardless of
+      // overflow.  Falls back to the runtime (Size-1) add when unmatched.
+      std::optional<int64_t> SubC;
+      Register SubX;
+      if (MachineInstr *SD = MRI.getVRegDef(Size);
+          SD && SD->getOpcode() == TargetOpcode::G_SUB) {
+        if (auto C = getIConstantVRegSExtVal(SD->getOperand(1).getReg(), MRI)) {
+          SubC = C;
+          SubX = SD->getOperand(2).getReg();
+        }
+      }
+      auto tryCancelEnd = [&](Register Ptr) -> Register {
+        if (!SubC)
+          return Register();
+        Register Base = Ptr;
+        int64_t Total = *SubC - 1; // + (Size - 1), with the -X cancelled below
+        bool FoundX = false;
+        while (true) {
+          MachineInstr *Def = MRI.getVRegDef(Base);
+          if (!Def || Def->getOpcode() != TargetOpcode::G_PTR_ADD)
+            break;
+          Register Off = Def->getOperand(2).getReg();
+          if (auto OffC = getIConstantVRegSExtVal(Off, MRI)) {
+            Total += *OffC;
+            Base = Def->getOperand(1).getReg();
+            continue;
+          }
+          if (!FoundX && Off == SubX) {
+            FoundX = true; // +X cancels the -X in Size
+            Base = Def->getOperand(1).getReg();
+            continue;
+          }
+          break;
+        }
+        if (!FoundX)
+          return Register();
+        return finishEndPtr(Ptr, Base, Total);
       };
 
       Register SrcEnd, DstEnd;
@@ -1515,12 +1633,28 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         SrcEnd = buildEndPtr(SrcPtr, Off);
         DstEnd = buildEndPtr(DstPtr, Off);
       } else {
-        auto One = MIRBuilder.buildConstant(S16, 1);
-        auto SizeM1 = MIRBuilder.buildSub(S16, Size, One);
-        SrcEnd = MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr, SizeM1)
-                     .getReg(0);
-        DstEnd = MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, SizeM1)
-                     .getReg(0);
+        Register SrcC = tryCancelEnd(SrcPtr);
+        Register DstC = tryCancelEnd(DstPtr);
+        // Build a runtime (Size-1) add only for the pointer(s) that didn't
+        // cancel; share the one Size-1 sub if both need it.
+        Register SizeM1;
+        auto getSizeM1 = [&]() -> Register {
+          if (!SizeM1.isValid()) {
+            auto One = MIRBuilder.buildConstant(S16, 1);
+            SizeM1 = MIRBuilder.buildSub(S16, Size, One).getReg(0);
+          }
+          return SizeM1;
+        };
+        SrcEnd = SrcC.isValid()
+                     ? SrcC
+                     : MIRBuilder.buildPtrAdd(MRI.getType(SrcPtr), SrcPtr,
+                                              getSizeM1())
+                           .getReg(0);
+        DstEnd = DstC.isValid()
+                     ? DstC
+                     : MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr,
+                                              getSizeM1())
+                           .getReg(0);
       }
       MIRBuilder.buildCopy(Register(Z80::HL), SrcEnd);
       MIRBuilder.buildCopy(Register(Z80::DE), DstEnd);

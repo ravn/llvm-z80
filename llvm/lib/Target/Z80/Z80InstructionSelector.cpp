@@ -32,6 +32,8 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsZ80.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -362,6 +364,37 @@ Z80InstructionSelector::countFoldablePatternsInBB(MachineBasicBlock &MBB,
 }
 
 // Emit a runtime library call for 16-bit binary ops.
+// ravn/llvm-z80 #244: at -O3 (CodeGenOptLevel::Aggressive), route i16 div/mod
+// runtime calls to the speed variants (__divhi3_fast, __udivhi3_fast,
+// __modhi3_fast, __umodhi3_fast).  Those use repeated subtraction (dcc's
+// DRSU/D16U shape): a handful of 16-bit `sbc hl,de` steps for the common
+// small-quotient case (e.g. the digits-of-e kernel, quotients ~<=11), with a
+// cap-16 fallback tail-calling the bounded __udivhi3.  On `e` this is ~2x
+// faster than the small routine and ~31% faster than dcc.  Every other opt
+// level (-O0/-O1/-O2/-Os/-Oz) and any function marked optsize keep the small
+// default routines, so no production firmware (which builds at -Os) is touched.
+// NOTE: speculative — a large quotient wastes up to 16 subtractions before the
+// fallback, making -O3 ~1.6x slower than -Os on that (uncommon) shape; the
+// planned per-call-site static selection (see
+// tasks/plan-2026-07-14-issue244-static-divselect.md, index B26) will route
+// provably-large sites to the bounded routine.
+// Z80 only -- SM83's __udivhi3 has a different register ABI and no _fast
+// variant, so it is left untouched.
+static const char *selectDivModRuntimeName(const MachineFunction &MF,
+                                           const Z80Subtarget &STI,
+                                           const char *Base) {
+  if (STI.hasSM83() ||
+      MF.getTarget().getOptLevel() != CodeGenOptLevel::Aggressive ||
+      MF.getFunction().hasOptSize())
+    return Base;
+  return StringSwitch<const char *>(Base)
+      .Case("__divhi3", "__divhi3_fast")
+      .Case("__udivhi3", "__udivhi3_fast")
+      .Case("__modhi3", "__modhi3_fast")
+      .Case("__umodhi3", "__umodhi3_fast")
+      .Default(Base);
+}
+
 // Z80:  HL=Src1, DE=Src2, result in DE  (__sdcccall(1))
 // SM83: DE=Src1, BC=Src2, result in BC  (__sdcccall(1))
 bool Z80InstructionSelector::selectRuntimeLibCall16(MachineInstr &MI,
@@ -370,6 +403,8 @@ bool Z80InstructionSelector::selectRuntimeLibCall16(MachineInstr &MI,
   MachineFunction &MF = *MBB.getParent();
   MachineRegisterInfo &MRI = MF.getRegInfo();
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
+
+  FuncName = selectDivModRuntimeName(MF, STI, FuncName);
 
   Register DstReg = MI.getOperand(0).getReg();
   Register Src1Reg = MI.getOperand(1).getReg();
@@ -1413,7 +1448,34 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           return false;
         return Def->getOperand(1).getCImm()->isZero();
       };
-      if (isConstZero(RHS)) {
+      // SLT -1, X (from SGT X,-1) and SGE -1, X (from SLE X,-1) are *also* pure
+      // sign-bit tests: X > -1 ⇔ X >= 0 ⇔ sign clear; X <= -1 ⇔ X < 0 ⇔ sign set.
+      // The 8-bit path already handles this (the LC==-1 case above); the 16-bit
+      // path historically did not, so the natural `if (x & 0x8000)` /
+      // `x >= 0` idiom (canonicalised by the middle-end to `sgt x, -1`) fell
+      // through to a full `LD HL,0xFFFF; SBC HL,rr` 16-bit compare.  Recognise
+      // the LHS==-1 form and emit the same one-instruction sign test as
+      // `SLT/SGE against 0`.  ravn/llvm-z80: dcc-corpus CRC-16 inner loop.
+      auto isConstMinusOne = [&](Register R) -> bool {
+        MachineInstr *Def = MRI.getVRegDef(R);
+        if (!Def || Def->getOpcode() != TargetOpcode::G_CONSTANT)
+          return false;
+        return Def->getOperand(1).getCImm()->isMinusOne();
+      };
+      if (isConstMinusOne(LHS) &&
+          (Pred == CmpInst::ICMP_SLT || Pred == CmpInst::ICMP_SGE)) {
+        if (!RBI.constrainGenericRegister(RHS, Z80::GR16RegClass, MRI))
+          return false;
+        Register HiByte = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), HiByte)
+            .addReg(RHS, RegState{}, Z80::sub_hi);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(HiByte);
+        // ADD A,A shifts bit 7 (the 16-bit sign bit) into carry.
+        BuildMI(MBB, MI, DL, TII.get(Z80::ADD_A_A));
+        // SLT -1, X (X >= 0): branch on no carry; SGE -1, X (X < 0): on carry.
+        JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_NC_nn : Z80::JP_C_nn;
+      } else if (isConstZero(RHS)) {
         // SLT X, 0: branch if sign bit set (bit 7 of high byte)
         // SGE X, 0: branch if sign bit clear
         if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI))
@@ -5794,7 +5856,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       return false;
 
     bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
-    const char *FuncName = IsSigned ? "__divhi3" : "__udivhi3";
+    const char *FuncName = selectDivModRuntimeName(
+        MF, STI, IsSigned ? "__divhi3" : "__udivhi3");
     Module *M = const_cast<Module *>(MF.getFunction().getParent());
     FunctionCallee Func = M->getOrInsertFunction(
         FuncName, FunctionType::get(Type::getInt16Ty(M->getContext()),

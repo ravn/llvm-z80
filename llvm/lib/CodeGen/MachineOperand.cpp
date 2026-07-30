@@ -380,7 +380,12 @@ bool MachineOperand::isIdenticalTo(const MachineOperand &Other) const {
     return false;
   }
   case MachineOperand::MO_MCSymbol:
-    return getMCSymbol() == Other.getMCSymbol();
+    // Compare the offset too: targets (e.g. Z80 static-frame slots) attach a
+    // nonzero offset to an MO_MCSymbol via setOffset(). Ignoring it lets
+    // branch-folder tail-merge two stores to __sfrend-2 and __sfrend-4 as
+    // "identical", dropping one store (ravn/llvm-z80#247).
+    return getMCSymbol() == Other.getMCSymbol() &&
+           getOffset() == Other.getOffset();
   case MachineOperand::MO_DbgInstrRef:
     return getInstrRefInstrIndex() == Other.getInstrRefInstrIndex() &&
            getInstrRefOpIndex() == Other.getInstrRefOpIndex();
@@ -450,7 +455,8 @@ hash_code llvm::hash_value(const MachineOperand &MO) {
   case MachineOperand::MO_Metadata:
     return hash_combine(MO.getType(), MO.getTargetFlags(), MO.getMetadata());
   case MachineOperand::MO_MCSymbol:
-    return hash_combine(MO.getType(), MO.getTargetFlags(), MO.getMCSymbol());
+    return hash_combine(MO.getType(), MO.getTargetFlags(), MO.getMCSymbol(),
+                        MO.getOffset());
   case MachineOperand::MO_DbgInstrRef:
     return hash_combine(MO.getType(), MO.getTargetFlags(),
                         MO.getInstrRefInstrIndex(), MO.getInstrRefOpIndex());

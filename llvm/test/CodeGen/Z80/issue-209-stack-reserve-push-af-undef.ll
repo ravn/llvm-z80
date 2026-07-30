@@ -1,7 +1,7 @@
-; RUN: llc -mtriple=z80 -O2 -verify-machineinstrs -z80-auto-static-stack=false < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -z80-auto-static-stack=false < %s | FileCheck %s --check-prefix=MIR
+; RUN: llc -mtriple=z80 -O2 -verify-machineinstrs -z80-enable-auto-static-stack=false < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -z80-enable-auto-static-stack=false < %s | FileCheck %s --check-prefix=MIR
 ;
-; -z80-auto-static-stack=false: this test exercises the PUSH AF stack-space
+; -z80-enable-auto-static-stack=false: this test exercises the PUSH AF stack-space
 ; reservation in the dynamic frame prologue, which auto-static-stack (#176,
 ; default on) bypasses by routing @g's locals to BSS.  The reservation path is
 ; still reached for opted-out / ISR / address-taken / stack-arg functions.

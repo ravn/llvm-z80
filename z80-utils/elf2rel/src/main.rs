@@ -50,6 +50,13 @@ const R_PCR: u8 = 0x04;
 const SDCC_AREAS: &[(&str, u8)] = &[
     ("_CODE", 0),
     ("_DATA", 0),
+    // Uninitialized statics (ELF .bss/.bss.*). Unlike _CODE/_DATA, this area's
+    // bytes are never written to the .rel file: SDCC's own _BSS convention is
+    // that the linker/crt0 zero it at load time, not that it is file-resident.
+    // See the ravn/llvm-z80-local fix for the upstream bug (llvm-z80/llvm-z80#30)
+    // where elf2rel used to route .bss into _DATA and materialize real zero
+    // bytes for it, inflating every .COM with a large uninitialized static.
+    ("_BSS", 0),
     ("_INITIALIZED", 0),
     ("_DABS", 8),
     ("_HOME", 0),
@@ -68,7 +75,7 @@ fn section_to_area(name: &str) -> &'static str {
     } else if name == ".data" || name.starts_with(".data.") {
         "_DATA"
     } else if name == ".bss" || name.starts_with(".bss.") {
-        "_DATA"
+        "_BSS"
     } else if name == ".rodata" || name.starts_with(".rodata.") {
         "_CODE"
     } else {
@@ -293,6 +300,12 @@ struct RelReloc {
 struct AreaData {
     bytes: Vec<u8>,
     relocs: Vec<(u32, RelReloc)>,
+    // Logical size of the area (used for symbol offsets and the emitted
+    // "A <name> size <hex>" header). Equals bytes.len() for _CODE/_DATA,
+    // where every byte is physically written. For _BSS it instead tracks
+    // the sum of SHT_NOBITS section sizes without any bytes being appended
+    // to `bytes` -- _BSS is allocated/zeroed at load time, not file-resident.
+    logical_len: u32,
 }
 
 fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String> {
@@ -325,6 +338,7 @@ fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String>
             AreaData {
                 bytes: Vec::new(),
                 relocs: Vec::new(),
+                logical_len: 0,
             },
         );
     }
@@ -356,17 +370,29 @@ fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String>
 
         let area_name = section_to_area(name);
         let area = area_data.get_mut(area_name).unwrap();
-        let offset = area.bytes.len() as u32;
+        // Offset must come from logical_len, not bytes.len(): for a _BSS
+        // area spanning multiple .bss.* sections, bytes.len() stays 0 the
+        // whole time (no bytes are ever appended for SHT_NOBITS), so it
+        // would hand out offset 0 to every symbol instead of the correct,
+        // increasing per-section offset.
+        let offset = area.logical_len;
         section_area_map.insert(si, (area_name, offset));
 
         if sh_type == elf::SHT_PROGBITS {
             let section_data = section.data(endian, data).unwrap_or(&[]);
             area.bytes.extend_from_slice(section_data);
+            area.logical_len = area.bytes.len() as u32;
         } else {
+            // SHT_NOBITS (.bss): grow the logical size only. Do NOT append
+            // zero bytes to `bytes` -- that's the upstream bug (materializing
+            // uninitialized statics as literal on-disk zero fill, e.g. a
+            // char buf[4096] with no initializer inflating the .rel/.COM by
+            // 4096 bytes for nothing). _BSS never emits T-records; only its
+            // "A _BSS size <hex>" header and symbol offsets need this value.
             let size = section.sh_size(endian) as usize;
-            area.bytes.resize(area.bytes.len() + size, 0);
+            area.logical_len += size as u32;
         }
-        *area_sizes.get_mut(area_name).unwrap() = area.bytes.len() as u32;
+        *area_sizes.get_mut(area_name).unwrap() = area.logical_len;
     }
 
     struct RelSymbol {

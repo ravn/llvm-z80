@@ -30,6 +30,28 @@ make clean && make CLANG="$CLANG" LLDLD="$LLDLD" \
 Per-snapshot disk: ~200 MB.  Snapshots live in
 `/Users/ravn/z80/llvm-z80/build-snapshots/` (gitignored).
 
+## `m5-loop-reload-scan.py` — M5 (#250) per-iteration base-reload oracle
+
+Turns the luck-based discovery of the M5 pattern (`ld hl,_base; add hl,rr`
+re-loaded every iteration instead of a running pointer, ravn/llvm-z80#250)
+into a repeatable detector.  Scans clang/llc `-S` output and flags every
+in-loop `add hl/ix/iy`, tagging `GLOBAL-BASE(sym)` for genuine per-iteration
+base reloads (M5) vs `PAIR-RECON` (the #99 IY-exile family) vs benign
+`add-in-loop`.
+
+```
+clang --target=z80 -Oz -mllvm -disable-lsr ... -S foo.c -o foo.s
+tasks/tools/m5-loop-reload-scan.py foo.s [bar.s ...]
+```
+
+A `GLOBAL-BASE` hit is a candidate: confirm by eye it is inside the back-edge,
+then profile to see if the loop is hot (cold call-bounded init loops pay the
+21 T reload as noise).  Corpus + production sweep 2026-07-12 found new
+instances (fannkuch `_perm`/`_count`, autoload FDC `_fdc_result`/`_fdc_cmd`);
+red/green on fannkuch's hot reversal loop measured **−20 % T-states, −48 B**
+from removing the `_perm` reloads.  See the M5 entry in
+`tasks/known-suboptimal-codegen.md`.
+
 ## sccache integration
 
 The build-macos/ cmake cache is wired to `~/.cargo/bin/sccache` via

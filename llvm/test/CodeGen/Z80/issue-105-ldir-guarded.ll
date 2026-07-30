@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-verify-inline-runtime-size < %s | FileCheck %s
 
 ; ravn/llvm-z80#105 — variable-size memcpy/memmove/memset on Z80
 ; lower to inline LDIR.  LDIR with BC=0 runs 65536 iterations (BC test

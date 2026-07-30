@@ -1,0 +1,31 @@
+# llvm-z80 cost-model measurement (Phase 0 harness)
+# tag: iy-unreserved
+# date: 2026-07-14T09:37:18Z
+# clang: /Users/ravn/z80/llvm-z80/build-macos/bin/clang
+# clang_sha: 96394df0eb49
+# clang_built: 2026-07-14T05:53:30Z
+# clang_uncommitted_changes: 1
+# clang_extra: '-mllvm -z80-unreserve-iy'
+# build_dir: /Users/ravn/z80/llvm-z80/build-macos
+tag	target	metric	value
+iy-unreserved	aes_Oz_default	text	2184
+iy-unreserved	aes_Oz_default	bin	2418
+iy-unreserved	aes_Oz_default	tstates	16563208
+iy-unreserved	aes_Oz_default	verify	PASS
+iy-unreserved	aes_O2_default	text	4226
+iy-unreserved	aes_O2_default	bin	4964
+iy-unreserved	aes_O2_default	tstates	16455727
+iy-unreserved	aes_O2_default	verify	PASS
+iy-unreserved	autoload	text_raw	3393
+iy-unreserved	autoload	prom_bin	2035
+iy-unreserved	autoload	prom_free	13
+iy-unreserved	autoload	main_relocated_size	486
+iy-unreserved	autoload	rom_o_text	1706
+iy-unreserved	cpnos	prom1_bin	1989
+iy-unreserved	cpnos	prom1_free	59
+iy-unreserved	cpnos	payload	1986
+iy-unreserved	rcbios	bios_bytes	5918
+iy-unreserved	runtime	pass	924
+iy-unreserved	runtime	fail	0
+iy-unreserved	runtime	fatal	0
+iy-unreserved	runtime	skip	258

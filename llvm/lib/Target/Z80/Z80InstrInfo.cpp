@@ -2293,6 +2293,70 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     case Z80::UMOD16: return IsSM83 ? 45 : 31;
     case Z80::SDIV16: return IsSM83 ? 79 : 66;
     case Z80::SMOD16: return IsSM83 ? 78 : 64;
+    // Z80: AND A(1)+SBC HL,rr(2)+SBC A,A(1)+AND n(2) = 6
+    // SM83: LD A,L(1)+SUB lo(1)+LD L,A(1)+LD A,H(1)+SBC hi(1)+LD H,A(1)
+    //       +SBC A,A(1)+AND n(2) = 9
+    case Z80::SUB_HL_rr_BO: return IsSM83 ? 9 : 6;
+    // Z80: LD A,r(1)+RRCA(1)+ADC HL,rr(2)+SBC A,A(1)+AND n(2) = 7
+    // SM83: LD A,r(1)+RRCA(1)+LD A,L(1)+ADC lo(1)+LD L,A(1)+LD A,H(1)+ADC hi(1)
+    //       +LD H,A(1)+SBC A,A(1)+AND n(2) = 11
+    case Z80::ADC_HL_rr_CIO: return IsSM83 ? 11 : 7;
+    // Z80: LD A,r(1)+RRCA(1)+SBC HL,rr(2)+SBC A,A(1)+AND n(2) = 7
+    // SM83: LD A,r(1)+RRCA(1)+LD A,L(1)+SBC lo(1)+LD L,A(1)+LD A,H(1)+SBC hi(1)
+    //       +LD H,A(1)+SBC A,A(1)+AND n(2) = 11
+    case Z80::SBC_HL_rr_BIO: return IsSM83 ? 11 : 7;
+    // Variable-shift pseudos (Z80ExpandPseudo::expandVarShift) expand — AFTER
+    // BranchRelaxation — into a count-guarded shift loop.  They are Z80Pseudo,
+    // so without an entry here they fall through to `if (isPseudo) return 0`
+    // and BranchRelaxation counts them as 0 bytes; the resulting under-estimate
+    // leaves a JR whose real offset exceeds ±127, which the object emitter
+    // silently relaxes to JP but the textual .s does not — ravn/llvm-z80#267
+    // (same class as #266).  Layout of every expansion (see expandVarShift):
+    //   head:  INC B(1) + DEC B(1) + JR Z,tail(2)          = 4
+    //   loop:  <body>  + terminator
+    //   term:  Z80 DJNZ(2)      |  SM83 DEC B(1)+JR NZ(2)=3
+    // Bodies: SLA/SRL/SRA A = CB-prefixed 2 B; RLCA/RRCA/ADD HL,HL = 1 B;
+    //         16-bit right shift = SRL/SRA H(2) + RR L(2) = 4 B.
+    // Worked example (sf_fix, #267 repro): one SHL16_VAR at obj 0xab is
+    //   04 05 28 03 / 29 / 10 fd = 7 B; one LSHR16_VAR at 0xba is
+    //   04 05 28 06 / cb 3c cb 1d / 10 fa = 10 B — both reported 0 before.
+    case Z80::SHL8_VAR:                                   // head4 + SLA A(2) + term
+    case Z80::LSHR8_VAR:                                  // head4 + SRL A(2) + term
+    case Z80::ASHR8_VAR:  return IsSM83 ? 9 : 8;          // head4 + SRA A(2) + term
+    case Z80::ROTL8_VAR:                                  // head4 + RLCA(1) + term
+    case Z80::ROTR8_VAR:                                  // head4 + RRCA(1) + term
+    case Z80::SHL16_VAR:  return IsSM83 ? 8 : 7;          // head4 + ADD HL,HL(1) + term
+    case Z80::LSHR16_VAR:                                 // head4 + SRL H+RR L(4) + term
+    case Z80::ASHR16_VAR: return IsSM83 ? 11 : 10;        // head4 + SRA H+RR L(4) + term
+    // #267 systemic: the remaining block-splitting / multi-byte pseudos that
+    // Z80ExpandPseudo expands AFTER BranchRelaxation.  Same class as the
+    // VAR-shifts above — undersized here == far `jr` under-relaxation.  Sizes
+    // measured with the #240 drift guard (`-z80-verify-inline-runtime-size`,
+    // which sums the real expansion) on both subtargets; the guard keeps them
+    // honest in CI (inline-runtime-size-verify.mir).  SM83 loop terminators use
+    // DEC B(1)+JR NZ(2)=3 vs Z80 DJNZ(2), hence the +1 on the loop pseudos.
+    case Z80::MUL8:   return IsSM83 ? 13 : 12;
+    case Z80::UDIV8:  return IsSM83 ? 16 : 15;
+    case Z80::UMOD8:  return IsSM83 ? 15 : 14;
+    case Z80::SDIV8:  return IsSM83 ? 38 : 37;
+    case Z80::SMOD8:  return IsSM83 ? 35 : 34;
+    // Saturating i8 (expandSatArith8) — subtarget-invariant (signed forms use
+    // JP PO and are Z80-only; the legalizer avoids them on SM83).
+    case Z80::UADDSAT8: return 5;   // ADD A,src(1)+JR NC(2)+LD A,#FF(2)
+    case Z80::USUBSAT8: return 4;   // SUB src(1)+JR NC(2)+XOR A(1)
+    case Z80::SADDSAT8:             // ADD A,src(1)+JP PO(3)+RLCA(1)+SBC A,A(1)+XOR #80(2)
+    case Z80::SSUBSAT8: return 8;   // SUB src(1)+JP PO(3)+RLCA(1)+SBC A,A(1)+XOR #80(2)
+    // Guarded block copy/fill (expandLdirGuarded / expandMemsetLdirGuarded) —
+    // Z80-only (LDIR/LDDR don't exist on SM83; gated by hasZ80()).  LDIR_GUARDED
+    // and LDDR_GUARDED share expandLdirGuarded and both block ops are 2-byte
+    // ED-prefixed, so both are 6.
+    case Z80::LDIR_GUARDED:        // JR Z(2)+LDIR(2) + guard head(2)
+    case Z80::LDDR_GUARDED: return 6;
+    case Z80::MEMSET_LDIR_GUARDED: return 15;
+    // #27 indexed load/store (opt-in, -z80-idx-addr) — each expands to a single
+    // LD r,(IX/IY+d) / LD (IX/IY+d),r = DD/FD prefix + opcode + disp = 3 B.
+    case Z80::LOAD_IDX8:
+    case Z80::STORE_IDX8: return 3;
     default: break;
     }
   }
@@ -2555,20 +2619,13 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   case Z80::ADD_HL_rr_CO: // ADD HL,rr(1) + SBC A,A(1) + AND n(2) = 4
     return 4;
 
-  case Z80::SUB_HL_rr_BO: // AND A(1) + SBC HL,rr(2) + SBC A,A(1) + AND n(2) = 6
-    return 6;
-
   case Z80::CMP16_ULT: // LD A,lo(1) + SUB lo(1) + LD A,hi(1) + SBC A,hi(1) +
                        // SBC A,A(1) + AND 1(2) = 7
     return 7;
 
   // CAPTURE_PV: PUSH AF(1) + POP HL(1) + LD A,L(1) + RRCA(1) + RRCA(1) + AND
-  // n(2) = 7
+  // n(2) = 7 (same on both targets)
   case Z80::CAPTURE_PV:
-  case Z80::ADC_HL_rr_CIO: // LD A,r(1) + RRCA(1) + ADC HL,rr(2) + SBC A,A(1) +
-                           // AND n(2) = 7
-  case Z80::SBC_HL_rr_BIO: // LD A,r(1) + RRCA(1) + SBC HL,rr(2) + SBC A,A(1) +
-                           // AND n(2) = 7
     return 7;
 
   // Zero test pseudo

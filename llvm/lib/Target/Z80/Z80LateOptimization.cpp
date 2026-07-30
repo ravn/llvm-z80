@@ -520,6 +520,58 @@ static bool z80IsExplicitSPWrite(const MachineInstr &MI,
          MI.modifiesRegister(Z80::SP, TRI);
 }
 
+// Map a zero-displacement IX/IY-indexed load/store opcode to the equivalent
+// (HL)-indirect opcode, reporting which index register it uses (IdxReg) and
+// whether it carries a trailing 8-bit value immediate (HasValImm, true only
+// for `LD (IX+d),n` / `LD (IY+d),n`).  Returns 0 if the opcode is not a
+// foldable indexed memory access.
+//
+// H/L-destination LOADS (LD_H_IXd / LD_L_IXd and IY twins) are intentionally
+// excluded: rewriting them to `ld h,(hl)` / `ld l,(hl)` overwrites the HL
+// pointer, which would corrupt any later (HL) access in the same fold window.
+// Stores from H/L (LD_IXd_H / LD_IXd_L) are fine -- they only read H/L.
+//
+// The (HL) forms share the same low opcode byte as the indexed forms (the DD/
+// FD prefix and the +d displacement byte are simply dropped), so each foldable
+// indexed op has a 1:1 (HL) counterpart that is one byte shorter and needs no
+// index register.
+static unsigned z80IndexedZeroDispToHLIndirect(unsigned Opc, MCPhysReg &IdxReg,
+                                               bool &HasValImm) {
+  HasValImm = false;
+  switch (Opc) {
+  // Stores: (IX+0) <- r  ->  (HL) <- r
+  case Z80::LD_IXd_B: IdxReg = Z80::IX; return Z80::LD_HLind_B;
+  case Z80::LD_IXd_C: IdxReg = Z80::IX; return Z80::LD_HLind_C;
+  case Z80::LD_IXd_D: IdxReg = Z80::IX; return Z80::LD_HLind_D;
+  case Z80::LD_IXd_E: IdxReg = Z80::IX; return Z80::LD_HLind_E;
+  case Z80::LD_IXd_H: IdxReg = Z80::IX; return Z80::LD_HLind_H;
+  case Z80::LD_IXd_L: IdxReg = Z80::IX; return Z80::LD_HLind_L;
+  case Z80::LD_IXd_A: IdxReg = Z80::IX; return Z80::LD_HLind_A;
+  case Z80::LD_IYd_B: IdxReg = Z80::IY; return Z80::LD_HLind_B;
+  case Z80::LD_IYd_C: IdxReg = Z80::IY; return Z80::LD_HLind_C;
+  case Z80::LD_IYd_D: IdxReg = Z80::IY; return Z80::LD_HLind_D;
+  case Z80::LD_IYd_E: IdxReg = Z80::IY; return Z80::LD_HLind_E;
+  case Z80::LD_IYd_H: IdxReg = Z80::IY; return Z80::LD_HLind_H;
+  case Z80::LD_IYd_L: IdxReg = Z80::IY; return Z80::LD_HLind_L;
+  case Z80::LD_IYd_A: IdxReg = Z80::IY; return Z80::LD_HLind_A;
+  // Immediate stores: (IX+0) <- n  ->  (HL) <- n
+  case Z80::LD_IXd_n: IdxReg = Z80::IX; HasValImm = true; return Z80::LD_HLind_n;
+  case Z80::LD_IYd_n: IdxReg = Z80::IY; HasValImm = true; return Z80::LD_HLind_n;
+  // Loads: r <- (IX+0)  ->  r <- (HL)   (H/L destinations excluded above)
+  case Z80::LD_B_IXd: IdxReg = Z80::IX; return Z80::LD_B_HLind;
+  case Z80::LD_C_IXd: IdxReg = Z80::IX; return Z80::LD_C_HLind;
+  case Z80::LD_D_IXd: IdxReg = Z80::IX; return Z80::LD_D_HLind;
+  case Z80::LD_E_IXd: IdxReg = Z80::IX; return Z80::LD_E_HLind;
+  case Z80::LD_A_IXd: IdxReg = Z80::IX; return Z80::LD_A_HLind;
+  case Z80::LD_B_IYd: IdxReg = Z80::IY; return Z80::LD_B_HLind;
+  case Z80::LD_C_IYd: IdxReg = Z80::IY; return Z80::LD_C_HLind;
+  case Z80::LD_D_IYd: IdxReg = Z80::IY; return Z80::LD_D_HLind;
+  case Z80::LD_E_IYd: IdxReg = Z80::IY; return Z80::LD_E_HLind;
+  case Z80::LD_A_IYd: IdxReg = Z80::IY; return Z80::LD_A_HLind;
+  default: return 0;
+  }
+}
+
 bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -1432,6 +1484,20 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         while (It != MIE && It->getOpcode() == TargetOpcode::KILL) ++It;
         if (It == MIE || It->getOpcode() != Z80::LD_A_L) continue;
         MachineInstr *LdA = &*It;
+        // Liveness guard (ravn/llvm-z80#242): this fold rewrites the sequence to
+        // a single `LD A,H` at the position of the original `LD L,H`, DELETING
+        // the `LD H,0` and the `LD L,H`.  That is only correct if both H and L
+        // are dead after the `LD A,L` — otherwise a later read sees the wrong
+        // value: H keeps its pre-zero contents (the zeroing is gone) and L keeps
+        // its old value (the copy is gone).  The historical comment claimed this
+        // precondition but never checked it; at -O0 a 16-bit compare/op with a
+        // zext-from-i8 operand expands to exactly `LD L,H; LD H,0; LD A,L; ...;
+        // LD A,H`, where the trailing `LD A,H` reads the zeroed high byte.
+        // Dropping the `LD H,0` then corrupts that read (e.g. 255u > 1u → false).
+        auto AfterLdA = std::next(MachineBasicBlock::iterator(LdA));
+        if (!isRegDeadAfter(AfterLdA, MBB, TRI, Z80::H) ||
+            !isRegDeadAfter(AfterLdA, MBB, TRI, Z80::L))
+          continue;
         LLVM_DEBUG(dbgs() << "  High-byte extract: LD L,H; LD H,0; LD A,L → "
                              "LD A,H\n");
         BuildMI(MBB, MI, MI.getDebugLoc(), TII->get(Z80::LD_A_H));
@@ -2405,8 +2471,11 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           ++MII; continue;
         }
         int64_t Limit = It->getOperand(0).getImm();
-        // Limit must fit in 8 bits for `CP n` to be equivalent.
-        if (Limit < 0 || Limit > 255) { ++MII; continue; }
+        // The 8-bit rewrite compares against (Limit + 1) (see the flag
+        // analysis at the CP_n emission below), so Limit + 1 must fit in the
+        // `CP n` immediate.  Limit == 255 (a 256-entry table whose bound is
+        // vacuously false for a u8 offset) bails to the 16-bit path.
+        if (Limit < 0 || Limit > 254) { ++MII; continue; }
         auto LdDE = It; ++It;
         if (It == MBB.end() || It->getOpcode() != Z80::LD_A_E) {
           ++MII; continue;
@@ -2442,11 +2511,18 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         // Same with HL -- after the rewrite, LD_L_A and LD_H_n 0
         // remain for jump-table indexing on the fall-through path.
 
-        // The 16-bit chain computes `DE - HL = limit - offset`, so
-        // carry-out is set iff offset > limit (out of range).
-        // `CP_n limit` computes `A - limit`, so carry-out is set iff
-        // offset < limit (in range).  These are *inverse* flags, so
-        // the branch condition must flip.
+        // The 16-bit chain computes `DE - HL = limit - offset`, so carry-out
+        // is set iff `offset > limit` (STRICT).  We rewrite to `CP_n (limit+1)`
+        // (`A - (limit+1)`), whose carry-out is set iff `offset < limit+1` i.e.
+        // `offset <= limit`.  Since `offset > limit` and `offset <= limit` are
+        // exact complements, flipping the branch condition reproduces the
+        // original test at EVERY value, including `offset == limit`.
+        //
+        // (An earlier version used `CP_n limit`; but `offset > limit` and
+        // `offset < limit` are NOT complements — they differ at
+        // `offset == limit` — so the max in-range index was wrongly sent to
+        // the default block.  Exposed by a switch whose highest case value maps
+        // to the last dense jump-table slot, e.g. nanoprintf's `%x`.)
         unsigned NewBrOpc;
         switch (BrOpc) {
         case Z80::JR_NC_e: NewBrOpc = Z80::JR_C_e; break;
@@ -2466,9 +2542,10 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         }
 
         DebugLoc DL = LdLA->getDebugLoc();
-        // Insert CP_n Limit before LdLA, then keep LD_L_A / LD_H_n 0
-        // after (they preserve A / set H, neither touches flags).
-        BuildMI(MBB, LdLA, DL, TII->get(Z80::CP_n)).addImm(Limit);
+        // Insert CP_n (Limit+1) before LdLA (see the flag analysis above for
+        // the +1), then keep LD_L_A / LD_H_n 0 after (they preserve A / set H,
+        // neither touches flags).
+        BuildMI(MBB, LdLA, DL, TII->get(Z80::CP_n)).addImm(Limit + 1);
         LdDE->eraseFromParent();
         LdAE->eraseFromParent();
         SubL->eraseFromParent();
@@ -4635,7 +4712,134 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // --- Peephole: fold (IX/IY+0) access back to (HL) when IX/IY mirrors HL ---
+  // ravn/llvm-z80#243 residual.  The `hli` register class lets the allocator
+  // place an HL-sized address (`STORE8_IND %addr:hli`) in IX/IY; when HL is
+  // also free it ends up holding the SAME address, so codegen materialises the
+  // index pointlessly and round-trips through HL:
+  //
+  //     push hl ; pop iy     ; COPY16_PUSHPOP $iy = $hl   (StartCopy: IY = HL)
+  //     ld a,c              ; ...A-only work, HL untouched...
+  //     cpl
+  //     push iy ; pop hl     ; COPY16_PUSHPOP $hl = $iy   (reverse copy, no-op:
+  //                          ;                             HL already == IY)
+  //     and (hl)            ; HL still holds buf+idx
+  //     ld 0(iy),a          ; -> can be ld (hl),a
+  //
+  // COPY16_PUSHPOP is opaque to machine-cp, so the round-trip survives to here.
+  // When StartCopy `$idx = $hl` is followed -- with HL never re-defined and
+  // $idx never re-defined -- only by the reverse copy `$hl = $idx` and/or
+  // displacement-0 indexed accesses through $idx, then HL == $idx throughout
+  // that window.  Rewrite each indexed access to its (HL) form, drop the
+  // reverse copies (pure no-ops: HL already holds the value), and drop the
+  // StartCopy materialisation.  The example above collapses to `and (hl);
+  // ld (hl),a` -- 4 instructions / 6 bytes removed, no IX/IY traffic.
+  if (STI.hasZ80()) {
+    for (auto &MBB : MF) {
+      for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+           MII != MIE;) {
+        // StartCopy must be `$ix/$iy = $hl`.
+        if (MII->getOpcode() != Z80::COPY16_PUSHPOP) { ++MII; continue; }
+        Register Dst = MII->getOperand(0).getReg();
+        Register Src = MII->getOperand(1).getReg();
+        if (Src != Z80::HL || !Z80::IR16RegClass.contains(Dst)) {
+          ++MII;
+          continue;
+        }
+        MCPhysReg Idx = Dst;
+        auto StartCopy = MII;
+
+        bool Ok = true;
+        bool SawRewritable = false;
+        SmallVector<MachineBasicBlock::iterator, 4> ReverseCopies;
+        // (instruction, new (HL) opcode, carries value immediate)
+        SmallVector<std::tuple<MachineBasicBlock::iterator, unsigned, bool>, 4>
+            Rewrites;
+        MachineBasicBlock::iterator LastTouch = StartCopy;
+
+        for (auto Scan = std::next(StartCopy); Scan != MIE; ++Scan) {
+          unsigned SOpc = Scan->getOpcode();
+
+          // The reverse copy `$hl = $idx` is a no-op here (HL already holds
+          // $idx's value) and is recognised BEFORE the HL-modification guard
+          // below, since it does write HL.  Record it for deletion.
+          if (SOpc == Z80::COPY16_PUSHPOP &&
+              Scan->getOperand(0).getReg() == Z80::HL &&
+              Scan->getOperand(1).getReg() == Idx) {
+            ReverseCopies.push_back(Scan);
+            LastTouch = Scan;
+            continue;
+          }
+
+          // A foldable displacement-0 indexed access through $idx.
+          MCPhysReg AccIdx = 0;
+          bool HasValImm = false;
+          unsigned HLOpc =
+              z80IndexedZeroDispToHLIndirect(SOpc, AccIdx, HasValImm);
+          if (HLOpc && AccIdx == Idx && Scan->getOperand(0).isImm() &&
+              Scan->getOperand(0).getImm() == 0) {
+            Rewrites.emplace_back(Scan, HLOpc, HasValImm);
+            SawRewritable = true;
+            LastTouch = Scan;
+            continue;
+          }
+
+          // Any re-definition of $idx that does NOT also read it closes the
+          // window cleanly: the StartCopy value is dead from here, and every
+          // use we needed to handle is already behind us.  (If it also reads
+          // $idx it is an unhandled use -- fall through to the bail below.)
+          bool ReadsIdx = Scan->readsRegister(Idx, TRI);
+          bool ModifiesIdx = Scan->modifiesRegister(Idx, TRI);
+          if (ModifiesIdx && !ReadsIdx)
+            break; // window closed; proceed with what we collected
+
+          // Any other read/modify of $idx is an unhandled use -> give up.
+          if (ReadsIdx || ModifiesIdx) { Ok = false; break; }
+
+          // Re-defining HL (full, H, or L) breaks the HL == $idx invariant for
+          // any subsequent indexed access -> give up.  (Plain reads of HL,
+          // e.g. `and (hl)`, are fine.)
+          if (Scan->modifiesRegister(Z80::HL, TRI)) { Ok = false; break; }
+        }
+
+        if (!Ok || !SawRewritable) { ++MII; continue; }
+
+        // The rewrite drops the StartCopy that defines $idx, so $idx must be
+        // dead after the last instruction we touched (a loop-carried index in
+        // IY, live out via a back-edge, would otherwise lose its value).
+        if (MBB.computeRegisterLiveness(TRI, Idx, std::next(LastTouch)) !=
+            MachineBasicBlock::LQR_Dead) {
+          ++MII;
+          continue;
+        }
+
+        LLVM_DEBUG(dbgs() << "  (IX/IY+0)->(HL) fold: dropping "
+                          << TRI->getName(Idx) << " materialisation, "
+                          << Rewrites.size() << " indexed access(es) rewritten\n");
+
+        // Rewrite each indexed access to its (HL) form.  The (HL) opcodes carry
+        // their HL use / register def as IMPLICIT operands in the MCInstrDesc,
+        // so BuildMI needs only the explicit value immediate (for LD (HL),n).
+        for (auto &R : Rewrites) {
+          MachineBasicBlock::iterator OldIt = std::get<0>(R);
+          unsigned NewOpc = std::get<1>(R);
+          bool HasValImm = std::get<2>(R);
+          DebugLoc DL = OldIt->getDebugLoc();
+          auto MIB = BuildMI(MBB, OldIt, DL, TII->get(NewOpc));
+          if (HasValImm)
+            MIB.addImm(OldIt->getOperand(1).getImm()); // the stored value n
+          OldIt->eraseFromParent();
+        }
+        for (auto &RC : ReverseCopies)
+          RC->eraseFromParent();
+        MII = MBB.erase(StartCopy);
+        Changed = true;
+      }
+    }
+  }
+
   // --- Peephole: IX/IY transfer elimination ---
+
   // The register allocator saves caller-saved registers across CALLs by
   // transferring to callee-saved IX/IY via PUSH rr; POP IX ... PUSH IX; POP rr.
   // This costs 6B (1+2+2+1) when a simple PUSH rr ... POP rr costs only 2B (1+1).
@@ -4781,6 +4985,104 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
           MII = std::prev(NextMII); // will be incremented by the loop
           Changed = true;
         }
+      }
+    }
+  }
+
+  // --- Peephole: dead BSS store-back (LD R,(X); ... LD (X),R) ---
+  // A frame-slot store `LD (X),R` whose value R was loaded from the SAME slot
+  // X — and R has not been modified nor has X been written between — is a
+  // provable no-op on memory (the slot already holds R's value) and is removed.
+  //
+  // Unlike the spill->PUSH/POP peephole below, this DROPS NOTHING from memory
+  // (the slot keeps its value), so it needs none of the loop-carried /
+  // address-taken / used-elsewhere guards those transforms require: any later
+  // reader of X (in any block, via any alias) sees the identical value whether
+  // or not the store runs.  Restricting to __sfrend/__sframe frame symbols
+  // (compiler-generated spill slots, never volatile) also avoids touching a
+  // volatile memory-mapped global that might use the same LD (nn),R encoding.
+  //
+  // The scan is backward from the store (up to MaxBSSStoreBackScan real
+  // instructions).  Stops early on: CALL (R is caller-saved), block
+  // terminator, another store to X (value changed), or R being defined
+  // (register modified).  The matching load must be found before any stopper.
+  //
+  // Example -- a loaded pointer used read-only then redundantly respilled:
+  //   LD_BC_nnind  __sfrend_main-402  ; bc = ptr           (load)
+  //   LD L,C ; LD H,B ; LD (HL),E    ; read-only uses of bc
+  //   LD_nnind_BC  __sfrend_main-402  ; ptr slot = bc <-- DEAD, removed
+  if (STI.staticStack()) {
+    // Store opcode -> the matching same-register load opcode.
+    auto matchingLoadForStore = [](unsigned StoreOpc) -> unsigned {
+      switch (StoreOpc) {
+      case Z80::LD_nnind_A:  return Z80::LD_A_nnind;
+      case Z80::LD_nnind_HL: return Z80::LD_HL_nnind;
+      case Z80::LD_nnind_DE: return Z80::LD_DE_nnind;
+      case Z80::LD_nnind_BC: return Z80::LD_BC_nnind;
+      default:               return 0;
+      }
+    };
+    // Store opcode -> the register being stored (implicit Use).
+    auto storedReg = [](unsigned StoreOpc) -> Register {
+      switch (StoreOpc) {
+      case Z80::LD_nnind_A:  return Z80::A;
+      case Z80::LD_nnind_HL: return Z80::HL;
+      case Z80::LD_nnind_DE: return Z80::DE;
+      case Z80::LD_nnind_BC: return Z80::BC;
+      default:               return Register();
+      }
+    };
+    // Maximum number of non-debug instructions to scan backward.
+    static constexpr unsigned MaxBSSStoreBackScan = 32;
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+        MachineInstr &Store = *MII++;
+        unsigned WantLoad = matchingLoadForStore(Store.getOpcode());
+        if (!WantLoad)
+          continue;
+        // Only compiler-generated frame slots (never volatile).
+        const MachineOperand &Addr = Store.getOperand(0);
+        if (!Addr.isMCSymbol())
+          continue;
+        StringRef Name = Addr.getMCSymbol()->getName();
+        if (!Name.starts_with("__sfrend") && !Name.starts_with("__sframe"))
+          continue;
+
+        Register Reg = storedReg(Store.getOpcode());
+
+        // Scan backward from Store looking for the matching load.
+        bool Found = false;
+        unsigned Scanned = 0;
+        for (MachineInstr *Prev = Store.getPrevNode(); Prev; Prev = Prev->getPrevNode()) {
+          if (Prev->isDebugInstr())
+            continue; // debug instructions don't count
+          if (++Scanned > MaxBSSStoreBackScan)
+            break;
+          // Stop at block terminators (can't scan past MBB boundary).
+          if (Prev->isTerminator())
+            break;
+          // Stop at calls: the stored register is caller-saved.
+          if (Prev->isCall())
+            break;
+          // Stop if another instruction stores to the same slot (value changed).
+          if (z80IsAnyBssStore(Prev->getOpcode()) && z80SameBssAddr(*Prev, Store))
+            break;
+          // Found the matching load before any stopper: store-back is dead.
+          if (Prev->getOpcode() == WantLoad && z80SameBssAddr(*Prev, Store)) {
+            Found = true;
+            break;
+          }
+          // Stop if this instruction modifies the stored register.
+          // (Check after the matching-load test because the load defines Reg.)
+          if (Prev->modifiesRegister(Reg, TRI))
+            break;
+        }
+        if (!Found)
+          continue;
+        LLVM_DEBUG(dbgs() << "Removing dead BSS store-back: " << Store);
+        Store.eraseFromParent();
+        Changed = true;
       }
     }
   }
@@ -6096,9 +6398,15 @@ bool Z80LateOptimization::runOnMachineFunction(MachineFunction &MF) {
         const MachineOperand &Addr = LdIt->getOperand(0);
         if (Addr.isGlobal())
           NewLd.addGlobalAddress(Addr.getGlobal(), Addr.getOffset());
-        else if (Addr.isMCSymbol())
-          NewLd.addSym(Addr.getMCSymbol(), Addr.getOffset());
-        else {
+        else if (Addr.isMCSymbol()) {
+          // #264: addSym's second arg is TargetFlags, NOT an offset -- passing
+          // the offset there silently drops it (address becomes __sfrend_f+0
+          // instead of __sfrend_f-3).  Set the offset on the operand
+          // explicitly, mirroring how eliminateFrameIndex's addBSSAddr does it.
+          auto *I = NewLd.addSym(Addr.getMCSymbol()).getInstr();
+          I->getOperand(I->getNumExplicitOperands() - 1)
+              .setOffset(Addr.getOffset());
+        } else {
           // Shouldn't happen given the sameAddrOp guard, but bail safely.
           NewLd.getInstr()->eraseFromParent();
           continue;

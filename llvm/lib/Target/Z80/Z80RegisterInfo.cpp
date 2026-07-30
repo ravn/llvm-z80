@@ -47,6 +47,24 @@ static llvm::cl::opt<bool> Z80LogRegallocHints(
     "z80-log-regalloc-hints", llvm::cl::Hidden, llvm::cl::init(false),
     llvm::cl::desc("Log every getRegAllocationHints query (Z80 #115/#27 S1)"));
 
+// ravn/llvm-z80#263: under +static-stack, a local array/alloca forces
+// hasFP=true, so the prologue loads IX with the link-time-constant frame base
+// __sfrend_<fn> (Z80FunctionInfo::UseStaticFrame).  Every fixed-offset frame
+// slot access then goes IX-relative (ld hl,__sfrend; ld de,off; add hl,de;
+// indirect ~51T) even though the address __sfrend+off is a compile-time
+// constant that direct absolute addressing (ld de,(nn) ~20T) can name in one
+// instruction.  This flag routes those accesses through the same direct-BSS
+// path already used when hasFP is false.  Default OFF pending the corpus +
+// production-density + PROM-boot (B2/#12) validation gate.
+static llvm::cl::opt<bool> Z80StaticStackFPDirectAddr(
+    "z80-static-stack-fp-direct-addr", llvm::cl::Hidden, llvm::cl::init(true),
+    llvm::cl::desc("Use direct absolute addressing for constant-base frame "
+                   "slots under +static-stack + hasFP (Z80 #263). Default ON: "
+                   "byte-identical/inert on file-scope-BSS firmware, and on "
+                   "local-array CP/M code it turns ~51T IX-relative slot loads "
+                   "into ~20T direct absolute loads (e benchmark -25% T-states, "
+                   "-233 B). Pass =false to restore IX-relative addressing."));
+
 // #112: un-reserve IY so it becomes an allocatable 4th 16-bit pair.
 // Default OFF.  Three blockers are now resolved -- the encoder opcode-0 crash
 // (GR16NoIR/GR16_BCDE discipline), the LEA_IX_FI missing-IY silent no-op (fixed
@@ -68,13 +86,19 @@ cl::opt<bool> Z80UnreserveIY(
 
 // #38/#112: IY is allocatable as a 4th 16-bit pair when the bring-up flag forces
 // it, OR when this function is compiled for SIZE (-Os/-Oz) AND +static-stack is
-// active.  Un-reserving IY is a measured size win (BIOS -23 B, autoload -11,
-// cpnos -10, AES -145 B) at a small speed cost (~+0.1% tstates: an IY-held value
-// is read via push iy; pop hl), so it is gated to size-opt and kept reserved for
-// speed (-O2/-O3).  +static-stack is required for correctness (the byte-decompose
-// legality fixes #112/#189/#201 are verified only under +static-stack).  Threaded
-// through getReservedRegs, getLargestLegalSuperClass, and Z80NarrowNoIndex so all
-// the leak-prevention engages together.
+// active.  Un-reserving IY USED to be a sizable win (BIOS -23 B, autoload -11,
+// cpnos -10, AES -145 B, ~2026-05).  RE-MEASURED 2026-07-14 (measure-all.sh,
+// clang 96394df): the tiered #23 cost model + backend gains since have absorbed
+// almost all of it -- baseline vs -z80-unreserve-iy is now BIOS 0, autoload -1,
+// cpnos 0, AES -Oz 0, AES -O2 -123 B (only AES-O2, off the production critical
+// path, at +0.08% tstates).  So the index tier is worth ~0 on production; a
+// GR16->cheap/index cost-tier split is NOT justified by data (see
+// tasks/plan-z80-cost-model-refinement-2026-06-08.md Phase 2 verdict).  Kept
+// gated to size-opt and reserved for speed (-O2/-O3).  +static-stack is required
+// for correctness (the byte-decompose legality fixes #112/#189/#201 are verified
+// only under +static-stack).  Threaded through getReservedRegs,
+// getLargestLegalSuperClass, and Z80NarrowNoIndex so all the leak-prevention
+// engages together.
 bool z80IsIYAllocatable(const MachineFunction &MF);
 } // namespace llvm
 
@@ -510,37 +534,29 @@ static void emitLargeOffsetAddr(MachineBasicBlock &MBB,
 // Check whether ADJCALLSTACKUP will actually clobber Reg when expanded.
 //
 // ADJCALLSTACKUP carries implicit-def annotations for HL, A, SP, but the
-// actual register side-effects depend on the expansion path chosen in
-// Z80FrameLowering::eliminateCallFramePseudoInstr (which runs AFTER frame
-// index elimination within PEI). The expansion paths are:
-//
-//   AdjAmount == 0         → erased entirely (no register effects)
-//   SM83 && AdjAmount≤127  → ADD SP,e     (only SP/flags modified)
-//   AdjAmount ≤ 16         → POP AF × N   (A/flags modified, HL untouched)
-//   AdjAmount > 16         → LD HL,n; ADD HL,SP; LD SP,HL (HL/flags modified)
-//
-// If we naively trust the implicit-defs, isRegLiveAt() may conclude a
-// register (e.g. HL) is dead when the pseudo won't actually modify it,
-// causing SPILL/RELOAD expansion to skip saving the register.
+// adjCallStackUpClobbersReg: return true if the ADJCALLSTACKUP pseudo's
+// expansion will clobber Reg. Uses classifyACSU (Z80FrameLowering.h) to mirror
+// exactly the path chosen by eliminateCallFramePseudoInstr — keeping the two
+// sides in sync via a single shared decision point.
 static bool adjCallStackUpClobbersReg(const MachineInstr &MI, Register Reg,
                                       const TargetRegisterInfo *TRI) {
   assert(MI.getOpcode() == Z80::ADJCALLSTACKUP);
   int64_t AdjAmount = MI.getOperand(0).getImm() - MI.getOperand(1).getImm();
-
-  if (AdjAmount == 0)
-    return false;
-
   const auto &STI = MI.getMF()->getSubtarget<Z80Subtarget>();
-  if (STI.hasSM83() && AdjAmount <= 127)
-    // ADD SP,e: only SP and flags modified.
-    return false;
 
-  if (AdjAmount <= 16)
+  switch (classifyACSU(AdjAmount, STI.hasSM83())) {
+  case ACSU_Erase:
+  case ACSU_AddSPe:
+    // Erased or ADD SP,e: only SP/flags modified, Reg is untouched.
+    return false;
+  case ACSU_PopAF:
     // POP AF: clobbers A and flags; HL is untouched.
     return TRI->regsOverlap(Reg, Z80::A);
-
-  // LD HL,n; ADD HL,SP; LD SP,HL: clobbers HL and flags.
-  return TRI->regsOverlap(Reg, Z80::HL);
+  case ACSU_AddHLSP:
+    // LD HL,n; ADD HL,SP; LD SP,HL: clobbers HL and flags.
+    return TRI->regsOverlap(Reg, Z80::HL);
+  }
+  llvm_unreachable("unhandled AdjCallStackUpPath");
 }
 
 static bool isRegLiveAt(Register Reg, MachineBasicBlock &MBB,
@@ -1394,8 +1410,24 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
 
   bool UseFP = TFI->hasFP(MF);
 
-  // Z80 stack frame layout (with frame pointer):
-  //   [parameters]     (IX+4, IX+5, ...)  - passed by caller
+  // #263: does IX hold the link-time-constant frame base __sfrend_<fn>?  This
+  // mirrors the UseStaticFrame predicate computed in Z80FrameLowering::
+  // emitPrologue exactly (recomputed here rather than read from
+  // Z80FunctionInfo to avoid any pass-ordering dependency on the prologue
+  // having run first).  When true, IX == __sfrend_<fn> and there are no stack
+  // arguments (NumFixedObjects == 0) or var-sized objects, so EVERY frame slot
+  // lives at the constant address __sfrend_<fn> + displacement and can use
+  // direct absolute addressing with the identical displacement the IX-relative
+  // path would use.
+  const Z80FunctionInfo *Z80FI = MF.getInfo<Z80FunctionInfo>();
+  bool ConstBaseFrame =
+      UseFP && STI2.staticStack() &&
+      MFI.getStackSize() > (uint64_t)Z80FI->getCalleeSavedFrameSize() &&
+      MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects();
+  // Gated behind the #263 flag until the validation gate clears.
+  bool StaticStackDirect = ConstBaseFrame && Z80StaticStackFPDirectAddr;
+
+
   //   [return address] (IX+2, IX+3)       - pushed by CALL
   //   [saved IX]       (IX+0, IX+1)       - pushed in prologue, IX points here
   //   [local var 1]    (IX-2, IX-1)       - allocated in prologue
@@ -1420,6 +1452,31 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
     Offset += FI->getCalleeSavedFrameSize();
   } else if (UseFP) {
     Offset += 2; // Skip saved IX (also needed for static stack: IX = base+size)
+    // #254: static-stack + frame-pointer (IX == __sfrend_<fn>).  The CSR saves
+    // (e.g. the caller's IX) live on the REAL stack via PUSH and are excluded
+    // from the BSS frame (Z80AsmPrinter: BSSSize = StackSize - CalleeSavedFrame
+    // Size).  PEI still folds CalleeSavedFrameSize into the object offsets, so
+    // without skipping it here the deepest local underflows below __sframe_<fn>
+    // into the adjacent global (silent corruption).  Mirrors the !UseFP static
+    // branch above, which adds the same term.  Worked example (bug254 main):
+    // StackSize=8, CSR=2 -> BSS=[__sfrend-6,__sfrend); FI#3 ObjOff=-10 must map
+    // to __sfrend-6 (=__sframe), i.e. -10 + 2 + 2 = -6, not -8 (underflow).
+    //
+    // #268: apply the CSR term ONLY to BSS-resident locals (Idx >= 0).  Fixed
+    // objects (Idx < 0) are incoming stack arguments and the sret return
+    // pointer; the CALLER pushed them onto the REAL stack ABOVE IX (positive
+    // offsets [ix+4], [ix+6], ...), while the CSR saves live BELOW IX.  Adding
+    // CalleeSavedFrameSize to a fixed object shifts it up by CSR bytes, so a
+    // sret pointer at [ix+4] is misread as [ix+6] (== arg 0's slot).  This
+    // miscompiles any function that returns double/aggregate via sret whose
+    // value comes from another sret-returning call (the __memmove_rt copying
+    // the callee result into our sret buffer loads its dest from the wrong
+    // slot).  Worked example (bug, CSR=2): sret FI ObjOff=2 must map to [ix+4]
+    // (=2+2), NOT [ix+6] (=2+2+2); control fn ok (CSR=0) was correct either way.
+    if (STI2.staticStack() && Idx >= 0) {
+      const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+      Offset += FI->getCalleeSavedFrameSize();
+    }
   } else {
     // For callee-cleanup calls, if regalloc inserted this frame-index
     // instruction between CALL and ADJCALLSTACKUP, PEI's SPAdj still
@@ -1480,7 +1537,13 @@ bool Z80RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   // When +static-stack and IX is not the frame pointer, resolve frame
   // indices to BSS addresses (__sfrend_funcname + offset) directly.
   // This allows IX/IY to be used as allocatable data registers.
-  if (STI2.staticStack() && !UseFP) {
+  //
+  // #263: also taken when IX *is* the frame pointer but holds the constant
+  // base __sfrend_<fn> (StaticStackDirect) -- the address is still
+  // __sfrend_<fn> + Offset, and Offset here is the same displacement the
+  // IX-relative path (else-if UseFP: Offset += 2) would use, so the emitted
+  // absolute address is byte-identical to the IX-relative access it replaces.
+  if ((STI2.staticStack() && !UseFP) || StaticStackDirect) {
     MCSymbol *EndSym = MF.getContext().getOrCreateSymbol(
         "__sfrend_" + MF.getName());
 

@@ -568,6 +568,15 @@ std::string Triple::computeDataLayout(StringRef ABIName) const {
            "f32:32:32-i64:32-f64:32-a:0:32-n32";
   case Triple::avr:
     return "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8:16-a:8";
+  case Triple::z80:
+  case Triple::sm83:
+    // ravn/llvm-z80 #214: keep in sync with Z80DataLayout in
+    // Z80TargetMachine.cpp.  Without this case `Triple::computeDataLayout`
+    // falls through to the `llvm_unreachable("Invalid arch")` below, which is
+    // what `opt -mtriple=z80` on datalayout-less IR hits (it installs a
+    // DataLayoutCallback that queries the triple's default layout during IR
+    // parsing).  Both z80 and the SM83 (Game Boy) variant share this layout.
+    return "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16";
   case Triple::bpfel:
   case Triple::bpfeb:
     return computeBPFDataLayout(*this);

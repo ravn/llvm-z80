@@ -23,4 +23,11 @@ int putchar(int c);
 int puts(const char *s);
 int printf(const char *fmt, ...);
 
+/* No buffering under CP/M (putchar writes directly via port I/O), so
+ * FILE/stdout/fflush are trivial stand-ins just to satisfy source that
+ * unconditionally calls fflush(stdout) (e.g. dcc/tests/ttt.c). */
+typedef int FILE;
+#define stdout ((FILE *)0)
+static inline int fflush(FILE *f) { (void)f; return 0; }
+
 #endif /* _STDIO_H */

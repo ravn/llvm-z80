@@ -137,8 +137,14 @@ PUSH rr (1B, 11T) + POP rr (1B, 10T) = 2 bytes to temporarily free a register pa
 ### IX-Indexed Access is Expensive
 Each `LD r,(IX+d)` or `LD (IX+d),r` is 3 bytes, 19 T-states. The register allocator's spill decisions should reflect this cost. On architectures with cheap stack access, spilling is nearly free — on Z80, each spill/reload costs 3 bytes.
 
-### Loop Strength Reduction (LSR) is Harmful
+### Loop Strength Reduction (LSR) is Harmful — but there IS a beneficial use case
 LSR widens 8-bit loop counters to 16-bit and creates extra induction variables, causing massive spills on Z80's 3-pair register file. Disabled via `-mllvm -disable-lsr`.
+
+**However, the blanket disable also throws away a class of wins that a *targeted*, non-counter-widening strength reduction would capture — and we have concrete use cases (2026-07-01):**
+- **Variable-shift by an IV.** `for (i=0;i<8;i++) x = (sw >> i) & 1;` lowers on Z80 to an `srl a; djnz` loop that re-shifts `i` times each iteration — O(n²). Since `i` is a simple IV, `sw >> i` is a recurrence reducible to one `>> 1` per iteration (maintain a running shifted value). LLVM's LSR/OSR only targets multiply/GEP recurrences, never shift-by-IV, so nothing does this even when LSR is *on*; and here LSR is off anyway. Measured: rewriting `(sw>>i)&1` → `(sw&1); sw>>=1` in `autoload rom.c display_sw1_status` saved 5 B PROM. There is no cost on normal targets (variable shift is 1 cheap instruction) which is exactly why upstream LLVM has no incentive to do it — it's Z80-specific.
+- **Stride-N index in an inner loop.** See `tasks/known-suboptimal-codegen.md` B21: a `line<<7` / `base+ch+line*128` recomputed each pass instead of a running `+128` pointer, cascading to an IY invariant-shuttle + counter spill.
+
+Both are the *same shape*: an IV-driven recurrence (`<<`, `>>`, or `*k`) recomputed from scratch where an incremental update is far cheaper on Z80. The right fix is a **Z80-aware operator strength reduction that does NOT widen the counter** (the thing that made generic LSR harmful) — it would capture both without the spill penalty. Filed thought, not yet built; revisit if a hot production loop shows either shape.
 
 ### Debugging: DISKETTE ERROR means check delay timing
 The FDC needs ~260ms after power-on. If delay timing is wrong (wrong DELAY_T constant for the compiler), the FDC Specify command fails and all disk operations fail with DISKETTE ERROR.

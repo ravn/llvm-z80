@@ -308,6 +308,21 @@ namespace CallingConv {
     /// No stack arguments. Error if registers exhausted.
     Z80_AllReg = 129,
 
+    /// Z80 z88dk __z88dk_fastcall — a single argument passed in a fixed
+    /// register: i8->L, i16->HL, i32->DE:HL (DE=high, HL=low).  The return
+    /// value uses the same registers (i8->L, i16->HL, i32->DE:HL), matching
+    /// __sdcccall(0).  Only one argument is register-passed; z88dk fastcall is
+    /// single-argument by construction (the frontend rejects >1 arg).
+    Z80_Z88dkFastCall = 130,
+
+    /// Z80 z88dk __z88dk_callee — arguments are pushed on the stack exactly
+    /// like __sdcccall(0), but the CALLEE cleans them up on return (Z80 has no
+    /// `ret N`, so the backend uses the RET_CLEANUP pseudo).  Return value uses
+    /// the z88dk classic registers (i8->L, i16->HL, i32->DE:HL), same as
+    /// __sdcccall(0).  Callee cleanup is forced regardless of return size
+    /// (unlike __sdcccall(1), which caller-cleans for >16-bit returns).
+    Z80_Z88dkCallee = 131,
+
     /// The highest possible ID. Must be some 2^k - 1.
     MaxID = 1023
   };

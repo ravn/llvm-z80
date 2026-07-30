@@ -1,0 +1,410 @@
+# Plan: make clang faster than dcc on the 4 dcc benchmarks
+
+**Goal (user):** clang should be *faster* than dcc on `sieve`, `e`, `ttt`, `tm`
+when compiled via `zcc +cpm -compiler=llvmz80` (real CP/M .COM with z88dk clib).
+
+**Updated 2026-07-12.** Previous version (2026-07-09) used freestanding llvm-z80
+builds + ntvcm (inaccurate T-states for DD/FD/ED opcodes, ~5% low). This version
+uses `zcc +cpm -compiler=llvmz80` + z88dk-ticks (cycle-accurate), which is the
+correct comparison: real CP/M programs with z88dk runtime, matching how end-users
+build.
+
+Runtime note: all arithmetic helpers (`___divhi3`, `___modhi3`, `___mulhi3`) resolve
+to z88dk's `l_divs_16_16x16` / `l_mulu_16_16x16` via wrappers in
+`z88dk/libsrc/l/llvmz80/__divhi3.asm`. z88dk's `cpm_clib` supplies the full
+runtime — none of llvm-z80's compiler-rt (`z80_rt`) is linked.
+
+---
+
+## STATUS UPDATE 2026-07-14 (Opus 4.8) — sieve WON; re-baselined
+
+Re-measured all four fair-and-same-harness (both dcc and zcc+llvmz80 under
+z88dk-ticks) on the CURRENT build (llvm-z80 `bb4a40d`, after #250/#244/#263
+landed). Best zcc opt per benchmark:
+
+| program | dcc cycles | zcc best     | opt  | ratio  | status                         |
+|---------|-----------|--------------|------|--------|--------------------------------|
+| sieve   | 27,979,152 | **27,464,244** | -O2  | **0.98x WIN** | DONE — #250 default-on at -O2 (`b59770c`) |
+| e       | 25,381,975 | 30,455,092   | -O2  | 1.20x  | OPEN — M2 BSS spill (verified this session) |
+| ttt     |  6,346,956 |  7,604,026   | -O3  | 1.20x  | OPEN — inlining/frame (-Os = 1.65x) |
+| tm      | 79,435,464 | 272,275,536  | any  | 3.43x  | allocator-bound; DO NOT chase  |
+
+Full per-opt-level table (zcc+llvmz80, ticks):
+
+| program | -Os        | -O2        | -O3        |
+|---------|-----------|------------|------------|
+| sieve   | 33,198,620 | **27,464,244** | 32,952,691 |
+| e       | 30,459,922 | 30,455,092 | 30,455,092 |
+| ttt     | 10,445,561 | 10,375,144 | **7,604,026** |
+| tm      | 292,284,244 | 272,275,536 | 272,275,518 |
+
+**Verified findings this session (known, not inherited):**
+
+1. **sieve now BEATS dcc at -O2** (0.98x, correct output `1899 primes.`). The
+   #250 pointer-walk stack shipped **default-ON at -O2** (`b59770c`). Phase A is
+   COMPLETE. `-O3` regresses sieve (32.95M) — do not use it for this shape.
+2. **B25 "always use -Os" is STALE.** Best opt is now per-workload: sieve wants
+   -O2 (27.46M vs -Os 33.20M), ttt wants -O3 (7.60M vs -Os 10.45M), e is flat
+   across -O2/-O3. There is no single best level; pick per-loop-shape. (Update
+   `known-suboptimal-codegen.md` B25 accordingly.)
+3. **e gap = BSS spill traffic (M2), NOT division.** Both compilers pay the same
+   16-bit divmod; the ~5M gap is clang's inner-loop BSS round-trips. Verified in
+   the current `-O2` asm inner loop (BB0_4): a redundant
+   `ld bc,(__sfrend-402); ld (__sfrend-402),bc` load-then-store-back (dead
+   store), the `a[]` base pointer reloaded AND re-stored to BSS every iteration
+   instead of pointer-walking, and `n` spilled to BSS (`-404`) each iteration.
+4. **ttt**: -O3 (7.60M) is 3x closer than -Os (10.45M). **Mechanism CONFIRMED
+   this session (was mis-stated as leaf-inlining):** -O3 **unrolls the fixed-trip
+   `for(p=0;p<9;p++)` move loop inside the hot recursive `MinMax`**. Evidence:
+   `MinMax` grows 183 -> 911 lines; `_board` refs 1 -> 53 (constant offsets, no
+   `cp 9`/back-edge at -O3). The `winner_functions[move]()` indirect win-check is
+   NOT devirtualized at either level (`call __call_iy` count = 1 both), and the
+   9 `posNfunc` are NOT inlined. `MinMax` uses a real IX stack frame (`(ix+d)`),
+   NOT static-stack BSS (backend disables static-stack for the recursive fn -> no
+   reentrancy bug). So the -O3 win is a generic LLVM opt-level policy (unrolling
+   is on at -O3, off at -Os/-O2 for size), not a Z80 backend deficiency; the
+   residual -O3 1.20x is IX-frame recursive spill traffic (M2/IX class).
+5. **zcc-llvmz80 uses no explicit `+static-stack`** (`--target=z80 -S
+   -ffreestanding`), but freestanding clang-z80 emits `__sfrend`-relative BSS
+   locals by DEFAULT — confirmed in the emitted asm. So the M2 BSS analysis
+   below applies to the zcc path.
+
+**Zoom-out (systemic cause):** e's dead BSS round-trips (#3), sieve lever-3's
+scan-IV spill placement (#261), and ttt's recursion-frame spills are the SAME
+M2 class — LLVM emits/keeps BSS traffic on the hot path that a Z80-aware
+dead-BSS-store + spill-sink would remove. That MIR-level lever (not a TTI cost
+tweak) is the real Phase-B target; `e` is the archetype.
+
+**Risk on the original Phase-B (TTI getMemoryOpCost):** likely INERT on
+GISel-Z80. Per CLAUDE.md, #227/#228/#229 each fired their IR consumer correctly
+but downstream Z80 machinery already produced the shape → zero codegen change.
+Prefer a concrete MIR peephole (dead-BSS-store elimination + spill-sink) over
+TTI cost model changes.
+
+---
+
+## Original baseline (2026-07-12, z88dk-ticks, zcc+llvmz80 vs dcc) — superseded above
+
+| program | dcc cycles | zcc -Oz | zcc -Os | zcc -O3 | dominant cost |
+|---------|-----------|---------|---------|---------|---------------|
+| sieve   | 27,979,152 | 34,277,588 (+23%) | 33,198,620 (+19%) | 32,952,691 (+18%) | pointer strength reduction |
+| e       | 25,381,975 | 37,947,563 (+50%) | 40,321,883 (+59%) | 41,829,740 (+65%) | BSS spill traffic (M2 class) |
+| ttt     |  6,346,956 | 10,423,676 (+64%) | 10,445,561 (+65%) |  7,604,026 (+20%) | call overhead at -Oz/-Os; BSS at -O3 |
+| tm      | 79,435,464 |300,141,986 (+278%) |292,231,444 (+268%) |272,222,718 (+243%) | allocator pattern (not codegen) |
+
+Note: -Oz is smaller but slower than -Os on sieve/ttt/tm; -Oz beats -Os on `e`
+(50% vs 59%) — likely because a more aggressively size-reduced body has fewer
+BSS-resident temporaries.
+
+---
+
+## Root-cause analysis (verified on zcc+llvmz80 assembly, 2026-07-12)
+
+### sieve — pointer strength reduction (unchanged from 2026-07-09)
+
+The `for (k=i+prime; k<=SIZE; k+=prime) flags[k]=FALSE;` inner loop is the
+hot path. zcc+llvmz80 -Os emits **97 T-states/iteration**:
+
+```asm
+.LBB0_5:
+    ld   hl,_flags   ; 10T  RELOAD global base address every iteration
+    add  hl,bc       ; 11T  bc = integer index k
+    xor  a           ;  4T
+    ld   (hl),a      ;  7T  flags[k] = 0
+    ld   l,c         ;  4T  shuttle bc -> hl
+    ld   h,b         ;  4T
+    add  hl,de       ; 11T  k += prime
+    ld   c,l         ;  4T  shuttle hl -> bc
+    ld   b,h         ;  4T
+    ld   hl,8191     ; 10T  RELOAD limit constant every iteration
+    ld   a,c         ;  4T
+    sub  l           ;  4T
+    ld   a,b         ;  4T
+    sbc  a,h         ;  4T  16-bit index compare
+    jr   c,.LBB0_5   ; 12T
+```
+
+dcc emits **39 T-states/iteration** by pointer-walking:
+
+```asm
+L52:
+    ld   (hl),0      ; 10T  hl IS the walking pointer
+    add  hl,de       ; 11T  de = prime (byte stride)
+    ld   a,h         ;  4T
+    cp   b           ;  4T  compare pointer high byte vs end.hi
+    jp   c,L52       ; 10T  fast path: high bytes differ
+    jp   nz,L54      ; 10T  h > b: done
+    ld   a,l         ;  4T
+    cp   c           ;  4T  high bytes equal: compare low bytes
+    jp   c,L52       ; 10T
+```
+
+dcc pre-computes `p = &flags[i+prime]` and `end = &flags[8191]` outside the
+loop; HL walks the array, DE holds the stride, BC holds the end pointer — all
+loaded ONCE. Clang reloads the base address and the limit every iteration and
+uses an integer index shuffled bc<->hl for address computation.
+
+**UPDATE 2026-07-12 — root cause of the residual regression is now pinned.**
+The two-pass machinery (`Z80LoopInstrFormPrep` + `Z80PinLoopPointer`, both
+default-OFF) already produces a **dcc-quality inner kill loop** when all three
+flags are on (`-z80-enable-loop-instr-form-prep`
+`-z80-loop-instr-form-prep-allow-nested` `-z80-enable-pin-loop-pointer`):
+
+```asm
+LBB0_4:                 ; the pinned, old-IV-eliminated kill loop
+    xor  a              ;  4T
+    ld   (hl),a         ;  7T   HL IS the walking pointer (pinned)
+    add  hl,bc          ; 11T   advance by stride (bc = prime)
+    ld   a,l ; sub e    ;  8T   pointer compare hl vs de(end)
+    ld   a,h ; sbc a,d  ;  8T
+    jr   c,LBB0_4       ; 12T
+```
+
+= **50 T/iter** (vs baseline's 97 T). The IR after form-prep is *perfect*: a
+clean pointer PHI, store-through, `gep %ptr, stride`, exit test
+`icmp ult ptr %next, gep(@flags, 8191)` — the old integer IV is fully
+eliminated. Measured: sieve 44.9M (fp+nest) → **36.1M (fp+nest+pin)**.
+
+But 36.1M is still WORSE than baseline 33.0M, for one reason: the kill-loop
+**start pointer leaks into the scan loop and is BSS-spilled every scan
+iteration**. `SCEVExpander.expandCodeFor(G.Start)` recognises `&flags[k_start]`
+as a *scan-loop* AddRec (`{@flags+3, +, 3}`) and — per its invariant of placing
+AddRec expansions at the AddRec loop's header — hoists `ld hl,_flags; add hl,de;
+ld (__sfrend-6),hl` into the scan header (block 3), computed unconditionally
+BEFORE the `if (flags[i])` test and round-tripped through BSS because it is only
+consumed later, in the kill-loop preheader (block 17). That ~35 T × ~82k scan
+iterations ≈ **+2.9M** — exactly the 36.1M − 33.0M gap.
+
+**The fix — DONE 2026-07-12 (lever 1 of 3).** `sinkStartPtrToPreheader` in
+`Z80LoopInstrFormPrep` moves the terminal start-pointer instruction down into
+the kill preheader (past the guard, register-adjacent to the kill loop) after
+SCEVExpander hoists it to the enclosing scan header. Block-level dominance
+checks keep it SSA-safe; only the terminal GEP is moved (no operand-chain
+reorder hazard). Measured: **fp+nest+pin 36.1M → 31.05M** — beats clang's own
+33.03M baseline, correct output (`1899 primes.`). Lit:
+`pointer-iv-strength-reduce-sink-startptr.ll`. Pass still default-OFF →
+production byte-identical. Writeup: `session-2026-07-12-issue250-sink-startptr.md`.
+
+**Lever 2 — high-byte-first inner exit test — DONE 2026-07-12 (merged).**
+`Z80HighByteFirstBranch` (new post-RA pass, default-OFF `-z80-enable-hbf-branch`)
+rewrites the inner 16-bit compare `ld a,l; sub c; ld a,h; sbc a,b; jr c` (16 T)
+into `ld a,h; cp b; jp c; jp nz; ld a,l; cp c; jp c` (8 T fast path) by splitting
+the latch into a hi-compare block + a lo-compare block. Matches the already-
+expanded CMP16_FLAGS chain (ExpandPostRAPseudos ran earlier), handles both the
+explicit two-terminator exit and the `jr c` + fall-through shape, emits absolute
+JP (10 T backedge vs 12 T JR). Measured: **31.05M → 29.72M** (+10 B),
+`1899 primes.`, verifier-clean, lit `high-byte-first-loop-exit.ll`. SIZE-NEGATIVE
+→ opt-in + loop-back-edge gated; production byte-identical.
+
+**Lever 3 — scan-index spill (M2 class) — NOT DONE; filed as #261.**
+The scan loop spills its IV `ld (__sfrend-2),de` (20 T) every iteration (≈1.6M,
+the whole residual gap to dcc). **Reframed after disassembling dcc's actual
+`SIEVE.COM`: this is a spill-PLACEMENT problem, not ISA-fundamental.** dcc ALSO
+keeps the scan IV frame-resident (`(ix-2)`, never long-term in a register) — the
+difference is dcc pays the spill/reload only in the COLD prime path, while clang
+pays it in the HOT scan header. On clang's `flags[i]==0` fast path (the common
+case) DE is never clobbered between the header store and the `.LBB0_7` reload, so
+both are dead there; LLVM placed the spill at the loop header (common dominator)
+instead of sinking it into the cold clobbering block (bb.3). Candidate fix: a
+Z80-aware spill-sink / tuned spill weights (keep DE live on the guard-false edge,
+spill only where the kill loop actually clobbers it). Non-trivial (`.LBB0_7` is a
+fast/slow merge) but tractable — NOT the loop-restructuring I first assumed. Full
+asm evidence + candidate fixes + reproduction in #261. Off the production
+critical path (no firmware kernel has this scan+nested shape).
+
+**Bottom line (2026-07-12):** three levers analysed; **1 + 2 shipped**
+(33.03M → **29.72M**, −10% vs clang baseline, within **+6.2%** of dcc). Lever 3
+is the ISA-fundamental scan-IV spill — the residual gap, no clean fix.
+
+---
+
+### e — BSS spill traffic (CORRECTED from 2026-07-09)
+
+**Previous analysis was wrong on two counts:**
+
+1. The old claim "two divmod calls per iteration" is FALSE. clang emits ONE call
+   to `___divhi3` per inner iteration. The `___divhi3` wrapper calls
+   `l_divs_16_16x16` which returns quotient in HL AND remainder in DE. The
+   wrapper does `ex de,hl` so on return: DE = quotient, HL = remainder. clang
+   then uses DE for `x/n` and HL for `x%n` — both from one division. This is
+   correct combined divmod codegen.
+
+2. The dominant cost is **not** divmod speed — it is **BSS spill traffic**.
+   Every local variable (`x`, `n`, loop counter, `a[n]`, `a[n-1]`) is resident
+   in BSS via `+static-stack`. Each 16-bit load from BSS costs:
+
+   ```asm
+   ld   hl,__sfrend_main   ; 10T  load BSS base pointer
+   ld   de,<offset>        ; 10T  load offset constant
+   add  hl,de              ; 11T  compute address
+   ld   e,(hl)             ;  7T  load low byte
+   inc  hl                 ;  6T
+   ld   d,(hl)             ;  7T  load high byte
+   ```
+   = **51 T-states per 16-bit BSS load** (stores are similar).
+
+   The inner loop body contains 6–8 such load/store sequences for `x`, `n`,
+   `a[n]`, `a[n-1]` — easily **300–400T of spill traffic per iteration**
+   on top of the 50–80T for actual computation.
+
+   dcc keeps `x` and the running multiply accumulator in registers and uses
+   a pointer walk for `a[n]` accesses.
+
+**Root cause:** M2 class (BSS load/store) — same family as the dominant cost in
+the BIOS large functions. The TTI cost model assigns zero cost to BSS-resident
+locals, so LLVM never pays to keep them register-resident.
+
+---
+
+### ttt — call overhead at -Oz/-Os; BSS at -O3
+
+9 `posNfunc()` win-check helpers and a recursive `minmax`. The -O3 gap (1.20x)
+is 3× smaller than the -Os gap (1.65x), confirming that **at -Oz/-Os the
+dominant cost is call overhead** from 9 un-inlined leaf functions.
+
+At -O3, clang inlines the helpers. The residual 1.20x gap is then recursion
+frame overhead: each `minmax` call spills state to BSS (same M2 class as `e`).
+dcc uses a simpler frame that fits more naturally in registers.
+
+**Two levers:** (1) lower the Z80 inlining threshold for single-block leaf
+functions at -Os/-Oz (TTI `getInliningThresholdMultiplier`); (2) address M2
+class BSS spills for the recursive case.
+
+---
+
+### tm — allocator pattern (not codegen)
+
+`tm.c` stress-tests `malloc`/`calloc`/`free` with growing blocks up to ~22 KB
+live simultaneously. The linked allocator is z88dk's `HeapFree_callee` /
+`HeapSbrk_callee` (a real but simple first-fit allocator), with 48 KB heap
+configured in `build_zcc.sh`.
+
+dcc links its own allocator tuned for this workload. The gap (3.4–3.8×) is
+allocator-quality, not clang codegen. **tm is not a meaningful compiler metric.**
+
+---
+
+## Common structural theme
+
+Three of four gaps trace to the **same two Z80 backend weaknesses**:
+
+1. **Missing pointer strength reduction** (sieve, secondary in e/ttt):
+   LLVM's LSR does not produce Z80-friendly pointer walks. Array indexing via
+   integer IV + `ld hl,GV; add hl,rr` per iteration instead of a walking
+   pointer pre-computed once outside the loop.
+
+2. **BSS spill traffic — M2 class** (dominant in e, residual in ttt at -O3):
+   `+static-stack` stores locals at BSS addresses. Each access costs 51T for a
+   16-bit load vs 4T for a register reference. The TTI cost model does not
+   charge for this so LLVM's register allocator does not fight to keep values
+   live in registers.
+
+dcc wins because it was designed specifically for CP/M Z80: it pointer-walks,
+keeps loop-carried scalars in HL/DE/BC, and uses a compact frame model.
+
+---
+
+## Plan (revised 2026-07-14 — highest-ROI first)
+
+### Phase A — sieve pointer strength reduction — ✅ DONE (shipped default-on -O2)
+
+#250 pointer-walk stack landed default-ON at -O2 (`b59770c`); sieve = 27.46M
+< dcc 27.98M (0.98x), correct output. No further work. (Detailed root-cause
+kept below for reference.) Do NOT use -O3 on sieve-shaped loops (regresses).
+
+### Phase B — e: kill inner-loop BSS spill traffic (M2) — HIGHEST ROI, systemic
+
+The `e` gap is BSS round-trips, not divmod. Attack in low-risk-first order,
+each with a lit test pinning the tightened loop + a runtime fixture, and the
+production triplet (rcbios/cpnos/autoload) byte-identical-or-better:
+
+- **B1 — dead BSS store-back elimination (cleanest, do first).** Eliminate the
+  `ld rr,(addr); ld (addr),rr` load-then-store-back pair (verified in e's BB0_4
+  at `__sfrend-402`) when `rr` is unmodified between and no other MBB aliases
+  the address (reuse the existing BSS-load-forwarding guards in
+  `Z80LateOptimization.cpp`). Pure win, no register-pressure risk.
+- **B2 — pointer-walk `a[]` (extend #250 to indexed-store loops).** The `a[n]`
+  store + `a[n-1]` load recompute the base pointer and round-trip it through BSS
+  each iteration; make it a walking pointer like sieve. Reuses the
+  `Z80LoopInstrFormPrep` / pointer-IV machinery.
+- **B3 — keep loop-carried scalars register-resident (spill-sink, = #261).**
+  `n` and `x` are spilled to BSS every iteration; sink the spills into the cold
+  path / keep them in a pair on the hot path. Same lever as sieve lever-3
+  (#261) — solving it once helps e, sieve, ttt-recursion, and BIOS.
+
+Do NOT pursue the TTI `getMemoryOpCost` route first — likely inert on GISel-Z80
+(see Risk note above). **Success = e clang < 25.38M cycles.**
+
+### Phase C — ttt: -O3 mechanism CONFIRMED — recommend -O3; residual = M2
+
+**Investigated this session; no Z80 lever needed.** The -Os->-O3 win is generic
+loop unrolling of the fixed-trip `for(p=0;p<9;p++)` move loop inside recursive
+`MinMax` (see finding #4). Decision:
+- **Ship guidance, not a backend patch:** use `-O3` for recursion-heavy code with
+  small fixed-count inner loops (ttt shape). Cost: +size (ttt 8251 B @ -O2 ->
+  9532 B @ -O3) and -O3 REGRESSES sieve — so this is per-workload, reinforcing
+  that B25 "always -Os" is dead.
+- Optional Z80-specific follow-up (LOW priority, only if a *production* kernel
+  shows this shape): teach the unroller/`Z80TTI` to unroll tiny fixed-trip loops
+  at -O2 without the global -O3 size cost. Not justified by ttt alone (a
+  benchmark, not firmware).
+- The residual -O3 1.20x is IX-frame recursive spill (M2/IX class) — folds into
+  Phase B's systemic spill work; not a separate effort.
+
+**Verdict: ttt is opt-level-policy-bound, not backend-bound.** Do not spend
+backend effort on ttt; document the -O3 recommendation.
+
+### Phase D — tm: document as allocator-bound, do not chase
+
+Not a codegen gap (z88dk heap vs dcc's allocator). Document and exclude from
+the compiler-quality signal.
+
+### Original Phase A/B/C detail (kept for reference)
+
+The BSS spill problem is systemic. Concrete levers for `e`'s pattern:
+
+1. TTI `getMemoryOpCost` / `getCastInstrCost`: charge the 51T per BSS
+   16-bit access so LLVM's register pressure model prefers register-resident
+   values over BSS-resident ones.
+2. Register coalescing for short-lived temporaries that are currently spilled
+   to BSS immediately after computation and reloaded before use.
+3. If (1)+(2) are insufficient, a late pass that sinks BSS stores into uses
+   and hoists BSS loads out of loops where the value is loop-invariant.
+
+The divmod situation is ALREADY CORRECT — one call, both values extracted.
+Do not "fix" divmod for `e`.
+
+**Success = e clang < 25.38M cycles.**
+
+### Phase C — ttt: Z80-tuned inlining threshold at -Os/-Oz
+
+Raise `getInliningThresholdMultiplier` (or equivalent TTI hook) specifically
+for single-basic-block leaf functions on Z80 so the 9 `posNfunc` helpers
+inline at -Os/-Oz. Watch code size — confirm production triplet unaffected.
+
+**Success = ttt -Os clang < 6.35M cycles.**
+
+### Phase D — tm: document as allocator-bound, do not chase
+
+Not a codegen gap. Document as "allocator-bound; z88dk heap vs dcc's allocator"
+and exclude from the compiler-quality signal.
+
+---
+
+## Sequencing & gates
+
+- Phase A first: cleanest win, archetype for the wider pointer-walk class.
+- Each phase: baseline → change → re-measure with ticks (not ntvcm).
+- Every codegen change needs a lit test (FileCheck pins the new loop) and,
+  where the win is runtime, a test-runner fixture.
+- Production triplet (rcbios/cpnos/autoload) must be byte-identical or better.
+- Upstream-routing per `feedback_upstream_routing_two_targets`.
+
+## Risks
+
+- Phase A register pressure: 3 pairs (HL=pointer, DE=stride, BC=end) leave
+  only 1 free for the store value — tight but feasible for sieve. e/ttt have
+  more live values; measure per-benchmark.
+- Phase B TTI changes affect all loops globally; full corpus + production guard
+  needed before committing.
+- Phase C inlining may grow .text at -Os; confirm with user before enabling.

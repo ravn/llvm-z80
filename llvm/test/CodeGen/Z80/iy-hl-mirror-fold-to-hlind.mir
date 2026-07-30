@@ -1,0 +1,183 @@
+# RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+#
+# ravn/llvm-z80#243 residual: the "(IX/IY+0)->(HL)" fold.
+#
+# The `hli` register class lets the allocator place an HL-sized address in
+# IX/IY (`STORE8_IND %addr:hli`); when HL is also free it ends up holding the
+# SAME address, so codegen materialises the index pointlessly:
+#
+#   $iy = COPY16_PUSHPOP $hl     ; IY = HL          (StartCopy)
+#   $hl = COPY16_PUSHPOP $iy     ; HL = IY (no-op: HL already == IY)
+#   LD_IYd_A 0, ..., $iy         ; ld 0(iy),a  ->  ld (hl),a
+#
+# COPY16_PUSHPOP is opaque to machine-cp, so the round-trip survives to the
+# late-opt pass.  When `$idx = $hl` is followed -- with HL never re-defined and
+# $idx never re-defined -- only by the reverse copy and/or displacement-0
+# indexed accesses through $idx, HL == $idx throughout: rewrite each access to
+# its (HL) form, drop the reverse copies, and drop the $idx materialisation.
+
+--- |
+  target triple = "z80"
+  define void @fold_store_iy() { ret void }
+  define void @fold_store_iy_reverse_copy() { ret void }
+  define void @fold_load_iy() { ret void }
+  define void @fold_store_ix() { ret void }
+  define void @fold_store_imm_iy() { ret void }
+  define void @no_fold_hl_clobbered() { ret void }
+  define void @no_fold_nonzero_disp() { ret void }
+  define void @no_fold_h_dest_load() { ret void }
+  define void @no_fold_iy_live_out() { ret void }
+...
+
+# --- Positive: bare store through IY mirrors HL -> ld (hl),a --------------
+---
+name:            fold_store_iy
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl, $a
+    $iy = COPY16_PUSHPOP $hl
+    LD_IYd_A 0, implicit $a, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: fold_store_iy
+# CHECK-NOT:   COPY16_PUSHPOP
+# CHECK-NOT:   LD_IYd_A
+# CHECK:       LD_HLind_A
+# CHECK-NOT:   $iy
+
+# --- Positive: store with the redundant reverse copy present -------------
+---
+name:            fold_store_iy_reverse_copy
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl, $a
+    $iy = COPY16_PUSHPOP $hl
+    $hl = COPY16_PUSHPOP $iy
+    AND_HLind implicit-def $a, implicit-def $flags, implicit $a, implicit $hl
+    LD_IYd_A 0, implicit $a, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: fold_store_iy_reverse_copy
+# CHECK-NOT:   COPY16_PUSHPOP
+# CHECK:       AND_HLind
+# CHECK-NEXT:  LD_HLind_A
+# CHECK-NOT:   LD_IYd_A
+
+# --- Positive: load through IY mirrors HL -> ld a,(hl) -------------------
+---
+name:            fold_load_iy
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl
+    $iy = COPY16_PUSHPOP $hl
+    LD_A_IYd 0, implicit-def $a, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: fold_load_iy
+# CHECK-NOT:   COPY16_PUSHPOP
+# CHECK-NOT:   LD_A_IYd
+# CHECK:       LD_A_HLind
+
+# --- Positive: same fold for the IX twin --------------------------------
+---
+name:            fold_store_ix
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl, $a
+    $ix = COPY16_PUSHPOP $hl
+    LD_IXd_A 0, implicit $a, implicit $ix
+    RET
+...
+# CHECK-LABEL: name: fold_store_ix
+# CHECK-NOT:   COPY16_PUSHPOP
+# CHECK-NOT:   LD_IXd_A
+# CHECK:       LD_HLind_A
+
+# --- Positive: immediate store ld (iy+0),n -> ld (hl),n -----------------
+---
+name:            fold_store_imm_iy
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl
+    $iy = COPY16_PUSHPOP $hl
+    LD_IYd_n 0, 42, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: fold_store_imm_iy
+# CHECK-NOT:   COPY16_PUSHPOP
+# CHECK-NOT:   LD_IYd_n
+# CHECK:       LD_HLind_n 42
+
+# --- Negative: HL re-defined between -> IY no longer mirrors HL ----------
+---
+name:            no_fold_hl_clobbered
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl, $a
+    $iy = COPY16_PUSHPOP $hl
+    $hl = LD_r16_nn 0
+    LD_IYd_A 0, implicit $a, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: no_fold_hl_clobbered
+# CHECK:       COPY16_PUSHPOP
+# CHECK:       LD_IYd_A
+
+# --- Negative: non-zero displacement is not (HL) ------------------------
+---
+name:            no_fold_nonzero_disp
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl, $a
+    $iy = COPY16_PUSHPOP $hl
+    LD_IYd_A 5, implicit $a, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: no_fold_nonzero_disp
+# CHECK:       COPY16_PUSHPOP
+# CHECK:       LD_IYd_A 5
+
+# --- Negative: loading into H via (HL) would clobber the HL pointer ------
+---
+name:            no_fold_h_dest_load
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $hl
+    $iy = COPY16_PUSHPOP $hl
+    LD_H_IYd 0, implicit-def $h, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: no_fold_h_dest_load
+# CHECK:       COPY16_PUSHPOP
+# CHECK:       LD_H_IYd
+
+# --- Negative: IY is loop-carried (live out via the successor) ----------
+---
+name:            no_fold_iy_live_out
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $hl, $a
+    $iy = COPY16_PUSHPOP $hl
+    LD_IYd_A 0, implicit $a, implicit $iy
+    JR_e %bb.1
+
+  bb.1:
+    liveins: $iy
+    LD_A_IYd 0, implicit-def $a, implicit $iy
+    RET
+...
+# CHECK-LABEL: name: no_fold_iy_live_out
+# CHECK:       COPY16_PUSHPOP
+# CHECK:       LD_IYd_A
+

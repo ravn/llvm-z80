@@ -1,0 +1,156 @@
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN:     -verify-machineinstrs --debugify-and-strip-all-safe %s -o - | FileCheck %s
+#
+# Dead BSS store-back elimination (non-adjacent extension).
+#
+# A frame-slot store `LD (X),R` is dead when:
+#   1. R was most recently loaded from the SAME slot X, AND
+#   2. R has not been modified since that load, AND
+#   3. No other instruction has stored to X since that load.
+# The slot already holds R's value; the store is a provable no-op.
+#
+# Unlike the spill->PUSH/POP peephole, this DROPS NOTHING from memory:
+# any later reader of X (in any block, via any alias) sees the identical
+# value with or without the store.  The scan is backward from the store
+# (up to MaxBSSStoreBackScan non-debug instructions) and stops early on:
+#   - CALL (the stored register is caller-saved)
+#   - another store to X (value changed)
+#   - a def of R (register no longer holds X's value)
+#   - block terminator
+#
+# Example -- dcc/tests/e.c inner loop, __sfrend_main-402 holds &a[n]:
+#   LD_BC_nnind  __sfrend_main-402   ; bc = &a[n]           (load)
+#   LD L,C ; LD H,B ; LD (HL),E     ; read-only uses of bc
+#   LD_nnind_BC  __sfrend_main-402   ; ptr slot = bc  <-- DEAD, removed
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+  @__sfrend_dead_bc     = global i8 0
+  @__sfrend_dead_hl     = global i8 0
+  @__sfrend_nonadjacent = global i8 0
+  @__sfrend_addr_a      = global i8 0
+  @__sfrend_addr_b      = global i8 0
+  @__sfrend_other       = global i8 0
+
+  ; Adjacent case: store immediately follows load — eliminated.
+  ; CHECK-LABEL: name: dead_bc
+  ; CHECK:     LD_BC_nnind
+  ; CHECK-NOT: LD_nnind_BC
+  ; CHECK:     RET
+  define void @dead_bc() { ret void }
+
+  ; CHECK-LABEL: name: dead_hl
+  ; CHECK:     LD_HL_nnind
+  ; CHECK-NOT: LD_nnind_HL
+  ; CHECK:     RET
+  define void @dead_hl() { ret void }
+
+  ; Non-adjacent case: an unrelated HL load sits between BC load and store.
+  ; BC is not modified, so the store-back is still dead — eliminated.
+  ; CHECK-LABEL: name: dead_nonadjacent
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     LD_HL_nnind
+  ; CHECK-NOT: LD_nnind_BC
+  ; CHECK:     RET
+  define void @dead_nonadjacent() { ret void }
+
+  ; A store to a DIFFERENT slot than the preceding load must be KEPT.
+  ; CHECK-LABEL: name: kept_diff_addr
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     LD_nnind_BC
+  define void @kept_diff_addr() { ret void }
+
+  ; If BC is redefined between the original load and the store-back,
+  ; the store can no longer be eliminated (BC != original slot value).
+  ; The second LD_BC_nnind redefines BC, stopping the backward scan.
+  ; CHECK-LABEL: name: kept_bc_redef
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     LD_nnind_BC
+  define void @kept_bc_redef() { ret void }
+
+  ; A CALL between load and store must prevent elimination (CALL may
+  ; clobber the caller-saved register; we conservatively bail).
+  ; CHECK-LABEL: name: kept_call_between
+  ; CHECK:     LD_BC_nnind
+  ; CHECK:     CALL_nn
+  ; CHECK:     LD_nnind_BC
+  declare void @ext()
+  define void @kept_call_between() { ret void }
+...
+---
+name:            dead_bc
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_dead_bc>, implicit-def $bc
+    LD_nnind_BC <mcsymbol __sfrend_dead_bc>, implicit $bc
+    RET implicit $bc
+
+...
+---
+name:            dead_hl
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_HL_nnind <mcsymbol __sfrend_dead_hl>, implicit-def $hl
+    LD_nnind_HL <mcsymbol __sfrend_dead_hl>, implicit $hl
+    RET implicit $hl
+
+...
+---
+name:            dead_nonadjacent
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_nonadjacent>, implicit-def $bc
+    LD_HL_nnind <mcsymbol __sfrend_other>, implicit-def $hl
+    LD_nnind_BC <mcsymbol __sfrend_nonadjacent>, implicit $bc
+    RET implicit $bc, implicit $hl
+
+...
+---
+name:            kept_diff_addr
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_addr_a>, implicit-def $bc
+    LD_nnind_BC <mcsymbol __sfrend_addr_b>, implicit $bc
+    RET implicit $bc
+
+...
+---
+# BC is redefined by a second BSS load (from a different slot).
+# The backward scan sees the second load defines BC → stops before
+# finding the original load → store is kept.
+name:            kept_bc_redef
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_nonadjacent>, implicit-def $bc
+    LD_BC_nnind <mcsymbol __sfrend_other>, implicit-def $bc
+    LD_nnind_BC <mcsymbol __sfrend_nonadjacent>, implicit $bc
+    RET implicit $bc
+
+...
+---
+# CALL between load and store: backward scan stops at CALL.
+name:            kept_call_between
+alignment:       1
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    LD_BC_nnind <mcsymbol __sfrend_nonadjacent>, implicit-def $bc
+    CALL_nn @ext, implicit-def $pc
+    LD_nnind_BC <mcsymbol __sfrend_nonadjacent>, implicit $bc
+    RET implicit $bc
+
+...

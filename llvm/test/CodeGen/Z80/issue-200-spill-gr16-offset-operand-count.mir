@@ -1,5 +1,10 @@
 # RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=prologepilog \
+# RUN:     -z80-static-stack-fp-direct-addr=false \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+#
+# NOTE: the #263 direct-addressing lever (default ON) turns constant-base frame
+# slots into direct absolute stores, bypassing the SPILL_GR16 frame-slot path
+# this test guards.  Pin the lever OFF to keep exercising the operand-count fix.
 #
 # ravn/llvm-z80 #200: under +static-stack, an address-taken local array forces
 # an IX frame.  SPILL_GR16 / RELOAD_GR16 are declared with three operands

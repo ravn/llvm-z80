@@ -1,4 +1,10 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 \
+; RUN:     -z80-static-stack-fp-direct-addr=false < %s | FileCheck %s
+;
+; NOTE: this test guards the large-offset IX/IY *spill* expansion path.  The
+; #263 direct-addressing lever (default ON) turns constant-base frame slots
+; into direct absolute loads/stores, bypassing that spill path entirely, so we
+; pin the lever OFF here to keep exercising the guarded mechanism.
 
 ; ravn/llvm-z80#28 — variable-size memcpy bug at -O0 was the dominant
 ; cause but not the only one.  This test covers the residual: when a
