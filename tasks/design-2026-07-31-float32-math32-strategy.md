@@ -1,270 +1,257 @@
-# Design: 32-bit `double` + z88dk `math32` runtime, and the sub/div bridge choice
+# Design: 32-bit `double` + z88dk math32 float runtime (measured)
 
-Date: 2026-07-31.
-Status: decided (Path Y for first landing); Path X documented as the upstream-discussable alternative.
-Tracking issue: ravn/llvm-z80 #277. Related: #276 (LLVM-24 merge), `plan-2026-07-10-z88dk-calling-conventions.md`.
+Date: 2026-07-31, substantially revised 2026-08-01 with **measured** ABI facts,
+a working Path X prototype, and a cycle benchmark.
+Status: Phase 0 committed; Path X implemented, gated, and verified end-to-end
+(both the compiler CC gate and the z88dk bridge now committed).
+Tracking: ravn/llvm-z80 #277. Upstream discussion: llvm-z80/llvm-z80 #34.
+Related: #276 (LLVM-24 merge), `plan-2026-07-10-z88dk-calling-conventions.md`.
 
-This document records a floating-point ABI decision for the Z80 backend and, in
-particular, the **Path X vs Path Y** choice for the two non-commutative float
-libcalls (`sub`, `div`). It is written to be discussed upstream on the
-`llvm-z80/llvm-z80` fork: the name-selection half touches
-`llvm/include/llvm/IR/RuntimeLibcalls.td` (a generic-LLVM mechanism), and the
-choice between a custom libcall calling convention and library-side shims is a
-genuine design fork worth a second opinion.
+> NOTE: an earlier draft of this document stated clang passes 32-bit floats in
+> "DEHL (D=MSB)". That was wrong. Disassembly of a real call site (2026-08-01)
+> shows clang uses **HLDE (HL = high word)**. All ABI claims below are measured,
+> not assumed.
 
 ---
 
 ## 1. Goal and decision
 
-**Goal (user, 2026-07-31):** reuse z88dk's existing runtime library and invent as
-little as possible; the compiler should emit the **fewest possible type casts**
-under the hood.
+Make `double`/`long double` 32-bit IEEE-754 binary32 and reuse z88dk's **math32**
+runtime, inventing as little as possible. The decisive reason (clarified
+2026-08-01): **math32 provides the full libm** (sqrt/sin/cos/exp/log/pow/...),
+which llvm-z80's own float runtime does NOT. See §3.
 
-**Decision:**
-1. `double` and `long double` are **32-bit IEEE-754 binary32** on Z80/SM83 (same
-   width and bit-format as `float`), not the C-standard 64-bit binary64.
-2. Reuse z88dk's **`math32`** runtime (a 32-bit IEEE-754 float library, selected
-   in z88dk by `--math32` = `-fp-mode=ieee`) instead of shipping our own 64-bit
-   Berkeley-SoftFloat closure.
-3. For the operand-order mismatch on the two non-commutative libcalls
-   (`__subsf3`, `__divsf3`), use **Path Y** (library-side swap-shims) for the
-   first landing; **Path X** (a custom libcall calling convention in the backend)
-   is documented below as the zero-runtime-cost alternative for later.
-
-The existing 64-bit softfloat work (`llvmz80-softfloat/` tree,
-`softfloat_cpm_z80.lib`, the #273 int->double fix, the `%f` nanoprintf shim) is
-**parked, not deleted**; it is simply no longer the default path.
+Decision:
+1. `double` = `long double` = 32-bit binary32 (Phase 0, committed).
+2. Reuse math32 for the z88dk-classic path.
+3. **Path X** (a calling-convention change) is the chosen mechanism: emit the
+   f32 arithmetic libcalls with `CallingConv::Z80_SDCCCall0`, which already
+   matches math32's ABI, so the z88dk bridge is a pure alias with zero glue.
+   **Path Y** (a library-side shim, §8) is a working fallback needing no
+   compiler change.
 
 ---
 
-## 2. Why 32-bit `double` satisfies "fewest typecasts" (measured)
+## 2. Why 32-bit `double` gives the fewest typecasts (measured)
 
-In C the usual arithmetic conversions and the default argument promotions insert
-`float`->`double` conversions in many places (variadic calls such as `printf`,
-unsuffixed float constants, many `math.h` prototypes). With a 64-bit `double`
-each such promotion is a real `__extendsfdf2` call, and every FP operation on a
-`double` is a 64-bit `df` libcall that nothing on this target implements.
-
-Making `double` == `float` == binary32 turns every one of those conversions into
-an **identity no-op**. Measured on the `build-macos` clang (already built with the
-change):
+C's usual conversions insert `float`->`double` promotions (variadic `printf`,
+unsuffixed constants, `math.h`). With 64-bit `double` each is a real
+`__extendsfdf2`. Making `double` == `float` == binary32 turns them into identity
+no-ops. Measured on `build-macos` clang (Phase 0):
 
 ```
-float  fadd(float,float)   -> call ___addsf3
-double dadd(double,double) -> call ___addsf3      (same 32-bit libcall)
-double f2d(float x){return x;}  -> (no call — identity)
-float  d2f(double x){return x;} -> (no call — identity)
+float  f + float  f -> ___addsf3
+double d + double d -> ___addsf3          (same 32-bit libcall)
+(double)aFloat       -> (no call)         identity
 ```
 
-Zero `__extendsfdf2` / `__truncdfsf2` anywhere; every FP op is a 32-bit `sf`
-libcall. The "fewest typecasts" constraint is therefore satisfied by the
-frontend type change alone — the rest of this document is only about mapping the
-`sf` libcalls to `math32`.
-
-The 13-line change lives in `clang/lib/Basic/Targets/Z80.cpp`
-(`DoubleWidth/DoubleFormat/LongDoubleWidth/LongDoubleFormat` -> 32 / IEEEsingle),
-with test `clang/test/CodeGen/z80-double-is-float32.c`.
+Zero `__extendsfdf2`/`__truncdfsf2`; every FP op is a 32-bit `sf` libcall. The
+13-line change is in `clang/lib/Basic/Targets/Z80.cpp` (`DoubleWidth`/
+`DoubleFormat`/`LongDoubleWidth`/`LongDoubleFormat`), test
+`clang/test/CodeGen/z80-double-is-float32.c`. **Committed** on branch
+`float32-math32` (`dafa0a1a79c0`).
 
 ---
 
-## 3. The libcall surface (measured, 2026-07-31)
+## 3. Two float runtimes exist — and only math32 has libm
 
-clang-z80 emits the standard compiler-rt `sf` names. Full surface:
-
-| Category | libcalls emitted |
-|---|---|
-| arithmetic | `__addsf3`, `__subsf3`, `__mulsf3`, `__divsf3` |
-| compare | `__cmpsf2`, `__gesf2`, `__gtsf2` (all 6 predicates canonicalise to these 3) |
-| int -> float | `__floatsisf`, `__floatunsisf` (16-bit int widens to SImode first) |
-| float -> int | `__fixsfsi`, `__fixunssfsi` |
-
-### Measured ABI: clang vs `math32` core
-
-| clang libcall | clang placement | `math32` core | Match |
-|---|---|---|---|
-| `__addsf3(a,b)` | a in **DEHL** (D=MSB), b on **stack**, result DEHL | `m32_fsadd32x32`: x(stack)+y(dehl)->dehl | **exact** (commutative) |
-| `__mulsf3(a,b)` | a DEHL, b stack | `m32_fsmul32x32`: same | **exact** (commutative) |
-| `__subsf3(a,b)=a-b` | a DEHL, b stack | `m32_fssub`: **x(stack)-y(dehl)** | **reversed** -> yields b-a |
-| `__divsf3(a,b)=a/b` | a DEHL, b stack | `m32_fsdiv`: reciprocal of y -> **stack/dehl** | **reversed** |
-| `__floatsisf(n)` | n in **DE:HL** (DE=lo, HL=hi, int layout) | int->float core (DEHL->DEHL) | reg-order: 0-1 instr |
-| `__fixsfsi(x)` | x in DEHL(float) -> DE:HL(int) | `m32_f2sint`: `DEHL float -> DEHL integer` | reg-order: 0-1 instr |
-| `__cmpsf2/gesf2/gtsf2` | returns **signed int** (-1/0/1 style) | `m32_compare`: returns **flags** (Z/carry) | return-repr adapter |
-
-Byte order confirmed: `math32`'s packed float has D = MSB (sign/exponent),
-matching clang's DE=high16. That is why add/mul are exact matches.
-
-**Consequence:** add and mul need only a name change; sub and div additionally
-need the operand order reversed; conversions need at most one `ex de,hl`; the
-three compares need a flags->signed-int adapter (an irreducible difference in
-*return representation*, present under any approach).
-
----
-
-## 4. The LLVM libcall model (where names and CC come from)
-
-Z80/SM83 currently sit in **`LegacyDefaultSystemLibrary`** via `isDefaultLibcallArch`
-in `llvm/include/llvm/IR/RuntimeLibcalls.td` (~line 3580), which supplies the
-default compiler-rt names (`__addsf3`, ...). That file explicitly says:
-
-> `// TODO: Should make every target explicit.`
-
-Two knobs, both confirmed to be honoured by Z80's GlobalISel pipeline
-(`LegalizerHelper::createLibcall` reads both `getLibcallImplName` and
-`getLibcallImplCallingConv`):
-
-- **Name** = the `RuntimeLibcallImpl` name. To emit `m32_fsadd32x32` instead of
-  `__addsf3`, define `def m32_fsadd32x32 : RuntimeLibcallImpl<ADD_F32,
-  "m32_fsadd32x32">;` and place it in a **dedicated Z80 `SystemRuntimeLibrary`**
-  (splitting z80/sm83 out of `isDefaultLibcallArch`). This directly discharges
-  the upstream TODO — it is the intended mechanism, not a workaround.
-- **Calling convention** = set at runtime via `setLibcallImplCallingConv(Impl,
-  CC)` (public in `RuntimeLibcalls.h`; AArch64 already uses it for
-  `AArch64_VectorCall`).
-
-The name half is identical in both Path X and Path Y. The paths differ only in
-how the sub/div operand order is corrected.
-
----
-
-## 5. The core problem: non-commutative operand order
-
-clang computes `__subsf3(a,b) = a - b` and places **a in DEHL, b on the stack**.
-`math32`'s `m32_fssub` computes `stack - dehl`. Feeding clang's placement in
-directly yields `b - a` — the wrong sign. `__divsf3` has the same shape
-(`stack / dehl` vs clang's a=dividend in DEHL). add and mul are unaffected
-(commutative). So exactly one thing must swap the two operands for sub and div.
-
----
-
-## 6. Path X vs Path Y
-
-### Path X — custom libcall calling convention (in the compiler)
-
-Define a Z80 calling convention for float libcalls that places **arg1 on the
-stack and arg2 in DEHL** (the reverse of the default sdcccall(1)). Then clang
-emits the operands where `math32` wants them:
-
-```
-a -> stack,  b -> DEHL
-m32_fssub:  stack - dehl  =  a - b   correct
-```
-
-- **Where:** `Z80CallLowering.cpp` (the hand-written CC switch that already
-  handles `Z80_SDCCCall0` / `Z80_Z88dkCallee`) + a new `CallingConv::ID` +
-  `setLibcallImplCallingConv` wiring the CC onto the four F32 arith impls.
-- **Runtime cost:** zero — the register allocator places operands correctly at
-  compile time.
-- **Cost:** ~30-60 lines of backend code + a new CC ID; a compiler change that
-  must be built and lit-tested. Same custom CC also covers the conversions
-  (absorbing any register-order difference at zero runtime cost).
-
-### Path Y — library-side swap-shims (in z88dk)
-
-Let clang emit the default placement (a in DEHL, b on stack) and interpose a
-tiny asm shim ahead of `math32` that swaps the two 32-bit operands for the two
-non-commutative ops:
-
-```
-__subsf3:
-    <swap DEHL with the 32-bit operand on the stack>   ; ~10-14 instructions
-    jp m32_fssub
-```
-
-- **Where:** a small asm bridge in z88dk (same class as the existing string /
-  integer-helper bridges; cf. `libsrc/l/llvmz80/newlib/llvmz80_imath.lib`). The
-  backend is untouched.
-- **Runtime cost:** ~10-14 instructions per `sub`/`div` call (those two ops only;
-  add/mul/conversions/compares are unaffected).
-- **Cost:** two small asm shims. No compiler-CC code, no clang rebuild for this
-  half.
-
-### Comparison
-
-| | Path X (custom CC) | Path Y (swap-shims) |
+| | llvm-z80 compiler-rt (ELF path) | z88dk math32 (z88dk path) |
 |---|---|---|
-| add, mul | name-remap, 0 shim | name-remap, 0 shim |
-| sub, div | 0 shim (CC places operands) | asm swap-shim x2 |
-| conversions | CC-absorbed (0 instr) | 0-1 instr |
-| compares | 3 flags->int adapters | 3 flags->int adapters |
-| where the code lives | llvm-z80 backend | z88dk library |
-| runtime cost | zero | ~10-14 instr per sub/div call |
-| needs clang build + lit | yes | no (for the sub/div half) |
-| reversibility | is the end state | trivially replaced by X later |
+| where | `compiler-rt/lib/builtins/z80/*.asm`, ships with clang-z80 | z88dk `libsrc/math/float/math32/` |
+| ABI | register (sdcccall(1)): arg1 HLDE, arg2 stack, result HLDE, callee-clean | stack (sdcccall(0)): both args stack, result DEHL |
+| arithmetic (`+ - * /`, compare, convert) | yes | yes |
+| **libm / math.h** (sqrt/sin/cos/exp/log/pow) | **NO** | **YES (full)** |
+| used by | standalone `--target=z80` (ld.lld ELF) | `zcc +cpm -compiler=llvmz80` |
+
+The ELF path's `__addsf3` is zlfn's own hand-written IEEE-754 binary32 runtime,
+written to match clang's default sdcccall(1) ABI (`compiler-rt/.../addsf3.asm`
+header: `Input: HLDE = a, stack = b; Output: HLDE = a + b; callee-cleanup`).
+
+**The gap:** `zcc` links z88dk's libraries, not llvm-z80's compiler-rt, so
+`__addsf3` is unresolved in a z88dk build. Reusing math32 fills the gap AND
+brings libm for free. Writing libm from scratch is infeasible; this is what
+justifies the whole integration.
 
 ---
 
-## 7. Decision and rationale
+## 4. Measured ABI (ground truth, disassembly 2026-08-01)
 
-**Path Y for the first landing.**
+clang emits the standard compiler-rt `sf` names. Full arithmetic surface:
+`__addsf3/__subsf3/__mulsf3/__divsf3`; compares canonicalise to three
+(`__cmpsf2/__gesf2/__gtsf2`); conversions `__floatsisf/__floatunsisf/__fixsfsi/
+__fixunssfsi`.
 
-- add, mul, conversions, and compares need no calling convention in either path,
-  so Path Y's only delta from Path X is two small asm shims that live entirely in
-  z88dk — zero compiler-CC surface and zero clang-rebuild risk for that half.
-- It matches the project ethos ("reuse z88dk, invent as little as possible"): the
-  shim is the same class of artefact as the string and integer bridges already in
-  `libsrc/l/llvmz80/`.
-- The runtime cost is confined to two operations (`sub`, `div`) that are not
-  typically hot on this workload; if profiling ever shows otherwise, Path X is a
-  drop-in replacement (§8).
-- It de-risks the first landing: the load-bearing, harder-to-review change (the
-  custom CC in `Z80CallLowering`) is deferred until the name-remap + math32
-  reuse is proven end-to-end.
+**clang's default C ABI (sdcccall(1)) for a 32-bit value:**
+- arg1 in **HLDE**: **HL = high word (MSB byte in H), DE = low word**.
+- arg2 on the stack.
+- result in **HLDE** (HL = high word). callee cleans.
 
-**Path X is the preferred *end state*** if zero runtime glue is wanted: it is the
-"clang conforms to the ABI" outcome, with no per-call shim on any op. It is
-documented here so the trade-off is explicit and can be discussed on the fork.
+Confirmed by disassembling `float g(void){return va+vb;}` — at `call ___addsf3`,
+`HL = va_hi`, `DE = va_lo`, `vb` on the stack.
 
----
+**z88dk math32 cores (`m32_fsadd` etc.):** operand on the stack + operand in
+**DEHL (D = MSB)**, result **DEHL**, entered by `jp` so the stack operand sits
+directly above the core's return address. This is the sccz80/SmallC HL-centric
+heritage (see `plan-2026-07-10` and §7).
 
-## 8. Migration Path Y -> X (if chosen later)
-
-1. Add a `CallingConv::ID` for the Z80 float-libcall convention.
-2. Implement arg placement (arg1->stack, arg2->DEHL, result DEHL) in
-   `Z80CallLowering.cpp`, alongside the existing `Z80_SDCCCall0` handling.
-3. `setLibcallImplCallingConv` for the four F32 arith impls (and the conversions
-   if their register order is folded in).
-4. Delete the two z88dk swap-shims; the name-remap and compare adapters are
-   unchanged.
-
-Because the name-selection and compare-adapter halves are identical in both
-paths, the migration touches only the two shims and the new CC — nothing else
-regresses.
+So clang's HLDE (HL=high) is the **word-swap** of math32's DEHL (DE=high) — the
+same half-swap the existing integer bridges already handle with `ex de,hl`
+(`z88dk/libsrc/l/llvmz80/__divsi3.asm`: *"clang ABI: HL:DE (HL=high); core ABI:
+DE:HL; one `ex de,hl`"*).
 
 ---
 
-## 9. Upstream relevance (llvm-z80/llvm-z80)
+## 5. The backend already has sdcccall(0) — and it matches math32
 
-- **`RuntimeLibcalls.td` change is on the intended path:** splitting z80/sm83 into
-  a dedicated `SystemRuntimeLibrary` with math32 impl names discharges the file's
-  own `// TODO: Should make every target explicit.` It is a clean, reviewable
-  change, not a hack.
-- **The Path X/Y choice is a general pattern** for any Z80 backend that targets a
-  host float library whose operand order differs from compiler-rt: either a
-  target libcall CC or library shims. Documenting the measured ABI and the
-  trade-off lets the fork owner weigh in before the CC surface is committed.
-- **No generic-LLVM behaviour changes** for other targets: the default system
-  library is untouched; only Z80/SM83's selection moves.
+`Z80CallLowering.cpp` defines per-convention register tables:
 
----
+| | sdcccall(1) (C default) | sdcccall(0) (`Z80_SDCCCall0`) |
+|---|---|---|
+| args | arg1 HLDE, arg2 stack | both on stack |
+| 16-bit return | DE | **HL** |
+| 32-bit return | `Ret_I32_Hi=HL` (HL=high) | **`Ret_I32_Hi=DE` (DE=high)** |
+| cleanup | callee | caller |
 
-## 10. Open items (impl-time, low risk)
-
-- Exact int byte-order in `m32_f2sint` result / `m32_sint2f` argument (determines
-  whether conversions are 0 or 1 `ex de,hl`).
-- `__unordsf2` / NaN compare path — did not appear at -O2; confirm whether
-  NaN-aware code emits it and bridge if so.
-- Exact `m32_compare` flag encoding (Z + carry) -> the -1/0/1 mapping per
-  `__cmpsf2` / `__gesf2` / `__gtsf2`.
-- Confirm stock ieee `printf("%f")` accepts clang's binary32 directly (both are
-  IEEE-754 binary32); if so, drop the nanoprintf / `-D__LLVMZ80_IEEE_PRINTF`
-  closure.
+`Z80_SDCCCall0` already returns 32-bit in **DEHL (DE=high)** and 16-bit in HL —
+exactly math32's convention. So no new calling convention is needed: the f32
+libcalls just need to be emitted with `Z80_SDCCCall0`, and the z88dk bridge
+becomes a pure alias.
 
 ---
 
-## 11. Verification gates
+## 6. Path X (chosen): the calling-convention change + pure alias
 
-- **lit:** emitted call name + operand placement pinned per libcall (two RUN
-  lines each).
-- **runtime (ntvcm):** self-checking oracles for arith / compare / conversion per
-  op, including sign-sensitive `sub`/`div` and NaN.
-- **printf:** `printf("%f")` byte-match vs a host reference.
+**Backend (one call site).** The f32 arithmetic is legalized by *custom* code in
+`Z80LegalizerInfo.cpp` (not `.libcallFor`), which hardcoded `CallingConv::C`.
+Changing that one `createLibcall(...)` to `CallingConv::Z80_SDCCCall0` makes
+clang push both float operands on the stack and read the result in DEHL.
+(Verified: after the change, a call site emits 4 `push` + `call ___addsf3` +
+`pop af`x4.) **This is why setting the CC in `RuntimeLibcalls.cpp` had no
+effect** — the custom legalizer bypasses the RuntimeLibcalls CC.
+
+**z88dk bridge (pure alias).** With the sdcccall(0) frame, `__addsf3` is a plain
+alias to z88dk's **SDCC** float wrappers:
+```
+___addsf3: jp cm32_sdcc_fsadd
+___subsf3: jp cm32_sdcc_fssub
+___mulsf3: jp cm32_sdcc_fsmul
+___divsf3: jp cm32_sdcc_fsdiv
+```
+Result: **ALL PASS** on the thorough arithmetic test (`z88dk/test/clang/
+runtime_float.c`, bit-exact, order-sensitive sub/div + signed-zero) at
+`-O2`/`-O3`/`-Os`. Zero register-order glue.
+
+Use the **`cm32_sdcc_*`** wrappers, NOT `cm32_sccz80_*`: the sccz80 wrappers do a
+`switch_arg` (SmallC->SDCC order) which double-swaps clang's already-SDCC-order
+operands, breaking sub/div. The SDCC wrappers match sdcccall(0) directly.
+
+---
+
+## 7. Why math32 needs the packed-float / jp contract (hard-won detail)
+
+- `m32_fsadd32x32` is NOT the packed-float entry (it reads the sign from `C`, a
+  pre-unpacked operand). The packed-float public entries are
+  `m32_fsadd/fssub/fsmul/fsdiv` — they do `ex de,hl; ld b,h; add hl,hl` to unpack
+  a packed float from DEHL.
+- The core reads the second operand from the stack **above its own return
+  address**, so it must be entered by `jp` (as the wrappers do), not `call` — a
+  `call` inserts an extra return address and the core reads the wrong bytes.
+- Result byte order: math32 returns DEHL (D=MSB); clang's HLDE return needs the
+  word-swap (handled by the sdcccall(0) DE-high return in Path X, or by an
+  `ex de,hl` trampoline in Path Y).
+
+---
+
+## 8. Path Y (working fallback): library-side shim, no compiler change
+
+If the backend is not changed, clang emits `__addsf3` with the default
+sdcccall(1) frame (arg1 HLDE, arg2 stack). The z88dk bridge then:
+1. `ex de,hl` (HLDE arg1 -> DEHL for the core);
+2. swaps the DEHL operand with the 32-bit stack operand (so a lands on the stack,
+   b in DEHL -> correct order for non-commutative sub/div);
+3. `jp` the core via a trampoline that `ex de,hl`s the DEHL result back to HLDE.
+~15 instructions/op, all in z88dk. Also **ALL PASS** on `runtime_float.c` when
+prototyped this way (2026-08-01).
+
+Path X is strictly cleaner (pure alias, zero runtime glue) and is now the
+**committed** implementation (§11); this swap-shim variant of `__addsf3.asm`
+was superseded and is not what ships. It remains documented here as the
+fallback if `-z80-float-sdcccall0` (§10) is ever reverted or deferred.
+
+---
+
+## 9. Cycle benchmark: the "math32 is faster" assumption is only half true
+
+Per-op cycles, cycle-accurate z88dk-ticks, N-difference (1000 vs 3000
+iterations, cancels startup), single operand set (3.14159 / 2.71828):
+
+| op | math32 | compiler-rt | winner |
+|---|---|---|---|
+| add | ~949 | ~1867 | **math32 ~2.0x** |
+| mul | ~2325 | ~8921 | **math32 ~3.8x** |
+| div | ~24567 | ~10787 | **compiler-rt ~2.3x** |
+
+- math32 is clearly faster for **add/mul** (dominant in typical code).
+- **compiler-rt is ~2.3x faster for division** — math32 divides via a
+  Newton-Raphson reciprocal (`a/b = a*(1/b)`, iterative, ~24.5 k cycles; this is
+  also the source of the 1-ULP `-3/3` result), while compiler-rt divides
+  directly (~10.8 k).
+- Per-op figures include loop + arg-marshalling overhead (fair: real call cost).
+  Data-dependent paths mean these are representative, not worst/best case.
+
+**Implication:** "math32 is faster" holds for add/mul, not div. But math32 is
+still required for libm regardless, so it is not either/or; a hybrid (math32 +
+compiler-rt's faster div) is possible but couples two runtimes.
+
+---
+
+## 10. Path X caveat, RESOLVED: the conditional-CC gate
+
+The Path X legalizer change, if unconditional, would also change the **ELF
+path**'s f32 libcalls to sdcccall(0) -- but the ELF compiler-rt `__addsf3`
+expects the register ABI, so the standalone `--target=z80` float runtime +
+the z80-utils f32 tests would break.
+
+**Fixed (2026-08-01):** the CC selection is gated behind a new opt-in
+`cl::opt<bool>` flag, `-z80-float-sdcccall0` (default OFF), in
+`Z80LegalizerInfo.cpp`. z88dk's zcc must pass `-mllvm -z80-float-sdcccall0`
+for `-compiler=llvmz80` builds (see `test/clang/runtime_float.sh` in z88dk);
+the default (flag absent) ELF path is unchanged -- confirmed by a lit
+`DEFAULT` check-prefix run with no flag
+(`llvm/test/CodeGen/Z80/issue-277-f32-libcall-sdcccall0.ll`) plus the full
+Z80 lit suite (208 PASS + 5 XFAIL, no regressions).
+
+math.h then follows for free: z88dk's `math.h` declares `sqrtf`/`sinf`/... which
+resolve to the `cm32_sdcc_*` libm wrappers under the same convention -> no
+boundary swaps between `a+b` and `sqrtf(...)`.
+
+---
+
+## 11. Status
+
+- **Committed** (llvm-z80 `float32-math32`): Phase 0 double=32 + lit test
+  (`dafa0a1a79c0`); this design doc (`d6bec6aa613a`, updated 2026-08-01).
+- **Committed** (llvm-z80 `float32-math32`): the `Z80LegalizerInfo.cpp` CC
+  change (Path X), gated behind `-z80-float-sdcccall0` (default OFF), with lit
+  test `issue-277-f32-libcall-sdcccall0.ll` pinning both the flag-on stack-arg
+  behavior and the flag-off (default/ELF) behavior.
+- **Committed** (z88dk `llvmz80-float32-math32`): the pure-alias bridge
+  `libsrc/l/llvmz80/__addsf3.asm` + thorough runtime test
+  `test/clang/runtime_float.c` + harness `test/clang/runtime_float.sh`.
+  Verified end-to-end under ntvcm: `ALL PASS` (order-sensitive sub/div and
+  signed-zero cases included); confirmed the SAME build WITHOUT the flag
+  produces garbage on every case (proves the gate is load-bearing, not a
+  no-op).
+
+## 12. Open items
+
+- Compare + conversion bridges (`__cmpsf2/__gesf2/__gtsf2`,
+  `__floatsisf/__fixsfsi`) — not yet built; needed before the existing
+  `test_08_f32_*` / `test_50_f32_mathlib` run under math32.
+- math.h wiring (z88dk header -> `cm32_sdcc_*` libm) — untested.
+- Whether math32's div can be tuned, or a hybrid uses compiler-rt's div.
+- Correct the ABI premise on upstream #34 (it repeats the wrong DEHL claim).
+- zcc convenience: currently users must pass `-mllvm -z80-float-sdcccall0
+  -L<z88dk>/libsrc -lmath32` by hand for every build; consider auto-injecting
+  these for `-compiler=llvmz80` once this direction is confirmed with the fork
+  owner, mirroring the existing `LLVMZ80RTLIB` auto-link pattern in zcc.c.
