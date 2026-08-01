@@ -242,12 +242,36 @@ boundary swaps between `a+b` and `sqrtf(...)`.
   signed-zero cases included); confirmed the SAME build WITHOUT the flag
   produces garbage on every case (proves the gate is load-bearing, not a
   no-op).
+- **Committed (2026-08-01, llvm-z80 `float32-math32`):** compares
+  (`__cmpsf2`/`__gtsf2`/`__gesf2`/`__unordsf2`, G_FCMP) gated behind the same
+  flag via a local `F32LibcallCC`. Conversions (`__fixsfsi`/`__fixunssfsi`/
+  `__floatsisf`/`__floatunsisf`) moved from the generic
+  `.libcallForCartesianProduct` (whose CC comes from a table Z80 never
+  populates) to `.customFor({{S32,S32}})` + a new `legalizeCustom` case, so
+  they can be gated the same way; the `{S32,S64}`/`{S64,S64}` pairs are
+  untouched. New lit test `issue-277-f32-cmp-conv-sdcccall0.ll`
+  (CHECK/DEFAULT pairs); full suite 209 PASS + 5 XFAIL, no regressions.
+- **Committed (2026-08-01, z88dk `llvmz80-float32-math32`):** bridges
+  `libsrc/l/llvmz80/__floatsisf.asm` (pure aliases -- `__fixsfsi`/
+  `__fixunssfsi` -> `cm32_sdcc___fs2sint`/`__fs2uint`; `__floatsisf`/
+  `__floatunsisf` -> `cm32_sdcc___slong2fs`/`__ulong2fs`, NOT the
+  16-bit-named `__sint2fs`/`__uint2fs`, which would drop half of clang's
+  32-bit-widened argument) and `libsrc/l/llvmz80/__cmpsf2.asm` (a real
+  adapter, not an alias: math32's raw `m32_compare` core has no NaN
+  awareness at all, so each entry point runs its own NaN check on both
+  stack operands before translating `m32_compare`'s Z/C flags to GCC's
+  -1/0/+1 tri-state). New runtime tests `test/clang/runtime_fconv.{c,sh}` /
+  `runtime_fcmp.{c,sh}` (boundary values, all 6 comparison predicates, NaN
+  in both operand positions, `__builtin_islessgreater`/`isunordered`):
+  `ALL PASS` under ntvcm. Negative control (same builds without the flag)
+  confirms the gate is load-bearing here too: conversions fail
+  deterministically with wrong values, compares hang -- both are the
+  expected symptom of an ABI mismatch, not silent wrong-but-plausible
+  behavior. `runtime_float.sh` (arithmetic) re-verified still PASS, so the
+  legalizer refactor this depends on caused no regression.
 
 ## 12. Open items
 
-- Compare + conversion bridges (`__cmpsf2/__gesf2/__gtsf2`,
-  `__floatsisf/__fixsfsi`) — not yet built; needed before the existing
-  `test_08_f32_*` / `test_50_f32_mathlib` run under math32.
 - math.h wiring (z88dk header -> `cm32_sdcc_*` libm) — untested.
 - Whether math32's div can be tuned, or a hybrid uses compiler-rt's div.
 - Correct the ABI premise on upstream #34 (it repeats the wrong DEHL claim).
