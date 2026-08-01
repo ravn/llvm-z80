@@ -203,6 +203,48 @@ iterations, cancels startup), single operand set (3.14159 / 2.71828):
 still required for libm regardless, so it is not either/or; a hybrid (math32 +
 compiler-rt's faster div) is possible but couples two runtimes.
 
+### 9a. Isolated ABI-only overhead (2026-08-01) — would porting compiler-rt to sdcccall(0) pay off?
+
+§9 measures *whole algorithms* (different bodies, different ABI) and cannot
+answer the narrower question raised while discussing this doc: is the
+`Z80_SDCCCall0` shape itself cheaper or more expensive to marshal than the
+default `CallingConv::C` shape, holding the arithmetic body constant? If
+sdcccall(0) marshalling were *cheaper*, there would be a real argument for
+porting compiler-rt to it upstream (removing the shim/flag entirely). If it
+is *more expensive*, the current flag + math32-glue design is strictly
+better on every axis (correct AND already faster, §9), and there is no
+performance case for an upstream ABI change.
+
+Measured directly with a hand-written raw-Z80 microbenchmark (`z88dk z80asm
+-b`, run under the cycle-accurate `z88dk-ticks -pc <start> -end <halt-addr>`
+emulator — the working invocation, found in `test/suites/bench.sh` /
+`src/z80asm/tools/get_emul_ticks.pl`; the earlier `-l file,addr -counter N`
+combination silently produced a constant, code-independent 131072 and was
+discarded), N=2000 calls, identical 1-instruction (`nop`) body in both call
+shapes:
+
+| ABI shape | T-states / 2000 calls | T-states / call |
+|---|---|---|
+| default `CallingConv::C` (arg1 in HLDE, arg2 on stack, callee-cleanup) | 330 005 | **165.0** |
+| `Z80_SDCCCall0` non-destructive-peek shim (both args on stack, caller-cleanup) | 614 005 | **307.0** |
+
+Delta: **+142 T-states per call for the sdcccall(0) shape** (≈ +86%
+marshalling overhead), cross-checked by hand-counting the emitted
+instructions for both loops (165 and ~311 T-states respectively, matching
+the measured figures to within the last-iteration `jr nz` not-taken
+correction).
+
+**Conclusion:** porting compiler-rt's arithmetic to `Z80_SDCCCall0` would
+make compiler-rt *slower*, not faster (e.g. add: ~1867 T-states today ->
+roughly ~1867 - 165 + 307 ≈ **2009 T-states**, i.e. ~7-8% worse), and would
+still be nowhere near math32's ~949 T-states, because math32's advantage
+over compiler-rt (§9) is algorithmic, not ABI-shape-related. There is
+therefore **no performance argument** for an upstream compiler-rt ABI
+change here — per the project's own decision rule (change the compiler only
+if it demonstrably pays off; otherwise prefer glue code), the current
+`-z80-float-sdcccall0` flag + math32-glue design is confirmed as the right
+call, not just the pragmatic one.
+
 ---
 
 ## 10. Path X caveat, RESOLVED: the conditional-CC gate
