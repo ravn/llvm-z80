@@ -127,3 +127,48 @@ suspiciously fast score as a red flag (cross-check elapsed vs iteration count).
 - Dhrystone lanes extended; CLBG code-size table generated.
 - `benchmarks/README.md` + top-level `sweep.sh` committed; results snapshot
   recorded. (Push only when asked.)
+
+---
+
+## IMPLEMENTED 2026-08-04 (z88dk `support/benchmarks/stdcbench/`, commit 5afb883db8, local/unpushed)
+
+Phases 0-3 done; stdcbench 0.8 vendored (GPL-2-or-later, license gate cleared)
+and ported to z88dk `+cpm/+test`.  `compare.sh` builds every lane, gates on the
+self-check under ntvcm, and prints cycles (z88dk-ticks) + `.COM` size.
+
+**Timing model settled (no wall clock, per user):** `portme.c stdcbench_clock()`
+is a pure call-counter -> fixed deterministic iteration count identical across
+compilers; the relative timer is z88dk-ticks (external, cycle-exact) between
+`TIMER_START/STOP` in `bench_main.c`.  CP/M+ntvcm expose no guest-readable
+clock, and a wall clock would be non-reproducible, so this is the correct axis.
+
+**Headline snapshot (c90base, @4 MHz):**
+| lane | .COM B | cycles | check |
+|---|---|---|---|
+| llvmz80 -O2 | 12624 | 414,888,705 | OK |
+| llvmz80 -Os | 12624 | 414,888,705 | OK (== -O2) |
+| sdcc0 | 12289 | 809,940,171 | OK |
+| sdcc1 | 12176 | — | CHECK-FAIL |
+| sccz80 | 11499 | 1,350,010,977 | OK |
+
+-> llvmz80 ~1.95x faster than sdcc0, ~3.25x faster than sccz80 on integer work.
+
+**Two llvmz80-specific blockers found (c90lib module), both need go-ahead to file:**
+1. **clang backend segfault** at `-O2/-Os`, pass `aggressive-instcombine` on fn
+   `add`, compiling `c90lib-lnlc.c` (`-O0/-O1` fine; sdcc/sccz80 fine).
+   Self-contained repro saved: `support/benchmarks/stdcbench/bugs/
+   c90lib-lnlc-O2-crash.i` (+ `bugs/README.md`).  Routing TBD at filing:
+   aggressive-instcombine is generic LLVM -> may belong at llvm/llvm-project.
+   Not yet delta-reduced (needs `add`+`test`+`permtest` inlined together).
+2. **z80asm `.asciz` limit**: clang emits the large c90lib-peep.c peephole-rules
+   string as one `.asciz`; z88dk z80asm rejects it (same class as the known
+   `s_countLeadingZeros8.c` 256-byte-table limitation; only the llvmz80 path
+   uses z80asm).
+
+**sdcc1 caveat:** `--sdcccall 1` against z88dk's sdcccall-0 clib miscompiles
+`c90base_immul`/`isort` (self-check fails) -> not a trustworthy lane; kept
+visible in the table.
+
+**Remaining (Phase 4-5, not started, need go-ahead):** extend Dhrystone with
+sccz80/dcc lanes; CoreMark download-on-demand lane; CLBG `.COM`-size sweep;
+top-level `benchmarks/sweep.sh` + README; file the two llvmz80 bugs.
