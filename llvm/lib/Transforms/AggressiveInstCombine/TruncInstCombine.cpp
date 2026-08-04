@@ -788,7 +788,21 @@ bool TruncInstCombine::run(Function &F) {
       //     trunc+zext bracket produces a worthless trunc-then-extend
       //     roundtrip on the same value — InstCombine would canonicalise
       //     it straight back to the original `and X, MASK`.
-      if (!NewDstSclTy || InstInfoMap.empty()) {
+      //   - the `And` we are about to erase is itself an in-graph node.
+      //     This only happens when X's def-use chain CYCLES back through
+      //     this very And, e.g. the i16 induction recurrence
+      //       %p = phi [0, ...], [%n, %loop]
+      //       %m = and i16 %p, 255      ; <- And == synthetic root's parent
+      //       %n = add i16 %m, 1
+      //       (%p uses %n uses %m uses %p)
+      //     Here getBestTruncatedType, walking operands from X=%p, reaches
+      //     %m and records it in InstInfoMap.  Erasing %m below would leave
+      //     a dangling pointer in InstInfoMap that ReduceExpressionGraph
+      //     then dereferences (use-after-free -> segfault, ravn/llvm-z80
+      //     stdcbench c90lib `add`).  AndMaskParentSkip only stops %m from
+      //     becoming a NarrowedAndMasks *rewrite candidate*; it does not
+      //     remove %m from the in-graph node set.  Bail cleanly instead.
+      if (!NewDstSclTy || InstInfoMap.empty() || InstInfoMap.count(And)) {
         Tr->eraseFromParent();
         continue;
       }
