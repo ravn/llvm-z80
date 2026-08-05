@@ -57,6 +57,28 @@ Z80MCAsmInfo::Z80MCAsmInfo(const Triple &TT, const MCTargetOptions &Options)
   MaxInstLength = 7;
   SupportsDebugInformation = true;
 
+  // The Z80 has no native 8-byte data directive, and the external assemblers
+  // this textual output feeds (z88dk z80asm, whose `DEFQ`/`DQ` are only 4-byte)
+  // do not provide one either. Leaving Data64bitsDirective null makes
+  // MCAsmStreamer split every 8-byte value into two little-endian 4-byte
+  // `.long` emissions (see MCAsmStreamer::emitValueImpl), so a 64-bit global
+  // initializer round-trips losslessly instead of being emitted as a `.quad`
+  // the downstream assembler would truncate to 32 bits (ravn/z88dk#27).
+  //
+  // Worked example: `unsigned long long g = 0x4008000000000000;` was emitted as
+  //   .quad 4613937818241073152
+  // which z80asm reduced to a 4-byte `DEFQ` (high 32 bits dropped -> g==0). It
+  // now emits
+  //   .long 0            ; low  32 bits
+  //   .long 1074266112   ; high 32 bits (0x40080000)
+  //
+  // Safe because a symbolic/relocatable 8-byte value (which would hit
+  // emitValueImpl's report_fatal_error non-absolute path) cannot be formed on
+  // this target: casting a 16-bit address to a 64-bit initializer is rejected
+  // by the front-end as non-constant. This only affects textual `-S` output;
+  // the integrated-assembler ELF object path does not consult this field.
+  Data64bitsDirective = nullptr;
+
   initializeAtSpecifiers(AtSpecifiers);
 }
 
