@@ -5613,6 +5613,9 @@ static void handleCallConvAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   case ParsedAttr::AT_Z80Callee:
     D->addAttr(::new (S.Context) Z80CalleeAttr(S.Context, AL));
     return;
+  case ParsedAttr::AT_Z80SmallC:
+    D->addAttr(::new (S.Context) Z80SmallCAttr(S.Context, AL));
+    return;
   default:
     llvm_unreachable("unexpected attribute kind");
   }
@@ -5913,6 +5916,9 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     break;
   case ParsedAttr::AT_Z80Callee:
     CC = CC_Z80Callee;
+    break;
+  case ParsedAttr::AT_Z80SmallC:
+    CC = CC_Z80SmallC;
     break;
   case ParsedAttr::AT_DeviceKernel: {
     // Validation was handled in handleDeviceKernelAttr.
@@ -8156,6 +8162,7 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
   case ParsedAttr::AT_Z80AllReg:
   case ParsedAttr::AT_Z80FastCall:
   case ParsedAttr::AT_Z80Callee:
+  case ParsedAttr::AT_Z80SmallC:
     handleCallConvAttr(S, D, AL);
     break;
   case ParsedAttr::AT_Z80PreservesRegs:

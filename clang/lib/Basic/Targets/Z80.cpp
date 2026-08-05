@@ -54,6 +54,19 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
   FloatAlign = 8;
   DoubleAlign = 8;
   LongDoubleAlign = 8;
+  // `double`/`long double` are 32-bit IEEE-754 binary32, same width and
+  // format as `float` -- deliberate for this 8-bit target: the only
+  // reusable host-side float runtime is z88dk's `math32` (32-bit,
+  // IEEE-754-compatible); a real 64-bit binary64 would need its own
+  // from-scratch soft-float library with no equivalent host implementation
+  // to bridge to. The base TargetInfo default (double=64/IEEEdouble) would
+  // instead emit __adddf3/__muldf3/... (64-bit) libcalls that nothing on
+  // this target implements. Verified 2026-07-28: baseline (before this
+  // change) emitted `call ___adddf3` and `sizeof(double) == 8`.
+  DoubleWidth = 32;
+  DoubleFormat = &llvm::APFloat::IEEEsingle();
+  LongDoubleWidth = 32;
+  LongDoubleFormat = &llvm::APFloat::IEEEsingle();
   SuitableAlign = 8;
   DefaultAlignForAttributeAligned = 8;
   SizeType = UnsignedInt;
@@ -168,6 +181,7 @@ Z80TargetInfo::checkCallingConvention(CallingConv CC) const {
   case CC_Z80AllReg:
   case CC_Z80FastCall:
   case CC_Z80Callee:
+  case CC_Z80SmallC:
     return CCCR_OK;
   default:
     return CCCR_Warning;

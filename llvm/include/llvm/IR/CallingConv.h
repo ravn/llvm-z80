@@ -323,6 +323,18 @@ namespace CallingConv {
     /// (unlike __sdcccall(1), which caller-cleans for >16-bit returns).
     Z80_Z88dkCallee = 131,
 
+    /// Z80 SDCC __smallc (small-C) — all parameters on stack, caller cleanup,
+    /// exactly like __sdcccall(0) EXCEPT the argument order is reversed.
+    /// __smallc pushes left-to-right, so the caller pushes the first declared
+    /// argument first (deepest) and the last argument last (nearest the return
+    /// address); the callee finds the last argument at the lowest stack address
+    /// (IX+4).  This is the opposite of __sdcccall(0) (right-to-left, first arg
+    /// at IX+4).  Identical for single-argument functions.  Return value uses
+    /// the z88dk classic registers (i8->L, i16->HL, i32->DE:HL), same as
+    /// __sdcccall(0).  Exists so clang can call the z88dk classic C library,
+    /// whose functions are compiled __smallc.
+    Z80_SmallC = 132,
+
     /// The highest possible ID. Must be some 2^k - 1.
     MaxID = 1023
   };

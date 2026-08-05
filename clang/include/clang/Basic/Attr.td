@@ -3606,6 +3606,11 @@ def Z80Callee : DeclOrTypeAttr, TargetSpecificAttr<TargetZ80> {
   let Documentation = [Z80CalleeDocs];
 }
 
+def Z80SmallC : DeclOrTypeAttr, TargetSpecificAttr<TargetZ80> {
+  let Spellings = [Clang<"z80_smallc">];
+  let Documentation = [Z80SmallCDocs];
+}
+
 def Z80PreservesRegs : InheritableAttr, TargetSpecificAttr<TargetZ80> {
   let Spellings = [Clang<"z80_preserves_regs">];
   let Args = [VariadicStringArgument<"Regs">];

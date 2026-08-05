@@ -162,6 +162,22 @@ the whole brief.
   chasing timing.
 - **Treat a user's "my guess is X" as a starting suggestion, not a constraint** —
   widen the candidate list and probe.
+- **Surprise tripwire — reset to the smallest decoupled repro; don't wait to
+  *feel* it's weird.** Fire on an objective trigger, not a mood. STOP and rebuild
+  a minimal, ONE-variable repro (decouple data from code path) the moment ANY of
+  these holds: (a) a result depends on something with no causal path to it in your
+  model — e.g. "loading glyph N changed glyph N's rendered *height*", yet load
+  order cannot affect a glyph's height, so the model is wrong, not the data;
+  (b) you're about to debug a mature external layer (emulator, compiler, OS,
+  kernel) to explain your *own* program's behaviour — prove your own setup with a
+  minimal repro first; (c) two or more probes have not shrunk the candidate-cause
+  set — you're sweeping, not bisecting; (d) your explanation *requires* the complex
+  layer to be buggy — resemblance/familiarity is a guess, not evidence; (e) you're
+  judging by impression ("looks cut") instead of a measured oracle. When a trigger
+  fires, say out loud what surprises you and why it contradicts your model, then
+  build the one-variable repro before going deeper. Define that measured oracle and
+  success criterion (e.g. "an 'A' fills 7 pixel rows, a 'p' fills 9") up front, so
+  "looks right" is never the test.
 
 ## Meta-cognition (the ones that matter most)
 

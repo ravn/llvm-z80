@@ -94,9 +94,19 @@ bool Z80RemoveJumpToNext::runOnMachineFunction(MachineFunction &MF) {
     } else if (!Cond.empty() && TBB && FBB && MBB.isLayoutSuccessor(FBB)) {
       // Conditional branch to TBB, then unconditional to FBB, where FBB is the
       // fall-through: keep only the conditional, drop the redundant uncond.
-      DebugLoc DL = MBB.findBranchDebugLoc();
-      TII.removeBranch(MBB);
-      TII.insertBranch(MBB, TBB, /*FBB=*/nullptr, Cond, DL);
+      //
+      // Erase ONLY the trailing unconditional branch and leave the conditional
+      // instruction byte-for-byte.  We must NOT removeBranch()+insertBranch()
+      // here: insertBranch re-materialises the conditional in its SHORT (JR_cc)
+      // form, and this pass runs AFTER BranchRelaxation, so a JP_cc that
+      // relaxation had already widened for range would be narrowed back into an
+      // out-of-range JR that nothing relaxes again -- the assembler then rejects
+      // it (ravn/llvm-z80: qsort 32-bit verify loop, "integer range: -$ac", a
+      // ~170 B loop back-edge from a Z80HighByteFirstBranch split block).
+      MachineBasicBlock::iterator LastBr = MBB.getLastNonDebugInstr();
+      if (LastBr == MBB.end() || !LastBr->isUnconditionalBranch())
+        continue;
+      LastBr->eraseFromParent();
       Changed = true;
       LLVM_DEBUG(dbgs() << "z80-remove-jump-to-next: dropped fall-through uncond in "
                         << MBB.getName() << "\n");

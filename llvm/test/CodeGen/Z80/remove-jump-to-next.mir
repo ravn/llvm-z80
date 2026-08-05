@@ -28,7 +28,11 @@ body: |
 # CHECK: bb.1:
 
 # Conditional to a far block, then an unconditional to the fall-through block:
-# keep the conditional, drop the redundant unconditional.
+# keep the conditional, drop the redundant unconditional.  The conditional must
+# survive BYTE-FOR-BYTE: this pass runs after BranchRelaxation, so a JP_C_nn the
+# relaxer widened for range must NOT be narrowed back to a short JR_C_e (which
+# nothing relaxes again -> out-of-range assembler error; ravn/llvm-z80 qsort
+# 32-bit verify loop, "integer range: -$ac").
 ---
 name:            cond_then_fallthrough
 tracksRegLiveness: true
@@ -43,10 +47,11 @@ body: |
   bb.2:
     RET
 ...
-# The conditional survives (re-inserted, here as the short JR_C_e form); the
+# The conditional survives unchanged as JP_C_nn (NOT narrowed to JR_C_e); the
 # redundant unconditional to the fall-through is gone.
 # CHECK-LABEL: name: cond_then_fallthrough
-# CHECK: J{{[PR]}}_C{{[_a-z]*}} %bb.2
+# CHECK: JP_C_nn %bb.2
+# CHECK-NOT: JR_C_e %bb.2
 # CHECK-NOT: JP_nn %bb.1
 # CHECK: bb.1:
 

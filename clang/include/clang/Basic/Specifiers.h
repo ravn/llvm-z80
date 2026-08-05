@@ -317,6 +317,7 @@ namespace clang {
     CC_Z80AllReg,          // __attribute__((z80_allreg))
     CC_Z80FastCall,        // __attribute__((z80_fastcall))
     CC_Z80Callee,          // __attribute__((z80_callee))
+    CC_Z80SmallC,          // __attribute__((z80_smallc))
   };
 
   /// Checks whether the given calling convention supports variadic
