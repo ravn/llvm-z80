@@ -6782,6 +6782,24 @@ i32 in DE:HL), the same as ``__sdcccall(0)``. Callee cleanup is forced for
 every non-variadic call, independent of the return size.}];
 }
 
+def Z80SmallCDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Heading = "clang::z80_smallc";
+  let Content = [{
+The ``z80_smallc`` attribute specifies SDCC's ``__smallc`` (small-C) calling
+convention for Z80 targets. All arguments are passed on the stack and the caller
+cleans them up, exactly like ``__sdcccall(0)`` -- except the argument order is
+reversed. ``__smallc`` pushes arguments left-to-right, so the caller pushes the
+first declared argument first (deepest) and the last argument last (nearest the
+return address); the callee therefore finds the last argument at the lowest
+stack address. This is the opposite of ``__sdcccall(0)``, which pushes
+right-to-left (first argument nearest the return address). The two are identical
+for functions taking a single argument. The return value uses the z88dk classic
+registers (i8 in L, i16 in HL, i32 in DE:HL). This convention exists so clang
+can call the z88dk classic C library, whose functions are compiled ``__smallc``.
+}];
+}
+
 def Z80PreservesRegsDocs : Documentation {
   let Category = DocCatFunction;
   let Heading = "clang::z80_preserves_regs";

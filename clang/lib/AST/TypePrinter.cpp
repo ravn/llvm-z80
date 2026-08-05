@@ -1208,6 +1208,9 @@ void TypePrinter::printFunctionAfter(const FunctionType::ExtInfo &Info,
     case CC_Z80Callee:
       OS << " __attribute__((z80_callee))";
       break;
+    case CC_Z80SmallC:
+      OS << " __attribute__((z80_smallc))";
+      break;
     }
   }
 

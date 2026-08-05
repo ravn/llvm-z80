@@ -71,7 +71,8 @@ protected:
   const CallingConvRegs &getRegsForCC(CallingConv::ID CC) const {
     // __z88dk_callee shares sdcccall(0)'s stack layout and return registers
     // (L/HL/DE:HL); it differs only in cleanup (isCalleeCleanup).
-    if (CC == CallingConv::Z80_SDCCCall0 || CC == CallingConv::Z80_Z88dkCallee)
+    if (CC == CallingConv::Z80_SDCCCall0 ||
+        CC == CallingConv::Z80_Z88dkCallee || CC == CallingConv::Z80_SmallC)
       return CCRegs0;
     if (CC == CallingConv::Z80_Z88dkFastCall)
       return CCRegsFast;
