@@ -147,7 +147,8 @@ static void diagnoseBadTypeAttribute(Sema &S, const ParsedAttr &attr,
   case ParsedAttr::AT_SDCCCall:                                                \
   case ParsedAttr::AT_Z80AllReg:                                               \
   case ParsedAttr::AT_Z80FastCall:                                             \
-  case ParsedAttr::AT_Z80Callee
+  case ParsedAttr::AT_Z80Callee:                                               \
+  case ParsedAttr::AT_Z80SmallC
 
 // Function type attributes.
 #define FUNCTION_TYPE_ATTRS_CASELIST                                           \
@@ -7842,6 +7843,8 @@ static Attr *getCCTypeAttr(ASTContext &Ctx, ParsedAttr &Attr) {
     return ::new (Ctx) Z80FastCallAttr(Ctx, Attr);
   case ParsedAttr::AT_Z80Callee:
     return ::new (Ctx) Z80CalleeAttr(Ctx, Attr);
+  case ParsedAttr::AT_Z80SmallC:
+    return ::new (Ctx) Z80SmallCAttr(Ctx, Attr);
   }
   llvm_unreachable("unexpected attribute kind!");
 }
