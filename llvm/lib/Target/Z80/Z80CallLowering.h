@@ -69,10 +69,13 @@ protected:
 
   /// Select the appropriate register config based on calling convention.
   const CallingConvRegs &getRegsForCC(CallingConv::ID CC) const {
-    // __z88dk_callee shares sdcccall(0)'s stack layout and return registers
-    // (L/HL/DE:HL); it differs only in cleanup (isCalleeCleanup).
+    // __z88dk_callee / __smallc / __smallc __z88dk_callee all share sdcccall(0)'s
+    // stack layout and return registers (L/HL/DE:HL); they differ only in the
+    // orthogonal argument-order (isSmallCArgOrder) and cleanup (isCalleeCleanup)
+    // axes -- see ravn/llvm-z80#282.
     if (CC == CallingConv::Z80_SDCCCall0 ||
-        CC == CallingConv::Z80_Z88dkCallee || CC == CallingConv::Z80_SmallC)
+        CC == CallingConv::Z80_Z88dkCallee || CC == CallingConv::Z80_SmallC ||
+        CC == CallingConv::Z80_SmallCCallee)
       return CCRegs0;
     if (CC == CallingConv::Z80_Z88dkFastCall)
       return CCRegsFast;

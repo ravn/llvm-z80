@@ -60,6 +60,15 @@ static unsigned getReturnTypeSizeInBits(Type *RetTy, const DataLayout &DL) {
   return Bits;
 }
 
+/// Argument-order axis (ravn/llvm-z80#282): true when the convention pushes
+/// arguments left-to-right (first declared arg deepest, last at IX+4), i.e. the
+/// __smallc order, as opposed to sdcccall(0)/__z88dk_callee right-to-left.  This
+/// axis is orthogonal to the cleanup axis (isCalleeCleanup), so __smallc and
+/// __smallc __z88dk_callee share it.
+static bool isSmallCArgOrder(CallingConv::ID CC) {
+  return CC == CallingConv::Z80_SmallC || CC == CallingConv::Z80_SmallCCallee;
+}
+
 /// Determine if callee cleans up stack arguments.
 /// sdcccall(0): always caller cleanup (returns false).
 /// sdcccall(1):
@@ -76,10 +85,12 @@ static bool isCalleeCleanup(bool IsVarArg, Type *RetTy, Type *FirstArgTy,
     return false;
   if (IsVarArg)
     return false;
-  // z88dk __z88dk_callee: callee cleanup is forced for every non-variadic call,
-  // independent of return size (unlike sdcccall(1) below, which caller-cleans
-  // for >16-bit returns).  Args are stack-passed like sdcccall(0).
-  if (CC == CallingConv::Z80_Z88dkCallee)
+  // z88dk __z88dk_callee (and __smallc __z88dk_callee): callee cleanup is forced
+  // for every non-variadic call, independent of return size (unlike sdcccall(1)
+  // below, which caller-cleans for >16-bit returns).  Args are stack-passed like
+  // sdcccall(0); __smallc __z88dk_callee differs only in the order axis.
+  if (CC == CallingConv::Z80_Z88dkCallee ||
+      CC == CallingConv::Z80_SmallCCallee)
     return true;
   if (IsSM83)
     return true;
@@ -190,7 +201,8 @@ ArgAssignment classifyArg(const CallingConvRegs &Regs, unsigned &RegParamCount,
   // empty result).  They share the stack layout; they differ only in who
   // cleans it up (see isCalleeCleanup), which is handled elsewhere.
   if (CC == CallingConv::Z80_SDCCCall0 || CC == CallingConv::Z80_Z88dkCallee ||
-      CC == CallingConv::Z80_SmallC || IsVarArg)
+      CC == CallingConv::Z80_SmallC || CC == CallingConv::Z80_SmallCCallee ||
+      IsVarArg)
     return Result;
 
   // All-register convention: use all available registers, no stack args.
@@ -613,7 +625,7 @@ bool Z80CallLoweringCommon::lowerFormalArguments(
   // Pre-compute the total stack bytes so each argument's frame offset can be
   // mirrored: an arg of slot size `sz` whose sdcccall(0) offset would be
   // `StackArgOffset` instead lands at `Total - StackArgOffset - sz`.
-  const bool IsSmallC = (CC == CallingConv::Z80_SmallC);
+  const bool IsSmallC = isSmallCArgOrder(CC);
   unsigned TotalStackBytes = 0;
   if (IsSmallC) {
     if (!FLI.CanLowerReturn)
@@ -944,7 +956,7 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
   // sdcccall(0)/__z88dk_callee: right-to-left (last arg pushed first, so the
   // first stack arg ends up at the lowest address = IX+4).  __smallc: pushes
   // left-to-right (first arg pushed first/deepest, last arg ends at IX+4).
-  const bool PushForward = (CC == CallingConv::Z80_SmallC);
+  const bool PushForward = isSmallCArgOrder(CC);
   for (unsigned K = 0, N = StackArgIndices.size(); K < N; ++K) {
     unsigned StackIdx =
         PushForward ? StackArgIndices[K] : StackArgIndices[N - 1 - K];
