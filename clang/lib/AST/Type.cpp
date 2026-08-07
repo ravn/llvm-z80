@@ -3753,6 +3753,8 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
     return "z80_callee";
   case CC_Z80SmallC:
     return "z80_smallc";
+  case CC_Z80SmallCCallee:
+    return "z80_smallc z80_callee";
     // clang-format off
   case CC_RISCVVectorCall: return "riscv_vector_cc";
 #define CC_VLS_CASE(ABI_VLEN) \
