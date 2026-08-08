@@ -8063,25 +8063,44 @@ static bool handleArmStateAttribute(Sema &S,
 /// Compose two Z80/SDCC calling-convention attributes that live on orthogonal
 /// ABI axes into the single convention that carries both (ravn/llvm-z80#282).
 ///
-/// z88dk decorates most of the classic clib (e.g. <graphics.h>
-/// plot_callee/draw_callee) `__smallc __z88dk_callee`, which means
-/// left-to-right argument push (the `__smallc` order axis) combined with
-/// callee stack cleanup (the `__z88dk_callee` cleanup axis).  Neither
-/// z80_smallc (L2R + caller-clean) nor z80_callee (R2L + callee-clean) alone
-/// expresses it.  When both attributes are written on one function type we
-/// compose them here instead of rejecting the pair as conflicting (#281).
+/// z88dk decorates the classic clib with combinations that the pre-#281
+/// last-attribute-wins behavior collapsed silently.  They fall into two kinds,
+/// both of which we now compose instead of rejecting as conflicting:
 ///
-/// This is order-independent (either spelling sequence yields the same CC) and
-/// deliberately narrow: only the smallc+callee pair composes today.  Any other
-/// combination is a genuine same-axis conflict and stays a hard error.
+///  * `__smallc __z88dk_callee` (the bulk, e.g. <graphics.h>
+///    plot_callee/draw_callee): left-to-right argument push (the `__smallc`
+///    order axis) combined with callee stack cleanup (the `__z88dk_callee`
+///    cleanup axis).  Neither z80_smallc (L2R + caller-clean) nor z80_callee
+///    (R2L + callee-clean) alone expresses it -> the combined
+///    CC_Z80SmallCCallee.
+///
+///  * anything + `__z88dk_fastcall` (e.g. `fileno(FILE*) __smallc
+///    __z88dk_fastcall`, and a few triple `__smallc __z88dk_callee
+///    __z88dk_fastcall`): fastcall passes the single argument in a register, so
+///    any stack-axis decoration written alongside it is vacuous and fastcall
+///    dominates.
+///
+/// Composition is order-independent (either spelling sequence yields the same
+/// CC) and deliberately narrow: only these z88dk-real combinations compose.
+/// Any other pair is a genuine same-axis conflict and stays a hard error.
 /// Returns true and sets \p Composed on success.
 static bool composeZ80CallingConvs(CallingConv A, CallingConv B,
                                    CallingConv &Composed) {
-  auto IsPair = [](CallingConv X, CallingConv Y, CallingConv P, CallingConv Q) {
-    return (X == P && Y == Q) || (X == Q && Y == P);
+  auto Has = [&](CallingConv X) { return A == X || B == X; };
+  auto Both = [&](CallingConv X, CallingConv Y) {
+    return (A == X && B == Y) || (A == Y && B == X);
   };
-  if (IsPair(A, B, CC_Z80SmallC, CC_Z80Callee)) {
+
+  // Orthogonal stack axes: smallc order + callee cleanup.
+  if (Both(CC_Z80SmallC, CC_Z80Callee)) {
     Composed = CC_Z80SmallCCallee;
+    return true;
+  }
+
+  // fastcall (register-passed single arg) dominates any stack-axis decoration.
+  if (Has(CC_Z80FastCall) &&
+      (Has(CC_Z80SmallC) || Has(CC_Z80Callee) || Has(CC_Z80SmallCCallee))) {
+    Composed = CC_Z80FastCall;
     return true;
   }
   return false;

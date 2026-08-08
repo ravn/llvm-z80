@@ -31,6 +31,18 @@ unsigned short add2(unsigned short a, unsigned short b) {
 // CHECK: call cc133 void @sink2(i16 noundef {{(zeroext )?}}1, i16 noundef {{(zeroext )?}}2)
 void call_sink2(void) { sink2(1, 2); }
 
+// fastcall passes its single argument in a register, so a stack-axis decoration
+// (smallc order / callee cleanup) written alongside it is vacuous and fastcall
+// dominates: `fileno(FILE*) __smallc __z88dk_fastcall` and the triple
+// `__smallc __z88dk_callee __z88dk_fastcall` both collapse to cc130 (#282).
+// CHECK: define{{.*}}cc130 {{.*}}i16 @sc_fast(i16
+__attribute__((z80_smallc)) __attribute__((z80_fastcall))
+unsigned short sc_fast(unsigned short a) { return a; }
+
+// CHECK: define{{.*}}cc130 {{.*}}i16 @triple(i16
+__attribute__((z80_smallc)) __attribute__((z80_callee)) __attribute__((z80_fastcall))
+unsigned short triple(unsigned short a) { return a; }
+
 // A call THROUGH A FUNCTION POINTER must carry the convention too -- this is the
 // reason the axes must live in the function type (indirect calls have no decl to
 // consult).  qsort-style comparators declared this way are the motivating case.
