@@ -79,6 +79,31 @@ Z80MCAsmInfo::Z80MCAsmInfo(const Triple &TT, const MCTargetOptions &Options)
   // the integrated-assembler ELF object path does not consult this field.
   Data64bitsDirective = nullptr;
 
+  // Emit byte/string data as one `.byte` per value instead of a `.ascii`
+  // string.  The external assembler this textual output feeds (z88dk z80asm)
+  // parses octal escapes GREEDILY -- it keeps consuming octal digits past the
+  // usual 3-digit limit, stopping only when the accumulated value would exceed
+  // 255.  LLVM's `.ascii` escaping emits a small byte as a 3-digit octal escape
+  // and a following printable byte 0x30-0x37 as a literal digit, so e.g. the
+  // pair 0x04,0x30 prints as `.ascii "\0040"`.  z80asm reads that as octal 040
+  // = 0x20, swallowing the `0` and dropping a byte; the array silently shrinks
+  // and every later element shifts.  (`sizeof`, folded by the front-end, stays
+  // correct, so nothing complains until the data is read wrong.)
+  //
+  // Worked example: `const unsigned char t[] = {0x11,0x04,0x30,0x22,0x33};` was
+  // emitted as `.ascii "\021\0040\"3"` -> DEFM -> z80asm assembled just 4 bytes
+  // [0x11,0x20,0x22,0x33].  This corrupted the z88dk chess demo's `pieces[]`
+  // (rook header read h=0 -> 0 sprite cells -> blank/garbage, then a `cells[]`
+  // overflow drove a wild BDOS call -> `Bdos Err`).
+  //
+  // Leaving these null makes MCAsmStreamer::emitBytes fall back to per-byte
+  // `.byte` emission (which z88dk maps to `DEFB`), matching the sccz80/zsdcc
+  // backends and removing the ambiguity.  Only textual `-S` output is affected;
+  // the integrated-assembler ELF object path writes raw bytes regardless.  The
+  // sdasz80 variant (Z80MCAsmInfoSDCC) already does this for the same reason.
+  AsciiDirective = nullptr;
+  AscizDirective = nullptr;
+
   initializeAtSpecifiers(AtSpecifiers);
 }
 
