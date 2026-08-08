@@ -55,6 +55,10 @@ public:
     return &TLInfo;
   }
 
+  // ravn/llvm-z80 #283: at -O3 route the 32-bit multiply libcall to the
+  // signed-magnitude fast variant __mulsi3_fast (see Z80Subtarget.cpp).
+  void initLibcallLoweringInfo(LibcallLoweringInfo &Info) const override;
+
   const CallLowering *getCallLowering() const override {
     return CallLoweringInfo.get();
   }

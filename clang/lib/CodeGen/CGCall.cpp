@@ -134,6 +134,8 @@ unsigned CodeGenTypes::ClangCallConvToLLVMCallConv(CallingConv CC) {
     return llvm::CallingConv::Z80_Z88dkCallee;
   case CC_Z80SmallC:
     return llvm::CallingConv::Z80_SmallC;
+  case CC_Z80SmallCCallee:
+    return llvm::CallingConv::Z80_SmallCCallee;
   }
 }
 
@@ -359,11 +361,19 @@ static CallingConv getCallingConventionForDecl(const ObjCMethodDecl *D,
   if (D->hasAttr<Z80FastCallAttr>())
     return CC_Z80FastCall;
 
-  if (D->hasAttr<Z80CalleeAttr>())
-    return CC_Z80Callee;
-
-  if (D->hasAttr<Z80SmallCAttr>())
-    return CC_Z80SmallC;
+  // z80_smallc (arg-order axis) and z80_callee (stack-cleanup axis) are
+  // orthogonal and compose: both present => the combined convention (cc133).
+  // See composeZ80CallingConvs in SemaType.cpp / ravn/llvm-z80#282.
+  {
+    bool SmallC = D->hasAttr<Z80SmallCAttr>();
+    bool Callee = D->hasAttr<Z80CalleeAttr>();
+    if (SmallC && Callee)
+      return CC_Z80SmallCCallee;
+    if (Callee)
+      return CC_Z80Callee;
+    if (SmallC)
+      return CC_Z80SmallC;
+  }
 
   return CC_C;
 }

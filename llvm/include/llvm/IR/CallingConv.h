@@ -335,6 +335,18 @@ namespace CallingConv {
     /// whose functions are compiled __smallc.
     Z80_SmallC = 132,
 
+    /// Z80 z88dk __smallc __z88dk_callee — the composition of the __smallc
+    /// argument order (left-to-right push, first declared arg deepest, last at
+    /// IX+4) with __z88dk_callee stack cleanup (the CALLEE pops the arguments).
+    /// Stack layout and return registers are identical to __smallc / sdcccall(0)
+    /// (i8->L, i16->HL, i32->DE:HL); it differs from __smallc only in cleanup,
+    /// and from __z88dk_callee only in argument order.  This is what the z88dk
+    /// classic clib actually uses for its `_callee` entry points (e.g. all of
+    /// <graphics.h>).  See ravn/llvm-z80#282: the backend decodes the two
+    /// orthogonal axes (order, cleanup) rather than hand-authoring a convention
+    /// per combination.
+    Z80_SmallCCallee = 133,
+
     /// The highest possible ID. Must be some 2^k - 1.
     MaxID = 1023
   };
