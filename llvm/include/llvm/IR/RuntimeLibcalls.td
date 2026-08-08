@@ -925,6 +925,13 @@ def __ashrdi3 : RuntimeLibcallImpl<SRA_I64>;
 def __mulqi3 : RuntimeLibcallImpl<MUL_I8>;
 def __mulhi3 : RuntimeLibcallImpl<MUL_I16>;
 def __mulsi3 : RuntimeLibcallImpl<MUL_I32>;
+// ravn/llvm-z80 #283: signed-magnitude fast variant of __mulsi3, selected only
+// at -O3 by Z80TargetLowering.  Same MUL_I32 op; the Z80 z88dk runtime bridge
+// routes it to the signed multiply core so 16-bit-fitting operands hit the
+// 32->16x16 demote fast path.  Declaring it here just makes the LibcallImpl
+// enum (RTLIB::impl___mulsi3_fast) and its symbol name available; it is not a
+// default anywhere, so non-Z80 targets are unaffected.
+def __mulsi3_fast : RuntimeLibcallImpl<MUL_I32>;
 def __muldi3 : RuntimeLibcallImpl<MUL_I64>;
 
 def __mulosi4 : RuntimeLibcallImpl<MULO_I32>;
