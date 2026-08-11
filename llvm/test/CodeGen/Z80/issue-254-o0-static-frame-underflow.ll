@@ -31,7 +31,15 @@ target triple = "z80"
 ; CHECK-NOT: __sfrend_f-1{{[0-9]}}
 ; CHECK: __sframe_f:
 ; CHECK-NEXT: .zero 6
-define dso_local i16 @f() {
+;
+; NOTE: `@f` is externally visible and calls memmove (an opaque/external
+; callee), so the Z80AutoStaticStack heuristic no longer AUTO-selects it (a
+; cross-TU caller could re-enter it -- see the #12 cross-TU-recursion test).
+; This test pins the static-frame LAYOUT invariant, which is orthogonal to how
+; +static-stack got enabled, so opt in EXPLICITLY here (the production path:
+; autoload/BIOS pass `-target-feature +static-stack`).  The explicit attribute
+; is honored verbatim by the pass (Existing.contains("static-stack") early-out).
+define dso_local i16 @f() #1 {
   %d = alloca ptr, align 1
   %s = alloca ptr, align 1
   store ptr @g, ptr %d, align 1
@@ -54,3 +62,5 @@ define dso_local i16 @f() {
 }
 
 declare void @llvm.memmove.p0.p0.i16(ptr writeonly captures(none), ptr readonly captures(none), i16, i1 immarg)
+
+attributes #1 = { "target-features"="+static-stack" }
