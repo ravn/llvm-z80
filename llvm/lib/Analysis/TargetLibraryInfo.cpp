@@ -70,6 +70,23 @@ static bool isCallingConvCCompatible(CallingConv::ID CC, const Triple &TT,
     return false;
   case llvm::CallingConv::C:
     return true;
+  // ravn/llvm-z80 (z88dk#57): the z88dk classic clib declares standard C
+  // library functions with an explicit Z80 calling convention -- printf-family
+  // is sdcccall(0), the __ZPROTO/string workers are z80_smallc (cc132), etc.
+  // Without this, isCallingConvCCompatible() returns false for them and the
+  // middle-end libcall simplifiers (printf("...\n")->puts, etc.) never fire,
+  // losing a large code-size win.  These are all plain integer/pointer ABIs
+  // over which the simplifiers only substitute one libcall for another; the
+  // ABI is re-applied in the backend from the *synthesized* call's CC (the
+  // replacement puts/putchar is stamped cc132 by -z80-classic-libc-cc in
+  // BuildLibCalls), so treating them as C-compatible here is safe.
+  case llvm::CallingConv::Z80_SDCCCall0:
+  case llvm::CallingConv::Z80_AllReg:
+  case llvm::CallingConv::Z80_Z88dkFastCall:
+  case llvm::CallingConv::Z80_Z88dkCallee:
+  case llvm::CallingConv::Z80_SmallC:
+  case llvm::CallingConv::Z80_SmallCCallee:
+    return TT.isZ80();
   case llvm::CallingConv::ARM_APCS:
   case llvm::CallingConv::ARM_AAPCS:
   case llvm::CallingConv::ARM_AAPCS_VFP: {

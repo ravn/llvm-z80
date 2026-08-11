@@ -3726,6 +3726,26 @@ static void adjustDeclContextForDeclaratorDecl(DeclaratorDecl *NewD,
     FixSemaDC(VD->getDescribedVarTemplate());
 }
 
+// ravn/llvm-z80 (z88dk#57): true when CC is one of the Z80 calling conventions
+// AND we are actually targeting Z80.  Used to preserve an explicit z88dk clib
+// ABI (z80_smallc/sdcccall(0)/z80_callee/...) on a redeclaration of a recognized
+// C library builtin, instead of forcibly resetting it to the builtin default.
+static bool isZ80CallingConv(CallingConv CC, const llvm::Triple &T) {
+  if (!T.isZ80())
+    return false;
+  switch (CC) {
+  case CC_Z80SDCCCall0:
+  case CC_Z80AllReg:
+  case CC_Z80FastCall:
+  case CC_Z80Callee:
+  case CC_Z80SmallC:
+  case CC_Z80SmallCCallee:
+    return true;
+  default:
+    return false;
+  }
+}
+
 bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
                              bool MergeTypeWithOld, bool NewDeclIsDefn) {
   // Verify the old decl was also a function.
@@ -3900,18 +3920,40 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
       // there but not here.
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
-    } else if (Old->getBuiltinID()) {
+    } else if (Old->getBuiltinID() &&
+               !isZ80CallingConv(NewTypeInfo.getCC(),
+                                 Context.getTargetInfo().getTriple())) {
       // Builtin attribute isn't propagated to the new one yet at this point,
       // so we check if the old one is a builtin.
 
       // Calling Conventions on a Builtin aren't really useful and setting a
       // default calling convention and cdecl'ing some builtin redeclarations is
       // common, so warn and ignore the calling convention on the redeclaration.
+      //
+      // EXCEPTION (ravn/llvm-z80, z88dk#57): on Z80 the classic z88dk clib
+      // declares standard C library functions (fwrite/fopen/fread/... via the
+      // __ZPROTO/__smallc header macros) with an explicit Z80 calling
+      // convention -- z80_smallc (cc132), sdcccall(0), z80_callee, etc. -- that
+      // is byte-for-byte the ABI the linked clib worker actually uses.  Unlike
+      // a generic host, that CC is NOT cosmetic here: dropping it makes clang
+      // pass args/return in the wrong registers/stack slots (HL vs DE + stack
+      // imbalance), so e.g. fwrite() returns garbage and the caller's stack is
+      // corrupted.  This surfaced when zcc -compiler=llvmz80 stopped forcing
+      // -ffreestanding (to enable printf("...\n")->puts): hosted mode began
+      // recognizing these as builtins and stripping the ABI.  So when the
+      // redeclaration carries an explicit Z80 CC, honor it instead of forcing
+      // the builtin default.  printf-family funcs keep sdcccall(0) and still
+      // recognize/transform (printf->puts) because TLI matches by name/proto,
+      // not CC; the synthesized puts gets its cc132 from -z80-classic-libc-cc.
       Diag(New->getLocation(), diag::warn_cconv_unsupported)
           << FunctionType::getNameForCallConv(NewTypeInfo.getCC())
           << (int)CallingConventionIgnoredReason::BuiltinFunction;
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
+    } else if (Old->getBuiltinID()) {
+      // Z80 clib redeclaration with an explicit Z80 CC (see the exception
+      // above): keep the caller's CC (New) so the classic-clib ABI is honored.
+      // No adjustment -- New already carries the correct Z80 calling convention.
     } else {
       // Calling conventions aren't compatible, so complain.
       bool FirstCCExplicit = getCallingConvAttributedType(First->getType());
