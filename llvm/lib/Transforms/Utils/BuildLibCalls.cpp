@@ -31,6 +31,32 @@ using namespace llvm;
 
 #define DEBUG_TYPE "build-libcalls"
 
+// ravn/llvm-z80 #57: the z88dk *classic* C library is built with the __smallc
+// calling convention (CallingConv::Z80_SmallC = 132: parameters on the stack,
+// caller cleanup, reversed argument order — see llvm/IR/CallingConv.h). When
+// the middle-end synthesizes a libcall (e.g. printf("foo\n") -> puts("foo") in
+// SimplifyLibCalls) it creates the callee declaration with the target's default
+// C CC, so the emitted call bypasses the classic __smallc ABI and reads stack
+// garbage at runtime (e.g. printf("banner\n") printed junk under ntvcm). This
+// flag makes getOrInsertLibFunc stamp Z80_SmallC on freshly-created libfunc
+// declarations on the z80 classic path, so the emit* helpers — which copy the
+// callee's CC onto the call via CI->setCallingConv(F->getCallingConv()) —
+// produce ABI-correct classic calls. It is OFF by default (safe for the default
+// sdcccall ELF path) and is intended to be turned on only by the z88dk classic
+// build (zcc for -compiler=llvmz80), alongside dropping -ffreestanding. All
+// classic clib *base* symbols share this one convention (verified: strlen,
+// strcmp, strchr, strcpy, memcpy, memset, memcmp all take stack args with
+// caller cleanup and return in DE), so a single uniform CC is correct here; the
+// _callee/_fastcall faster entries are alternate symbols the headers macro-
+// redirect for source-level calls and are never what the middle-end synthesizes.
+static cl::opt<bool> StampZ80ClassicLibcCC(
+    "z80-classic-libc-cc", cl::init(false), cl::Hidden,
+    cl::desc("Stamp CallingConv::Z80_SmallC (__smallc) on middle-end-"
+             "synthesized C library calls on the z80 classic (z88dk) path, so "
+             "transforms like printf(\"foo\\n\") -> puts(\"foo\") emit calls "
+             "that honour the classic clib ABI instead of the default C CC. "
+             "Only correct when linking against the z88dk classic clib."));
+
 //- Infer Attributes ---------------------------------------------------------//
 
 STATISTIC(NumReadNone, "Number of functions inferred as readnone");
@@ -1522,6 +1548,19 @@ FunctionCallee llvm::getOrInsertLibFunc(Module *M, const TargetLibraryInfo &TLI,
   // of the caller to have called isLibFuncEmittable() first.
   Function *F = cast<Function>(C.getCallee());
   assert(F->getFunctionType() == T && "Function type does not match.");
+
+  // ravn/llvm-z80 #57: stamp the classic clib __smallc CC on freshly-created
+  // (declaration-only, default-C-CC, non-variadic) libfunc decls on the z80
+  // classic path. Guards: never clobber an explicit non-C CC that a source
+  // declaration already carried (getOrInsertFunction reuses such a decl), never
+  // touch a defined function, and skip variadic functions (classic printf-style
+  // variadics use __vasmallc, a different convention — the synthesized set we
+  // care about, e.g. puts, is non-variadic). See StampZ80ClassicLibcCC above.
+  if (StampZ80ClassicLibcCC && M->getTargetTriple().isZ80() &&
+      F->isDeclaration() && !F->isVarArg() &&
+      F->getCallingConv() == CallingConv::C)
+    F->setCallingConv(CallingConv::Z80_SmallC);
+
   switch (TheLibFunc) {
   case LibFunc_fputc:
   case LibFunc_putchar:
