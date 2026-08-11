@@ -131,7 +131,14 @@ function(z80_build_builtins TRIPLE SUBDIR CRT0_ASM RT_DIR SDAS)
   list(APPEND ALL_RUNTIME_OUTPUTS ${OUT}/${SUBDIR}_crt0.o)
 
   file(GLOB RT_SOURCES ${RT_DIR}/*.asm)
-  list(FILTER RT_SOURCES EXCLUDE REGEX "crt0.*\\.asm$")
+  # Exclude crt0 (linked separately) and all CP/M-.COM-specific variants.
+  # cpm_putchar.asm exports _putchar via BDOS as an ALTERNATE to the port-1
+  # putchar.asm; bundling both into one archive yields a duplicate _putchar
+  # that sdldz80 rejects ("Multiple definition of _putchar") when the archive
+  # is linked positionally.  The CP/M variants belong to the cpm_crt0 + cpm.ld
+  # path, not the general runtime.  Mirrors the exclusion in the test-runner's
+  # ELF staging (z80-utils/test-runner/src/runtime.rs: skip stem "cpm_*").
+  list(FILTER RT_SOURCES EXCLUDE REGEX "(crt0.*|cpm_.*)\\.asm$")
   set(RT_OBJS "")
   foreach(src ${RT_SOURCES})
     get_filename_component(name ${src} NAME_WE)

@@ -35,6 +35,7 @@
 
 #include "Z80AutoStaticStack.h"
 #include "Z80.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/CallGraph.h"
@@ -135,9 +136,66 @@ public:
       }
     }
 
+    // Soundness under SEPARATE COMPILATION (ravn/llvm-z80 #12 family).  The
+    // module CallGraph only sees intra-module edges, so the single-node-SCC
+    // "non-recursive" proof above is blind to cross-TU cycles.  Canonical case:
+    //
+    //   // TU A (clang):  u32 f(u32 n){ return n ? n + g(n-1) : 0; }   // g extern
+    //   // TU B (sdcc):   u32 g(u32 n){ return n ? n + f(n-1) : 0; }   // f extern
+    //
+    // f and g are MUTUALLY recursive, but in TU A the callee g is a declaration,
+    // so f sits in its own single-node SCC and looks non-recursive.  Auto-
+    // injecting +static-stack on f puts its live-across-call spill of `n` in a
+    // FIXED BSS slot; the recursive re-entry (f -> g -> f) then clobbers it, and
+    // `n + g(n-1)` reads a corrupted `n` (observed: 32-bit cross-recursion
+    // returns 0x0002 instead of 0x000A).
+    //
+    // Compute the set of functions from which control can LEAVE the visible
+    // module (reach an opaque/external callee).  The gate below refuses
+    // +static-stack on an externally-VISIBLE member of that set: while such an
+    // F's fixed BSS frame is live, the opaque callee may re-enter F from another
+    // TU.  A function that is NOT externally visible (local linkage, and not
+    // address-taken -- the latter already in `Unsafe`) cannot be named or
+    // reached from outside, so every cycle through it is intra-module and the
+    // SCC scan already covers it; such a function stays eligible even when it
+    // calls external helpers (e.g. memcpy, __mulsi3) that never call back.
+    SmallPtrSet<const Function *, 16> ReachesExternal;
+    {
+      // Predecessor map over resolvable (internal, defined) call edges.
+      DenseMap<const Function *, SmallVector<const Function *, 4>> Preds;
+      SmallVector<const Function *, 16> Seed;
+      for (Function &F : M) {
+        const CallGraphNode *N = CG[&F];
+        if (!N)
+          continue;
+        for (const auto &Edge : *N) {
+          const Function *Callee = Edge.second->getFunction();
+          // null callee == CallsExternalNode (opaque/indirect target);
+          // Callee->empty() == a declaration whose body is in another TU.
+          // Either way control leaves the visible module at this edge.
+          if (!Callee || Callee->empty()) {
+            if (ReachesExternal.insert(&F).second)
+              Seed.push_back(&F);
+          } else {
+            Preds[Callee].push_back(&F);
+          }
+        }
+      }
+      // Propagate backward: if a callee can reach external, so can its callers.
+      while (!Seed.empty()) {
+        const Function *G = Seed.pop_back_val();
+        auto It = Preds.find(G);
+        if (It == Preds.end())
+          continue;
+        for (const Function *P : It->second)
+          if (ReachesExternal.insert(P).second)
+            Seed.push_back(P);
+      }
+    }
+
     bool Changed = false;
     for (Function &F : M)
-      Changed |= processFunction(F, NonRecursive, Unsafe);
+      Changed |= processFunction(F, NonRecursive, Unsafe, ReachesExternal);
     return Changed;
   }
 
@@ -148,7 +206,8 @@ public:
 private:
   bool processFunction(Function &F,
                        const SmallPtrSetImpl<const Function *> &NonRecursive,
-                       const SmallPtrSetImpl<const Function *> &Unsafe) {
+                       const SmallPtrSetImpl<const Function *> &Unsafe,
+                       const SmallPtrSetImpl<const Function *> &ReachesExternal) {
     // Definition only.
     if (F.empty())
       return false;
@@ -178,8 +237,16 @@ private:
         break;
       }
     bool Safe = IsLeaf;
-    // Level 2: non-leaf but CallGraph-SCC-non-recursive.
-    if (!Safe && NonRecursive.contains(&F))
+    // Level 2: non-leaf but CallGraph-SCC-non-recursive.  Sound ONLY when a
+    // cross-TU cycle through F is impossible (see ReachesExternal in
+    // runOnModule): either F cannot be named/reached from outside this module
+    // (local linkage; address-taken is already excluded via `Unsafe`), or
+    // control never leaves the module while F is live (F does not reach an
+    // opaque/external callee).  An externally-visible F that reaches an opaque
+    // callee could be re-entered from another TU, so the module-local
+    // "non-recursive" proof is unsound for it -- fall back to a reentrant frame.
+    if (!Safe && NonRecursive.contains(&F) &&
+        (F.hasLocalLinkage() || !ReachesExternal.contains(&F)))
       Safe = true;
     if (!Safe)
       return false;
