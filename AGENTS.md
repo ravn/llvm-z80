@@ -126,6 +126,21 @@ the whole brief.
   capture the "before" first.
 - **Verify before "done."** Prove it works — run the tests, check the logs, diff
   behavior between the baseline and your change. Never mark complete on assumption.
+- **Ask where "expected" comes from — the one question that catches a whole class
+  of false "verified."** Before calling anything verified, ask: *what is my ground
+  truth, and is it independent of the thing under test?* If "expected" was produced
+  by the same pipeline, tool, or code path as "actual" — or if my check is "all N
+  builds/variants agree" — I have an **equivalence** oracle, not a **correctness**
+  one. N artifacts agreeing proves they compute the *same* thing, not the *right*
+  thing; they can all be identically wrong. Break the loop with a source that does
+  *not* share the failure mode: an independent reimplementation (float vs
+  fixed-point, brute force vs optimised), a hand-worked example, a known-good
+  reference render, or a domain sanity check ("does this output even *look* like
+  the thing it claims to be?"). (2026-08-12: a fixed-point Mandelbrot was declared
+  correct because DR C and three Open Watcom builds produced byte-identical output
+  and matched a stored baseline — but all four shared a 16-bit `px*640` overflow
+  from the same source, so the right third was blank in every build; the user
+  caught it by eye in one glance. The check "all builds agree" was circular.)
 - **Building is not behaving.** A clean compile / smaller binary is not proof of
   correctness. For behavior-affecting changes, run the runtime/value oracle before
   committing.
