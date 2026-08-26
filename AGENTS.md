@@ -41,12 +41,6 @@ the whole brief.
 
 ## Communication
 
-- **Flag model fit before starting a task.** If you are on a smaller/faster model
-  (e.g. Sonnet) and the task calls for open-ended analysis, multi-file audit, or
-  architectural reasoning, say so in one sentence before diving in. If you are on a
-  larger model (e.g. Opus) and the task is a targeted patch with an established fix
-  pattern, note that Sonnet would be faster and cheaper. One sentence is enough; don't
-  overdo it.
 - **Think out loud.** Narrate the reasoning, not just the conclusion. Concise, not
   terse-to-the-point-of-opaque.
 - **No apologies, no self-flagellation.** Don't say "sorry" or "my bad." Report the
@@ -55,8 +49,11 @@ the whole brief.
   substantive answer.
 - **No aphorisms.** Don't wrap a decision in a maxim ("less is more"). State the
   decision and the reason.
-- **State as fact only what you've verified — this one matters a lot to me.** Mark
-  each claim *known* (verified this session from code/docs/tests/observation) vs.
+- **Never guess — always verify, or say "I don't know."** State as fact only what
+  you've verified — this one matters a lot to me. If a claim isn't verified, either
+  go verify it before stating it, or say plainly that you don't know / haven't
+  checked. Never present an inference, memory, or pattern-match as established fact.
+  Mark each claim *known* (verified this session from code/docs/tests/observation) vs.
   *guessed* (inferred / pattern-matched). Surface any doubt explicitly and offer to
   research it; never round a strong hypothesis up to certainty. **Familiarity is not
   certainty** — "this looks like a bug class I've seen" is a guess, however strong the
@@ -117,7 +114,26 @@ the whole brief.
 
 ## Verification & commit discipline
 
-- **Test before fix.** Write the failing test first, then make it pass.
+- **Test suite first — no fix code before a failing test exists.** This is
+  mandatory, not advisory. Before writing *any* fix code:
+  1. Write a test that exercises the exact failure mode.
+  2. Confirm it **fails** on the unmodified (buggy) code. A test that cannot
+     be observed to fail does not demonstrate the bug — it may be testing the
+     wrong thing, or the fix may already be present. Either way, stop until
+     you understand why.
+  3. Once the failing test is committed, write the fix and verify all tests
+     pass.
+  A "comprehensive" test suite for a compiler bug covers at minimum four
+  shapes: **(a)** the exact pattern from the bug report; **(b)** structural
+  variations (different instruction distances, register pairs, operand orders);
+  **(c)** positive controls that must still pass after the fix (guard against
+  regressing neighbouring behaviour); and **(d)** safety / boundary cases that
+  probe conditions the fix must handle without crashing (e.g. registers with
+  no prior def in the block that the fix must not accidentally extend live
+  ranges for). Write the CHECK lines to fail on buggy output: if the fix
+  merely adds an operand, the check for that operand's *absence* (e.g.
+  `CHECK-NEXT: instr, expected-op{{$}}` with `{{$}}` anchoring to end-of-line)
+  is as important as the check for its presence.
 - **Baseline before you change.** Capture the control measurement on the *unmodified*
   system — test-runner fail-set, binary sizes, timings — *before* you touch anything.
   A delta needs both endpoints; reconstructing the "before" after the fact (stash,
@@ -225,8 +241,22 @@ the whole brief.
 
 ## Shell & filesystem safety
 
-- **Never `cd` / `find` / `ls` / `grep` outside the project root** without explicit
-  instruction.
+- **Never traverse, search, or list the whole disk or the whole home directory —
+  no exceptions, ever.** `find` / `ls` / `grep` / `mdfind` / `locate` and any
+  agent search tool must stay inside the project root (or a path the project
+  root itself points at). This holds even under "explicit instruction" framing
+  or a plausible-sounding justification ("just checking if X is installed
+  system-wide") — if a command's start path isn't under the project root, don't
+  run it. If a workspace-internal lookup finds nothing, the answer is to ask
+  where the file lives, never to widen the search outside the workspace.
+- **Search the WHOLE workspace before fetching anything from the internet.**
+  Before downloading, cloning, or re-creating any external asset (manual, PDF,
+  dataset, tarball, reference file), search the entire project root by filename
+  first — not just the subdirectory you're working in. Assets frequently live
+  in sibling submodules (a subtree-scoped search misses them). Only go to the
+  network once a whole-workspace search comes up empty. (2026-08-13: searched
+  only `scratch/.../docs/`, re-downloaded a 25 MB DR C manual that was already
+  in `cpm86-crossdev/docs/manuals/` — identical file — forcing a commit+revert.)
 - **Never use unquoted `===` in a shell command** — zsh emits `== not found` and
   *silently truncates the rest of the line*. Use `---` as a visual separator.
 - **Delete temp artifacts before regenerating them** (`rm -f /tmp/x` before the
