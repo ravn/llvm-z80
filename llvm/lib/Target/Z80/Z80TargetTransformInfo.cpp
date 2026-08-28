@@ -32,11 +32,12 @@ using namespace llvm;
 // ravn/llvm-z80#177: the shift-width and wider-cast cost refinements (Steps 2/3)
 // are *accurate* but, on every workload measured (AES corpus, cpnos, BIOS, the
 // compiler-comparison-corpus, a CRC/MAC/bitfield microbench), they change NO
-// codegen -- the passes that consult them (LoopUnroll/SimplifyCFG/CGP/
-// TruncInstCombine) have no cheaper Z80 alternative to select.  Kept behind this
-// hidden, default-off flag so they ship as documented/tested model-accuracy
-// without touching default codegen until a workload proves them out.  The
-// isLegalAddImmediate fix (Step 1) is a real codegen win and is NOT gated.
+// codegen -- the passes that consult them (LoopUnroll/SimplifyCFG/SelectOptimize/
+// SpeculativeExecution/IROutliner/ConstantHoisting/CGP/TruncInstCombine) have no
+// cheaper Z80 alternative to select.  Kept behind this hidden, default-off flag
+// so they ship as documented/tested model-accuracy without touching default
+// codegen until a workload proves them out.  The isLegalAddImmediate fix (Step 1)
+// is a real codegen win and is NOT gated.
 static cl::opt<bool> EnableExperimentalCosts(
     "z80-experimental-tti-costs", cl::init(false), cl::Hidden,
     cl::desc("Z80: enable the accurate-but-currently-inert shift-width and "
