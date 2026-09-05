@@ -104,20 +104,20 @@ MCOperand Z80MCInstLower::lowerSymbolOperand(const MachineOperand &MO,
   if (!MO.isJTI() && MO.getOffset() != 0)
     Expr = MCBinaryExpr::createAdd(
         Expr, MCConstantExpr::create(MO.getOffset(), Ctx), Ctx);
-  // Byte-half operand flags (ravn/llvm-z80#205 follow-up): wrap the symbol in
-  // the lo/hi Z80MCExpr so an 8-bit immediate field (e.g. `LD (HL),<sym>`)
-  // emits the Addr16_Low / Addr16_High relocation instead of a 16-bit one.
+
+  // A target flag picks out one byte of the symbol's address; the Z80MCExpr
+  // wrapper routes the encoder to the matching Addr16_Low/High fixup.
   switch (MO.getTargetFlags()) {
-  case Z80::MO_LO:
-    Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_LO, Expr, /*IsNegated=*/false,
-                             Ctx);
+  case Z80::MO_NO_FLAGS:
     break;
-  case Z80::MO_HI:
-    Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_HI, Expr, /*IsNegated=*/false,
-                             Ctx);
+  case Z80::MO_ADDR16_LO:
+    Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_LO, Expr, false, Ctx);
+    break;
+  case Z80::MO_ADDR16_HI:
+    Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_HI, Expr, false, Ctx);
     break;
   default:
-    break;
+    llvm_unreachable("Unknown target flag on symbol operand");
   }
   return MCOperand::createExpr(Expr);
 }

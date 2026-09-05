@@ -241,7 +241,7 @@ Tool *Z80ToolChain::buildLinker() const {
 }
 
 void Z80ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
-                                         ArgStringList &CC1Args,
+                                         ArgStringList &CC1Args, BoundArch,
                                          Action::OffloadKind) const {
   // When using the external SDCC assembler, emit sdasz80 assembly format.
   // With the integrated assembler, assembly goes directly through MC.
@@ -277,4 +277,28 @@ void Z80ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
   if (!DriverArgs.hasArg(options::OPT_fdelete_null_pointer_checks,
                          options::OPT_fno_delete_null_pointer_checks))
     CC1Args.push_back("-fno-delete-null-pointer-checks");
+}
+
+void Z80ToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
+                                             ArgStringList &CC1Args) const {
+  // The host's headers must never be searched: glibc's stdint.h defines
+  // int32_t as int, which is 16 bits here, silently truncating every
+  // int32_t in a translation unit that includes it.
+  if (DriverArgs.hasArg(options::OPT_nostdinc))
+    return;
+
+  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+    SmallString<128> Dir(getDriver().ResourceDir);
+    llvm::sys::path::append(Dir, "include");
+    addSystemInclude(DriverArgs, CC1Args, Dir.str());
+  }
+
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc))
+    return;
+
+  if (!getDriver().SysRoot.empty()) {
+    SmallString<128> Dir(getDriver().SysRoot);
+    llvm::sys::path::append(Dir, "include");
+    addSystemInclude(DriverArgs, CC1Args, Dir.str());
+  }
 }

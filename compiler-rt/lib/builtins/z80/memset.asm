@@ -3,6 +3,7 @@
 	.globl _memset
 	; _memset_done is local (no .globl) so `jr z` stays 2 bytes.
 
+
 ;===------------------------------------------------------------------------===;
 ; _memset - Fill memory block
 ;

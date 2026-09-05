@@ -51,73 +51,57 @@ Z80TargetLowering::Z80TargetLowering(const Z80TargetMachine &TM,
   // Stack pointer register
   setStackPointerRegisterToSaveRestore(Z80::SP);
 
+  // Only an 8-bit access is a single instruction, and interrupts are taken
+  // between instructions. Anything wider becomes an __atomic_* libcall, which
+  // the runtime does not provide, so it fails to link rather than look atomic.
+  setMaxAtomicSizeInBitsSupported(8);
+
   // Z80 has limited jump table support
   setMaximumJumpTableSize(std::min(256u, getMaximumJumpTableSize()));
 
-  // On Z80, jump table dispatch costs ~19 bytes (zero-extend, table lookup,
-  // indirect jump) + 2 bytes per entry.  Cascaded CP/JR Z branches cost ~4
-  // bytes per case.  Jump tables only win for ≥8 cases.  The LLVM default
-  // is 4, which generates jump tables for 4-case IOBYTE dispatches that are
-  // 15+ bytes larger than the equivalent if-else chain.
-  setMinimumJumpTableEntries(8);
+  // Measured over the test suite at Os: on SM83 a switch of up to seven
+  // cases compiles smaller as a comparison tree than as a table (35 bytes
+  // on the one such switch in the suite, and every micro-sweep size up to
+  // eight cases), while on Z80 the generic threshold of four is already
+  // the size optimum, so only SM83 moves. Raising either past sixteen
+  // costs hundreds of bytes on interpreter-style dense switches.
+  if (STI.hasSM83())
+    setMinimumJumpTableEntries(8);
 
   // Z80 has no conditional move instruction, so SELECT is always expanded
   // to a branch sequence. Prefer branches over selects since they avoid
   // computing both sides of the conditional.
   PredictableSelectIsExpensive = true;
-
-  // Issue #87/#73: at -Oz, the default MaxStoresPerMemcpyOptSize=4 unrolls
-  // an 8-byte __builtin_memcpy into 4× 16-bit immediate stores (~28-43 B
-  // of inline LD HL,(addr); LD (addr),HL pairs) instead of dispatching
-  // to the LDIR runtime stub (~12 B per call site).  On Z80 the inline
-  // form is bigger than LDIR for N ≥ 3 bytes:
-  //   inline cost: 6 B per i8 store, 6 B per i16 store (no fold across)
-  //   LDIR cost:   12 B fixed (LD HL,src; LD DE,dst; LD BC,n; LDIR; ret)
-  // Break-even at N=2 (12 B vs 12 B), LDIR wins for N≥3.  Cap at 1 store
-  // (= up to 16 bits = 2 bytes inline) under -Oz so anything larger falls
-  // back to LDIR.  Same for -O2/-O3 -- the default of 8 stores would
-  // produce ~48 B of inline code for N=16 vs 14 B with LDIR.
-  MaxStoresPerMemcpy = 1;
-  MaxStoresPerMemcpyOptSize = 1;
-  // memmove similarly -- LDDR (or LDIR with overlap check) wins early.
-  MaxStoresPerMemmove = 1;
-  MaxStoresPerMemmoveOptSize = 1;
-  // memset: inline is similarly bloated; LDIR-based memset (1 byte stored
-  // + LDIR fill) wins quickly.
-  MaxStoresPerMemset = 1;
-  MaxStoresPerMemsetOptSize = 1;
 }
 
-MVT Z80TargetLowering::getRegisterType(MVT VT) const {
-  // Z80 has 8-bit and 16-bit registers
+// Values wider than a 16-bit register pair are passed and returned as
+// individual bytes: the SDCC conventions place them in arbitrary mixes of
+// 8-bit registers and stack slots, which the default largest-legal-type
+// breakdown (pairs of i16) cannot describe.
+MVT Z80TargetLowering::getRegisterTypeForCallingConv(LLVMContext &Context,
+                                                     CallingConv::ID CC,
+                                                     EVT VT) const {
   if (VT.getSizeInBits() > 16)
-    return MVT::i8; // Split larger values into bytes
+    return MVT::i8;
   if (VT.getSizeInBits() > 8)
     return MVT::i16;
-  return TargetLowering::getRegisterType(VT);
+  return TargetLowering::getRegisterTypeForCallingConv(Context, CC, VT);
 }
 
-unsigned
-Z80TargetLowering::getNumRegisters(LLVMContext &Context, EVT VT,
-                                   std::optional<MVT> RegisterVT) const {
+unsigned Z80TargetLowering::getNumRegistersForCallingConv(LLVMContext &Context,
+                                                          CallingConv::ID CC,
+                                                          EVT VT) const {
   if (VT.getSizeInBits() > 16)
-    return VT.getSizeInBits() / 8;
+    return divideCeil(VT.getSizeInBits(), 8);
   if (VT.getSizeInBits() > 8)
-    return 1; // One 16-bit register
-  return TargetLowering::getNumRegisters(Context, VT, RegisterVT);
+    return 1;
+  return TargetLowering::getNumRegistersForCallingConv(Context, CC, VT);
 }
 
 
 
 TargetLowering::ConstraintType
 Z80TargetLowering::getConstraintType(StringRef Constraint) const {
-  if (Constraint.size() == 2) {
-    // 16-bit register pair constraints
-    if (Constraint == "bc" || Constraint == "de" || Constraint == "hl" ||
-        Constraint == "af" || Constraint == "ix" || Constraint == "iy" ||
-        Constraint == "sp")
-      return C_Register;
-  }
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:
@@ -141,25 +125,6 @@ std::pair<unsigned, const TargetRegisterClass *>
 Z80TargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
                                                 StringRef Constraint,
                                                 MVT VT) const {
-  // Handle both bare "hl" and braced "{hl}" constraint forms.
-  StringRef RegName = Constraint;
-  if (RegName.starts_with("{") && RegName.ends_with("}"))
-    RegName = RegName.drop_front().drop_back();
-
-  if (RegName.size() == 2) {
-    auto Result =
-        StringSwitch<std::pair<unsigned, const TargetRegisterClass *>>(RegName)
-            .Case("bc", {Z80::BC, &Z80::GR16RegClass})
-            .Case("de", {Z80::DE, &Z80::GR16RegClass})
-            .Case("hl", {Z80::HL, &Z80::GR16RegClass})
-            .Case("af", {Z80::AF, &Z80::GR16_AFRegClass})
-            .Case("ix", {Z80::IX, &Z80::IR16RegClass})
-            .Case("iy", {Z80::IY, &Z80::IR16RegClass})
-            .Case("sp", {Z80::SP, &Z80::Ptr16RegClass})
-            .Default({0, nullptr});
-    if (Result.second)
-      return Result;
-  }
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     default:

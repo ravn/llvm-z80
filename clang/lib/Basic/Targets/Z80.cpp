@@ -39,7 +39,12 @@ SmallVector<Builtin::InfosShard> Z80TargetInfo::getTargetBuiltins() const {
 Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
     : TargetInfo(Triple) {
   // Must match Z80TargetMachine data layout
-  resetDataLayout("e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16");
+  resetDataLayout("e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-ve-n8:16");
+
+  // The data layout mangles globals with a leading underscore (sdas
+  // convention); the frontend prefix must agree, and a non-empty prefix is
+  // also what makes asm("name") renames emit their exact spelling.
+  UserLabelPrefix = "_";
 
   PointerWidth = 16;
   PointerAlign = 8;
@@ -67,8 +72,26 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
   DoubleFormat = &llvm::APFloat::IEEEsingle();
   LongDoubleWidth = 32;
   LongDoubleFormat = &llvm::APFloat::IEEEsingle();
+
+  // The fixed-point types (_Accum/_Fract) and the storage-only float types
+  // (__fp16, __bf16) have their own layout fields and default to their
+  // natural alignment; everything is byte-aligned here.
+  ShortAccumAlign = 8;
+  AccumAlign = 8;
+  LongAccumAlign = 8;
+  ShortFractAlign = 8;
+  FractAlign = 8;
+  LongFractAlign = 8;
+  HalfAlign = 8;
+  BFloat16Align = 8;
+  // Vectors take their element's byte alignment (the "ve" datalayout token);
+  // their natural alignment cannot be honored on a byte-aligned stack.
+  VectorsAreElementAligned = true;
+  MaxVectorAlign = 8;
+
   SuitableAlign = 8;
   DefaultAlignForAttributeAligned = 8;
+  MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 8;
   SizeType = UnsignedInt;
   PtrDiffType = SignedInt;
   IntPtrType = SignedInt;
@@ -199,6 +222,12 @@ void Z80TargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__z80__");
     Builder.defineMacro("__Z80__");
   }
+  // compiler-rt/{z80,sm83} has no complex helpers, so `a * b` and `a / b` on
+  // _Complex would only fail at link time with an undefined __mulsc3 or
+  // __divsc3. Say so up front instead; portable code guards <complex.h> on
+  // this macro.
+  Builder.defineMacro("__STDC_NO_COMPLEX__");
+
   // Z80/SM83 uses sdasz80 .rel object format, not ELF.
   // Do not define __ELF__.
 }

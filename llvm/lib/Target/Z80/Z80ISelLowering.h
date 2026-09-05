@@ -54,11 +54,12 @@ public:
 
   ConstraintType getConstraintType(StringRef Constraint) const override;
 
-  MVT getRegisterType(MVT VT) const override;
+  MVT getRegisterTypeForCallingConv(LLVMContext &Context, CallingConv::ID CC,
+                                    EVT VT) const override;
 
-  unsigned
-  getNumRegisters(LLVMContext &Context, EVT VT,
-                  std::optional<MVT> RegisterVT = std::nullopt) const override;
+  unsigned getNumRegistersForCallingConv(LLVMContext &Context,
+                                         CallingConv::ID CC,
+                                         EVT VT) const override;
 
   bool preferNarrowTypes() const override { return true; }
 

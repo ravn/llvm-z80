@@ -14,6 +14,16 @@ pub struct SdccConfig {
     pub pattern: Option<String>,
 }
 
+/// Results the suite will emit: each discovered test pair, once per
+/// optimisation level.
+pub fn count(paths: &Paths, config: &SdccConfig) -> u32 {
+    crate::utils::discover_sdcc_test_names(&paths.sdcc_test_dir())
+        .iter()
+        .filter(|n| config.pattern.as_deref().is_none_or(|p| n.contains(p)))
+        .count() as u32
+        * config.opt_levels.len() as u32
+}
+
 pub fn run(paths: &Paths, config: &SdccConfig, on_result: &mut OnResult) -> SuiteResult {
     let test_dir = paths.sdcc_test_dir();
     let clang = paths.clang();
@@ -23,20 +33,7 @@ pub fn run(paths: &Paths, config: &SdccConfig, on_result: &mut OnResult) -> Suit
     let sdcc_lib = config::find_sdcc_lib(config.target);
 
     // Discover test pairs: test_*_clang.c
-    let mut test_names: Vec<String> = std::fs::read_dir(&test_dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("test_") && name.ends_with("_clang.c") {
-                Some(name.strip_suffix("_clang.c")?.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    test_names.sort();
+    let test_names = crate::utils::discover_sdcc_test_names(&test_dir);
 
     for test_name in &test_names {
         if let Some(ref pat) = config.pattern {
@@ -163,7 +160,15 @@ fn run_single(
     let bin = tmp_dir.join(format!("{tag}.bin"));
     let out_base = tmp_dir.join(tag);
     {
-        let crt0 = paths.crt0(target);
+        // The harness's own crt0: it records main's return value at
+        // _exitcode so the result can be read from a RAM dump.
+        let crt0 = match crate::runtime::ensure_sdcc_crt0(paths, target) {
+            Ok(p) => p,
+            Err(e) => {
+                remove_tmp_dir(&tmp_dir);
+                return TestResult::fatal(tag, format!("harness crt0: {e}"));
+            }
+        };
         let rt = paths.rt_lib(target);
 
         let mut cmd = Command::new(linker);
@@ -204,7 +209,18 @@ fn run_single(
             return TestResult::fatal(tag, "_halt symbol not found in map file");
         }
     };
-    let result = match emulator::emulate(&bin, target, &halt_addr) {
+    let result_addr = match emulator::symbol_addr_from_map(&map_file, "_exitcode") {
+        Some(a) => a,
+        None => {
+            remove_tmp_dir(&tmp_dir);
+            return TestResult::fatal(tag, "_exitcode symbol not found in map file");
+        }
+    };
+    let dump = tmp_dir.join(format!("{tag}.ram"));
+    let result = match emulator::run_program(
+        &bin, target, &halt_addr, result_addr, &dump, target.emu_timeout_secs())
+        .map(|r| r.value)
+    {
         Err(e) => TestResult::fatal(tag, e),
         Ok(got) => {
             let expected = emulator::parse_expected(&source);

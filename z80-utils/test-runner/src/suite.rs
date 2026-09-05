@@ -16,11 +16,6 @@ pub enum TestOutcome {
 pub struct TestResult {
     pub tag: String,
     pub outcome: TestOutcome,
-    /// Optional diagnostic text printed under the result line (e.g. the
-    /// captured port-1 `FAIL @<line>` strings for a failing multi-CHECK
-    /// fixture — ravn/llvm-z80#137).  Sibling to `outcome` so existing
-    /// `match &outcome` sites are unaffected.
-    pub note: Option<String>,
 }
 
 impl TestResult {
@@ -28,7 +23,6 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Pass { reg_value: reg_value.into() },
-            note: None,
         }
     }
 
@@ -36,7 +30,6 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Fail { got: got.into(), expected: expected.into() },
-            note: None,
         }
     }
 
@@ -44,7 +37,6 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Fatal { reason: reason.into() },
-            note: None,
         }
     }
 
@@ -52,18 +44,38 @@ impl TestResult {
         TestResult {
             tag: tag.into(),
             outcome: TestOutcome::Skip { reason: reason.into() },
-            note: None,
         }
-    }
-
-    /// Attach diagnostic text rendered under the result line.
-    pub fn with_note(mut self, note: Option<String>) -> Self {
-        self.note = note;
-        self
     }
 
     pub fn is_pass(&self) -> bool {
         matches!(self.outcome, TestOutcome::Pass { .. })
+    }
+}
+
+/// Run a built program and judge it against the `expect` directive in its
+/// source. Every suite that checks a program's return value does exactly this,
+/// so the four copies of it live here.
+pub fn judge(
+    tag: &str,
+    bin: &Path,
+    target: crate::config::Target,
+    halt_addr: &str,
+    result_addr: u32,
+    dump: &Path,
+    source: &str,
+) -> TestResult {
+    let got = match crate::emulator::run_program(
+        bin, target, halt_addr, result_addr, dump, target.emu_timeout_secs())
+    {
+        Ok(r) => r.value,
+        Err(e) => return TestResult::fatal(tag, e),
+    };
+    let expected = crate::emulator::parse_expected(source);
+    match crate::emulator::check_result(&got, &expected) {
+        Ok(()) => TestResult::pass(tag, format!("0x{got}")),
+        Err((got_padded, exp_padded)) => {
+            TestResult::fail(tag, format!("0x{got_padded}"), format!("0x{exp_padded}"))
+        }
     }
 }
 
@@ -148,6 +160,12 @@ pub fn remove_tmp_dir(dir: &Path) {
 }
 
 /// Clean up leftover `tmp_*` directories from previous runs.
+///
+/// Directories belonging to a process that is still alive are left alone.
+/// `unique_tmp_dir` stamps the owning pid into the name precisely so this can
+/// tell them apart: a second runner started while one is mid-run would
+/// otherwise delete the first one's working files, and the first would fail
+/// with its emulator RAM dump or object files having vanished underneath it.
 pub fn cleanup_old_tmp_dirs(dir: &Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -156,10 +174,21 @@ pub fn cleanup_old_tmp_dirs(dir: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("tmp_") && entry.path().is_dir() {
+        if name.starts_with("tmp_") && entry.path().is_dir() && !owner_is_running(&name) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
+}
+
+/// Whether the pid embedded in a `tmp_<pid>_<n>` name is still running. Falls
+/// back to "not running" wherever /proc is unavailable, which restores the
+/// unconditional cleanup this replaced.
+fn owner_is_running(name: &str) -> bool {
+    let pid = match name.strip_prefix("tmp_").and_then(|r| r.split('_').next()) {
+        Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p,
+        _ => return false,
+    };
+    Path::new("/proc").join(pid).is_dir()
 }
 
 /// Extract a meaningful error message from compiler/linker stderr output.
@@ -343,7 +372,16 @@ pub fn run_cmd_timeout(
         match child.try_wait() {
             Ok(Some(status)) => {
                 let stderr = stderr_reader.join().unwrap_or_default();
-                return Ok((status.code().unwrap_or(1), String::new(), stderr));
+                // A process killed by a signal has no exit code. Report the
+                // signal negated so callers can tell a crash from a compiler
+                // that merely rejected its input; a deep enough nesting makes
+                // clang's parser overflow the stack and die without printing
+                // anything at all.
+                let code = match status.code() {
+                    Some(c) => c,
+                    None => -std::os::unix::process::ExitStatusExt::signal(&status).unwrap_or(1),
+                };
+                return Ok((code, String::new(), stderr));
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
@@ -355,5 +393,30 @@ pub fn run_cmd_timeout(
             }
             Err(e) => return Err(e.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_dirs_owned_by_a_live_process() {
+        let base = std::env::temp_dir().join(format!("z80-cleanup-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let live = base.join(format!("tmp_{}_0", std::process::id()));
+        // A pid this high will not be in use.
+        let dead = base.join("tmp_4000000_0");
+        let junk = base.join("tmp_notapid_0");
+        for d in [&live, &dead, &junk] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+
+        cleanup_old_tmp_dirs(&base);
+
+        assert!(live.is_dir(), "a running process's dir must survive");
+        assert!(!dead.is_dir(), "a dead process's dir must be removed");
+        assert!(!junk.is_dir(), "an unparsable name must still be removed");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
