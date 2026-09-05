@@ -23,7 +23,7 @@ namespace llvm {
 class FunctionPass;
 
 // New-PM entry point.
-struct Z80LoopInstrFormPrep : public PassInfoMixin<Z80LoopInstrFormPrep> {
+struct Z80LoopInstrFormPrep : public detail::PassInfoMixin<Z80LoopInstrFormPrep> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
 

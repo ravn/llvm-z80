@@ -18,7 +18,7 @@ class FunctionPass;
 class PassRegistry;
 
 // New-PM wrapper.
-class Z80SinkColdLoopIV : public PassInfoMixin<Z80SinkColdLoopIV> {
+class Z80SinkColdLoopIV : public detail::PassInfoMixin<Z80SinkColdLoopIV> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };

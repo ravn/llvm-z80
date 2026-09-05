@@ -563,8 +563,6 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
 
   // G_FENCE: no-op on single-threaded Z80 — erase in legalizeCustom.
   getActionDefinitionsBuilder(G_FENCE).custom();
-
-  getLegacyLegalizerInfo().computeTables();
 }
 
 bool Z80LegalizerInfo::legalizeIntrinsic(LegalizerHelper &Helper,

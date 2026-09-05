@@ -25,7 +25,7 @@ namespace llvm {
 class FunctionPass;
 
 // New-PM entry point.
-struct Z80PatternFillRecognize : public PassInfoMixin<Z80PatternFillRecognize> {
+struct Z80PatternFillRecognize : public detail::PassInfoMixin<Z80PatternFillRecognize> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
 

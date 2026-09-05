@@ -21,7 +21,7 @@ namespace llvm {
 class FunctionPass;
 
 // New-PM entry point.
-struct Z80LoopRotate : public PassInfoMixin<Z80LoopRotate> {
+struct Z80LoopRotate : public detail::PassInfoMixin<Z80LoopRotate> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
 
