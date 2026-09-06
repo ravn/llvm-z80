@@ -10,7 +10,10 @@ declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 ; would make a raw LDIR copy 65536 bytes.
 define void @test_memcpy(ptr %dst, ptr %src, i16 %n) {
 ; CHECK-LABEL: _test_memcpy:
-; CHECK:       call ___memmove_rt
+; CHECK:       ld a,b
+; CHECK-NEXT:  or c
+; CHECK-NEXT:  jr z,
+; CHECK:       ldir
   call void @llvm.memcpy.p0.p0.i16(ptr %dst, ptr %src, i16 %n, i1 false)
   ret void
 }
