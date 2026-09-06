@@ -18,11 +18,12 @@ define void @test_memcpy(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; A proven non-zero constant keeps the compact inline LDIR lowering.
+; A proven non-zero constant keeps the raw inline LDIR lowering.
 define void @test_memcpy_constant(ptr %dst, ptr %src) {
 ; CHECK-LABEL: _test_memcpy_constant:
-; The incoming pointers are HL=dst and DE=src; memcpy swaps them for LDIR:
-; HL=src, DE=dst, BC=16.
+; The incoming pointers are HL=dst and DE=src; LDIR needs HL=src,
+; DE=dst, BC=16.  The current fixed-register setup preserves dst in
+; BC while swapping HL/DE, then reloads BC with the real byte count.
 ; CHECK:       ld c,l
 ; CHECK-NEXT:  ld b,h
 ; CHECK-NEXT:  ex de,hl
