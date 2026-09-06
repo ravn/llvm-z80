@@ -417,8 +417,8 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   // Memory intrinsics use the custom Z80 LDIR/LDDR and memmove lowering below.
   getActionDefinitionsBuilder({G_MEMCPY, G_MEMMOVE}).custom();
 
-  // G_MEMSET needs custom handling: promote i8 val to i16 (C 'int')
-  // before lowering to libcall, so calling convention assigns it correctly
+  // G_MEMSET needs custom handling for Z80 block-fill lowering and for
+  // promoting the i8 fill value to C int on the libcall fallback path.
   getActionDefinitionsBuilder(G_MEMSET).custom();
 
   // ===== Floating point (softfloat — all via library calls) =====
@@ -1296,7 +1296,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     }
 
     // CRITICAL: LDIR with BC=0 runs 65536 iterations, trashing 64 KB of
-    // memory.  Variable sizes use a guarded pseudo so BC==0 is a no-op.)
+    // memory.  Variable sizes use a guarded pseudo so BC==0 is a no-op.
     auto SizeC = getIConstantVRegSExtVal(Size, MRI);
     if (SizeC && *SizeC == 0) {
       MI.eraseFromParent();
@@ -1495,27 +1495,33 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_MEMSET: {
-    // C memset takes (void*, int, size_t). On Z80, int = i16.
-    // G_MEMSET has i8 val operand which must be promoted to i16
-    // so the calling convention assigns it to DE (2nd i16 reg param)
-    // instead of treating it as an i8 arg.
+    Register DstPtr = MI.getOperand(0).getReg();
     Register ValReg = MI.getOperand(1).getReg();
+    Register Size = MI.getOperand(2).getReg();
     LLT ValTy = MRI.getType(ValReg);
 
-    if (ValTy.getSizeInBits() < 16) {
-      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
-      auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
-      MI.getOperand(1).setReg(ZExt.getReg(0));
+    const auto &STI = MIRBuilder.getMF().getSubtarget<Z80Subtarget>();
+    if (!STI.hasZ80()) {
+      // C memset takes (void *, int, size_t), so promote the i8 G_MEMSET
+      // fill value to i16 before using the stack-ABI libcall fallback.
+      if (ValTy.getSizeInBits() < 16) {
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+        auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
+        MI.getOperand(1).setReg(ZExt.getReg(0));
+      }
+      auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
+      if (Result != LegalizerHelper::Legalized)
+        return false;
+      MI.eraseFromParent();
+      return true;
     }
 
-    Register DstPtr = MI.getOperand(0).getReg();
-    Register Size = MI.getOperand(2).getReg();
     // CRITICAL: when the LDIR-fill pattern below is fed BC=0 (which is
     // size-1 for size==1), LDIR runs 65536 iterations and trashes 64 KB
-    // of memory.  Constant-Size handling (#63):
-    //   size==0 → no-op, drop the MI;
-    //   size==1 → emit only the leading single-byte store, skip LDIR.
-    // Variable-size case → MEMSET_LDIR_GUARDED: post-RA
+    // of memory.  Constant-Size handling:
+    //   size==0 -> no-op, drop the MI;
+    //   size==1 -> emit only the leading single-byte store, skip LDIR.
+    // Variable-size case -> MEMSET_LDIR_GUARDED: post-RA
     // expansion adds runtime size==0 and size==1 guards around the
     // entire fill (leading store + LDIR).
     auto SizeC = getIConstantVRegSExtVal(Size, MRI);
