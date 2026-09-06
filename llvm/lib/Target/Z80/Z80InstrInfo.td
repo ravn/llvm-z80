@@ -932,7 +932,7 @@ def SMOD16 : Z80Pseudo<(outs), (ins)> {
   let Defs = [A, B, C, DE, HL, FLAGS];
 }
 // LDIR_GUARDED / LDDR_GUARDED / MEMSET_LDIR_GUARDED — runtime BC==0
-// guard around block-move / block-fill instructions (issue #105).
+// guard around block-move / block-fill instructions.
 //
 // Z80 LDIR / LDDR test BC AFTER decrement: with BC=0 they run 65536
 // iterations and trash 64 KB.  When the legalizer can't statically
