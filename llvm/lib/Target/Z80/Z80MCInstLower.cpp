@@ -110,10 +110,10 @@ MCOperand Z80MCInstLower::lowerSymbolOperand(const MachineOperand &MO,
   switch (MO.getTargetFlags()) {
   case Z80::MO_NO_FLAGS:
     break;
-  case Z80::MO_ADDR16_LO:
+  case Z80::MO_LO:
     Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_LO, Expr, false, Ctx);
     break;
-  case Z80::MO_ADDR16_HI:
+  case Z80::MO_HI:
     Expr = Z80MCExpr::create(Z80MCExpr::VK_ADDR16_HI, Expr, false, Ctx);
     break;
   default:

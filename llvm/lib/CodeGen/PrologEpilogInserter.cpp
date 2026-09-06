@@ -66,7 +66,7 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "prolog-epilog"
+#define DEBUG_TYPE "prologepilog"
 
 using MBBVector = SmallVector<MachineBasicBlock *, 4>;
 

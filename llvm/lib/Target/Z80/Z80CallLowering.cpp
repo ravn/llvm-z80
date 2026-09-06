@@ -562,7 +562,13 @@ bool Z80CallLoweringCommon::lowerReturn(MachineIRBuilder &MIRBuilder,
     BitWidth = 16; // Pointers
 
   if (BitWidth <= 8) {
-    MIRBuilder.buildCopy(Regs.Ret_I8, VRegs[0]);
+    if (MRI.getType(VRegs[0]).getSizeInBits() == 1) {
+      Register RetByte = MRI.createGenericVirtualRegister(LLT::scalar(8));
+      MIRBuilder.buildZExt(RetByte, VRegs[0]);
+      MIRBuilder.buildCopy(Regs.Ret_I8, RetByte);
+    } else {
+      MIRBuilder.buildCopy(Regs.Ret_I8, VRegs[0]);
+    }
     emitRet({{Regs.Ret_I8, RegState::Implicit}});
   } else if (BitWidth <= 16) {
     MIRBuilder.buildCopy(Regs.Ret_I16, VRegs[0]);
@@ -598,7 +604,8 @@ bool Z80CallLoweringCommon::lowerFormalArguments(
   bool IsVarArg = F.isVarArg();
   CallingConv::ID CC = F.getCallingConv();
 
-  if (F.arg_empty() && !IsVarArg)
+  // A demoted return still carries a hidden sret pointer on the stack.
+  if (F.arg_empty() && !IsVarArg && FLI.CanLowerReturn)
     return true;
 
   const CallingConvRegs &Regs = getRegsForCC(CC);
@@ -740,7 +747,13 @@ bool Z80CallLoweringCommon::lowerFormalArguments(
         MIRBuilder.buildMergeLikeInstr(VReg, {LoReg, HiReg});
       } else {
         MBB.addLiveIn(Assign.PhysReg);
-        MIRBuilder.buildCopy(VReg, Register(Assign.PhysReg));
+        if (MRI.getType(VReg).getSizeInBits() == 1) {
+          Register ArgByte = MRI.createGenericVirtualRegister(LLT::scalar(8));
+          MIRBuilder.buildCopy(ArgByte, Register(Assign.PhysReg));
+          MIRBuilder.buildTrunc(VReg, ArgByte);
+        } else {
+          MIRBuilder.buildCopy(VReg, Register(Assign.PhysReg));
+        }
       }
     }
 
@@ -1089,7 +1102,13 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
           ArgRegs.push_back(Assign.PhysReg);
           ArgRegs.push_back(Assign.PhysReg2);
         } else {
-          MIRBuilder.buildCopy(Assign.PhysReg, VReg);
+          if (MRI.getType(VReg).getSizeInBits() == 1) {
+            Register ArgByte = MRI.createGenericVirtualRegister(LLT::scalar(8));
+            MIRBuilder.buildZExt(ArgByte, VReg);
+            MIRBuilder.buildCopy(Assign.PhysReg, ArgByte);
+          } else {
+            MIRBuilder.buildCopy(Assign.PhysReg, VReg);
+          }
           ArgRegs.push_back(Assign.PhysReg);
         }
       }
@@ -1476,7 +1495,13 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
         BitWidth = 16;
 
       if (BitWidth <= 8) {
-        MIRBuilder.buildCopy(VReg, Register(Regs.Ret_I8));
+        if (MRI.getType(VReg).getSizeInBits() == 1) {
+          Register RetByte = MRI.createGenericVirtualRegister(LLT::scalar(8));
+          MIRBuilder.buildCopy(RetByte, Register(Regs.Ret_I8));
+          MIRBuilder.buildTrunc(VReg, RetByte);
+        } else {
+          MIRBuilder.buildCopy(VReg, Register(Regs.Ret_I8));
+        }
       } else if (BitWidth <= 16) {
         MIRBuilder.buildCopy(VReg, Register(Regs.Ret_I16));
       } else if (BitWidth <= 32) {

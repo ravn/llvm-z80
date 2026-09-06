@@ -12,7 +12,7 @@ define i16 @fib(i16 %n) {
 ; CHECK-O0:       add hl,
 ; CHECK-O0:       xor
 ; CHECK-O0:       or
-; CHECK-O0:       j{{[rp]}} z,
+; CHECK-O0:       {{(j[pr] z,|ret z)}}
 
 ; CHECK-O1-LABEL: _fib:
 ; CHECK-O1:       add hl,de

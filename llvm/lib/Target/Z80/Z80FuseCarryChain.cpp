@@ -234,7 +234,11 @@ bool Z80FuseCarryChain::processBlock(MachineBasicBlock &MBB) {
         if (HK == CarryKind::Add) {
           BuildMI(MBB, Head, DL, TII->get(realHeadAddOpc(HeadRHS)));
         } else {
-          BuildMI(MBB, Head, DL, TII->get(Z80::AND_A)); // clear CF for low sub
+          auto AndA = BuildMI(MBB, Head, DL, TII->get(Z80::AND_A));
+          // The carry-clear does not consume a meaningful accumulator here.
+          for (MachineOperand &MO : AndA->operands())
+            if (MO.isReg() && MO.isUse() && MO.getReg() == Z80::A)
+              MO.setIsUndef(true);
           BuildMI(MBB, Head, DL, TII->get(realSubOpc(HeadRHS)));
         }
         MachineBasicBlock::iterator AfterHead = std::next(I);
