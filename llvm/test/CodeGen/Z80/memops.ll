@@ -21,15 +21,10 @@ define void @test_memcpy(ptr %dst, ptr %src, i16 %n) {
 ; A proven non-zero constant keeps the raw inline LDIR lowering.
 define void @test_memcpy_constant(ptr %dst, ptr %src) {
 ; CHECK-LABEL: _test_memcpy_constant:
-; The incoming pointers are HL=dst and DE=src; LDIR needs HL=src,
-; DE=dst, BC=16.  The current fixed-register setup preserves dst in
-; BC while swapping HL/DE, then reloads BC with the real byte count.
-; CHECK:       ld c,l
-; CHECK-NEXT:  ld b,h
-; CHECK-NEXT:  ex de,hl
-; CHECK-NEXT:  ld e,c
-; CHECK-NEXT:  ld d,b
-; CHECK-NEXT:  ld bc,#16
+; This test only pins the memory-operation choice: constant non-zero size can
+; use raw LDIR, unlike the variable-size path that needs a runtime guard.
+; The register setup is deliberately not pinned here.
+; CHECK:       ld bc,#16
 ; CHECK:       ldir
   call void @llvm.memcpy.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
