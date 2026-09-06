@@ -152,18 +152,6 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
         Modified |= expandMemsetLdirGuarded(MBB, Inst, TII);
         MI = MBB.end();
         break;
-      case Z80::COPY16_PUSHPOP: {
-        // Expand to adjacent PUSH src; POP dst.  Runs after all optimization
-        // passes so nothing can insert between them (issue #32).
-        Register Dst = Inst.getOperand(0).getReg();
-        Register Src = Inst.getOperand(1).getReg();
-        DebugLoc DL = Inst.getDebugLoc();
-        BuildMI(MBB, Inst, DL, TII.get(Z80::getPushOpcode(Src)));
-        BuildMI(MBB, Inst, DL, TII.get(Z80::getPopOpcode(Dst)));
-        Inst.eraseFromParent();
-        Modified = true;
-        break;
-      }
       default:
         break;
       }
@@ -1190,7 +1178,7 @@ bool Z80ExpandPseudo::expandLdirGuarded(MachineBasicBlock &MBB,
                                         const Z80InstrInfo &TII,
                                         unsigned BlockOpc) {
   // Expand LDIR_GUARDED / LDDR_GUARDED into a runtime BC==0 guard
-  // around the block-move (issue #105).
+  // around the block-move.
   //
   //   HeadMBB:                 (was the original MBB up to MI)
   //     ...
@@ -1219,8 +1207,8 @@ bool Z80ExpandPseudo::expandLdirGuarded(MachineBasicBlock &MBB,
   TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
 
   // Head: LD A,B; OR C; JR Z, TailMBB.
-  BuildMI(&MBB, DL, TII.get(Z80::LD_A_B));
-  BuildMI(&MBB, DL, TII.get(Z80::OR_C));
+  Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::B);
+  Z80::buildAlu8(&MBB, DL, TII, Z80::OR_r, Z80::C);
   BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
   MBB.addSuccessor(BodyMBB);
   MBB.addSuccessor(TailMBB);
@@ -1236,7 +1224,7 @@ bool Z80ExpandPseudo::expandLdirGuarded(MachineBasicBlock &MBB,
 bool Z80ExpandPseudo::expandMemsetLdirGuarded(MachineBasicBlock &MBB,
                                               MachineInstr &MI,
                                               const Z80InstrInfo &TII) {
-  // Expand MEMSET_LDIR_GUARDED for variable-size memset (issue #105).
+  // Expand MEMSET_LDIR_GUARDED for variable-size memset.
   // Inputs: HL=dst, E=val, BC=size.
   //
   //   HeadMBB:
@@ -1278,25 +1266,25 @@ bool Z80ExpandPseudo::expandMemsetLdirGuarded(MachineBasicBlock &MBB,
   TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
 
   // Head: LD A,B; OR C; JR Z, TailMBB.
-  BuildMI(&MBB, DL, TII.get(Z80::LD_A_B));
-  BuildMI(&MBB, DL, TII.get(Z80::OR_C));
+  Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::B);
+  Z80::buildAlu8(&MBB, DL, TII, Z80::OR_r, Z80::C);
   BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
   MBB.addSuccessor(FirstMBB);
   MBB.addSuccessor(TailMBB);
 
   // First: LD (HL),E; DEC BC; LD A,B; OR C; JR Z, TailMBB.
-  BuildMI(FirstMBB, DL, TII.get(Z80::LD_HLind_E));
-  BuildMI(FirstMBB, DL, TII.get(Z80::DEC_BC));
-  BuildMI(FirstMBB, DL, TII.get(Z80::LD_A_B));
-  BuildMI(FirstMBB, DL, TII.get(Z80::OR_C));
+  BuildMI(FirstMBB, DL, TII.get(Z80::LD_HLind_r)).addReg(Z80::E);
+  Z80::buildIncDec16(FirstMBB, DL, TII, Z80::DEC_rr, Z80::BC);
+  Z80::buildLD8(FirstMBB, DL, TII, Z80::A, Z80::B);
+  Z80::buildAlu8(FirstMBB, DL, TII, Z80::OR_r, Z80::C);
   BuildMI(FirstMBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
   FirstMBB->addSuccessor(FillMBB);
   FirstMBB->addSuccessor(TailMBB);
 
   // Fill: LD D,H; LD E,L; INC DE; LDIR.
-  BuildMI(FillMBB, DL, TII.get(Z80::LD_D_H));
-  BuildMI(FillMBB, DL, TII.get(Z80::LD_E_L));
-  BuildMI(FillMBB, DL, TII.get(Z80::INC_DE));
+  Z80::buildLD8(FillMBB, DL, TII, Z80::D, Z80::H);
+  Z80::buildLD8(FillMBB, DL, TII, Z80::E, Z80::L);
+  Z80::buildIncDec16(FillMBB, DL, TII, Z80::INC_rr, Z80::DE);
   BuildMI(FillMBB, DL, TII.get(Z80::LDIR));
   FillMBB->addSuccessor(TailMBB);
 

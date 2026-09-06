@@ -1539,6 +1539,12 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     case Z80::USUBSAT8: return 4;
     case Z80::SADDSAT8:
     case Z80::SSUBSAT8: return 8;
+    // LD A,B; OR C; JR Z,skip; LDIR/LDDR = 6 bytes.
+    case Z80::LDIR_GUARDED:
+    case Z80::LDDR_GUARDED: return 6;
+    // Zero-size guard (4) + first store (1) + size-one guard (4) +
+    // DE setup and LDIR (6) = 15 bytes.
+    case Z80::MEMSET_LDIR_GUARDED: return 15;
     default: break;
     }
   }
