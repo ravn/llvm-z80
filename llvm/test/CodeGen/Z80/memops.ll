@@ -6,11 +6,14 @@ declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 
 @memmove_buf = internal global [64 x i8] zeroinitializer
 
-; Variable-size memcpy uses the guarded register-CC helper because BC=0
-; would make a raw LDIR copy 65536 bytes.
+; Test: memcpy lowers to inline LDIR on Z80, with a runtime BC==0
+; guard for the variable-size case.
 define void @test_memcpy(ptr %dst, ptr %src, i16 %n) {
 ; CHECK-LABEL: _test_memcpy:
-; CHECK:       call ___memmove_rt
+; CHECK:       ld a,b
+; CHECK-NEXT:  or c
+; CHECK-NEXT:  jr z,
+; CHECK:       ldir
   call void @llvm.memcpy.p0.p0.i16(ptr %dst, ptr %src, i16 %n, i1 false)
   ret void
 }
@@ -83,12 +86,13 @@ define void @test_memmove_constant_backward() {
   ret void
 }
 
-; Known pointer direction with runtime size still needs the zero-safe helper.
+; Known pointer direction with runtime size uses guarded LDIR.
 define void @test_memmove_known_direction_runtime_size(i16 %n) {
 ; CHECK-LABEL: _test_memmove_known_direction_runtime_size:
-; CHECK:       call ___memmove_rt
-; CHECK-NOT:   ldir
-; CHECK-NOT:   lddr
+; CHECK:       ld a,b
+; CHECK-NEXT:  or c
+; CHECK-NEXT:  jr z,
+; CHECK:       ldir
   %dst = getelementptr i8, ptr @memmove_buf, i16 8
   %src = getelementptr i8, ptr @memmove_buf, i16 24
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %n, i1 false)
@@ -114,18 +118,21 @@ define void @test_memmove(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; Test: memset lowers to runtime call with i8 val promoted to i16
+; Test: variable-size memset lowers to an inline guarded LDIR fill.
 define void @test_memset(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset:
-; CHECK:       call _memset
-  call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
-  ret void
-}
-
-; Test: memset val is zero-extended (not sign-extended) to i16
-define void @test_memset_zext(ptr %dst, i8 %val, i16 %n) {
-; CHECK-LABEL: _test_memset_zext:
-; CHECK:       ld {{[a-z]}},#0
+; CHECK:       ld a,b
+; CHECK-NEXT:  or c
+; CHECK-NEXT:  jr z,
+; CHECK:       ld (hl),e
+; CHECK-NEXT:  dec bc
+; CHECK-NEXT:  ld a,b
+; CHECK-NEXT:  or c
+; CHECK-NEXT:  jr z,
+; CHECK:       ldir
+; val is held in E across the BC test so
+; `ld a,b; or c` doesn't clobber it; the leading store therefore goes
+; via `ld (hl),e`.
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }
