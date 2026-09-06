@@ -2305,6 +2305,17 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     // SM83: LD A,r(1)+RRCA(1)+LD A,L(1)+SBC lo(1)+LD L,A(1)+LD A,H(1)+SBC hi(1)
     //       +LD H,A(1)+SBC A,A(1)+AND n(2) = 11
     case Z80::SBC_HL_rr_BIO: return IsSM83 ? 11 : 7;
+    // 8-bit multiply/divide/modulo and saturating arithmetic.
+    // Sizes match upstream llvm-z80/llvm-z80 commit 841d84e5e1d7.
+    case Z80::MUL8:   return IsSM83 ? 13 : 12;
+    case Z80::UDIV8:  return IsSM83 ? 16 : 15;
+    case Z80::UMOD8:  return IsSM83 ? 15 : 14;
+    case Z80::SDIV8:  return IsSM83 ? 38 : 37;
+    case Z80::SMOD8:  return IsSM83 ? 35 : 34;
+    case Z80::UADDSAT8: return 5;
+    case Z80::USUBSAT8: return 4;
+    case Z80::SADDSAT8:
+    case Z80::SSUBSAT8: return 8;
     // Guarded block copy/fill (expandLdirGuarded / expandMemsetLdirGuarded).
     // Z80-only (LDIR/LDDR don't exist on SM83; gated by hasZ80()).
     // LDIR_GUARDED / LDDR_GUARDED: JR Z(2) + LDIR/LDDR(2) + guard head(2) = 6

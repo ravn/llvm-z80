@@ -59,6 +59,16 @@ static bool isInlineRuntimeSizedPseudo(unsigned Opcode) {
   case Z80::UMOD16:
   case Z80::SDIV16:
   case Z80::SMOD16:
+  // 8-bit ops sized in getInstSizeInBytes (sizes match upstream 841d84e5e1d7).
+  case Z80::MUL8:
+  case Z80::UDIV8:
+  case Z80::UMOD8:
+  case Z80::SDIV8:
+  case Z80::SMOD8:
+  case Z80::UADDSAT8:
+  case Z80::USUBSAT8:
+  case Z80::SADDSAT8:
+  case Z80::SSUBSAT8:
   // Guarded block copy/fill and indexed load/store — ravn/llvm-z80 additions
   // not yet covered by upstream; sizes in getInstSizeInBytes above.
   case Z80::LDIR_GUARDED:
