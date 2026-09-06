@@ -3,10 +3,9 @@
  * size==0 must not trash memory.
  *
  * Z80 LDIR / LDDR test BC AFTER decrement: with BC=0 they run 65536
- * iterations.  Pre-#105 the legalizer emitted unguarded LDIR for
- * variable-size memcpy / memmove / memset.  At runtime, when size
- * happened to be 0, this trashed 64 KB.  The fix wraps the block
- * instructions in a runtime BC==0 guard.
+ * iterations.  Unguarded variable-size block operations therefore
+ * trashed 64 KB when the runtime size happened to be 0.  The guarded
+ * lowering wraps the block instructions in a runtime BC==0 guard.
  *
  * This test calls each of memcpy / memmove / memset with size==0
  * (non-constant — passed through a volatile to defeat compile-time
