@@ -118,13 +118,17 @@ define void @test_memmove(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; Test: memset lowers to runtime call with i8 val promoted to i16
+; Test: variable-size memset lowers to an inline guarded LDIR fill.
 define void @test_memset(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset:
 ; CHECK:       ld a,b
 ; CHECK-NEXT:  or c
 ; CHECK-NEXT:  jr z,
 ; CHECK:       ld (hl),e
+; CHECK-NEXT:  dec bc
+; CHECK-NEXT:  ld a,b
+; CHECK-NEXT:  or c
+; CHECK-NEXT:  jr z,
 ; CHECK:       ldir
 ; val is held in E across the BC test so
 ; `ld a,b; or c` doesn't clobber it; the leading store therefore goes
