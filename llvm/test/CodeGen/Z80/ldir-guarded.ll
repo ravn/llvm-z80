@@ -2,8 +2,8 @@
 
 ; Variable-size block operations must guard BC==0 because LDIR/LDDR
 ; interpret zero as 65536 iterations.
-; Lowering to inline LDIR with BC=0 runs 65536 iterations (BC test
-; happens AFTER decrement), which trashes 64 KB of memory.
+; Lowering a zero count to a raw block instruction would run 65536
+; iterations (BC test happens AFTER decrement), trashing 64 KB of memory.
 ;
 ; Constant-size sub-cases are handled separately (size==0 -> erase,
 ; size==1 memset -> emit only the leading store).  This test covers the
