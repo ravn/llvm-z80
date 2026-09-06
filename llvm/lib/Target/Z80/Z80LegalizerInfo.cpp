@@ -1515,7 +1515,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     // of memory.  Constant-Size handling (#63):
     //   size==0 → no-op, drop the MI;
     //   size==1 → emit only the leading single-byte store, skip LDIR.
-    // Variable-size case → MEMSET_LDIR_GUARDED (#105): post-RA
+    // Variable-size case → MEMSET_LDIR_GUARDED: post-RA
     // expansion adds runtime size==0 and size==1 guards around the
     // entire fill (leading store + LDIR).
     auto SizeC = getIConstantVRegSExtVal(Size, MRI);
@@ -1542,7 +1542,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     // Store val at first byte: HL=dst, then LD (HL),val.
     MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
     MIRBuilder.buildCopy(Register(Z80::A), ValReg);
-    MIRBuilder.buildInstr(Z80::LD_HLind_A);
+    MIRBuilder.buildInstr(Z80::LD_HLind_r).addReg(Z80::A);
 
     if (*SizeC == 1) {
       MI.eraseFromParent();

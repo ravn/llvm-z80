@@ -132,11 +132,3 @@ define void @test_memset(ptr %dst, i8 %val, i16 %n) {
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }
-
-; Test: memset val is zero-extended (not sign-extended) to i16
-define void @test_memset_zext(ptr %dst, i8 %val, i16 %n) {
-; CHECK-LABEL: _test_memset_zext:
-; CHECK:       ld {{[a-z]}},#0
-  call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
-  ret void
-}

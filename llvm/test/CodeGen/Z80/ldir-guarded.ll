@@ -1,6 +1,7 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 
-; ravn/llvm-z80#105 — variable-size memcpy/memmove/memset on Z80
+; Variable-size block operations must guard BC==0 because LDIR/LDDR
+; interpret zero as 65536 iterations.
 ; lower to inline LDIR.  LDIR with BC=0 runs 65536 iterations (BC test
 ; happens AFTER decrement), which trashes 64 KB of memory.
 ;
