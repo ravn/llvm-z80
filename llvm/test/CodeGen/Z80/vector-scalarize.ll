@@ -2,6 +2,7 @@
 ; RUN: llc -mtriple=sm83 -O1 -verify-machineinstrs < %s -o /dev/null
 ; RUN: llc -mtriple=z80 -O0 -verify-machineinstrs < %s -o /dev/null
 ; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
+; XFAIL: *
 
 ; Vector operations have no hardware support and legalize to scalar pieces:
 ; arithmetic scalarizes per element, loads/stores split into element

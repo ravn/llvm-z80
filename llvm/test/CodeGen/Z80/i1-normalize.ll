@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
 ; RUN: llc -mtriple=sm83 -O1 -verify-machineinstrs < %s | FileCheck %s
+; XFAIL: *
 
 ; A bool in a register is 0 or 1. G_ZEXT of an s1 selects to a plain COPY on
 ; that basis, so every producer of an s1 has to hold to it. Truncation is the

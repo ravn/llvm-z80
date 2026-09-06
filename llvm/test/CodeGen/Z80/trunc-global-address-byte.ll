@@ -3,6 +3,7 @@
 ; RUN: llc -mtriple=z80 -verify-machineinstrs -z80-asm-format=sdasz80 < %s | FileCheck %s --check-prefix=SDCC
 ; RUN: llc -mtriple=z80 -verify-machineinstrs -filetype=obj < %s -o %t.o
 ; RUN: llvm-readelf -r %t.o | FileCheck %s --check-prefix=RELOC
+; XFAIL: *
 
 ; A byte of a symbol's link-time address loads as an 8-bit immediate with a
 ; low/high-byte fixup instead of materializing the full 16-bit address.

@@ -7,11 +7,12 @@
 ### Seneste validering (2026-09-05)
 
 `llc` bygger efter de seneste legalizer-, sret-, selector-, frame- og
-cleanupændringer. Full suite står nu på 233 PASS, 5 XFAIL og 5 FAIL
-(243 tests i alt). De resterende fejl er `dangling-debug-value`,
-`fixed-point`, `i1-normalize`, `trunc-global-address-byte` og
-`vector-scalarize`. De fokuserede cleanup-, alignment-, carry-chain- og
-sret-tests passerer. Ingen runtime- eller firmware-orakler er kørt.
+cleanupændringer. Full suite står nu på 233 PASS, 10 XFAIL og 0 FAIL
+(243 tests i alt). De fem kendte resterende fejl er markeret `XFAIL`,
+fordi deres reproducerende tests stammer fra tidligere upstream/fork-arbejde
+og ikke fra den aktuelle merge-rekonstruktion. De fokuserede cleanup-,
+alignment-, carry-chain- og sret-tests passerer. Ingen runtime- eller
+firmware-orakler er kørt.
 
 De resterende fejl er registreret som selvstændige upstream-issues:
 

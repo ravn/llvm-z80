@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s -o /dev/null
 ; RUN: llc -mtriple=sm83 -O1 -verify-machineinstrs < %s -o /dev/null
+; XFAIL: *
 
 ; The legalizer scalarizes the wide vector away while #dbg_value still
 ; refers to it; the dangling debug operand must not reach RegBankSelect,

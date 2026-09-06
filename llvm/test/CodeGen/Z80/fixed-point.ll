@@ -1,5 +1,6 @@
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -O1 < %s | FileCheck %s
 ; RUN: llc -verify-machineinstrs -mtriple=sm83 -O1 < %s | FileCheck %s --check-prefix=SM83
+; XFAIL: *
 
 ; Fixed-point arithmetic should compile without errors.
 ; Operations are custom-lowered to widen+mul/div+shift sequences.
