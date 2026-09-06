@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-verify-inline-runtime-size < %s | FileCheck %s
 
 ; Variable-size block operations must guard BC==0 because LDIR/LDDR
 ; interpret zero as 65536 iterations.

@@ -21,17 +21,45 @@
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #define DEBUG_TYPE "z80-expand-pseudo"
 
 using namespace llvm;
 
 namespace {
+
+static cl::opt<bool> VerifyInlineRuntimeSize(
+    "z80-verify-inline-runtime-size", cl::Hidden, cl::init(false),
+    cl::desc("Assert selected Z80 pseudos' getInstSizeInBytes entries match "
+             "the real byte count of their expansions"));
+
+static bool isInlineRuntimeSizedPseudo(unsigned Opcode) {
+  switch (Opcode) {
+  case Z80::LDIR_GUARDED:
+  case Z80::LDDR_GUARDED:
+  case Z80::MEMSET_LDIR_GUARDED:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static unsigned sumFunctionSizeBytes(const MachineFunction &MF,
+                                     const Z80InstrInfo &TII) {
+  unsigned Total = 0;
+  for (const MachineBasicBlock &MBB : MF)
+    for (const MachineInstr &MI : MBB)
+      Total += TII.getInstSizeInBytes(MI);
+  return Total;
+}
 
 class Z80ExpandPseudo : public MachineFunctionPass {
 public:
@@ -80,6 +108,14 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
     for (auto MI = MBB.begin(), ME = MBB.end(); MI != ME;) {
       MachineInstr &Inst = *MI;
       ++MI; // Advance before potential erase
+
+      unsigned VerifyOpc = 0, VerifyReported = 0, VerifyBefore = 0;
+      if (VerifyInlineRuntimeSize &&
+          isInlineRuntimeSizedPseudo(Inst.getOpcode())) {
+        VerifyOpc = Inst.getOpcode();
+        VerifyReported = TII.getInstSizeInBytes(Inst);
+        VerifyBefore = sumFunctionSizeBytes(MF, TII);
+      }
 
       switch (Inst.getOpcode()) {
       case Z80::SHL8_VAR:
@@ -154,6 +190,19 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
         break;
       default:
         break;
+      }
+
+      if (VerifyOpc) {
+        unsigned VerifyAfter = sumFunctionSizeBytes(MF, TII);
+        if (VerifyAfter != VerifyBefore) {
+          int Actual =
+              (int)VerifyReported + ((int)VerifyAfter - (int)VerifyBefore);
+          report_fatal_error(
+              Twine("Z80 pseudo ") + TII.getName(VerifyOpc) +
+              " getInstSizeInBytes reports " + Twine(VerifyReported) +
+              " bytes but its expansion is " + Twine(Actual) +
+              " bytes; update Z80InstrInfo::getInstSizeInBytes");
+        }
       }
     }
   }
