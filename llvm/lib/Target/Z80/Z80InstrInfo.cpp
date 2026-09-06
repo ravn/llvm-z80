@@ -2305,6 +2305,15 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     // SM83: LD A,r(1)+RRCA(1)+LD A,L(1)+SBC lo(1)+LD L,A(1)+LD A,H(1)+SBC hi(1)
     //       +LD H,A(1)+SBC A,A(1)+AND n(2) = 11
     case Z80::SBC_HL_rr_BIO: return IsSM83 ? 11 : 7;
+    // Guarded block copy/fill (expandLdirGuarded / expandMemsetLdirGuarded).
+    // Z80-only (LDIR/LDDR don't exist on SM83; gated by hasZ80()).
+    // LDIR_GUARDED / LDDR_GUARDED: JR Z(2) + LDIR/LDDR(2) + guard head(2) = 6
+    case Z80::LDIR_GUARDED:
+    case Z80::LDDR_GUARDED: return 6;
+    case Z80::MEMSET_LDIR_GUARDED: return 15;
+    // Indexed load/store (opt-in, -z80-idx-addr): DD/FD prefix + opcode + disp = 3
+    case Z80::LOAD_IDX8:
+    case Z80::STORE_IDX8: return 3;
     default: break;
     }
   }
