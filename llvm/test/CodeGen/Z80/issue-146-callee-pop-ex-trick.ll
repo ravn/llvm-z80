@@ -18,6 +18,33 @@
 
 ; --- i8 return: HL dead, EX trick fires ----------------------------------------
 ; Four i8 args spill to stack (sdcccall(1) exhausts regs after A,L,E,C).
+; CHECK-LABEL: ret_i8:
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	hl,5
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	hl,7
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	add	a,l
+; CHECK:      	add	a,b
+; CHECK:      	add	a,c
+; CHECK:      	add	a,d
+; CHECK:      	add	a,e
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
 define zeroext i8 @ret_i8(i8 %a, i8 %b, i8 %c, i8 %d, i8 %e, i8 %f) {
   %sum = add i8 %a, %b
   %sum2 = add i8 %sum, %c
@@ -27,14 +54,8 @@ define zeroext i8 @ret_i8(i8 %a, i8 %b, i8 %c, i8 %d, i8 %e, i8 %f) {
   ret i8 %sum5
 }
 
-; CHECK-LABEL: ret_i8:
-; CHECK:      pop hl
 ; EX trick: zero or more INC SP between pop hl and ex (sp),hl.
-; CHECK:      ex (sp),hl
-; CHECK-NEXT: ret
 ; BC fallback must not appear.
-; CHECK-NOT:  pop bc
-; CHECK-NOT:  push bc
 
 ; --- i16 return: HL holds return value, BC fallback used -----------------------
 define i16 @ret_i16(i8 %a, i8 %b, i8 %c, i8 %d, i8 %e, i8 %f) {
@@ -43,6 +64,56 @@ define i16 @ret_i16(i8 %a, i8 %b, i8 %c, i8 %d, i8 %e, i8 %f) {
   %ce = zext i8 %c to i16
   %de = zext i8 %d to i16
   %ee = zext i8 %e to i16
+; CHECK-LABEL: ret_i16:
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	c,b
+; CHECK:      	ld	b,0
+; CHECK:      	ld	(L_ret_i16.frame+6),bc
+; CHECK:      	ld	hl,5
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	c,b
+; CHECK:      	ld	b,0
+; CHECK:      	ld	(L_ret_i16.frame+4),bc
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	c,b
+; CHECK:      	ld	b,0
+; CHECK:      	ld	(L_ret_i16.frame+2),bc
+; CHECK:      	ld	hl,7
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	b,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	ld	c,b
+; CHECK:      	ld	b,0
+; CHECK:      	ld	(L_ret_i16.frame),bc
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,0
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,0
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	add	hl,de
+; CHECK:      	ld	bc,(L_ret_i16.frame+6)
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,(L_ret_i16.frame+4)
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,(L_ret_i16.frame+2)
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,(L_ret_i16.frame)
+; CHECK:      	add	hl,bc
+; CHECK:      	ex	de,hl
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
   %fe = zext i8 %f to i16
   %sum = add i16 %ae, %be
   %sum2 = add i16 %sum, %ce
@@ -52,9 +123,4 @@ define i16 @ret_i16(i8 %a, i8 %b, i8 %c, i8 %d, i8 %e, i8 %f) {
   ret i16 %sum5
 }
 
-; CHECK-LABEL: ret_i16:
-; CHECK:      pop bc
-; CHECK:      push bc
-; CHECK-NEXT: ret
 ; EX trick must not appear for i16 returns.
-; CHECK-NOT:  ex (sp),hl

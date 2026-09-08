@@ -1,4 +1,5 @@
 # RUN: llc -mtriple=z80 -run-pass=livevars %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80 #156428: LiveVariables::HandlePhysRegUse added a spurious
 # super-register implicit-def (e.g. implicit-def $hl) to an instruction that

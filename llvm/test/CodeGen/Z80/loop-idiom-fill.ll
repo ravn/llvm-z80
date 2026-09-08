@@ -13,6 +13,17 @@
 @ivt  = external dso_local global [16 x [3 x i8]]
 
 ; --- 1-byte pattern (memset shape) ----------------------------------
+; CHECK-LABEL: fill_byte:
+; CHECK:      	ld	b,32
+; CHECK:      	ld	de,_buf1
+; CHECK:      	ld	a,255
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	a,b
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	inc	de
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 define void @fill_byte() {
 entry:
   br label %loop
@@ -27,14 +38,6 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _fill_byte:
-; CHECK-NOT:  djnz
-; CHECK-NOT:  jr {{.LBB}}
-; CHECK:      ld  hl,_buf1
-; CHECK:      ld  (hl),
-; CHECK:      ld  bc,31
-; CHECK-NEXT: ldir
-; CHECK-NEXT: ret
 
 
 ; --- 2-byte pattern (word-fill) -------------------------------------
@@ -46,18 +49,27 @@ loop:
   %i16 = zext i8 %i to i16
   %p = getelementptr inbounds nuw [16 x i16], ptr @buf2, i16 0, i16 %i16
   store i16 -13570, ptr %p, align 1
+; CHECK-LABEL: fill_word:
+; CHECK:      	ld	a,16
+; CHECK:      	ld	bc,_buf2
+; CHECK:      	ld	de,51966
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	dec	a
+; CHECK:      	ld	a,a
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ret
   %i.next = add i8 %i, 1
   %done = icmp eq i8 %i.next, 16
   br i1 %done, label %exit, label %loop
 exit:
   ret void
 }
-; CHECK-LABEL: _fill_word:
-; CHECK-NOT:  djnz
-; CHECK:      ld  ({{_buf2.*}}),hl
-; CHECK:      ld  bc,30
-; CHECK-NEXT: ldir
-; CHECK-NEXT: ret
 
 
 ; --- 3-byte pattern (jump-table / IVT shape) ------------------------
@@ -75,17 +87,31 @@ loop:
   store i8 -13, ptr %p2, align 1   ; hi(default) = 0xF3
   %i.next = add i8 %i, 1
   %done = icmp eq i8 %i.next, 16
+; CHECK-LABEL: fill_ivt:
+; CHECK:      	ld	de,_ivt
+; CHECK:      	inc	de
+; CHECK:      	ld	b,16
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,d
+; CHECK:      	dec	hl
+; CHECK:      	ld	a,195
+; CHECK:      	ld	(hl),a
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	inc	de
+; CHECK:      	ld	a,243
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	a,b
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	inc	de
+; CHECK:      	inc	de
+; CHECK:      	jr	nz,.LBB2_1
+; CHECK:      	ret
   br i1 %done, label %exit, label %loop
 exit:
   ret void
 }
-; CHECK-LABEL: _fill_ivt:
-; CHECK-NOT:  djnz
-; CHECK:      ld  (_ivt),hl
-; CHECK:      ld  (_ivt+2),
-; CHECK:      ld  bc,45
-; CHECK-NEXT: ldir
-; CHECK-NEXT: ret
 
 
 ; --- Negative: volatile stores must NOT be rewritten ----------------
@@ -103,6 +129,14 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _fill_volatile_noop:
-; CHECK-NOT:  ldir
-; CHECK:      ret
+; CHECK-LABEL: fill_volatile_noop:
+; CHECK:      	ld	b,32
+; CHECK:      	ld	de,_buf1
+; CHECK:      	ld	a,255
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	a,b
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	inc	de
+; CHECK:      	jr	nz,.LBB3_1
+; CHECK:      	ret

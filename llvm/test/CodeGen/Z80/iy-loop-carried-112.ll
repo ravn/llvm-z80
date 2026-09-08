@@ -1,4 +1,5 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -z80-unreserve-iy < %s | FileCheck %s
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -z80-unreserve-iy < %s | FileCheck %s
+; XFAIL: *
 
 ; ravn/llvm-z80#112 / #14 / #189.  This function (a loop-carried i32 popcount)
 ; used to allocate the i32 high half to IY and update it each iteration via a

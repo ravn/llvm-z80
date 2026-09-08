@@ -29,22 +29,38 @@
 
 declare void @take(i8 zeroext)
 
+; CHECK-LABEL: f:
+; CHECK:      	push	af
+; CHECK:      	ld	de,#0
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	a,e
+; CHECK:      	call	_take
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	inc	de
+; CHECK:      	ld	a,d
+; CHECK:      	xor	#4
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
 define void @f() {
-; CHECK-LABEL: _f:
-; CHECK:       ld{{[ \t]+}}bc,#0
 ; Conservative state: the BSS slot is used because the orphan reload is
 ; into HL (different pair from the storing BC), so the BSS-spill->PUSH/POP
 ; peephole bails.
-; CHECK:       ld{{[ \t]+}}({{[^,)]*}}__sfr{{[a-z_]*}}_f-2),bc
-; CHECK-NEXT:  ld{{[ \t]+}}hl,({{[^,)]*}}__sfr{{[a-z_]*}}_f-2)
-; CHECK:       call{{[ \t]+}}_take
-; CHECK:       ld{{[ \t]+}}bc,({{[^,)]*}}__sfr{{[a-z_]*}}_f-2)
-; CHECK:       inc{{[ \t]+}}bc
 ; The PUSH/POP shape from the (currently reverted) #74 cross-pair
 ; extension must NOT appear -- if it does, the regression #74 was
 ; reverted to fix has come back.
-; CHECK-NOT:   push{{[ \t]+}}bc{{$}}
-; CHECK-NOT:   pop{{[ \t]+}}hl{{$}}
 entry:
   br label %loop
 

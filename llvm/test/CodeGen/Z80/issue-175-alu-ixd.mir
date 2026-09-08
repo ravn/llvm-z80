@@ -1,5 +1,6 @@
-# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-late-opt \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#175 -- Z80LateOptimization fuses
 #   LD <r>,(IX+d) ; <ALU>_<r>

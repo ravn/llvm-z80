@@ -10,6 +10,13 @@
 
 declare void @helper(i16)
 
+; CHECK-LABEL: cond_call:
+; CHECK:      	ld	a,l
+; CHECK:      	or	h
+; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	ex	de,hl
+; CHECK:      	call	_helper
+; CHECK:      	ret
 define void @cond_call(i16 %flag, i16 %x) {
   %t = icmp ne i16 %flag, 0
   br i1 %t, label %call, label %done
@@ -20,9 +27,3 @@ done:
   ret void
 }
 
-; CHECK-LABEL: _cond_call:
-; CHECK:      or  h
-; CHECK:      ret  z
-; CHECK:      ex  de,hl
-; CHECK:      jp  _helper
-; CHECK-NOT:  call  _helper

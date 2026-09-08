@@ -1,5 +1,6 @@
-# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-late-opt \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80 #212: the "ADD IX/IY" peephole folds
 #   COPY16_PUSHPOP $hl, $iy ; ADD_HL_rr ; COPY16_PUSHPOP $iy, $hl

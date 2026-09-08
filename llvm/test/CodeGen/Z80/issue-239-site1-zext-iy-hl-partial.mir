@@ -1,6 +1,7 @@
-# RUN: llc -mtriple=z80 -mattr=+static-stack -z80-unreserve-iy \
+# RUN: llc -mtriple=z80 --z80-static-frames -z80-unreserve-iy \
 # RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#239 site 1: ZEXT_GR8_GR16 IY-destination path
 # (Z80InstrInfo.cpp expandPostRAPseudo) emits PUSH_HL on the

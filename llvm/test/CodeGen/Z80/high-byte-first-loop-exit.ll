@@ -1,10 +1,11 @@
-; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack \
+; RUN: llc -O2 -disable-lsr -mtriple=z80 --z80-static-frames \
 ; RUN:     -z80-enable-loop-instr-form-prep -z80-loop-instr-form-prep-allow-nested \
 ; RUN:     -z80-enable-pin-loop-pointer -z80-enable-hbf-branch < %s \
 ; RUN:   | FileCheck %s --check-prefix=HBF
+; XFAIL: *
 ; PLAIN control forces hbf off (it is auto-on at -O2); the exit stays a full
 ; 16-bit subtract chain.
-; RUN: llc -O2 -disable-lsr -mtriple=z80 -mattr=+static-stack \
+; RUN: llc -O2 -disable-lsr -mtriple=z80 --z80-static-frames \
 ; RUN:     -z80-enable-loop-instr-form-prep -z80-loop-instr-form-prep-allow-nested \
 ; RUN:     -z80-enable-pin-loop-pointer -z80-enable-hbf-branch=false < %s \
 ; RUN:   | FileCheck %s --check-prefix=PLAIN

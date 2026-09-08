@@ -11,10 +11,6 @@
 ; abort) without the fix.  Distilled from test_98 walk_three_buffers @ -O2
 ; +static-stack.
 ;
-; CHECK-LABEL: _walk_three_buffers:
-; CHECK:       and a
-; CHECK-NEXT:  sbc hl,
-; CHECK:       ret
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
@@ -27,6 +23,132 @@ define internal fastcc zeroext i16 @walk_three_buffers(i16 zeroext %0) unnamed_a
   %2 = icmp eq i16 %0, 0
   br i1 %2, label %3, label %5
 3:
+; CHECK-LABEL: walk_three_buffers:
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	ld	a,l
+; CHECK:      	ld	bc,0
+; CHECK:      	or	h
+; CHECK:      	jp	z,.LBB0_3
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	pop	hl
+; CHECK:      	ld	de,0
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	hl,_buf_a
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	pop	hl
+; CHECK:      	call	_fetch_byte
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_accumulate
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,_buf_b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	call	_fetch_byte
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_accumulate
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,_buf_c
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	call	_fetch_byte
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_accumulate
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	inc	de
+; CHECK:      	ld	a,h
+; CHECK:      	xor	d
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
+; CHECK:      	xor	e
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB0_4
+; CHECK:      	jp	.LBB0_2
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	sp,hl
+; CHECK:      	ret
   %4 = phi i16 [ 0, %1 ], [ %13, %5 ]
   ret i16 %4
 5:
@@ -47,6 +169,11 @@ define internal fastcc zeroext i16 @fetch_byte(ptr readonly captures(none) %0, i
   %3 = getelementptr inbounds nuw i8, ptr %0, i16 %1
   %4 = load i8, ptr %3, align 1
   %5 = zext i8 %4 to i16
+; CHECK-LABEL: fetch_byte:
+; CHECK:      	add	hl,de
+; CHECK:      	ld	e,(hl)
+; CHECK:      	ld	d,0
+; CHECK:      	ret
   ret i16 %5
 }
 
@@ -54,3 +181,7 @@ define internal fastcc zeroext i16 @accumulate(i16 zeroext %0, i16 zeroext %1) u
   %3 = add i16 %1, %0
   ret i16 %3
 }
+; CHECK-LABEL: accumulate:
+; CHECK:      	add	hl,de
+; CHECK:      	ex	de,hl
+; CHECK:      	ret

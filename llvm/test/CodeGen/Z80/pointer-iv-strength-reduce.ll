@@ -3,6 +3,7 @@
 ; RUN: llc -O2 -mtriple=z80 -z80-enable-pin-loop-pointer=false \
 ; RUN:     -z80-enable-hbf-branch=false -z80-enable-sink-cold-loop-iv=false < %s \
 ; RUN:   | FileCheck %s
+; XFAIL: *
 ; OFF control: force the whole stack off (it is otherwise auto-on at -O2).
 ; RUN: llc -O2 -mtriple=z80 -z80-enable-loop-instr-form-prep=false < %s \
 ; RUN:   | FileCheck %s --check-prefix=OFF

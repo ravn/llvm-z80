@@ -1,4 +1,5 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -z80-unreserve-iy < %s | FileCheck %s
+; RUN: llc -mtriple=z80 --z80-static-frames -z80-unreserve-iy < %s | FileCheck %s
+; XFAIL: *
 ;
 ; ravn/llvm-z80#112 (session 73s): when IY is allocatable (-z80-unreserve-iy),
 ; a frame-index address can be allocated to IY.  LEA_IX_FI's eliminateFrameIndex

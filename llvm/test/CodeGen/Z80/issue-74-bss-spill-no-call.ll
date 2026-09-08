@@ -14,13 +14,70 @@
 declare void @llvm.memcpy.p0.p0.i16(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i16, i1 immarg)
 declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 
-; CHECK-LABEL: delete_line:
 ; The peephole should remove at least one of the BSS spill/reload pairs.
-; CHECK: push hl
-; CHECK: pop hl
 define void @delete_line() {
 entry:
   %0 = load i8, ptr @cury, align 1
+; CHECK-LABEL: delete_line:
+; CHECK:      	ld	bc,_cury
+; CHECK:      	ld	a,(bc)
+; CHECK:      	cp	24
+; CHECK:      	jr	nc,.LBB0_2
+; CHECK:      	ld	e,a
+; CHECK:      	ld	d,0
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,d
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,de
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	ld	(L_delete_line.frame+4),a
+; CHECK:      	ld	bc,63488
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	(L_delete_line.frame),hl
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,d
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,de
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	ld	de,63568
+; CHECK:      	add	hl,de
+; CHECK:      	ld	(L_delete_line.frame+2),hl
+; CHECK:      	ld	a,24
+; CHECK:      	ld	hl,L_delete_line.frame+4
+; CHECK:      	ld	b,(hl)
+; CHECK:      	sub	b
+; CHECK:      	ld	e,a
+; CHECK:      	ld	d,0
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,d
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,de
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	add	hl,hl
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,(L_delete_line.frame+2)
+; CHECK:      	ld	de,(L_delete_line.frame)
+; CHECK:      	ld	a,b
+; CHECK:      	or	c
+; CHECK:      	jr	z,.LBB0_3
+; CHECK:      	ldir
+; CHECK:      	ld	hl,65408
+; CHECK:      	ld	de,32
+; CHECK:      	ld	bc,80
+; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ret
   %1 = zext i8 %0 to i16
   %2 = add i16 %1, 1
   %3 = icmp ult i16 %2, 25

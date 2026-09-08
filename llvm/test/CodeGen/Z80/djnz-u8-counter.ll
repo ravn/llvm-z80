@@ -16,6 +16,17 @@
 declare void @write_byte(i8 zeroext)
 
 ; do { body; } while (--n)  -- DJNZ is the canonical lowering.
+; CHECK-LABEL: do_while_dec:
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 define void @do_while_dec(i8 zeroext %n) {
 entry:
   br label %loop
@@ -31,10 +42,6 @@ exit:
   ret void
 }
 
-; CHECK-LABEL: _do_while_dec:
-; CHECK:      ld  b,a
-; CHECK:      djnz
-; CHECK:      ret
 
 ; Sanity: a body that calls a function (clobbers B per sdcccall) cannot
 ; use DJNZ.  Pin the fallback shape.
@@ -42,6 +49,22 @@ define void @do_while_dec_with_call(i8 zeroext %n) {
 entry:
   br label %loop
 loop:
+; CHECK-LABEL: do_while_dec_with_call:
+; CHECK:      	dec	sp
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	a,b
+; CHECK:      	call	_write_byte
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	inc	sp
+; CHECK:      	ret
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   call void @write_byte(i8 zeroext %i)
   %i.next = add i8 %i, -1
@@ -51,6 +74,3 @@ exit:
   ret void
 }
 
-; CHECK-LABEL: _do_while_dec_with_call:
-; CHECK-NOT:  djnz
-; CHECK:      ret

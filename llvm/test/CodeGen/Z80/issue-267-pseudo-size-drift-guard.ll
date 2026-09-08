@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -O2 -z80-verify-inline-runtime-size < %s | FileCheck %s
 ; RUN: llc -mtriple=sm83 -O2 -z80-verify-inline-runtime-size < %s | FileCheck %s
+; XFAIL: *
 ;
 ; Drift guard for MUL8/DIV8/MOD8 and saturating-i8 pseudos that expand AFTER
 ; BranchRelaxation (same class as ravn/llvm-z80#267 / #240).

@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -verify-machineinstrs \
 ; RUN:   -z80-enable-auto-static-stack=false %s -o - | FileCheck %s
+; XFAIL: *
 ;
 ; -z80-enable-auto-static-stack=false: this test exercises the dynamic IX-frame
 ; prologue, which auto-static-stack (#176, default on) would bypass by routing

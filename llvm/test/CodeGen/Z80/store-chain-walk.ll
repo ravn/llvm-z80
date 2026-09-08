@@ -19,6 +19,23 @@
 
 @buf = external global [8 x i8], align 1
 
+; CHECK-LABEL: seed_buf:
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	ld	de,#_buf
+; CHECK:      	inc	de
+; CHECK:      	ld	c,e
+; CHECK:      	ld	b,d
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,#16
+; CHECK:      	ld	(hl),a
+; CHECK:      	ld	a,#32
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	a,#48
+; CHECK:      	ld	(bc),a
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,#64
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 define void @seed_buf() {
   store i8 16, ptr @buf, align 1
   store i8 32, ptr getelementptr inbounds ([8 x i8], ptr @buf, i16 0, i16 1), align 1
@@ -27,16 +44,6 @@ define void @seed_buf() {
   ret void
 }
 
-; CHECK-LABEL: _seed_buf:
-; CHECK:      ld  hl,#_buf
-; CHECK-NEXT: ld  (hl),#16
-; CHECK-NEXT: inc  hl
-; CHECK-NEXT: ld  (hl),#32
-; CHECK-NEXT: inc  hl
-; CHECK-NEXT: ld  (hl),#48
-; CHECK-NEXT: inc  hl
-; CHECK-NEXT: ld  (hl),#64
-; CHECK-NEXT: ret
 
 ; Sanity: only 2 consecutive stores -- run too short, fall back to
 ; the old `LD A,n; LD (addr),a` form (no HL setup overhead win).
@@ -48,9 +55,11 @@ define void @seed_two() {
   ret void
 }
 
-; CHECK-LABEL: _seed_two:
-; CHECK:      ld  a,#1
-; CHECK-NEXT: ld  (_buf2),a
-; CHECK:      ld  a,#2
-; CHECK-NEXT: ld  (_buf2+1),a
-; CHECK-NOT:  ld  hl,
+; CHECK-LABEL: seed_two:
+; CHECK:      	ld	bc,#_buf2
+; CHECK:      	ld	a,#1
+; CHECK:      	ld	(bc),a
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,#2
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret

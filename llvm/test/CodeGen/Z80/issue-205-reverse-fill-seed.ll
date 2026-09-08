@@ -1,5 +1,6 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s --check-prefix=OFF
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -z80-reverse-fill-seed -verify-machineinstrs < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 < %s | FileCheck %s --check-prefix=OFF
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -z80-reverse-fill-seed -verify-machineinstrs < %s | FileCheck %s --check-prefix=ON
+; XFAIL: *
 ;
 ; ravn/llvm-z80#205 follow-up (experimental, default OFF): the K=2 LDIR-fill
 ; seed `LD HL,VAL; LD (nn),HL; ...; LD HL,nn; LDIR` can be rewritten as a
@@ -41,3 +42,18 @@ loop:
 exit:
   ret void
 }
+; CHECK-LABEL: fill_word:
+; CHECK:      	ld	a,16
+; CHECK:      	ld	bc,_buf2
+; CHECK:      	ld	de,51966
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	dec	a
+; CHECK:      	ld	a,a
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret

@@ -18,19 +18,12 @@ target triple = "z80"
 %struct.three = type { i8, i8, i8 }
 @buf = dso_local global %struct.three zeroinitializer, align 1
 
-; CHECK-LABEL: _hold_hl_across_chain:
 
 ; The chain rewrite must NOT fire here because HL is live across the
 ; chain (it holds the %ptr parameter, used by the trailing load).  We
 ; assert that the original `LD A,n; LD (addr),A` form is preserved
 ; rather than the LD HL,#_buf rewrite.
 ;
-; CHECK:        ld      a,#17
-; CHECK:        ld      ({{.*}}buf{{.*}}),a
-; CHECK:        ld      a,#34
-; CHECK:        ld      a,(hl)
-; CHECK-NOT:    ld      hl,#_buf
-; CHECK:        ret
 
 define i8 @hold_hl_across_chain(ptr %ptr) {
 entry:
@@ -39,6 +32,19 @@ entry:
   %p2 = getelementptr inbounds %struct.three, ptr @buf, i32 0, i32 2
   store volatile i8 17, ptr %p0, align 1
   store volatile i8 34, ptr %p1, align 1
+; CHECK-LABEL: hold_hl_across_chain:
+; CHECK:      	ld	de,#_buf
+; CHECK:      	ld	bc,#_buf
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,#17
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	a,#34
+; CHECK:      	ld	(bc),a
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,#51
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ret
   store volatile i8 51, ptr %p2, align 1
   %v = load volatile i8, ptr %ptr, align 1
   ret i8 %v

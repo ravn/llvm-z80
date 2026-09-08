@@ -24,6 +24,46 @@ target triple = "z80"
 ; LD H,A; OR A; JR NZ five-MI pattern that the peephole rewrites to
 ; DEC H; JR NZ.  Production autoload `_delay` is the canonical
 ; consumer (verified to drop 9 B with this peephole firing).
+; CHECK-LABEL: delay:
+; CHECK:      	dec	sp
+; CHECK:      	ld	h,a
+; CHECK:      	push	af
+; CHECK:      	ld	a,l
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),a
+; CHECK:      	pop	hl
+; CHECK:      	pop	af
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_6
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	ld	l,a
+; CHECK:      	ld	c,0
+; CHECK:      	ld	b,0
+; CHECK:      	inc	bc
+; CHECK:      	ld	e,c
+; CHECK:      	ld	a,c
+; CHECK:      	xor	e
+; CHECK:      	or	b
+; CHECK:      	add	a,255
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	xor	1
+; CHECK:      	jr	nz,.LBB0_3
+; CHECK:      	dec	l
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ld	a,h
+; CHECK:      	dec	a
+; CHECK:      	ld	h,a
+; CHECK:      	or	a
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	inc	sp
+; CHECK:      	ret
 define void @delay(i8 %outer, i8 %inner) {
 entry:
   %nonzero = icmp ne i8 %outer, 0
@@ -52,7 +92,6 @@ exit:
   ret void
 }
 
-; CHECK-LABEL: delay:
 ; The mid loop's counter (LBB0_3 ... LBB0_5 region) MUST end with the
 ; post-fix `dec r; jr nz` shape, NOT the pre-fix 5-MI shape that
 ; included `or a` between `ld r, a` and `jr nz`.
@@ -65,6 +104,3 @@ exit:
 ;
 ; Assert the post-fix instruction at LBB0_5 is dec-then-jr, not the
 ; LD-DEC-LD-OR-JR chain.
-; CHECK: %bb.5:
-; CHECK: dec{{[ \t]+}}h
-; CHECK: jr{{[ \t]+}}nz

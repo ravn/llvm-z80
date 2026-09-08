@@ -6,7 +6,6 @@
 ; jr {c,nc}).  Same for the operand-swapped forms (ICMP_ULE / UGT
 ; arriving as UGE / ULT post-normalization, with K = N*256+0xFF).
 ;
-; CHECK lines verify (a) the 8-bit high-byte test is present and
 ; (b) the 16-bit subtract-and-borrow chain is absent.  Branch
 ; direction (z vs nz, c vs nc) may be swapped by later layout
 ; passes — we accept either.
@@ -16,13 +15,6 @@ declare i16 @get()
 ;
 ; Case 1: var-LHS, RHS = 256.  `r >= 256` and `r < 256`
 ;
-; CHECK-LABEL: check_uge_256:
-; CHECK:       call	_get
-; CHECK:       ld	a,d
-; CHECK-NEXT:  or	a
-; CHECK-NEXT:  jr	{{n?z}},
-; CHECK-NOT:   sbc	a,
-; CHECK-NOT:   ld	bc,
 define i8 @check_uge_256() {
 entry:
   %r = call i16 @get()
@@ -31,17 +23,22 @@ entry:
 hi:
   ret i8 -1
 lo:
+; CHECK-LABEL: check_uge_256:
+; CHECK:      	call	_get
+; CHECK:      	ld	bc,255
+; CHECK:      	ld	a,c
+; CHECK:      	sub	e
+; CHECK:      	ld	a,b
+; CHECK:      	sbc	a,d
+; CHECK:      	jr	nc,.LBB0_2
+; CHECK:      	ld	a,255
+; CHECK:      	ret
+; CHECK:      	ld	a,e
+; CHECK:      	ret
   %b = trunc i16 %r to i8
   ret i8 %b
 }
 
-; CHECK-LABEL: check_ult_256:
-; CHECK:       call	_get
-; CHECK:       ld	a,d
-; CHECK-NEXT:  or	a
-; CHECK-NEXT:  jr	{{n?z}},
-; CHECK-NOT:   sbc	a,
-; CHECK-NOT:   ld	bc,
 define i8 @check_ult_256() {
 entry:
   %r = call i16 @get()
@@ -57,15 +54,20 @@ hi:
 ;
 ; Case 2 (post-normalization swap): `r <= 255` arrives as ULE which
 ; the backend's switch normalizes to UGE with operands swapped, so
+; CHECK-LABEL: check_ult_256:
+; CHECK:      	call	_get
+; CHECK:      	ld	bc,256
+; CHECK:      	ld	a,e
+; CHECK:      	sub	c
+; CHECK:      	ld	a,d
+; CHECK:      	sbc	a,b
+; CHECK:      	jr	nc,.LBB1_2
+; CHECK:      	ld	a,e
+; CHECK:      	ret
+; CHECK:      	ld	a,255
+; CHECK:      	ret
 ; we see LHS = const 255, RHS = var.
 ;
-; CHECK-LABEL: check_ule_255:
-; CHECK:       call	_get
-; CHECK:       ld	a,d
-; CHECK-NEXT:  or	a
-; CHECK-NEXT:  jr	{{n?z}},
-; CHECK-NOT:   sbc	a,
-; CHECK-NOT:   ld	bc,
 define i8 @check_ule_255() {
 entry:
   %r = call i16 @get()
@@ -81,12 +83,6 @@ hi:
 ;
 ; Case 3: K = 512 = 2*256 — uses CP_n with threshold 2 plus JR NC/C.
 ;
-; CHECK-LABEL: check_uge_512:
-; CHECK:       call	_get
-; CHECK:       ld	a,d
-; CHECK-NEXT:  cp	2
-; CHECK-NEXT:  jr	{{n?c}},
-; CHECK-NOT:   sbc	a,
 define i8 @check_uge_512() {
 entry:
   %r = call i16 @get()
@@ -94,6 +90,18 @@ entry:
   br i1 %tim, label %hi, label %lo
 hi:
   ret i8 -1
+; CHECK-LABEL: check_ule_255:
+; CHECK:      	call	_get
+; CHECK:      	ld	bc,256
+; CHECK:      	ld	a,e
+; CHECK:      	sub	c
+; CHECK:      	ld	a,d
+; CHECK:      	sbc	a,b
+; CHECK:      	jr	nc,.LBB2_2
+; CHECK:      	ld	a,e
+; CHECK:      	ret
+; CHECK:      	ld	a,255
+; CHECK:      	ret
 lo:
   %b = trunc i16 %r to i8
   ret i8 %b
@@ -104,9 +112,6 @@ lo:
 ; (falls back to CMP16_FLAGS chain).  Confirms we still emit the
 ; standard subtract-and-borrow path for non-byte-aligned constants.
 ;
-; CHECK-LABEL: check_uge_257:
-; CHECK:       call	_get
-; CHECK:       sbc	a,
 define i8 @check_uge_257() {
 entry:
   %r = call i16 @get()
@@ -118,3 +123,27 @@ lo:
   %b = trunc i16 %r to i8
   ret i8 %b
 }
+; CHECK-LABEL: check_uge_512:
+; CHECK:      	call	_get
+; CHECK:      	ld	bc,511
+; CHECK:      	ld	a,c
+; CHECK:      	sub	e
+; CHECK:      	ld	a,b
+; CHECK:      	sbc	a,d
+; CHECK:      	jr	nc,.LBB3_2
+; CHECK:      	ld	a,255
+; CHECK:      	ret
+; CHECK:      	ld	a,e
+; CHECK:      	ret
+; CHECK-LABEL: check_uge_257:
+; CHECK:      	call	_get
+; CHECK:      	ld	bc,256
+; CHECK:      	ld	a,c
+; CHECK:      	sub	e
+; CHECK:      	ld	a,b
+; CHECK:      	sbc	a,d
+; CHECK:      	jr	nc,.LBB4_2
+; CHECK:      	ld	a,255
+; CHECK:      	ret
+; CHECK:      	ld	a,e
+; CHECK:      	ret

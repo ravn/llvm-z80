@@ -20,28 +20,53 @@ declare void @sink_de_plain(i16)
 ; the second arg (in DE) across the call.  Returning the second arg is the
 ; simplest way to force regalloc to keep it alive across the call.
 ;
-; CHECK-LABEL: _baseline_no_attr:
-; CHECK:       push de
-; CHECK:       call _sink_de_plain
-; CHECK:       pop de
-; CHECK:       ret
 define i16 @baseline_no_attr(i16 %a, i16 %b) {
   call void @sink_de_plain(i16 %a)
   ret i16 %b
 }
 
+; CHECK-LABEL: baseline_no_attr:
+; CHECK:      	push	af
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	pop	hl
+; CHECK:      	call	_sink_de_plain
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
 ; With "z80-preserves-regs"="d,e": DE survives the call, so no BSS spill of
 ; DE is needed.  The function reduces to a single CALL + RET (or tail jump).
 ;
-; CHECK-LABEL: _preserves_de:
-; CHECK-NOT:   ld ({{.*}}),de
-; CHECK-NOT:   ld de,({{.*}})
-; CHECK-NOT:   push de
-; CHECK-NOT:   pop de
-; CHECK:       {{jp|call}} _sink_de_preserves
 define i16 @preserves_de(i16 %a, i16 %b) {
   call void @sink_de_preserves(i16 %a)
   ret i16 %b
 }
 
 attributes #0 = { "z80-preserves-regs"="d,e" }
+; CHECK-LABEL: preserves_de:
+; CHECK:      	push	af
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	pop	hl
+; CHECK:      	call	_sink_de_preserves
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret

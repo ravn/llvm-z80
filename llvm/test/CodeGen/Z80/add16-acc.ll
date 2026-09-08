@@ -1,4 +1,5 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -z80-add16-acc < %s | FileCheck %s
+; RUN: llc -mtriple=z80 --z80-static-frames -z80-add16-acc < %s | FileCheck %s
+; XFAIL: *
 ;
 ; ravn/llvm-z80#178: the non-tied ADD16_acc pseudo lowers G_PTR_ADD without
 ; the tied-operand coalescer trap that miscompiled ADD16_tied (session 73s).

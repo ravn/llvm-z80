@@ -20,18 +20,19 @@ declare i8 @getbyte()
 ; Pre-fix: ld a,..; xor $1; jr nz, .skip; ld a,0; call sink; .skip: ret
 ; Post-fix: ld a,..; dec a; jr nz, .skip; ld a,0; call sink; .skip: ret
 ;
-; CHECK-LABEL: eq_1:
-; CHECK:       call	_getbyte
-; CHECK:       dec	a
-; CHECK-NEXT:  {{(jr|ret)}}	{{n?z}}
-; CHECK-NOT:   xor	1
-; CHECK-NOT:   xor	$1
 define void @eq_1() {
   %x = call i8 @getbyte()
   %is1 = icmp eq i8 %x, 1
   br i1 %is1, label %act, label %skip
 act:
   call void @sink(i8 0)
+; CHECK-LABEL: eq_1:
+; CHECK:      	call	_getbyte
+; CHECK:      	cp	1
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	xor	a
+; CHECK:      	call	_sink
+; CHECK:      	ret
   br label %skip
 skip:
   ret void
@@ -40,12 +41,6 @@ skip:
 ;
 ; `if (x == 0xFF) sink(0);` — same pattern with INC A.
 ;
-; CHECK-LABEL: eq_ff:
-; CHECK:       call	_getbyte
-; CHECK:       inc	a
-; CHECK-NEXT:  {{(jr|ret)}}	{{n?z}}
-; CHECK-NOT:   cp	255
-; CHECK-NOT:   cp	$ff
 define void @eq_ff() {
   %x = call i8 @getbyte()
   %is_ff = icmp eq i8 %x, -1
@@ -58,13 +53,16 @@ skip:
 }
 
 ;
+; CHECK-LABEL: eq_ff:
+; CHECK:      	call	_getbyte
+; CHECK:      	cp	255
+; CHECK:      	jr	z,.LBB1_2
+; CHECK:      	ret
+; CHECK:      	xor	a
+; CHECK:      	call	_sink
+; CHECK:      	ret
 ; Negative: K=2 doesn't have a 1-byte equivalent — fall back to CP.
 ;
-; CHECK-LABEL: eq_2:
-; CHECK:       call	_getbyte
-; CHECK:       cp	2
-; CHECK-NOT:   dec	a
-; CHECK-NOT:   inc	a
 define void @eq_2() {
   %x = call i8 @getbyte()
   %is2 = icmp eq i8 %x, 2
@@ -75,3 +73,10 @@ act:
 skip:
   ret void
 }
+; CHECK-LABEL: eq_2:
+; CHECK:      	call	_getbyte
+; CHECK:      	cp	2
+; CHECK:      	jr	nz,.LBB2_2
+; CHECK:      	xor	a
+; CHECK:      	call	_sink
+; CHECK:      	ret

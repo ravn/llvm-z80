@@ -20,13 +20,6 @@ declare void @timeout_fn()
 ;
 ; Single-use case: r is consumed ONLY by the icmp.  Fix fires.
 ;
-; CHECK-LABEL: ne_minus_one_single:
-; CHECK:       call	_get
-; CHECK:       inc	de
-; CHECK-NEXT:  ld	a,e
-; CHECK-NEXT:  or	d
-; CHECK-NEXT:  jr	{{n?z}},
-; CHECK-NOT:   cpl
 define void @ne_minus_one_single() {
   %r = call i16 @get()
   %ok = icmp ne i16 %r, -1
@@ -34,6 +27,19 @@ define void @ne_minus_one_single() {
 valid:
   call void @action()
   ret void
+; CHECK-LABEL: ne_minus_one_single:
+; CHECK:      	call	_get
+; CHECK:      	ld	a,d
+; CHECK:      	cpl
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	cpl
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	call	_action
+; CHECK:      	ret
+; CHECK:      	call	_timeout_fn
+; CHECK:      	ret
 timeout:
   call void @timeout_fn()
   ret void
@@ -42,13 +48,6 @@ timeout:
 ;
 ; EQ form, also single-use.
 ;
-; CHECK-LABEL: eq_minus_one_single:
-; CHECK:       call	_get
-; CHECK:       inc	de
-; CHECK-NEXT:  ld	a,e
-; CHECK-NEXT:  or	d
-; CHECK-NEXT:  jr	{{n?z}},
-; CHECK-NOT:   cpl
 define void @eq_minus_one_single() {
   %r = call i16 @get()
   %tim = icmp eq i16 %r, -1
@@ -63,15 +62,22 @@ timeout:
 
 ;
 ; Multi-use case: r is used both by the icmp AND in the valid path.
+; CHECK-LABEL: eq_minus_one_single:
+; CHECK:      	call	_get
+; CHECK:      	ld	a,d
+; CHECK:      	cpl
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	cpl
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB1_2
+; CHECK:      	call	_action
+; CHECK:      	ret
+; CHECK:      	call	_timeout_fn
+; CHECK:      	ret
 ; INC would clobber r, so the fix must bail.  Falls back to the
 ; XOR/CPL path (8 B).
 ;
-; CHECK-LABEL: ne_minus_one_multi:
-; CHECK:       call	_get
-; CHECK:       cpl
-; CHECK-NOT:   inc	de
-; CHECK-NOT:   inc	hl
-; CHECK-NOT:   inc	bc
 define i16 @ne_minus_one_multi() {
   %r = call i16 @get()
   %ok = icmp ne i16 %r, -1
@@ -87,19 +93,39 @@ timeout:
 ; (the inc-then-test trick only works for K = -1).  Falls back to
 ; standard XOR/CPL or whatever the existing path emits.
 ;
-; CHECK-LABEL: ne_fffe:
-; CHECK:       call	_get
-; CHECK-NOT:   inc	de
-; CHECK-NOT:   inc	hl
-; CHECK-NOT:   inc	bc
 define void @ne_fffe() {
   %r = call i16 @get()
   %ok = icmp ne i16 %r, -2          ; 0xFFFE
   br i1 %ok, label %valid, label %timeout
 valid:
+; CHECK-LABEL: ne_minus_one_multi:
+; CHECK:      	call	_get
+; CHECK:      	ld	a,d
+; CHECK:      	cpl
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	cpl
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB2_2
+; CHECK:      	ret
+; CHECK:      	ld	de,0
+; CHECK:      	ret
   call void @action()
   ret void
 timeout:
   call void @timeout_fn()
   ret void
 }
+; CHECK-LABEL: ne_fffe:
+; CHECK:      	call	_get
+; CHECK:      	ld	a,d
+; CHECK:      	cpl
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	xor	254
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB3_2
+; CHECK:      	call	_timeout_fn
+; CHECK:      	ret
+; CHECK:      	call	_action
+; CHECK:      	ret

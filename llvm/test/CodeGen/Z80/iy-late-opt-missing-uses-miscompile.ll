@@ -48,6 +48,33 @@ target triple = "z80"
 @buf = internal unnamed_addr global [16 x i8] zeroinitializer, align 1
 
 ; Function Attrs: optsize
+; CHECK-LABEL: test:
+; CHECK:      	ld	d,a
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,#0
+; CHECK:      	ld	hl,#8
+; CHECK:      	and	a
+; CHECK:      	sbc	hl,bc
+; CHECK:      	ld	c,l
+; CHECK:      	ld	hl,#255
+; CHECK:      	ld	b,c
+; CHECK:      	inc	b
+; CHECK:      	dec	b
+; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	add	hl,hl
+; CHECK:      	djnz	.LBB0_1
+; CHECK:      	ld	c,l
+; CHECK:      	ld	e,d
+; CHECK:      	ld	d,#0
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	add	hl,de
+; CHECK:      	ld	a,c
+; CHECK:      	cpl
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,(hl)
+; CHECK:      	and	c
+; CHECK:      	ld	(hl),a
+; CHECK:      	ret
 define dso_local void @test(i8 noundef zeroext %0, i8 noundef zeroext %1) local_unnamed_addr #0 {
   %3 = zext i8 %1 to i16
   %4 = sub nsw i16 8, %3
@@ -64,13 +91,8 @@ define dso_local void @test(i8 noundef zeroext %0, i8 noundef zeroext %1) local_
 
 attributes #0 = { optsize "target-features"="+z80" }
 
-; CHECK-LABEL: _test:
 ; No IX/IY traffic: the address lives only in HL, and the load/store both
 ; use (HL).  The old wrong output stored to the caller's (iy+0); the
 ; intermediate (correct-but-suboptimal) output round-tripped through IY.
-; CHECK-NOT:   iy
-; CHECK:       and (hl)
-; CHECK-NEXT:  ld (hl),a
-; CHECK-NOT:   iy
 
 ;

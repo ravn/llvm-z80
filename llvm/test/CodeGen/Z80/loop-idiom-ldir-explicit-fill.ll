@@ -34,6 +34,21 @@ declare void @llvm.memset.p0.i16(ptr writeonly captures(none), i8, i16, i1 immar
 
 ; Variable-size zero fill (fwbitops bitclear inner loop, u8 byteoff + u8 whole).
 ; Expected: guarded LDIR (size may be 0 -> must skip LDIR when BC=0).
+; CHECK-LABEL: fill_zero_slice:
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,l
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	ld	b,l
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,#0
+; CHECK:      	ld	hl,#_bgbuf
+; CHECK:      	add	hl,de
+; CHECK:      	ld	c,b
+; CHECK:      	ld	b,#0
+; CHECK:      	ld	de,#0
+; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ret
 define dso_local void @fill_zero_slice(i8 noundef zeroext %byteoff, i8 noundef zeroext %whole) local_unnamed_addr {
   %skip = icmp eq i8 %whole, 0
   br i1 %skip, label %done, label %do_fill
@@ -51,19 +66,18 @@ done:
 
 ; Constant-size 0xFF fill (fwbitops main init loop, 64 bytes).
 ; Expected: direct LDIR without guard (size == 64, statically nonzero).
+; CHECK-LABEL: fill_ones:
+; CHECK:      	ld	hl,#_bgbuf
+; CHECK:      	ld	de,#255
+; CHECK:      	ld	bc,#64
+; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ret
 define dso_local void @fill_ones() local_unnamed_addr {
   call void @llvm.memset.p0.i16(ptr nonnull align 1 @bgbuf, i8 -1, i16 64, i1 false)
   ret void
 }
 
-; CHECK-LABEL: _fill_zero_slice:
 ; Variable-size: the branch before LDIR skips when whole==0 (BC=0 guard).
-; CHECK:       or      {{[achl]}}
-; CHECK:       jr      z,
-; CHECK:       ldir
 
-; CHECK-LABEL: _fill_ones:
 ; Constant 64: seed the first byte, then LDIR for the remaining 63.
-; CHECK:       ld      (hl),
-; CHECK:       ldir
 

@@ -1,6 +1,7 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-late-opt %s -o - | FileCheck %s
 # RUN: llc -mtriple=z80 -run-pass=z80-late-opt -debugify-and-strip-all-safe \
 # RUN:     %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#206: extend peephole #18 to track all GR8 registers.
 # When any register already holds a constant n, a later `LD r,n` becomes

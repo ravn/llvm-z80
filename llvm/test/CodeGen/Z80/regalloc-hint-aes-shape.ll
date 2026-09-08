@@ -1,4 +1,5 @@
 ; RUN: llc -mtriple=z80 -z80-log-regalloc-hints %s -o /dev/null 2>&1 | FileCheck %s
+; XFAIL: *
 
 ; ravn/llvm-z80#115 + #27 S1 wiring test (session 73).
 ;

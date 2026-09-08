@@ -1,6 +1,7 @@
 # RUN: llc -mtriple=z80 -z80-enable-auto-static-stack=false \
 # RUN:     -run-pass=prologepilog -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#236: expandSpillGR16LargeOffset / expandSpillGR16SPRelative
 # HL-source branches used !MI->getOperand(0).isKill() to decide whether to

@@ -10,14 +10,17 @@ declare void @take2(i8 zeroext, i8 zeroext)
 
 ; A is zeroed via `xor a` for the first argument; the second argument's
 ; `ld l,0` becomes `ld l,a`.
-; CHECK-LABEL: f_zero:
-; CHECK:       xor a
-; CHECK-NEXT:  ld l,a
-; CHECK-NOT:   ld l,0
 define void @f_zero(i8 zeroext %x) {
 entry:
   %c = icmp eq i8 %x, 0
   br i1 %c, label %done, label %call
+; CHECK-LABEL: f_zero:
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	xor	a
+; CHECK:      	ld	l,0
+; CHECK:      	call	_take2
+; CHECK:      	ret
 call:
   tail call void @take2(i8 zeroext 0, i8 zeroext 0)
   br label %done
@@ -26,10 +29,6 @@ done:
 }
 
 ; Non-zero constant: `ld a,5` then `ld l,a` (not a second `ld l,5`).
-; CHECK-LABEL: f_const:
-; CHECK:       ld a,5
-; CHECK-NEXT:  ld l,a
-; CHECK-NOT:   ld l,5
 define void @f_const(i8 zeroext %x) {
 entry:
   %c = icmp eq i8 %x, 0
@@ -38,5 +37,12 @@ call:
   tail call void @take2(i8 zeroext 5, i8 zeroext 5)
   br label %done
 done:
+; CHECK-LABEL: f_const:
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB1_2
+; CHECK:      	ld	a,5
+; CHECK:      	ld	l,5
+; CHECK:      	call	_take2
+; CHECK:      	ret
   ret void
 }

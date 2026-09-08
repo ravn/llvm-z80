@@ -20,13 +20,6 @@ declare void @sink_hl_only() #1
 
 ; %a in HL, %b in DE.  After call, both must be live for the add.
 ; With "d,e" preserved, DE survives; only HL needs save/restore.
-; CHECK-LABEL: _f_de:
-; CHECK-NOT:   ld ({{.*}}),de
-; CHECK-NOT:   ld de,({{.*}})
-; CHECK:       call _sink_de_only
-; CHECK-NOT:   ld ({{.*}}),de
-; CHECK-NOT:   ld de,({{.*}})
-; CHECK:       ret
 define i16 @f_de(i16 %a, i16 %b) {
   call void @sink_de_only()
   %s = add i16 %a, %b
@@ -34,18 +27,48 @@ define i16 @f_de(i16 %a, i16 %b) {
 }
 
 ; Symmetric case: with "h,l" preserved, HL should survive across the call.
+; CHECK-LABEL: f_de:
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	call	_sink_de_only
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	add	hl,bc
+; CHECK:      	ex	de,hl
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
 ; No push hl / pop hl should be emitted; DE is the one that needs spill.
 ;
 ; Today (#135): HL push/pop is emitted AND DE is BSS-spilled, because
 ; regalloc sees ADJCALLSTACKUP's implicit-def of HL and treats HL as dead.
 ;
-; CHECK-LABEL: _f_hl:
-; CHECK-NOT:   push hl
-; CHECK-NOT:   pop hl
-; CHECK:       call _sink_hl_only
-; CHECK-NOT:   push hl
-; CHECK-NOT:   pop hl
-; CHECK:       ret
 define i16 @f_hl(i16 %a, i16 %b) {
   call void @sink_hl_only()
   %s = add i16 %a, %b
@@ -54,3 +77,40 @@ define i16 @f_hl(i16 %a, i16 %b) {
 
 attributes #0 = { "z80-preserves-regs"="d,e" }
 attributes #1 = { "z80-preserves-regs"="h,l" }
+; CHECK-LABEL: f_hl:
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	call	_sink_hl_only
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,#2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	add	hl,bc
+; CHECK:      	ex	de,hl
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret

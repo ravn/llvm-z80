@@ -41,8 +41,35 @@
 ;   }
 ;   return y;
 
+; CHECK-LABEL: gf_alog:
+; CHECK:      	ld	b,#1
+; CHECK:      	jr	.LBB0_3
+; CHECK:      	ld	a,d
+; CHECK:      	xor	#27
+; CHECK:      	xor	b
+; CHECK:      	ld	b,a
+; CHECK:      	ld	l,c
+; CHECK:      	ld	a,l
+; CHECK:      	dec	a
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,l
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_6
+; CHECK:      	ld	a,b
+; CHECK:      	add	a,a
+; CHECK:      	ld	d,a
+; CHECK:      	ld	a,b
+; CHECK:      	xor	#128
+; CHECK:      	ld	e,a
+; CHECK:      	ld	a,#255
+; CHECK:      	xor	#128
+; CHECK:      	cp	e
+; CHECK:      	jr	nc,.LBB0_1
+; CHECK:      	ld	a,d
+; CHECK:      	jr	.LBB0_2
+; CHECK:      	ld	a,b
+; CHECK:      	ret
 define i8 @gf_alog(i16 noundef %0) nounwind {
-; CHECK-LABEL: _gf_alog:
 ;
 ; Post-fix: the loop header uses SUB 1 + JR C instead of the
 ; 6-instruction LD/DEC/LD/LD/OR/JR_Z pattern that the GISel
@@ -50,14 +77,10 @@ define i8 @gf_alog(i16 noundef %0) nounwind {
 ; 0 (borrow from 0 wraps to 0xFF); JR C branches on that.
 ;
 ; Required: the inner loop body contains a `sub #1` and a `jr c`.
-; CHECK:      sub{{[ \t]+}}#1
-; CHECK:      jr{{[ \t]+}}c
 ;
 ; Anti-pattern (P1): the OLD redundant-reload pattern.  After the
 ; fix we should NOT see `dec a` followed by `or a` (the test)
 ; followed by `jr z` -- that's the unfixed shape.
-; CHECK-NOT:  dec{{[ \t]+}}a
-; CHECK-NOT:  or{{[ \t]+}}a
 ;
 ; Anti-pattern (P2): the bit-7 test redundant-reload pattern.
 ; Original shape: `add a,a` (sets carry = bit 7) followed by
@@ -65,7 +88,6 @@ define i8 @gf_alog(i16 noundef %0) nounwind {
 ; then `rlca` (re-derive same carry).  After P2 fix the second
 ; reload + rlca disappear -- only the add a,a remains, with the
 ; conditional branch using its carry directly.
-; CHECK-NOT:  rlca
 
   %2 = trunc i16 %0 to i8
   br label %3

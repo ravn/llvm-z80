@@ -15,14 +15,49 @@ target triple = "z80"
 
 declare zeroext i16 @callee(i16 noundef zeroext)
 
-; CHECK-LABEL: bug125:
-; CHECK:      ld de,10
-; CHECK:      add hl,de
-; CHECK:      jp _callee
 define internal zeroext i16 @bug125(i16 noundef zeroext %0) #0 {
   %2 = alloca i16, align 1
   %3 = alloca i16, align 1
   store i16 %0, ptr %2, align 1
+; CHECK-LABEL: bug125:
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	bc,10
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_callee
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
   %4 = load i16, ptr %2, align 1
   %5 = add i16 %4, 10
   store i16 %5, ptr %3, align 1

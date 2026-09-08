@@ -23,6 +23,57 @@
 ; The store-back below MUST reach v's frame slot before the back-edge reloads
 ; it (the conversion to PUSH/POP must be refused for this loop-carried slot).
 
+; CHECK-LABEL: f:
+; CHECK:      	push	af
+; CHECK:      	dec	sp
+; CHECK:      	ld	hl,1
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),0
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),1
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	de,0
+; CHECK:      	jp	.LBB0_1
+; CHECK:      	ld	hl,1
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	srl	b
+; CHECK:      	rr	c
+; CHECK:      	ld	hl,1
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	inc	a
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),a
+; CHECK:      	jp	.LBB0_2
+; CHECK:      	ld	hl,1
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	a,e
+; CHECK:      	sub	c
+; CHECK:      	ld	a,d
+; CHECK:      	sbc	a,b
+; CHECK:      	jp	c,.LBB0_1
+; CHECK:      	jp	.LBB0_3
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
 define i8 @f() {
 entry:
   %v = alloca i16
@@ -50,9 +101,6 @@ end:
   ret i8 %r
 }
 
-; CHECK-LABEL: _f:
 ; The 16-bit right shift of v:
-; CHECK: srl
 ; ...and its result must be stored back to v's static-stack frame slot before
 ; the loop re-reads it (this store is the one currently missing):
-; CHECK: ld ({{(__sframe_f|__sfrend_f)[-+0-9]*}}),de

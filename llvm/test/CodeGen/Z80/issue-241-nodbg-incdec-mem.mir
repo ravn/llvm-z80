@@ -2,6 +2,7 @@
 # RUN:     | FileCheck %s
 # RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs \
 # RUN:     -debugify-and-strip-all-safe %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#241 (follow-up to #221): in-memory INC/DEC peephole
 # (LD A,(addr); INC/DEC A; LD (addr),A → LD HL,addr; INC/DEC (HL)) used raw

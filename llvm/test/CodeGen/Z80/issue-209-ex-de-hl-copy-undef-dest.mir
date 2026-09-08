@@ -26,7 +26,7 @@ body:             |
     liveins: $hl
     ; $de is not live-in: its old value is a don't-care.
     ; CHECK-LABEL: name: copy_hl_to_de
-    ; CHECK: EX_DE_HL implicit-def $de, implicit-def $hl, implicit undef $de, implicit $hl
+    ; CHECK: EX_DE_HL implicit-def $de, implicit-def dead $hl, implicit undef $de, implicit $hl
     renamable $de = COPY killed renamable $hl
     RET implicit $de
 ...
@@ -38,7 +38,7 @@ body:             |
     liveins: $de
     ; $hl is not live-in: its old value is a don't-care.
     ; CHECK-LABEL: name: copy_de_to_hl
-    ; CHECK: EX_DE_HL implicit-def $de, implicit-def $hl, implicit $de, implicit undef $hl
+    ; CHECK: EX_DE_HL implicit-def dead $de, implicit-def $hl, implicit $de, implicit undef $hl
     renamable $hl = COPY killed renamable $de
     RET implicit $hl
 ...

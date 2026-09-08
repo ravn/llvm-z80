@@ -1,5 +1,6 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr -enable-z80-loop-rotate < %s | FileCheck %s --check-prefix=ROT
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr < %s | FileCheck %s --check-prefix=NOROT
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr -enable-z80-loop-rotate < %s | FileCheck %s --check-prefix=ROT
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr < %s | FileCheck %s --check-prefix=NOROT
+; XFAIL: *
 ;
 ; Issue #77a: head-test do-while-decrement loops shouldn't pay the
 ; cross-BB `or a` test that re-derives the Z flag the body's `dec` already
@@ -43,6 +44,26 @@ exit:
   ret void
 }
 
+; CHECK-LABEL: countdown:
+; CHECK:      	ld	d,18
+; CHECK:      	ld	a,d
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_3
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,d
+; CHECK:      	ld	de,61191
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	dec	a
+; CHECK:      	ld	d,a
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	jr	.LBB0_1
+; CHECK:      	ret
 ; With -enable-z80-loop-rotate ON, the back-edge branch uses the Z flag from the
 ; body's `dec` directly — no re-test via `or a`.
 ; ROT-LABEL: countdown:

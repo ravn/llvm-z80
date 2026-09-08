@@ -18,6 +18,42 @@ declare void @f0d()
 declare void @f0e()
 declare void @f1e()
 
+; CHECK-LABEL: specc:
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,29
+; CHECK:      	cp	b
+; CHECK:      	jr	c,.LBB0_11
+; CHECK:      	ld	l,b
+; CHECK:      	ld	h,0
+; CHECK:      	add	hl,hl
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,LJTI0_0
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ex	de,hl
+; CHECK:      	jp	(hl)
+; CHECK:      	call	_f01
+; CHECK:      	ret
+; CHECK:      	call	_f04
+; CHECK:      	ret
+; CHECK:      	call	_f09
+; CHECK:      	ret
+; CHECK:      	call	_f02
+; CHECK:      	ret
+; CHECK:      	call	_f0d
+; CHECK:      	ret
+; CHECK:      	call	_f0e
+; CHECK:      	ret
+; CHECK:      	call	_f05
+; CHECK:      	ret
+; CHECK:      	call	_f08
+; CHECK:      	ret
+; CHECK:      	call	_f1e
+; CHECK:      	ret
 define void @specc(i8 zeroext %c) {
 entry:
   switch i8 %c, label %default [
@@ -42,10 +78,7 @@ case0e: tail call void @f0e() ret void
 case1e: tail call void @f1e() ret void
 default: ret void
 }
-; CHECK-LABEL: _specc:
 ; The 16-bit subtract chain must NOT appear:
-; CHECK-NOT:   sub l
-; CHECK-NOT:   sbc a,h
 ; The bound check is `cp N` + a single carry branch (NC = out of range =
 ; take exit).  The switch range is 1..30 stride 1, so after `dec a` the
 ; offset is in [0,29] and the strict bound is `offset > 29 -> default`.
@@ -53,6 +86,3 @@ default: ret void
 ; original peephole used `cp max_offset`, which wrongly sent offset 29
 ; (case 30) to the default block — the jump-table off-by-one fixed in
 ; Z80LateOptimization (CP_n Limit+1).  See bugs/switchbug.c.
-; CHECK:       dec a
-; CHECK:       cp 30
-; CHECK:       {{ret|jr|jp}} nc

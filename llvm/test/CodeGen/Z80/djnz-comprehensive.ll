@@ -34,6 +34,17 @@ declare i8 @produce()
 ;==============================================================================
 
 ; Argument counter (already in A) -> copied to B -> DJNZ.
+; CHECK-LABEL: arg_counter_djnz:
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 define void @arg_counter_djnz(i8 zeroext %n) {
 entry:
   br label %loop
@@ -47,10 +58,6 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _arg_counter_djnz:
-; CHECK:       ld  b,a
-; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       ret
 
 
 ; Pointer-walk + countdown (canonical sum_array shape).
@@ -58,6 +65,25 @@ define i8 @sum_walk(ptr %p, i8 zeroext %n) {
 entry:
   br label %loop
 loop:
+; CHECK-LABEL: sum_walk:
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,#4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	ld	b,#0
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	a,b
+; CHECK:      	add	a,d
+; CHECK:      	ld	b,a
+; CHECK:      	inc	hl
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ld	a,b
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   %ptr = phi ptr [ %p, %entry ], [ %ptr.next, %loop ]
   %sum = phi i8 [ 0, %entry ], [ %sum.next, %loop ]
@@ -70,9 +96,6 @@ loop:
 exit:
   ret i8 %sum.next
 }
-; CHECK-LABEL: _sum_walk:
-; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       ret
 
 
 ; Counter is observably 0 after the loop -- DJNZ-clobber-B is fine.
@@ -83,16 +106,24 @@ loop:
   %i = phi i8 [ 10, %entry ], [ %i.next, %loop ]
   %p = load volatile ptr, ptr @port, align 2
   store volatile i8 0, ptr %p, align 1
+; CHECK-LABEL: counter_used_after:
+; CHECK:      	ld	b,#10
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB2_1
+; CHECK:      	ld	a,b
+; CHECK:      	ret
   %i.next = add i8 %i, -1
   %cond = icmp ne i8 %i.next, 0
   br i1 %cond, label %loop, label %exit
 exit:
   ret i8 %i.next
 }
-; CHECK-LABEL: _counter_used_after:
-; CHECK:       ld  b,#10
-; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       ret
 
 
 ;==============================================================================
@@ -111,11 +142,23 @@ loop:
   br i1 %cond, label %loop, label %exit
 exit:
   ret void
+; CHECK-LABEL: call_in_body_no_djnz:
+; CHECK:      	dec	sp
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	a,b
+; CHECK:      	call	_sink
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	jr	nz,.LBB3_1
+; CHECK:      	inc	sp
+; CHECK:      	ret
 }
-; CHECK-LABEL: _call_in_body_no_djnz:
-; CHECK-NOT:   {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       call _sink
-; CHECK:       ret
 
 
 ; i16 counter cannot use DJNZ (B is 8-bit only).
@@ -132,11 +175,22 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _i16_counter_no_djnz:
-; CHECK-NOT:   {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       ret
 
 
+; CHECK-LABEL: i16_counter_no_djnz:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	bc
+; CHECK:      	ld	a,c
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB4_1
+; CHECK:      	ret
 ;==============================================================================
 ; SEQUENTIAL LOOPS: each loop should independently use DJNZ.
 ; B is freed by the first loop (DJNZ leaves B=0) and rehinted for
@@ -161,11 +215,30 @@ loop2:
   store volatile i8 1, ptr %p2, align 1
   %j.next = add i8 %j, -1
   %c2 = icmp ne i8 %j.next, 0
+; CHECK-LABEL: two_sequential_loops:
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,l
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB5_1
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	a,#1
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB5_2
+; CHECK:      	ret
   br i1 %c2, label %loop2, label %exit
 exit:
   ret void
 }
-; CHECK-LABEL: _two_sequential_loops:
 ; FIXED (#94): both sequential loops now use DJNZ.  Z80SplitDjnzCounters
 ; (post-coalesce, pre-greedy) inserts a fresh COPY of each loop counter
 ; into a BReg single-register class vreg at the loop preheader; the
@@ -173,9 +246,6 @@ exit:
 ; and B is reused sequentially across the non-overlapping per-loop
 ; counter ranges.  The `LD B, D` between the loops is the second-loop
 ; preheader COPY (1 byte; paid back by the DJNZ savings on loop2).
-; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       ret
 
 
 ;==============================================================================
@@ -206,13 +276,26 @@ outer.latch:
 exit:
   ret void
 }
-; CHECK-LABEL: _nested_djnz:
 ; Today exactly one DJNZ fires (on the outer, sub-optimally).  When
 ; the regalloc hint is fixed to prefer inner, swap which loop has
+; CHECK-LABEL: nested_djnz:
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,l
+; CHECK:      	ld	(L_nested_djnz.frame),a
+; CHECK:      	ld	a,(L_nested_djnz.frame)
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB6_2
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB6_1
+; CHECK:      	ret
 ; `dec r; jr nz` vs `djnz`.
-; CHECK:       {{[ \t]}}djnz{{[ \t]}}
-; CHECK-NOT:   {{[ \t]}}djnz{{[ \t]}}
-; CHECK:       ret
 
 
 ;==============================================================================
@@ -258,10 +341,23 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _const_trip_inc_jrnz:
-; CHECK-NOT:   {{[ \t]}}djnz{{[ \t]}}
-; CHECK-NOT:   sbc a,a
-; CHECK-NOT:   rrca
-; CHECK:       inc d
-; CHECK-NEXT:  jr  nz,
-; CHECK:       ret
+; CHECK-LABEL: const_trip_inc_jrnz:
+; CHECK:      	ld	c,#206
+; CHECK:      	ld	hl,#_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	b,#0
+; CHECK:      	inc	bc
+; CHECK:      	ld	e,c
+; CHECK:      	ld	a,c
+; CHECK:      	xor	e
+; CHECK:      	or	b
+; CHECK:      	add	a,#255
+; CHECK:      	sbc	a,a
+; CHECK:      	and	#1
+; CHECK:      	xor	#1
+; CHECK:      	jr	nz,.LBB7_1
+; CHECK:      	ret

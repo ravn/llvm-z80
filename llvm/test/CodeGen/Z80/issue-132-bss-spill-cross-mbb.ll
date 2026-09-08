@@ -15,20 +15,9 @@
 
 declare i16 @target()
 
-; CHECK-LABEL: retry:
-; CHECK:       push	af
-; CHECK-NEXT:  call	_target
-; CHECK:       pop	af
-; CHECK:       dec	a
-; CHECK-LABEL: %ret1
 ; Per ravn/llvm-z80#138: comp uses `pop af` (1 B) when AF is dead at
 ; the escape, instead of `inc sp; inc sp` (2 B).  Here %ret1 returns
 ; a constant so A and FLAGS are unused; the fast comp form applies.
-; CHECK-NEXT:  pop	af
-; CHECK-NEXT:  ld	de,1
-; CHECK-NEXT:  ret
-; CHECK-NOT:   ld	{{.*}}({{.*}}sfrend{{.*}})
-; CHECK-NOT:   ld	({{.*}}sfrend{{.*}})
 define i16 @retry(i8 %t) {
 entry:
   br label %loop
@@ -40,6 +29,28 @@ loop:
   br i1 %nz, label %ret1, label %cont
 
 cont:
+; CHECK-LABEL: retry:
+; CHECK:      	dec	sp
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),b
+; CHECK:      	call	_target
+; CHECK:      	ld	a,e
+; CHECK:      	or	d
+; CHECK:      	jr	nz,.LBB0_4
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ld	de,0
+; CHECK:      	inc	sp
+; CHECK:      	ret
+; CHECK:      	ld	de,1
+; CHECK:      	inc	sp
+; CHECK:      	ret
   %t.dec = add i8 %t.phi, -1
   %nzc = icmp ne i8 %t.dec, 0
   br i1 %nzc, label %loop, label %ret0

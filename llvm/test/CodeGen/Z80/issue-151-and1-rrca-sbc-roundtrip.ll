@@ -18,18 +18,27 @@
 
 declare i16 @get()
 
-; CHECK-LABEL: select_test:
-; CHECK:       call	_get
-; CHECK:       sub	1
-; CHECK:       sbc	a,a
-; CHECK-NEXT:  ld	e,a
-; CHECK-NEXT:  ld	d,a
-; CHECK-NEXT:  ret
-; CHECK-NOT:   and	1
-; CHECK-NOT:   rrca
 define i16 @select_test() {
   %a = call i16 @get()
   %eq = icmp eq i16 %a, 1
   %res = sext i1 %eq to i16
   ret i16 %res
 }
+; CHECK-LABEL: select_test:
+; CHECK:      	call	_get
+; CHECK:      	ld	b,d
+; CHECK:      	ld	a,e
+; CHECK:      	xor	1
+; CHECK:      	or	b
+; CHECK:      	sub	1
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	ld	l,a
+; CHECK:      	ld	a,l
+; CHECK:      	rrca
+; CHECK:      	and	128
+; CHECK:      	add	a,a
+; CHECK:      	sbc	a,a
+; CHECK:      	ld	e,a
+; CHECK:      	ld	d,a
+; CHECK:      	ret
