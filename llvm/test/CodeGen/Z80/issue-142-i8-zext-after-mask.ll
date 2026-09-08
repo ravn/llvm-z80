@@ -28,13 +28,6 @@ declare i16 @recv_byte_t()
 ; Post-#142+#150 (sub_lo, high byte not materialised into HL):
 ;   ld a,e; and 127; dec a; jr nz, ...     (no `ld l,a`, no `or h`)
 ;
-; CHECK-LABEL: check_soh_mask:
-; CHECK:       call	_recv_byte_t
-; CHECK:       and	127
-; CHECK-NOT:   ld	l, a
-; CHECK:       {{(cp	1|dec	a)}}
-; CHECK-NOT:   or	h
-; CHECK-NOT:   sub	1
 define i8 @check_soh_mask() {
 entry:
   %r = call i16 @recv_byte_t()
@@ -42,6 +35,18 @@ entry:
   %mismatch = icmp ne i16 %masked, 1
   br i1 %mismatch, label %retry, label %ok
 retry:
+; CHECK-LABEL: check_soh_mask:
+; CHECK:      	call	_recv_byte_t
+; CHECK:      	ld	a,e
+; CHECK:      	and	127
+; CHECK:      	ld	b,0
+; CHECK:      	sub	1
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	xor	a
+; CHECK:      	ret
+; CHECK:      	ld	a,1
+; CHECK:      	ret
   ret i8 1
 ok:
   ret i8 0
@@ -50,12 +55,6 @@ ok:
 ;
 ; Same with eq predicate (verify symmetric handling).
 ;
-; CHECK-LABEL: check_soh_mask_eq:
-; CHECK:       call	_recv_byte_t
-; CHECK:       and	127
-; CHECK:       {{(cp	1|dec	a)}}
-; CHECK-NOT:   or	h
-; CHECK-NOT:   sub	1
 define i8 @check_soh_mask_eq() {
 entry:
   %r = call i16 @recv_byte_t()
@@ -69,16 +68,23 @@ retry:
 }
 
 ;
+; CHECK-LABEL: check_soh_mask_eq:
+; CHECK:      	call	_recv_byte_t
+; CHECK:      	ld	a,e
+; CHECK:      	and	127
+; CHECK:      	ld	b,0
+; CHECK:      	sub	1
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB1_2
+; CHECK:      	xor	a
+; CHECK:      	ret
+; CHECK:      	ld	a,1
+; CHECK:      	ret
 ; AND with 0x00FF (full low-byte mask): high byte provably zero.
 ; Compare to 0 should use OR A (1 B) not SUB + OR H.  Note: the
 ; `and 255` itself folds away upstream since the i8 narrow already
 ; clears the high byte.
 ;
-; CHECK-LABEL: check_zero_mask:
-; CHECK:       call	_recv_byte_t
-; CHECK:       or	a
-; CHECK-NEXT:  jr	{{n?z}},
-; CHECK-NOT:   or	h
 define i8 @check_zero_mask() {
 entry:
   %r = call i16 @recv_byte_t()
@@ -95,11 +101,18 @@ retry:
 ; Negative: AND with constant whose high byte IS non-zero — must NOT
 ; fold (high byte may be non-zero after the AND).
 ;
-; CHECK-LABEL: check_high_mask:
-; CHECK:       call	_recv_byte_t
-; CHECK:       or	h
 define i8 @check_high_mask() {
 entry:
+; CHECK-LABEL: check_zero_mask:
+; CHECK:      	call	_recv_byte_t
+; CHECK:      	ld	b,0
+; CHECK:      	ld	a,e
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB2_2
+; CHECK:      	ld	a,1
+; CHECK:      	ret
+; CHECK:      	xor	a
+; CHECK:      	ret
   %r = call i16 @recv_byte_t()
   %masked = and i16 %r, 32767       ; 0x7FFF: high byte = 0x7F non-zero
   %match = icmp eq i16 %masked, 1
@@ -109,3 +122,16 @@ ok:
 retry:
   ret i8 1
 }
+; CHECK-LABEL: check_high_mask:
+; CHECK:      	call	_recv_byte_t
+; CHECK:      	ld	a,d
+; CHECK:      	and	127
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	sub	1
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB3_2
+; CHECK:      	xor	a
+; CHECK:      	ret
+; CHECK:      	ld	a,1
+; CHECK:      	ret

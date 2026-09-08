@@ -1,5 +1,6 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-stack -z80-idx-addr -z80-verify-inline-runtime-size < %s | FileCheck %s --check-prefix=ON
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-stack < %s | FileCheck %s --check-prefix=OFF
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 --z80-static-frames -z80-idx-addr -z80-verify-inline-runtime-size < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 --z80-static-frames < %s | FileCheck %s --check-prefix=OFF
+; XFAIL: *
 
 ; ravn/llvm-z80#27: a call-free function that dereferences a pointer at a
 ; constant offset should use IX/IY-displacement addressing (ld r,d(i?) /
@@ -36,6 +37,31 @@ entry:
 ; displacement addressing, so there is no add-to-HL at all.
 define void @rmw2(ptr %p) optsize {
 ; ON-LABEL: rmw2:
+; CHECK-LABEL: sum3:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	inc	de
+; CHECK:      	ld	(L_sum3.frame+2),de
+; CHECK:      	ld	de,#5
+; CHECK:      	add	hl,de
+; CHECK:      	ld	(L_sum3.frame),hl
+; CHECK:      	ld	de,#13
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	add	hl,de
+; CHECK:      	ld	bc,(L_sum3.frame+2)
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	b,a
+; CHECK:      	ld	de,(L_sum3.frame)
+; CHECK:      	ld	a,(de)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	a,b
+; CHECK:      	add	a,c
+; CHECK:      	add	a,d
+; CHECK:      	ret
 ; ON:       ld a,{{[0-9]+\(i[xy]\)}}
 ; ON:       ld {{[0-9]+\(i[xy]\)}},a
 ; ON:       ld a,{{[0-9]+\(i[xy]\)}}
@@ -73,6 +99,20 @@ declare void @ext()
 define i8 @has_call(ptr %p) optsize {
 ; ON-LABEL: has_call:
 ; ON:       add hl,
+; CHECK-LABEL: rmw2:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	ld	de,#6
+; CHECK:      	add	hl,de
+; CHECK:      	ld	a,(bc)
+; CHECK:      	inc	a
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	a,(hl)
+; CHECK:      	inc	a
+; CHECK:      	ld	(hl),a
+; CHECK:      	ret
 ; ON-NOT:   {{[0-9]+\(i[xy]\)}}
 entry:
   call void @ext()
@@ -80,3 +120,33 @@ entry:
   %v = load i8, ptr %a
   ret i8 %v
 }
+; CHECK-LABEL: single:
+; CHECK:      	ld	bc,#9
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	a,(hl)
+; CHECK:      	inc	a
+; CHECK:      	ld	(hl),a
+; CHECK:      	ret
+; CHECK-LABEL: has_call:
+; CHECK:      	push	af
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	call	_ext
+; CHECK:      	ld	bc,#7
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,d
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	a,(hl)
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret

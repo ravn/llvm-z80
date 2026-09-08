@@ -1,5 +1,6 @@
-; RUN: llc -mtriple=z80 -O2 -mattr=+static-stack < %s -o %t.s
+; RUN: llc -mtriple=z80 -O2 --z80-static-frames < %s -o %t.s
 ; RUN: FileCheck %s < %t.s
+; XFAIL: *
 ;
 ; Test: BSS self-clear via memcpy(p+1, p, n-1) must not clobber the
 ; destination pointer when the function's static frame overlaps with

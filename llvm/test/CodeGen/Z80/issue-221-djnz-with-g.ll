@@ -43,26 +43,35 @@
 ; update this test -- but until then the second djnz is intentional
 ; failure: if it appears, something has rewired the regalloc unexpectedly.
 
-; CHECK-LABEL: triple_nest:
 ; LLVM emits the SSA block name (e.g. `%inner_hdr`) as a trailing comment
 ; on the label line; use that to anchor the innermost-loop label even
 ; though it isn't the first .LBB label in the function.
-; CHECK: [[INNER:\.LBB[0-9_]+]]:{{[ \t]*}}; %inner_hdr
-; CHECK: djnz [[INNER]]
 ; Exactly one djnz today (only one reg can be B at a time).  If a future
 ; two-DJNZ-via-PUSH/POP optimisation lands, update this CHECK-NOT.
-; CHECK-NOT: djnz
 ; The optimal lowering for outer / mid loops is `dec r; jr nz`, not the
 ; 5-instruction round-trip `ld a,r; dec a; ld r,a; or a; jr nz` that the
 ; #221 peephole removes.  Verify by absence of the round-trip's signature
 ; `ld a,<gr8>` followed end-of-line (the leftover load before djnz appears
 ; only on the inner loop and gets rewritten by later passes).
-; CHECK-NOT: {{ld a,[bcdehl]$}}
 define void @triple_nest(i8 zeroext %outer, i8 zeroext %mid_init) {
 entry:
   %t = icmp eq i8 %outer, 0
   br i1 %t, label %exit, label %outer_hdr
 
+; CHECK-LABEL: triple_nest:
+; CHECK:      	ld	b,a
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_7
+; CHECK:      	ld	c,l
+; CHECK:      	ld	d,0
+; CHECK:      	dec	d
+; CHECK:      	jr	nz,.LBB0_4
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB0_3
+; CHECK:      	ld	a,b
+; CHECK:      	dec	a
+; CHECK:      	jr	.LBB0_1
+; CHECK:      	ret
 outer_hdr:
   %o = phi i8 [ %outer, %entry ], [ %o.next, %outer_latch ]
   br label %mid_hdr
@@ -94,8 +103,6 @@ exit:
 
 ; ---- simple DEC B; JR NZ → DJNZ (counter pre-allocated to B) ----------------
 
-; CHECK-LABEL: simple_dec_b:
-; CHECK: djnz
 define void @simple_dec_b(i8 zeroext %n) {
 entry:
   br label %loop
@@ -103,6 +110,11 @@ loop:
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   call void asm sideeffect "", "{b}"(i8 %i)
   %i.next = add i8 %i, -1
+; CHECK-LABEL: simple_dec_b:
+; CHECK:      	ld	b,a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ret
   %cond = icmp ne i8 %i.next, 0
   br i1 %cond, label %loop, label %exit
 exit:

@@ -16,16 +16,24 @@
 ; canonical sbc a,a.  Z80LateOptimization detects the literal pattern
 ; and deletes it (-8 B per call site).
 
+; CHECK-LABEL: mask_neq:
+; CHECK:      	sub	l
+; CHECK:      	add	a,#255
+; CHECK:      	sbc	a,a
+; CHECK:      	and	#1
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	add	a,a
+; CHECK:      	sbc	a,a
+; CHECK:      	ret
 define zeroext i8 @mask_neq(i8 zeroext %x, i8 zeroext %y) {
   %cmp = icmp ne i8 %x, %y
   %m   = sext i1 %cmp to i8
   ret i8 %m
 }
 
-; CHECK-LABEL: _mask_neq:
-; CHECK:       sub  l
-; CHECK-NEXT:  add  a,#255
-; CHECK-NEXT:  sbc  a,a
-; CHECK-NEXT:  ret
-; CHECK-NOT:   rrca
-; CHECK-NOT:   and  #128

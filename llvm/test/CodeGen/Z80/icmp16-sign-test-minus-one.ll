@@ -16,24 +16,46 @@
 ; x >= 0  (sgt x, -1 after canonicalisation): sign test via ADD A,A, no 16-bit SBC.
 ; (Branch sense c/nc is a block-layout choice; the invariant is "sign test, not
 ;  a full LD HL,0xFFFF; SBC HL,rr compare".)
-; CHECK-LABEL: _sge_zero:
-; CHECK:       add a,a
-; CHECK-NEXT:  jr {{n?}}c,
-; CHECK-NOT:   sbc hl,
 define dso_local i16 @sge_zero(i16 %x) {
   %c = icmp sgt i16 %x, -1
   br i1 %c, label %t, label %f
 t:
+; CHECK-LABEL: sge_zero:
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	bc,65535
+; CHECK:      	ld	a,b
+; CHECK:      	xor	d
+; CHECK:      	rlca
+; CHECK:      	sbc	a,a
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,65535
+; CHECK:      	and	a
+; CHECK:      	sbc	hl,de
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,b
+; CHECK:      	cpl
+; CHECK:      	and	c
+; CHECK:      	ld	c,a
+; CHECK:      	ld	de,65535
+; CHECK:      	ld	a,d
+; CHECK:      	rlca
+; CHECK:      	and	1
+; CHECK:      	and	b
+; CHECK:      	or	c
+; CHECK:      	xor	1
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ld	de,100
+; CHECK:      	ret
+; CHECK:      	ld	de,200
+; CHECK:      	ret
   ret i16 100
 f:
   ret i16 200
 }
 
 ; x < 0  (sle x, -1 after canonicalisation): sign test via ADD A,A, no 16-bit SBC.
-; CHECK-LABEL: _slt_zero:
-; CHECK:       add a,a
-; CHECK-NEXT:  jr {{n?}}c,
-; CHECK-NOT:   sbc hl,
 define dso_local i16 @slt_zero(i16 %x) {
   %c = icmp sle i16 %x, -1
   br i1 %c, label %t, label %f
@@ -42,13 +64,17 @@ t:
 f:
   ret i16 200
 }
+; CHECK-LABEL: slt_zero:
+; CHECK:      	ld	a,h
+; CHECK:      	add	a,a
+; CHECK:      	jr	c,.LBB1_2
+; CHECK:      	ld	de,200
+; CHECK:      	ret
+; CHECK:      	ld	de,100
+; CHECK:      	ret
 
 ; Full CRC-16 byte step: the natural `if (crc & 0x8000)` idiom.  The inner
 ; sign test must be ADD A,A (no 16-bit SBC), and the poly XOR uses immediates.
-; CHECK-LABEL: _crc16_byte:
-; CHECK:       add hl,hl
-; CHECK-NOT:   sbc hl,
-; CHECK:       add a,a
 define dso_local i16 @crc16_byte(i16 %crc, i8 zeroext %b) {
   %b16  = zext i8 %b to i16
   %init = xor i16 %crc, %b16
@@ -61,6 +87,63 @@ loop:
   br i1 %neg, label %noxor, label %doxor
 doxor:
   %x = xor i16 %sh, 4129
+; CHECK-LABEL: crc16_byte:
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	a,e
+; CHECK:      	xor	b
+; CHECK:      	ld	e,a
+; CHECK:      	ld	b,8
+; CHECK:      	jr	.LBB2_3
+; CHECK:      	ld	bc,(L_crc16_byte.frame+1)
+; CHECK:      	ld	a,c
+; CHECK:      	xor	33
+; CHECK:      	ld	e,a
+; CHECK:      	ld	a,b
+; CHECK:      	xor	16
+; CHECK:      	ld	d,a
+; CHECK:      	ld	a,(L_crc16_byte.frame)
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	jr	z,.LBB2_5
+; CHECK:      	ld	a,b
+; CHECK:      	ld	(L_crc16_byte.frame),a
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,d
+; CHECK:      	add	hl,hl
+; CHECK:      	ld	(L_crc16_byte.frame+1),hl
+; CHECK:      	ld	c,e
+; CHECK:      	ld	b,d
+; CHECK:      	ld	de,65535
+; CHECK:      	ld	a,d
+; CHECK:      	xor	b
+; CHECK:      	rlca
+; CHECK:      	sbc	a,a
+; CHECK:      	ld	e,a
+; CHECK:      	ld	hl,65535
+; CHECK:      	and	a
+; CHECK:      	sbc	hl,bc
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	cpl
+; CHECK:      	and	b
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,d
+; CHECK:      	rlca
+; CHECK:      	and	1
+; CHECK:      	and	e
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB2_1
+; CHECK:      	ld	de,(L_crc16_byte.frame+1)
+; CHECK:      	jr	.LBB2_2
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
   br label %cont
 noxor:
   br label %cont

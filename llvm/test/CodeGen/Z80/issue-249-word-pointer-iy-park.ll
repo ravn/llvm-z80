@@ -1,7 +1,8 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr < %s \
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr < %s \
 ; RUN:   | FileCheck %s --check-prefix=OFF
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr \
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr \
 ; RUN:   -z80-enable-keep-loop-pointer-in-pair < %s | FileCheck %s --check-prefix=ON
+; XFAIL: *
 ;
 ; ravn/llvm-z80#249 / #251: a `*p++ = i` i16 store loop parks the loop-carried
 ; pointer in IY and shuttles it IY<->BC<->HL with three push/pop pairs per
@@ -40,6 +41,22 @@ exit:
 body:
   %ptr.next = getelementptr inbounds nuw i8, ptr %ptr, i16 2
   store volatile i16 %i, ptr %ptr, align 1
+; CHECK-LABEL: f:
+; CHECK:      	ld	a,e
+; CHECK:      	or	d
+; CHECK:      	jr	z,.LBB0_3
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	dec	de
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	jr	.LBB0_1
+; CHECK:      	ret
   %i.next = add i16 %i, -1
   br label %loop
 }

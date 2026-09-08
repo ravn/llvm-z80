@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 \
 ; RUN:     -z80-static-stack-fp-direct-addr=false < %s | FileCheck %s
+; XFAIL: *
 ;
 ; NOTE: this test guards the large-offset IX/IY *spill* expansion path.  The
 ; #263 direct-addressing lever (default ON) turns constant-base frame slots

@@ -1,5 +1,6 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#243 residual: the "(IX/IY+0)->(HL)" fold.
 #

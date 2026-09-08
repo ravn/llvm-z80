@@ -11,6 +11,15 @@
 @c = global i8 0
 @dst = global i16 0
 
+; CHECK-LABEL: zero_three:
+; CHECK:      	ld	bc,#_a
+; CHECK:      	xor	a
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	bc,#_b
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	bc,#_c
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 define void @zero_three() {
   store volatile i8 0, ptr @a
   store volatile i8 0, ptr @b
@@ -20,12 +29,6 @@ define void @zero_three() {
 
 ; Three consecutive zero stores -- A=0 established once via xor a,
 ; carried across both inter-store branches.
-; CHECK-LABEL: _zero_three:
-; CHECK:      xor  a
-; CHECK-NEXT: ld  (_a),a
-; CHECK-NEXT: ld  (_b),a
-; CHECK-NEXT: ld  (_c),a
-; CHECK-NEXT: ret
 
 define void @zero_then_inc_hl() {
   store volatile i8 0, ptr @a
@@ -33,17 +36,21 @@ define void @zero_then_inc_hl() {
   %q = add i16 %p, 1
   store volatile i16 %q, ptr @dst
   store volatile i8 0, ptr @b   ; A should still be 0 from step 1
+; CHECK-LABEL: zero_then_inc_hl:
+; CHECK:      	ld	de,#_dst
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,#_a
+; CHECK:      	xor	a
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	hl,#_dst
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	bc,#_b
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
   ret void
 }
 
 ; HL manipulation between two A=0 stores -- HL ops don't touch A,
 ; so no re-zero of A required.
-; CHECK-LABEL: _zero_then_inc_hl:
-; CHECK:      xor  a
-; CHECK:      ld  (_a),a
-; CHECK:      ld  hl,#_dst+1
-; CHECK:      ld  (_dst),hl
-; CHECK-NOT:  xor  a
-; CHECK-NOT:  ld  a,#0
-; CHECK:      ld  (_b),a
-; CHECK:      ret

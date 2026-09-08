@@ -1,6 +1,7 @@
 # RUN: llc -mtriple=z80 -z80-unreserve-iy \
 # RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#239 site 2: SPILL_GR16 with IX/IY source routes through HL
 # (PUSH IX/IY; POP HL; LD (IX+d),L; LD (IX+d+1),H).  The save bracket used

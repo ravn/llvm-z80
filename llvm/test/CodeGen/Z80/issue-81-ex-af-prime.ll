@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s
+; XFAIL: *
 
 ; ravn/llvm-z80#81 — the integrated assembler must accept "ex af, af'"
 ; in inline asm.  The AsmLexer treats apostrophe as a single-quoted

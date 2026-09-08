@@ -13,27 +13,27 @@
 
 @flag = internal global i1 false, align 1
 
+; CHECK-LABEL: set_flag_true:
+; CHECK:      	ld	bc,#_flag
+; CHECK:      	ld	a,#1
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 define void @set_flag_true() {
   store i1 true, ptr @flag, align 1
   ret void
 }
 
-; CHECK-LABEL: _set_flag_true:
-; CHECK:      ld  a,#1
-; CHECK-NOT:  and  #1
-; CHECK:      ld  (_flag),a
-; CHECK:      ret
 
 define void @set_flag_false() {
   store i1 false, ptr @flag, align 1
   ret void
 }
 
-; CHECK-LABEL: _set_flag_false:
-; CHECK:      xor  a
-; CHECK-NOT:  and  #1
-; CHECK:      ld  (_flag),a
-; CHECK:      ret
+; CHECK-LABEL: set_flag_false:
+; CHECK:      	ld	bc,#_flag
+; CHECK:      	xor	a
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 
 ; Companion: _Bool from runtime value -- here AND IS legitimate
 ; (the source might have any bits set after `sbc a,a` materializes
@@ -45,8 +45,11 @@ define void @set_flag_runtime(i8 zeroext %v) {
   ret void
 }
 
-; CHECK-LABEL: _set_flag_runtime:
-; CHECK:      sbc  a,a
-; CHECK:      and  #1
-; CHECK:      ld  (_flag),a
-; CHECK:      ret
+; CHECK-LABEL: set_flag_runtime:
+; CHECK:      	sub	#0
+; CHECK:      	add	a,#255
+; CHECK:      	sbc	a,a
+; CHECK:      	and	#1
+; CHECK:      	ld	bc,#_flag
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret

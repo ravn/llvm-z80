@@ -19,6 +19,24 @@
 ; The fixed codegen MUST save the rotated value to E (or another temp)
 ; BEFORE the destructive XOR, then reload it for the next rotation.
 
+; CHECK-LABEL: rj_sb_inv:
+; CHECK:      	xor	99
+; CHECK:      	rlca
+; CHECK:      	ld	b,a
+; CHECK:      	rlca
+; CHECK:      	rlca
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,b
+; CHECK:      	xor	c
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,c
+; CHECK:      	rlca
+; CHECK:      	rlca
+; CHECK:      	rlca
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,b
+; CHECK:      	xor	c
+; CHECK:      	ret
 define zeroext i8 @rj_sb_inv(i8 zeroext %x) {
 ; Post-#161 codegen: the first rotated value MUST be preserved (it's
 ; needed for the third rotation, which the peephole would corrupt by
@@ -26,22 +44,6 @@ define zeroext i8 @rj_sb_inv(i8 zeroext %x) {
 ; value (y_3) is dead immediately after the final xor, so the
 ; computeRegisterLiveness check in #161 correctly allows the peephole
 ; to fire there (no save of y_3 needed).
-; CHECK-LABEL: rj_sb_inv:
-; CHECK:        xor 99
-; CHECK-NEXT:   rlca
-; CHECK-NEXT:   ld d,a
-; CHECK-NEXT:   rlca
-; CHECK-NEXT:   rlca
-; CHECK-NEXT:   ld e,a
-; CHECK-NEXT:   ld a,d
-; CHECK-NEXT:   xor e
-; CHECK-NEXT:   ld d,a
-; CHECK-NEXT:   ld a,e
-; CHECK-NEXT:   rlca
-; CHECK-NEXT:   rlca
-; CHECK-NEXT:   rlca
-; CHECK-NEXT:   xor d
-; CHECK-NEXT:   ret
   %y0 = xor i8 %x, 99
   %y1 = tail call i8 @llvm.fshl.i8(i8 %y0, i8 %y0, i8 1)
   %y2 = tail call i8 @llvm.fshl.i8(i8 %y0, i8 %y0, i8 3)

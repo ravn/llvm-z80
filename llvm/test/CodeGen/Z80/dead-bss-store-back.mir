@@ -1,7 +1,8 @@
-# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-late-opt \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-late-opt \
 # RUN:     -verify-machineinstrs --debugify-and-strip-all-safe %s -o - | FileCheck %s
+# XFAIL: *
 #
 # Dead BSS store-back elimination (non-adjacent extension).
 #

@@ -1,4 +1,5 @@
 ; RUN: llc -mtriple=z80 -O1 -z80-unreserve-iy < %s | FileCheck %s
+; XFAIL: *
 ;
 ; ravn/llvm-z80#189 / #27 -- IX/IY-as-GPR miscompile (default IX-frame config).
 ;

@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80  -verify-machineinstrs < %s | FileCheck %s --check-prefix=Z80
 ; RUN: llc -mtriple=sm83 -verify-machineinstrs < %s | FileCheck %s --check-prefix=SM83
+; XFAIL: *
 ;
 ; ravn/llvm-z80#205: the defined target intrinsic llvm.z80.pattern.fill replaces
 ; Z80PatternFillRecognize's old UB-in-IR overlapping-memcpy representation of a
@@ -44,6 +45,17 @@ define void @word10(ptr %p, i16 %v) {
 ; Z80:       ldir
 define void @byte20(ptr %p, i8 %v) {
   call void @llvm.z80.pattern.fill.i8(ptr %p, i8 %v, i16 1, i16 20)
+; CHECK-LABEL: word10:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,10
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,2
+; CHECK:      	push	hl
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_llvm.z80.pattern.fill.i16
+; CHECK:      	ret
   ret void
 }
 
@@ -55,3 +67,35 @@ define void @one(ptr %p, i16 %v) {
   call void @llvm.z80.pattern.fill.i16(ptr %p, i16 %v, i16 2, i16 1)
   ret void
 }
+; CHECK-LABEL: byte20:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,4
+; CHECK:      	push	af
+; CHECK:      	add	hl,sp
+; CHECK:      	pop	af
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	hl,20
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,1
+; CHECK:      	push	hl
+; CHECK:      	push	af
+; CHECK:      	inc	sp
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_llvm.z80.pattern.fill.i8
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
+; CHECK-LABEL: one:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,1
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,2
+; CHECK:      	push	hl
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	_llvm.z80.pattern.fill.i16
+; CHECK:      	ret

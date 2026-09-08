@@ -20,7 +20,6 @@
 ; line then.  The .LBB labels below reflect llc at filing time; if they renumber
 ; when the bug is fixed, refresh them.
 ;
-; XFAIL: *
 ;
 ; CHECK-LABEL: sf_fix:
 ; CHECK-NOT: jr nc,.LBB0_15

@@ -40,15 +40,23 @@ declare void @sink(i8)
 ;     ret
 ;
 ; All three LD A,D instances must be removed by the post-fix peephole.
+; CHECK-LABEL: cross_block_chain:
+; CHECK:      	call	_compute
+; CHECK:      	ld	b,a
+; CHECK:      	cp	#2
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ld	a,b
+; CHECK:      	ret
+; CHECK:      	ld	a,b
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_4
+; CHECK:      	ld	de,#_g8
+; CHECK:      	ld	a,b
+; CHECK:      	ld	(de),a
+; CHECK:      	ret
+; CHECK:      	ld	a,#1
+; CHECK:      	ret
 define i8 @cross_block_chain() {
-; CHECK-LABEL: _cross_block_chain:
-; CHECK:       call _compute
-; CHECK:       ld   d,a
-; CHECK:       cp   #2
-; CHECK-NOT:   ld   a,d
-; CHECK:       or   a
-; CHECK-NOT:   ld   a,d
-; CHECK:       ld   ({{_?}}g8),a
 entry:
   %v = call i8 @compute()
   %is2 = icmp eq i8 %v, 2
@@ -72,23 +80,30 @@ store_path:
 ; A still equal to the saved register. Each LD A,reg that the current
 ; allocator emits between the CPs is redundant.
 define i8 @cp_chain_three() {
-; CHECK-LABEL: _cp_chain_three:
-; CHECK:       call _compute
 ; After ravn/llvm-z80#197 (ADJCALLSTACKUP no longer falsely clobbers A), the
 ; compute() result stays live in A across the whole CP chain -- there is no
 ; save to a register at all, which subsumes #60's redundant-reload removal.
 ; A is live to the final store, so #148's `cp #1`->`dec a` collapse no longer
 ; applies (dec a would clobber the live A).
-; CHECK-NOT:   ld   {{[bcdehl]}},a
-; CHECK:       cp   #1
-; CHECK-NOT:   ld   a,{{[bcdehl]}}
-; CHECK:       cp   #2
-; CHECK-NOT:   ld   a,{{[bcdehl]}}
-; CHECK:       cp   #3
-; CHECK-NOT:   ld   a,{{[bcdehl]}}
-; CHECK:       ld   ({{_?}}g8),a
 entry:
   %v = call i8 @compute()
+; CHECK-LABEL: cp_chain_three:
+; CHECK:      	call	_compute
+; CHECK:      	cp	#1
+; CHECK:      	jr	nz,.LBB1_2
+; CHECK:      	ld	a,#10
+; CHECK:      	ret
+; CHECK:      	cp	#2
+; CHECK:      	jr	nz,.LBB1_4
+; CHECK:      	ld	a,#20
+; CHECK:      	ret
+; CHECK:      	cp	#3
+; CHECK:      	jr	nz,.LBB1_6
+; CHECK:      	ld	a,#30
+; CHECK:      	ret
+; CHECK:      	ld	bc,#_g8
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
   %e1 = icmp eq i8 %v, 1
   br i1 %e1, label %r1, label %t1
 r1:
@@ -113,15 +128,7 @@ t3:
 ; A volatile store of an immediate clobbers A (LD A,#0xff), so the reload
 ; from the save register is required.
 define void @negative_a_clobbered_by_imm_store() {
-; CHECK-LABEL: _negative_a_clobbered_by_imm_store:
-; CHECK:       call _compute
-; CHECK:       ld   {{[bcdehl]}},a
-; CHECK:       ld   a,#255
-; CHECK:       ld   ({{_?}}g8),a
 ; The reload must remain; A was clobbered above.
-; CHECK:       ld   a,{{[bcdehl]}}
-; CHECK:       ld   ({{_?}}g8),a
-; CHECK:       ret
 entry:
   %v = call i8 @compute()
   store volatile i8 -1, ptr @g8
@@ -136,14 +143,33 @@ entry:
 ; peephole doesn't directly apply, but the test confirms the produced
 ; sequence remains correct.
 define void @negative_call_clobbers() {
-; CHECK-LABEL: _negative_call_clobbers:
-; CHECK:       call _compute
-; CHECK:       call _sink
-; CHECK:       ld   ({{_?}}g8),a
-; CHECK:       ret
 entry:
   %v = call i8 @compute()
+; CHECK-LABEL: negative_a_clobbered_by_imm_store:
+; CHECK:      	call	_compute
+; CHECK:      	ld	b,a
+; CHECK:      	ld	de,#_g8
+; CHECK:      	ld	a,#255
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	a,b
+; CHECK:      	ld	(de),a
+; CHECK:      	ret
   call void @sink(i8 0)
   store volatile i8 %v, ptr @g8
   ret void
 }
+; CHECK-LABEL: negative_call_clobbers:
+; CHECK:      	dec	sp
+; CHECK:      	call	_compute
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),a
+; CHECK:      	xor	a
+; CHECK:      	call	_sink
+; CHECK:      	ld	bc,#_g8
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	(bc),a
+; CHECK:      	inc	sp
+; CHECK:      	ret

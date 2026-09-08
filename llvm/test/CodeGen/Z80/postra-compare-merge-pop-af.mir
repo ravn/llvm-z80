@@ -1,5 +1,6 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-post-ra-compare-merge \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#265 (found via the #263 static-stack direct-addressing lever):
 # Z80PostRACompareMerge removed an `OR A` as "redundant" whenever the

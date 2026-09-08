@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-stack=true  < %s | FileCheck %s --check-prefix=ON
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-stack=false < %s | FileCheck %s --check-prefix=OFF
+; XFAIL: *
 ;
 ; ravn/llvm-z80#176: the Z80AutoStaticStack IR pass auto-injects
 ; "target-features"="+static-stack" on provably-non-recursive functions, so

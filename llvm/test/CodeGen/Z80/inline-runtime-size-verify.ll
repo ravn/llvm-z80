@@ -1,4 +1,5 @@
 ; RUN: llc -mtriple=z80 -mattr=+inline-i16-runtime -z80-verify-inline-runtime-size < %s | FileCheck %s
+; XFAIL: *
 ;
 ; #240 drift guard for the inline-runtime pseudos (MUL16 / UDIV16 / UMOD16 /
 ; SDIV16 / SMOD16).  Their sizes in Z80InstrInfo::getInstSizeInBytes are

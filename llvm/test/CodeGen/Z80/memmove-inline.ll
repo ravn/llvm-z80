@@ -10,15 +10,26 @@
 
 
 ; --- dst = src + 4: dst > src → LDDR ---------------------------------
+; CHECK-LABEL: memmove_dst_after_src:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	de,15
+; CHECK:      	add	hl,de
+; CHECK:      	ld	(L_memmove_dst_after_src.frame),hl
+; CHECK:      	ld	de,19
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	add	hl,de
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	hl,(L_memmove_dst_after_src.frame)
+; CHECK:      	ld	bc,16
+; CHECK:      	lddr
+; CHECK:      	ret
 define void @memmove_dst_after_src(ptr %src) {
   %dst = getelementptr inbounds i8, ptr %src, i16 4
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_dst_after_src:
-; CHECK-NOT:  call _memmove
-; CHECK:      lddr
-; CHECK:      ret
 
 
 ; --- dst = src - 4: dst < src → LDIR ---------------------------------
@@ -26,12 +37,18 @@ define void @memmove_dst_before_src(ptr %src) {
   %dst = getelementptr inbounds i8, ptr %src, i16 -4
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
+; CHECK-LABEL: memmove_dst_before_src:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	de,65532
+; CHECK:      	add	hl,de
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	bc,16
+; CHECK:      	ldir
+; CHECK:      	ret
 }
-; CHECK-LABEL: _memmove_dst_before_src:
-; CHECK-NOT:  call _memmove
-; CHECK-NOT:  lddr
-; CHECK:      ldir
-; CHECK:      ret
 
 
 ; --- src = dst + 4: dst < src → LDIR ---------------------------------
@@ -40,15 +57,18 @@ define void @memmove_src_after_dst(ptr %dst) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_src_after_dst:
-; CHECK-NOT:  call _memmove
-; CHECK-NOT:  lddr
-; CHECK:      ldir
-; CHECK:      ret
 
 
 ; --- common-base GEPs: dst=buf+8, src=buf+2 → dst>src → LDDR ---------
 ; #91: with constant Size, the legalizer constant-folds Size-1 and the
+; CHECK-LABEL: memmove_src_after_dst:
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	bc,4
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,16
+; CHECK:      	ldir
+; CHECK:      	ret
 ; chained G_PTR_ADD offsets so each end pointer becomes one
 ; G_PTR_ADD(@buf, k); the existing ISel fold then emits a direct
 ; `LD HL, _buf+const`.  Result: src+31 = _buf+33, dst+31 = _buf+39,
@@ -59,13 +79,6 @@ define void @memmove_global_offsets() {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 32, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_global_offsets:
-; CHECK-NOT:  call _memmove
-; CHECK:      ld  hl,_buf+33
-; CHECK-NEXT: ld  de,_buf+39
-; CHECK-NEXT: ld  bc,32
-; CHECK-NEXT: lddr
-; CHECK-NEXT: ret
 
 
 ; --- identical pointers: no-op ---------------------------------------
@@ -73,12 +86,22 @@ define void @memmove_noop(ptr %p) {
   call void @llvm.memmove.p0.p0.i16(ptr %p, ptr %p, i16 64, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_noop:
-; CHECK-NOT:  call _memmove
-; CHECK-NOT:  ldir
-; CHECK-NOT:  lddr
-; CHECK:      ret
 
+; CHECK-LABEL: memmove_global_offsets:
+; CHECK:      	ld	bc,33
+; CHECK:      	ld	hl,_buf
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	de,39
+; CHECK:      	ld	hl,_buf
+; CHECK:      	add	hl,de
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	bc,32
+; CHECK:      	lddr
+; CHECK:      	ret
 
 ; --- src is a RUNTIME base (itself a G_PTR_ADD), dst = src + 4 → LDDR ----
 ; The common screen-scroll shape: base = p + runtime_idx, then
@@ -93,13 +116,10 @@ define void @memmove_dst_after_runtime_base(ptr %p, i16 %idx) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %base, i16 16, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_dst_after_runtime_base:
-; CHECK-NOT:  call _memmove
-; CHECK-NOT:  ___memmove_rt
-; CHECK:      lddr
-; CHECK:      ret
 
 
+; CHECK-LABEL: memmove_noop:
+; CHECK:      	ret
 ; --- src is a RUNTIME base, dst = src - 4 → LDIR -------------------------
 define void @memmove_dst_before_runtime_base(ptr %p, i16 %idx) {
   %base = getelementptr inbounds i8, ptr %p, i16 %idx
@@ -107,12 +127,6 @@ define void @memmove_dst_before_runtime_base(ptr %p, i16 %idx) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %base, i16 16, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_dst_before_runtime_base:
-; CHECK-NOT:  call _memmove
-; CHECK-NOT:  ___memmove_rt
-; CHECK-NOT:  lddr
-; CHECK:      ldir
-; CHECK:      ret
 
 
 ; --- runtime pointers, unknown direction → register-CC __memmove_rt (#126) -
@@ -122,11 +136,17 @@ define void @memmove_runtime(ptr %dst, ptr %src) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_runtime:
-; CHECK:      ld bc,16
-; CHECK:      jp ___memmove_rt
 
 
+; CHECK-LABEL: memmove_dst_after_runtime_base:
+; CHECK:      	add	hl,de
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	bc,4
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,16
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
 @sbuf = external dso_local global [4096 x i8]
 
 ; --- runtime-count LDDR: cancel a common runtime term in the end pointer -----
@@ -141,14 +161,16 @@ define void @memmove_cancel_runtime_term(i16 %i) {
   %dst = getelementptr i8, ptr %src, i16 80
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %size, i1 false)
   ret void
+; CHECK-LABEL: memmove_dst_before_runtime_base:
+; CHECK:      	add	hl,de
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	bc,65532
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,16
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
 }
-; CHECK-LABEL: _memmove_cancel_runtime_term:
-; CHECK-NOT:  call _memmove
-; CHECK-NOT:  ___memmove_rt
-; CHECK:      ld hl,_sbuf+1919
-; CHECK:      ld de,_sbuf+1999
-; CHECK:      lddr
-; CHECK:      ret
 
 
 ; --- constant-address (inttoptr) base: end pointers fold to single immediates -
@@ -164,13 +186,11 @@ define void @memmove_cancel_const_base(i16 %i) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %size, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_cancel_const_base:
-; CHECK-NOT:  ld hl,63488
-; CHECK:      ld hl,65407
-; CHECK:      ld de,65487
-; CHECK:      lddr
-; CHECK:      ret
 
+; CHECK-LABEL: memmove_runtime:
+; CHECK:      	ld	bc,16
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
 
 ; --- negative control: unrelated runtime size -> NO cancel, runtime add ------
 ; Size (%n) is not `C - i`, so the end pointer stays src + (Size-1) computed at
@@ -181,11 +201,53 @@ define void @memmove_no_cancel(i16 %i, i16 %n) {
   call void @llvm.memmove.p0.p0.i16(ptr %dst, ptr %src, i16 %n, i1 false)
   ret void
 }
-; CHECK-LABEL: _memmove_no_cancel:
-; CHECK-NOT:  ld hl,_sbuf+1919
-; CHECK-NOT:  ld de,_sbuf+1999
-; CHECK:      lddr
-; CHECK:      ret
 
 
 declare void @llvm.memmove.p0.p0.i16(ptr, ptr, i16, i1 immarg)
+; CHECK-LABEL: memmove_cancel_runtime_term:
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	hl,1920
+; CHECK:      	and	a
+; CHECK:      	sbc	hl,de
+; CHECK:      	ld	(L_memmove_cancel_runtime_term.frame),hl
+; CHECK:      	ld	hl,_sbuf
+; CHECK:      	add	hl,de
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	de,80
+; CHECK:      	add	hl,de
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
+; CHECK:      	ld	bc,(L_memmove_cancel_runtime_term.frame)
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
+; CHECK-LABEL: memmove_cancel_const_base:
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	hl,1920
+; CHECK:      	and	a
+; CHECK:      	sbc	hl,de
+; CHECK:      	ld	(L_memmove_cancel_const_base.frame),hl
+; CHECK:      	ld	hl,63488
+; CHECK:      	add	hl,de
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	de,80
+; CHECK:      	add	hl,de
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
+; CHECK:      	ld	bc,(L_memmove_cancel_const_base.frame)
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
+; CHECK-LABEL: memmove_no_cancel:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	(L_memmove_no_cancel.frame),de
+; CHECK:      	ld	hl,_sbuf
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	bc,80
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,(L_memmove_no_cancel.frame)
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret

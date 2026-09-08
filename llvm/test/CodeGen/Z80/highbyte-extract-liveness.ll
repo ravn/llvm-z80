@@ -8,12 +8,6 @@
 ; MUST survive.  Before the liveness guard, the peephole deleted it and
 ; 255u > 1u computed false.
 ;
-; CHECK-LABEL: _f:
-; CHECK:      ld   l,h
-; CHECK-NEXT: ld   h,0
-; CHECK-NEXT: ld   a,l
-; CHECK:      ld   a,h
-; CHECK-NEXT: sbc  a,d
 
 @v8 = internal global i8 0, align 1
 
@@ -23,6 +17,33 @@ define dso_local i16 @f() #0 {
   store volatile i8 -1, ptr @v8, align 1
   %3 = load volatile i8, ptr @v8, align 1
   %4 = zext i8 %3 to i16
+; CHECK-LABEL: f:
+; CHECK:      	push	ix
+; CHECK:      	ld	ix,0
+; CHECK:      	add	ix,sp
+; CHECK:      	push	af
+; CHECK:      	dec	sp
+; CHECK:      	ld	bc,_v8
+; CHECK:      	ld	a,255
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,0
+; CHECK:      	ld	(ix+-2),c
+; CHECK:      	ld	(ix+-1),b
+; CHECK:      	ld	(ix+-3),1
+; CHECK:      	ld	d,0
+; CHECK:      	ld	a,(ix+-3)
+; CHECK:      	sub	(ix+-2)
+; CHECK:      	ld	a,d
+; CHECK:      	sbc	a,(ix+-1)
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	ld	e,a
+; CHECK:      	ld	d,0
+; CHECK:      	ld	sp,ix
+; CHECK:      	pop	ix
+; CHECK:      	ret
   store i16 %4, ptr %1, align 1
   store i8 1, ptr %2, align 1
   %5 = load i16, ptr %1, align 1

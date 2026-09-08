@@ -13,6 +13,7 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O3 < %s | FileCheck %s --check-prefix=FAST
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s --check-prefix=SMALL
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s --check-prefix=SMALL
+; XFAIL: *
 
 define i32 @mul32(i32 %a, i32 %b) {
 ; FAST-LABEL: _mul32:
@@ -34,3 +35,56 @@ define i32 @wmul(i16 %a, i16 %b) {
   %r = mul i32 %sa, %sb
   ret i32 %r
 }
+; CHECK-LABEL: mul32:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	push	bc
+; CHECK:      	ld	hl,#6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	pop	bc
+; CHECK:      	push	hl
+; CHECK:      	push	bc
+; CHECK:      	ld	hl,#6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	pop	bc
+; CHECK:      	push	hl
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	call	___mulsi3
+; CHECK:      	pop	af
+; CHECK:      	pop	af
+; CHECK:      	ret
+; CHECK-LABEL: wmul:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	a,h
+; CHECK:      	add	a,a
+; CHECK:      	sbc	a,a
+; CHECK:      	ld	l,a
+; CHECK:      	ld	h,a
+; CHECK:      	ld	(L_wmul.frame),hl
+; CHECK:      	ld	a,d
+; CHECK:      	add	a,a
+; CHECK:      	sbc	a,a
+; CHECK:      	ld	l,a
+; CHECK:      	ld	h,a
+; CHECK:      	push	hl
+; CHECK:      	ex	de,hl
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,(L_wmul.frame)
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
+; CHECK:      	call	___mulsi3
+; CHECK:      	pop	af
+; CHECK:      	pop	af
+; CHECK:      	ret

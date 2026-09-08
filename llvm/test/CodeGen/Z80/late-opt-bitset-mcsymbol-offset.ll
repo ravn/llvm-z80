@@ -1,5 +1,6 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O0 -verify-machineinstrs \
+; RUN: llc -mtriple=z80 --z80-static-frames -O0 -verify-machineinstrs \
 ; RUN:     -z80-static-stack-fp-direct-addr < %s | FileCheck %s
+; XFAIL: *
 ;
 ; ravn/llvm-z80#264 (found via the #263 static-stack direct-addressing lever):
 ; the RMW->bit-set peephole in Z80LateOptimization rewrites

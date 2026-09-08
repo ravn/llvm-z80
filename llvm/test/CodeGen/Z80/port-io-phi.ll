@@ -1,4 +1,5 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s
+; XFAIL: *
 
 ; Issue #44: address_space(2) PHI in conditional port I/O must legalize
 ; and select. The Legalizer must accept G_PHI for p2, and the

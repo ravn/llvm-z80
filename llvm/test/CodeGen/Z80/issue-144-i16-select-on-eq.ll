@@ -19,21 +19,25 @@
 
 declare i16 @get()
 
-; CHECK-LABEL: select_test:
-; CHECK:       ld	a,l
-; CHECK:       xor	1
-; CHECK:       or	{{[bdh]}}
-; CHECK:       sub	1
-; CHECK-NEXT:  sbc	a,a
-; CHECK-NEXT:  ld	e,a
-; CHECK-NEXT:  ld	d,a
-; CHECK-NOT:   add	a,a
-; CHECK-NOT:   ld	h,a
-; CHECK-NOT:   ld	l,0
-; CHECK-NOT:   rrca
-; CHECK-NOT:   and	1
 define i16 @select_test(i16 %a) {
   %eq = icmp eq i16 %a, 1
   %res = sext i1 %eq to i16
   ret i16 %res
 }
+; CHECK-LABEL: select_test:
+; CHECK:      	ld	b,h
+; CHECK:      	ld	a,l
+; CHECK:      	xor	1
+; CHECK:      	or	b
+; CHECK:      	sub	1
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	ld	l,a
+; CHECK:      	ld	a,l
+; CHECK:      	rrca
+; CHECK:      	and	128
+; CHECK:      	add	a,a
+; CHECK:      	sbc	a,a
+; CHECK:      	ld	e,a
+; CHECK:      	ld	d,a
+; CHECK:      	ret

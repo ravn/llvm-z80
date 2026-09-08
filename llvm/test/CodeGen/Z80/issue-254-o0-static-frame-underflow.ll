@@ -22,15 +22,8 @@ target triple = "z80"
 @n = dso_local global i8 6, align 1
 @g = dso_local global [10 x i8] zeroinitializer, align 1
 
-; CHECK-LABEL: _f:
 ; The frame is 6 BSS bytes; the deepest slot must land AT __sframe_f
 ; (__sfrend_f-6), never below it.
-; CHECK-NOT: __sfrend_f-7
-; CHECK-NOT: __sfrend_f-8
-; CHECK-NOT: __sfrend_f-9
-; CHECK-NOT: __sfrend_f-1{{[0-9]}}
-; CHECK: __sframe_f:
-; CHECK-NEXT: .zero 6
 ;
 ; NOTE: `@f` is externally visible and calls memmove (an opaque/external
 ; callee), so the Z80AutoStaticStack heuristic no longer AUTO-selects it (a
@@ -46,6 +39,74 @@ define dso_local i16 @f() #1 {
   %kv = load volatile i8, ptr @k, align 1
   %kz = zext i8 %kv to i16
   %sp = getelementptr inbounds i8, ptr @g, i16 %kz
+; CHECK-LABEL: f:
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	push	af
+; CHECK:      	ld	de,_g
+; CHECK:      	ld	bc,_g
+; CHECK:      	inc	bc
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	bc,_k
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,0
+; CHECK:      	ld	hl,_g
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	hl,2
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	ld	bc,_n
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,0
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ld	bc,_g
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	h,a
+; CHECK:      	ld	l,0
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	hl,0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	or	b
+; CHECK:      	ld	e,a
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	sp,hl
+; CHECK:      	ret
   store ptr %sp, ptr %s, align 1
   %dl = load ptr, ptr %d, align 1
   %sl = load ptr, ptr %s, align 1

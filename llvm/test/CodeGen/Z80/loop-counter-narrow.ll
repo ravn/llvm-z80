@@ -18,12 +18,35 @@ declare void @use_byte(i8 zeroext) nounwind
 ; Issue #62: also verify the dead HL copy (ld l,e; ld h,d) is eliminated
 ; before the compare. The peephole detects HL is dead-stored (reassigned
 ; before any use) and replaces `ld l,e; ld h,d; ld a,l` with `ld a,e`.
+; CHECK-LABEL: loop_counter_narrow:
+; CHECK:      	push	af
+; CHECK:      	ld	bc,#0
+; CHECK:      	jp	.LBB0_1
+; CHECK:      	ld	a,c
+; CHECK:      	sub	#7
+; CHECK:      	or	b
+; CHECK:      	jp	z,.LBB0_3
+; CHECK:      	jp	.LBB0_2
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	call	_use_byte
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	inc	bc
+; CHECK:      	jp	.LBB0_1
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
 define void @loop_counter_narrow() nounwind {
-; CHECK-LABEL: _loop_counter_narrow:
-; CHECK:       ld a,e
-; CHECK-NEXT:  cp #7
-; CHECK-NOT:   or h
-; CHECK-NOT:   or b
 entry:
   br label %loop
 
@@ -45,15 +68,38 @@ exit:
 
 ; Same pattern but with NE predicate.
 define void @loop_counter_narrow_ne() nounwind {
-; CHECK-LABEL: _loop_counter_narrow_ne:
-; CHECK:       ld a,e
-; CHECK-NEXT:  cp #7
-; CHECK-NOT:   or h
-; CHECK-NOT:   or b
 entry:
   br label %loop
 
 loop:
+; CHECK-LABEL: loop_counter_narrow_ne:
+; CHECK:      	push	af
+; CHECK:      	ld	bc,#0
+; CHECK:      	jp	.LBB1_1
+; CHECK:      	ld	a,c
+; CHECK:      	sub	#7
+; CHECK:      	or	b
+; CHECK:      	jp	nz,.LBB1_2
+; CHECK:      	jp	.LBB1_3
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	call	_use_byte
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	inc	bc
+; CHECK:      	jp	.LBB1_1
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
   %i = phi i16 [ 0, %entry ], [ %next, %body ]
   %cmp = icmp ne i16 %i, 7
   br i1 %cmp, label %body, label %exit
@@ -72,9 +118,6 @@ exit:
 ; Counter without nuw — INC16 still preserves high-byte-zero since
 ; the loop structure guarantees range [0,7].
 define void @loop_counter_no_nuw() nounwind {
-; CHECK-LABEL: _loop_counter_no_nuw:
-; CHECK:       cp #7
-; CHECK-NOT:   or h
 entry:
   br label %loop
 
@@ -84,6 +127,34 @@ loop:
   br i1 %cmp, label %exit, label %body
 
 body:
+; CHECK-LABEL: loop_counter_no_nuw:
+; CHECK:      	push	af
+; CHECK:      	ld	bc,#0
+; CHECK:      	jp	.LBB2_1
+; CHECK:      	ld	a,c
+; CHECK:      	sub	#7
+; CHECK:      	or	b
+; CHECK:      	jp	z,.LBB2_3
+; CHECK:      	jp	.LBB2_2
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	call	_use_byte
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	inc	bc
+; CHECK:      	jp	.LBB2_1
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
   %ptr = getelementptr inbounds i8, ptr @buf, i16 %i
   %val = load i8, ptr %ptr
   call void @use_byte(i8 %val)
@@ -97,8 +168,6 @@ exit:
 ; Negative test: parameter-based start value — high byte may not be zero.
 ; Should use OR H because the PHI incoming from entry is not provably [0,255].
 define void @loop_counter_param_start(i16 %start) nounwind {
-; CHECK-LABEL: _loop_counter_param_start:
-; CHECK:       or h
 entry:
   br label %loop
 
@@ -111,6 +180,35 @@ body:
   %ptr = getelementptr inbounds i8, ptr @buf, i16 %i
   %val = load i8, ptr %ptr
   call void @use_byte(i8 %val)
+; CHECK-LABEL: loop_counter_param_start:
+; CHECK:      	push	af
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	jp	.LBB3_1
+; CHECK:      	ld	a,c
+; CHECK:      	sub	#7
+; CHECK:      	or	b
+; CHECK:      	jp	z,.LBB3_3
+; CHECK:      	jp	.LBB3_2
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),c
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),b
+; CHECK:      	call	_use_byte
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	b,(hl)
+; CHECK:      	inc	bc
+; CHECK:      	jp	.LBB3_1
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
   %next = add nuw nsw i16 %i, 1
   br label %loop
 

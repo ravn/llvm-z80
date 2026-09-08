@@ -20,6 +20,10 @@
 
 declare void @take_byte(i8 zeroext)
 
+; CHECK-LABEL: call_with_extern_high:
+; CHECK:      	ld	a,#>(_external_data)
+; CHECK:      	call	_take_byte
+; CHECK:      	ret
 define void @call_with_extern_high() {
   %1 = ptrtoint ptr @external_data to i16
   %2 = lshr i16 %1, 8
@@ -28,12 +32,6 @@ define void @call_with_extern_high() {
   ret void
 }
 
-; CHECK-LABEL: _call_with_extern_high:
-; CHECK:      ld  de,#_external_data
-; CHECK-NEXT: ld  a,d
-; CHECK-NOT:  ld  l,d
-; CHECK-NOT:  ld  h,#0
-; CHECK:      jp  _take_byte
 
 define void @store_extern_high() {
   %1 = ptrtoint ptr @external_data to i16
@@ -41,12 +39,10 @@ define void @store_extern_high() {
   %3 = trunc i16 %2 to i8
   store volatile i8 %3, ptr inttoptr (i16 -3072 to ptr), align 1024
   ret void
+; CHECK-LABEL: store_extern_high:
+; CHECK:      	ld	bc,#62464
+; CHECK:      	ld	a,#>(_external_data)
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 }
 
-; CHECK-LABEL: _store_extern_high:
-; CHECK:      ld  de,#_external_data
-; CHECK-NEXT: ld  a,d
-; CHECK-NOT:  ld  l,d
-; CHECK-NOT:  ld  h,#0
-; CHECK:      ld  ({{.*}}),a
-; CHECK:      ret

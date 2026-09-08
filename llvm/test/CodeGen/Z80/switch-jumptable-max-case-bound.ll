@@ -26,6 +26,45 @@ declare void @c8()
 declare void @c9()
 declare void @def()
 
+; CHECK-LABEL: dispatch:
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,9
+; CHECK:      	cp	b
+; CHECK:      	jp	c,.LBB0_11
+; CHECK:      	ld	l,b
+; CHECK:      	ld	h,0
+; CHECK:      	add	hl,hl
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	hl,LJTI0_0
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ex	de,hl
+; CHECK:      	jp	(hl)
+; CHECK:      	call	_c0
+; CHECK:      	ret
+; CHECK:      	call	_c4
+; CHECK:      	ret
+; CHECK:      	call	_c9
+; CHECK:      	ret
+; CHECK:      	call	_c2
+; CHECK:      	ret
+; CHECK:      	call	_c3
+; CHECK:      	ret
+; CHECK:      	call	_c7
+; CHECK:      	ret
+; CHECK:      	call	_c1
+; CHECK:      	ret
+; CHECK:      	call	_c5
+; CHECK:      	ret
+; CHECK:      	call	_c6
+; CHECK:      	ret
+; CHECK:      	call	_def
+; CHECK:      	ret
+; CHECK:      	call	_c8
+; CHECK:      	ret
 define void @dispatch(i8 zeroext %x) {
 entry:
   switch i8 %x, label %L_def [
@@ -53,7 +92,4 @@ L9: tail call void @c9() ret void
 L_def: tail call void @def() ret void
 }
 
-; CHECK-LABEL: _dispatch:
 ; The narrowed bound must be cp 10 (Range+1), not cp 9.
-; CHECK-NOT:   cp 9
-; CHECK:       cp 10

@@ -6,12 +6,28 @@
 @var2 = external global i8
 
 ; EQ branch: ADD A,C; JR C,fallthrough; CP r; JR Z,target
+; CHECK-LABEL: narrow_add_cmp_eq:
+; CHECK:      	ld	bc,#_var1
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	l,a
+; CHECK:      	ld	h,#0
+; CHECK:      	ld	bc,#32
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,#_var2
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
+; CHECK:      	xor	c
+; CHECK:      	or	b
+; CHECK:      	jp	z,.LBB0_1
+; CHECK:      	jp	.LBB0_2
+; CHECK:      	ld	de,#1
+; CHECK:      	ret
+; CHECK:      	ld	de,#0
+; CHECK:      	ret
 define i16 @narrow_add_cmp_eq() {
-; CHECK-LABEL: _narrow_add_cmp_eq:
-; CHECK:       add a,#32
-; CHECK-NEXT:  j{{[rp]}} c,
-; CHECK-NEXT:  cp
-; CHECK-NEXT:  j{{[rp]}} z,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
@@ -28,15 +44,31 @@ else:
 
 ; NE branch: ADD A,C; JR C,target; CP r; JR NZ,target
 define i16 @narrow_add_cmp_ne() {
-; CHECK-LABEL: _narrow_add_cmp_ne:
-; CHECK:       add a,#32
-; CHECK-NEXT:  j{{[rp]}} c,
-; CHECK-NEXT:  cp
-; CHECK-NEXT:  j{{[rp]}} nz,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
   %sum = add nuw nsw i16 %ext_a, 32
+; CHECK-LABEL: narrow_add_cmp_ne:
+; CHECK:      	ld	bc,#_var1
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	l,a
+; CHECK:      	ld	h,#0
+; CHECK:      	ld	bc,#32
+; CHECK:      	add	hl,bc
+; CHECK:      	ld	bc,#_var2
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
+; CHECK:      	xor	c
+; CHECK:      	or	b
+; CHECK:      	jp	nz,.LBB1_1
+; CHECK:      	jp	.LBB1_2
+; CHECK:      	ld	de,#1
+; CHECK:      	ret
+; CHECK:      	ld	de,#0
+; CHECK:      	ret
   %b = load i8, ptr @var2
   %ext_b = zext i8 %b to i16
   %cmp = icmp ne i16 %sum, %ext_b
@@ -49,11 +81,6 @@ else:
 
 ; Commuted: add on RHS instead of LHS
 define i16 @narrow_add_cmp_commuted() {
-; CHECK-LABEL: _narrow_add_cmp_commuted:
-; CHECK:       add a,#32
-; CHECK-NEXT:  j{{[rp]}} c,
-; CHECK-NEXT:  cp
-; CHECK-NEXT:  j{{[rp]}} nz,
 entry:
   %a = load i8, ptr @var1
   %ext_a = zext i8 %a to i16
@@ -63,6 +90,28 @@ entry:
   %cmp = icmp ne i16 %ext_a, %sum
   br i1 %cmp, label %then, label %else
 then:
+; CHECK-LABEL: narrow_add_cmp_commuted:
+; CHECK:      	ld	bc,#_var1
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,#0
+; CHECK:      	ld	de,#_var2
+; CHECK:      	ld	a,(de)
+; CHECK:      	ld	l,a
+; CHECK:      	ld	h,#0
+; CHECK:      	ld	de,#32
+; CHECK:      	add	hl,de
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,c
+; CHECK:      	xor	l
+; CHECK:      	or	b
+; CHECK:      	jp	nz,.LBB2_1
+; CHECK:      	jp	.LBB2_2
+; CHECK:      	ld	de,#1
+; CHECK:      	ret
+; CHECK:      	ld	de,#0
+; CHECK:      	ret
   ret i16 1
 else:
   ret i16 0

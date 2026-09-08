@@ -24,6 +24,41 @@
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
 
+; CHECK-LABEL: bench_run:
+; CHECK:      	ld	bc,0
+; CHECK:      	jr	.LBB0_3
+; CHECK:      	ld	bc,0
+; CHECK:      	ld	(L_bench_run.frame+2),bc
+; CHECK:      	ld	hl,0
+; CHECK:      	ld	de,1
+; CHECK:      	ld	(L_bench_run.frame),de
+; CHECK:      	ld	de,0
+; CHECK:      	ld	a,c
+; CHECK:      	or	b
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
+; CHECK:      	or	b
+; CHECK:      	or	c
+; CHECK:      	ld	bc,(L_bench_run.frame)
+; CHECK:      	jr	nz,.LBB0_5
+; CHECK:      	ld	a,c
+; CHECK:      	or	a
+; CHECK:      	jr	z,.LBB0_1
+; CHECK:      	ld	bc,1
+; CHECK:      	ld	de,1
+; CHECK:      	ld	(L_bench_run.frame+2),de
+; CHECK:      	ld	de,0
+; CHECK:      	ld	(L_bench_run.frame),de
+; CHECK:      	ld	hl,0
+; CHECK:      	jr	.LBB0_2
+; CHECK:      	ld	a,1
+; CHECK:      	or	a
+; CHECK:      	jr	nz,.LBB0_7
+; CHECK:      	ret
+; CHECK:      	ld	de,(L_bench_run.frame+2)
+; CHECK:      	ret
 define i16 @bench_run() {
   br label %1
 
@@ -54,6 +89,3 @@ define i16 @bench_run() {
 ; The two value-1 phi-source stores must go to DIFFERENT static-frame slots
 ; and must both be present (pre-fix, branch-folder merged them and only the
 ; -2 store survived).
-; CHECK-LABEL: bench_run:
-; CHECK-DAG: ld (__sfrend_bench_run-2),hl
-; CHECK-DAG: ld (__sfrend_bench_run-4),hl

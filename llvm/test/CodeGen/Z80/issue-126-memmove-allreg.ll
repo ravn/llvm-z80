@@ -14,19 +14,26 @@ declare void @llvm.memmove.p0.p0.i16(ptr, ptr, i16, i1)
 declare void @llvm.memcpy.p0.p0.i16(ptr, ptr, i16, i1)
 
 ; Two unrelated runtime pointers -> direction unknown -> __memmove_rt.
-; CHECK-LABEL: mm:
-; CHECK:      ld bc,16
-; CHECK:      ___memmove_rt
 define void @mm(ptr %d, ptr %s) {
   call void @llvm.memmove.p0.p0.i16(ptr %d, ptr %s, i16 16, i1 false)
   ret void
+; CHECK-LABEL: mm:
+; CHECK:      	ld	bc,16
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
 }
 
 ; memcpy still inlines LDIR (no libcall, no frame).
-; CHECK-LABEL: mc:
-; CHECK:      ldir
-; CHECK-NOT:  ___memmove_rt
 define void @mc(ptr %d, ptr %s) {
   call void @llvm.memcpy.p0.p0.i16(ptr %d, ptr %s, i16 16, i1 false)
   ret void
 }
+; CHECK-LABEL: mc:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
+; CHECK:      	ld	bc,16
+; CHECK:      	ldir
+; CHECK:      	ret

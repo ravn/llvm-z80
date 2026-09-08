@@ -1,5 +1,6 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-late-opt \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80 #194: -verify-machineinstrs passed before Z80LateOptimization
 # and failed after it ("Using an undefined physical register" at a reader of

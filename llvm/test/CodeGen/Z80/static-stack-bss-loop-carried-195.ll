@@ -15,6 +15,60 @@
 ; matched store (the loop-carried-reload signature).  The high-half write-back
 ; must survive in the loop body.
 
+; CHECK-LABEL: popcount32:
+; CHECK:      	ld	a,d
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	or	b
+; CHECK:      	ld	(L_popcount32.frame),a
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
+; CHECK:      	or	b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,L_popcount32.frame
+; CHECK:      	ld	b,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	or	b
+; CHECK:      	jr	z,.LBB0_4
+; CHECK:      	ld	b,0
+; CHECK:      	ld	a,e
+; CHECK:      	and	1
+; CHECK:      	add	a,b
+; CHECK:      	ld	(L_popcount32.frame),a
+; CHECK:      	srl	d
+; CHECK:      	rr	e
+; CHECK:      	ld	a,l
+; CHECK:      	rrca
+; CHECK:      	and	128
+; CHECK:      	ld	b,h
+; CHECK:      	ld	h,a
+; CHECK:      	ld	a,d
+; CHECK:      	or	h
+; CHECK:      	ld	d,a
+; CHECK:      	ld	h,b
+; CHECK:      	srl	h
+; CHECK:      	rr	l
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	or	b
+; CHECK:      	ld	(L_popcount32.frame+1),a
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
+; CHECK:      	or	b
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,L_popcount32.frame
+; CHECK:      	ld	b,(hl)
+; CHECK:      	ld	hl,L_popcount32.frame+1
+; CHECK:      	ld	c,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	or	c
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ld	a,b
+; CHECK:      	ret
+; CHECK:      	xor	a
+; CHECK:      	ret
 define dso_local zeroext i8 @popcount32(i32 noundef %0) {
   %2 = icmp eq i32 %0, 0
   br i1 %2, label %11, label %3
@@ -36,6 +90,3 @@ define dso_local zeroext i8 @popcount32(i32 noundef %0) {
 
 ; The loop-carried high half must be written back into its BSS slot inside the
 ; loop body (not dropped by a PUSH/POP conversion).
-; CHECK-LABEL: .LBB0_2:
-; CHECK: ld ({{[^)]*}}),{{bc|de|hl}}
-; CHECK: .LBB0_2

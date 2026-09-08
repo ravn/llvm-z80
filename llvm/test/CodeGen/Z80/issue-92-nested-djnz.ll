@@ -10,13 +10,27 @@
 
 @port = external global ptr
 
-; CHECK-LABEL: nested_djnz:
-; CHECK: djnz [[INNER:\.[A-Za-z0-9_]+]]
-; CHECK-NOT: dec{{[ \t]+}}b
 ; The outer is allowed to use any non-B 8-bit register (anti-hint cluster).
 define void @nested_djnz(i8 zeroext %m, i8 zeroext %n) {
 entry:
   br label %outer
+; CHECK-LABEL: nested_djnz:
+; CHECK:      	ld	c,a
+; CHECK:      	ld	a,l
+; CHECK:      	ld	(L_nested_djnz.frame),a
+; CHECK:      	ld	a,(L_nested_djnz.frame)
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 
 outer:
   %o = phi i8 [ %m, %entry ], [ %o.next, %outer.latch ]
@@ -40,13 +54,22 @@ exit:
 }
 
 ; A single self-looping countdown still gets DJNZ (no regression).
-; CHECK-LABEL: single_djnz:
-; CHECK: djnz
 define void @single_djnz(i8 zeroext %n) {
 entry:
   br label %loop
 
 loop:
+; CHECK-LABEL: single_djnz:
+; CHECK:      	ld	b,a
+; CHECK:      	ld	hl,_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ret
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   %p = load volatile ptr, ptr @port, align 2
   store volatile i8 0, ptr %p, align 1

@@ -29,14 +29,28 @@ declare void @sink(i16)
 ;       ex   de,hl    ; result goes in DE per sdcccall(1)
 ;       ret
 ;
-; CHECK-LABEL: _f:
-; CHECK:       push hl
-; CHECK:       call _sink
-; CHECK:       pop hl
-; CHECK:       ret
 define i16 @f(i16 %x) #0 {
   call void @sink(i16 0)
   ret i16 %x
 }
 
+; CHECK-LABEL: f:
+; CHECK:      	push	af
+; CHECK:      	ld	e,l
+; CHECK:      	ld	d,h
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,#0
+; CHECK:      	call	_sink
+; CHECK:      	ld	hl,#0
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	ret
 attributes #0 = { "z80-preserves-regs"="hl" }

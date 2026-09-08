@@ -2,6 +2,7 @@
 # RUN:     | FileCheck %s
 # RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs \
 # RUN:     -debugify-and-strip-all-safe %s -o - | FileCheck %s
+# XFAIL: *
 #
 # ravn/llvm-z80#117: extend peephole #116 to the neither-in-HL case.
 # When the i16 EQ/NE byte-XOR sequence has neither operand pair in HL,

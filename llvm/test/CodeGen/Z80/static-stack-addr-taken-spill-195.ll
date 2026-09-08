@@ -16,6 +16,94 @@ target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
 
 ; Function Attrs: nofree norecurse nounwind optsize memory(inaccessiblemem: readwrite)
+; CHECK-LABEL: main:
+; CHECK:      	ld	hl,L_main.frame
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,L_main.frame
+; CHECK:      	ld	(hl),1
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	hl,L_main.frame+2
+; CHECK:      	ld	(hl),2
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	bc,3
+; CHECK:      	ld	(L_main.frame+4),bc
+; CHECK:      	ld	hl,L_main.frame+6
+; CHECK:      	ld	(hl),4
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	hl,L_main.frame+8
+; CHECK:      	ld	(hl),5
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	hl,L_main.frame+10
+; CHECK:      	ld	(hl),6
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	hl,L_main.frame+12
+; CHECK:      	ld	(hl),7
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	hl,L_main.frame+14
+; CHECK:      	ld	(hl),8
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	ld	hl,L_main.frame+16
+; CHECK:      	ld	(hl),9
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),0
+; CHECK:      	pop	hl
+; CHECK:      	ld	de,(L_main.frame)
+; CHECK:      	ld	de,(L_main.frame+8)
+; CHECK:      	ld	de,(L_main.frame+16)
+; CHECK:      	inc	hl
+; CHECK:      	inc	hl
+; CHECK:      	ld	de,0
+; CHECK:      	ld	(L_main.frame+18),de
+; CHECK:      	ld	(L_main.frame+20),bc
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	dec	hl
+; CHECK:      	dec	hl
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	de,(L_main.frame+18)
+; CHECK:      	add	hl,de
+; CHECK:      	ld	(L_main.frame+18),hl
+; CHECK:      	ld	(L_main.frame+22),bc
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	de,(L_main.frame+18)
+; CHECK:      	add	hl,de
+; CHECK:      	ld	(L_main.frame+18),hl
+; CHECK:      	ld	l,c
+; CHECK:      	ld	h,b
+; CHECK:      	ld	bc,(L_main.frame+20)
+; CHECK:      	inc	hl
+; CHECK:      	inc	hl
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	de,(L_main.frame+18)
+; CHECK:      	add	hl,de
+; CHECK:      	ld	(L_main.frame+18),hl
+; CHECK:      	dec	bc
+; CHECK:      	ld	hl,(L_main.frame+22)
+; CHECK:      	ld	de,6
+; CHECK:      	add	hl,de
+; CHECK:      	ld	a,c
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ld	de,(L_main.frame+18)
+; CHECK:      	ret
 define dso_local i16 @main() local_unnamed_addr #0 {
   %1 = alloca [3 x [3 x i16]], align 1
   call void @llvm.lifetime.start.p0(ptr nonnull %1) #2
@@ -88,5 +176,3 @@ attributes #2 = { nounwind }
 !9 = !{!"llvm.loop.mustprogress"}
 
 ; The m[0][0]=1 store must reach its BSS slot (not be PUSH'd and dropped).
-; CHECK: ld de,1
-; CHECK-NEXT: ld ({{[^)]*}}),de

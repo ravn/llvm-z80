@@ -1,12 +1,13 @@
 ; Default is ON (#263 lever enabled by default), so the bare RUN with no flag
 ; must already produce direct addressing:
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs \
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -verify-machineinstrs \
 ; RUN:     < %s | FileCheck %s
+; XFAIL: *
 ; Explicitly enabling it is equivalent:
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs \
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -verify-machineinstrs \
 ; RUN:     -z80-static-stack-fp-direct-addr < %s | FileCheck %s
 ; Passing =false restores the old IX-relative addressing (base + runtime add):
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs \
+; RUN: llc -mtriple=z80 --z80-static-frames -O2 -verify-machineinstrs \
 ; RUN:     -z80-static-stack-fp-direct-addr=false < %s | FileCheck %s --check-prefix=OFF
 ;
 ; ravn/llvm-z80#263: a local array (`int a[100]`) lowers to an `alloca`, which

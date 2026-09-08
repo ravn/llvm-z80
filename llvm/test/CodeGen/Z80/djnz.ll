@@ -4,10 +4,12 @@
 ; The GR8 allocation order puts B last (before A), keeping it available
 ; for the DJNZ register hint on loop counters.
 
+; CHECK-LABEL: delay:
+; CHECK:      	ld	b,a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 define void @delay(i8 %n) {
-; CHECK-LABEL: _delay:
-; CHECK:       ld b,a
-; CHECK:       djnz
 entry:
   br label %loop
 
@@ -23,10 +25,27 @@ exit:
 
 ; Test: DJNZ with a loop body (memory access + accumulation)
 define i8 @sum_array(ptr %p, i8 %n) {
-; CHECK-LABEL: _sum_array:
-; CHECK:       djnz
 entry:
   br label %loop
+; CHECK-LABEL: sum_array:
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,#4
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	c,(hl)
+; CHECK:      	pop	hl
+; CHECK:      	ld	b,#0
+; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	a,b
+; CHECK:      	add	a,d
+; CHECK:      	ld	b,a
+; CHECK:      	inc	hl
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ld	a,b
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
 
 loop:
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]

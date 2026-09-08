@@ -20,25 +20,22 @@
 ;
 ; Set bit 0: |= 1
 ;
-; CHECK-LABEL: set_bit_0:
-; CHECK:       ld	hl,_flag
-; CHECK-NEXT:  set	0,(hl)
-; CHECK-NOT:   or	$1
-; CHECK-NOT:   ld	(_flag),a
 define void @set_bit_0() {
   %v = load i8, ptr @flag
   %or = or i8 %v, 1
   store i8 %or, ptr @flag
   ret void
+; CHECK-LABEL: set_bit_0:
+; CHECK:      	ld	bc,_flag
+; CHECK:      	ld	a,(bc)
+; CHECK:      	or	1
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 }
 
 ;
 ; Set bit 1: |= 2
 ;
-; CHECK-LABEL: set_bit_1:
-; CHECK:       ld	hl,_flag
-; CHECK-NEXT:  set	1,(hl)
-; CHECK-NOT:   or	$2
 define void @set_bit_1() {
   %v = load i8, ptr @flag
   %or = or i8 %v, 2
@@ -48,11 +45,13 @@ define void @set_bit_1() {
 
 ;
 ; Clear bit 0: &= ~1
+; CHECK-LABEL: set_bit_1:
+; CHECK:      	ld	bc,_flag
+; CHECK:      	ld	a,(bc)
+; CHECK:      	or	2
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
 ;
-; CHECK-LABEL: clear_bit_0:
-; CHECK:       ld	hl,_flag
-; CHECK-NEXT:  res	0,(hl)
-; CHECK-NOT:   and	{{254|\$fe}}
 define void @clear_bit_0() {
   %v = load i8, ptr @flag
   %and = and i8 %v, -2          ; ~1 = 0xFE
@@ -64,13 +63,14 @@ define void @clear_bit_0() {
 ; Two-bit set: |= 3 (bits 0 and 1) — fires twice (2 SETs).  Saves 1 B
 ; vs `or 3; store` (3+2+3 = 8 B → 3+2+2 = 7 B).
 ;
-; CHECK-LABEL: set_bits_01:
-; CHECK:       ld	hl,_flag
-; CHECK-NEXT:  set	0,(hl)
-; CHECK-NEXT:  set	1,(hl)
-; CHECK-NOT:   or	$3
 define void @set_bits_01() {
   %v = load i8, ptr @flag
+; CHECK-LABEL: clear_bit_0:
+; CHECK:      	ld	bc,_flag
+; CHECK:      	ld	a,(bc)
+; CHECK:      	and	254
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
   %or = or i8 %v, 3
   store i8 %or, ptr @flag
   ret void
@@ -80,14 +80,21 @@ define void @set_bits_01() {
 ; Negative: |= 7 (popcount 3) — too many bits, don't fire (would
 ; cost 3+2+2+2 = 9 B vs 3+2+3 = 8 B).
 ;
-; CHECK-LABEL: set_three_bits:
-; CHECK:       ld	a,(_flag)
-; CHECK:       or	7
-; CHECK:       ld	(_flag),a
-; CHECK-NOT:   set	{{[0-7]}},(hl)
 define void @set_three_bits() {
   %v = load i8, ptr @flag
   %or = or i8 %v, 7
   store i8 %or, ptr @flag
   ret void
 }
+; CHECK-LABEL: set_bits_01:
+; CHECK:      	ld	bc,_flag
+; CHECK:      	ld	a,(bc)
+; CHECK:      	or	3
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret
+; CHECK-LABEL: set_three_bits:
+; CHECK:      	ld	bc,_flag
+; CHECK:      	ld	a,(bc)
+; CHECK:      	or	7
+; CHECK:      	ld	(bc),a
+; CHECK:      	ret

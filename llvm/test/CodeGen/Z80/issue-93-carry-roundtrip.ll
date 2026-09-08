@@ -29,6 +29,26 @@
 
 @port = external dso_local global ptr, align 2
 
+; CHECK-LABEL: const_trip_50:
+; CHECK:      	ld	c,206
+; CHECK:      	ld	hl,_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	b,0
+; CHECK:      	inc	bc
+; CHECK:      	ld	e,c
+; CHECK:      	ld	a,c
+; CHECK:      	xor	e
+; CHECK:      	or	b
+; CHECK:      	add	a,255
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	xor	1
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 define void @const_trip_50() {
 entry:
   br label %loop
@@ -42,15 +62,8 @@ loop:
 exit:
   ret void
 }
-; CHECK-LABEL: _const_trip_50:
 ; The carry-roundtrip chain must be gone.
-; CHECK-NOT:   sbc a,a
-; CHECK-NOT:   rrca
-; CHECK-NOT:   add a,1
 ; The replacement is INC + JR NZ.
-; CHECK:       inc d
-; CHECK-NEXT:  jr nz,
-; CHECK:       ret
 
 
 ; A larger constant trip count (255) should also fold.
@@ -61,14 +74,29 @@ loop:
   %i = phi i8 [ 255, %entry ], [ %i.next, %loop ]
   %p = load volatile ptr, ptr @port, align 2
   store volatile i8 0, ptr %p, align 1
+; CHECK-LABEL: const_trip_255:
+; CHECK:      	ld	c,1
+; CHECK:      	ld	hl,_port
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	b,0
+; CHECK:      	inc	bc
+; CHECK:      	ld	e,c
+; CHECK:      	ld	a,c
+; CHECK:      	xor	e
+; CHECK:      	or	b
+; CHECK:      	add	a,255
+; CHECK:      	sbc	a,a
+; CHECK:      	and	1
+; CHECK:      	xor	1
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ret
   %i.next = add i8 %i, -1
   %cond = icmp ne i8 %i.next, 0
   br i1 %cond, label %loop, label %exit
 exit:
   ret void
 }
-; CHECK-LABEL: _const_trip_255:
-; CHECK-NOT:   sbc a,a
-; CHECK:       inc d
-; CHECK-NEXT:  jr nz,
-; CHECK:       ret

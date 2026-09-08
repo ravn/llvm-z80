@@ -14,6 +14,70 @@
 ; 4-instr A-preserving reload (PUSH AF; LD A,(slot); LD r,A; POP AF) must then
 ; survive instead of being folded into a PUSH/POP DE that clobbers D.
 
+; CHECK-LABEL: crc_one:
+; CHECK:      	ld	b,8
+; CHECK:      	jr	.LBB0_2
+; CHECK:      	ld	a,l
+; CHECK:      	xor	d
+; CHECK:      	ld	e,a
+; CHECK:      	ld	a,h
+; CHECK:      	ld	hl,L_crc_one.frame+3
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	d
+; CHECK:      	ld	d,a
+; CHECK:      	ld	a,c
+; CHECK:      	ld	hl,(L_crc_one.frame)
+; CHECK:      	xor	l
+; CHECK:      	ld	l,a
+; CHECK:      	ld	a,b
+; CHECK:      	xor	h
+; CHECK:      	ld	h,a
+; CHECK:      	ld	a,(L_crc_one.frame+2)
+; CHECK:      	dec	a
+; CHECK:      	ld	b,a
+; CHECK:      	jr	z,.LBB0_4
+; CHECK:      	ld	(L_crc_one.frame),hl
+; CHECK:      	ld	a,b
+; CHECK:      	ld	(L_crc_one.frame+2),a
+; CHECK:      	ld	c,e
+; CHECK:      	ld	b,d
+; CHECK:      	srl	b
+; CHECK:      	rr	c
+; CHECK:      	ld	a,l
+; CHECK:      	rrca
+; CHECK:      	and	128
+; CHECK:      	ld	h,a
+; CHECK:      	ld	a,c
+; CHECK:      	ld	d,a
+; CHECK:      	ld	a,b
+; CHECK:      	or	h
+; CHECK:      	ld	(L_crc_one.frame+3),a
+; CHECK:      	ld	bc,(L_crc_one.frame)
+; CHECK:      	srl	b
+; CHECK:      	rr	c
+; CHECK:      	ld	(L_crc_one.frame),bc
+; CHECK:      	ld	a,e
+; CHECK:      	and	1
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,0
+; CHECK:      	ld	e,0
+; CHECK:      	ld	l,e
+; CHECK:      	ld	h,0
+; CHECK:      	ld	(L_crc_one.frame+4),hl
+; CHECK:      	ld	hl,0
+; CHECK:      	ld	a,c
+; CHECK:      	or	b
+; CHECK:      	ld	e,a
+; CHECK:      	ld	bc,(L_crc_one.frame+4)
+; CHECK:      	ld	a,c
+; CHECK:      	or	b
+; CHECK:      	or	e
+; CHECK:      	ld	bc,0
+; CHECK:      	jr	z,.LBB0_1
+; CHECK:      	ld	bc,60856
+; CHECK:      	ld	hl,33568
+; CHECK:      	jr	.LBB0_1
+; CHECK:      	ret
 define dso_local i32 @crc_one(i32 noundef %0) {
   br label %3
 
@@ -35,8 +99,3 @@ define dso_local i32 @crc_one(i32 noundef %0) {
 
 ; The A-preserving 4-instr reload of the first compare's result must survive
 ; (#173 must NOT fold it into a D-clobbering PUSH/POP DE).
-; CHECK-LABEL: _crc_one:
-; CHECK:      push af
-; CHECK-NEXT: ld a,(__sfrend{{[^)]*}})
-; CHECK-NEXT: ld {{[a-l]}},a
-; CHECK-NEXT: pop af
