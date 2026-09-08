@@ -5,13 +5,7 @@ set(LLVM_TARGET_DEFINITIONS Z80.td)
 tablegen(LLVM Z80GenAsmMatcher.inc -gen-asm-matcher)
 tablegen(LLVM Z80GenAsmWriter.inc -gen-asm-writer)
 tablegen(LLVM Z80GenCallingConv.inc -gen-callingconv)
-# NOTE (#181, session 73s): no -gen-dag-isel.  The Z80 backend is GlobalISel
-# only -- there is no SelectionDAG instruction selector (no Z80ISelDAGToDAG.cpp,
-# no SelectionDAGISel subclass, no setOperationAction/LowerOperation anywhere).
-# The generated Z80GenDAGISel.inc table was never #included by any source file
-# (vestigial from the LLVM-MOS infra port, 6d1fd0b); dropping it removes dead
-# build-time work and the false impression of a coexisting DAGISel path.  See
-# tasks/session73s-issue181-dagisel-gisel-audit.md.
+tablegen(LLVM Z80GenDAGISel.inc -gen-dag-isel)
 tablegen(LLVM Z80GenDisassemblerTables.inc -gen-disassembler)
 tablegen(LLVM Z80GenPreLegalizeGICombiner.inc -gen-global-isel-combiner
               -combiners="Z80PreLegalizerCombiner")
@@ -38,15 +32,9 @@ add_llvm_target(Z80CodeGen
   Z80PostLegalizerCombiner.cpp
   Z80ExpandPseudo.cpp
   Z80FixupImplicitDefs.cpp
-  Z80FuseCarryChain.cpp
   Z80FrameLowering.cpp
   Z80ISelLowering.cpp
   Z80IndexIV.cpp
-  Z80AutoStaticStack.cpp
-  Z80PatternFillRecognize.cpp
-  Z80LoopRotate.cpp
-  Z80LoopInstrFormPrep.cpp
-  Z80SinkColdLoopIV.cpp
   Z80InlineAsmLowering.cpp
   Z80InstrInfo.cpp
   Z80InstructionSelector.cpp
@@ -54,24 +42,16 @@ add_llvm_target(Z80CodeGen
   Z80LegalizerInfo.cpp
   Z80LowerSelect.cpp
   Z80MCInstLower.cpp
-  Z80NarrowNoIndex.cpp
+  Z80NonReentrant.cpp
   Z80PostRACompareMerge.cpp
   Z80PostRAScavenging.cpp
   Z80RegisterBankInfo.cpp
   Z80RegisterInfo.cpp
   Z80ShiftRotateChain.cpp
-  Z80PinAluAccumulator.cpp
-  Z80KeepLoopPointerInPair.cpp
-  Z80PinLoopPointer.cpp
-  Z80HighByteFirstBranch.cpp
-  Z80RemoveJumpToNext.cpp
-  Z80PruneCallFrameDefs.cpp
-  Z80ReorderTestDec.cpp
-  Z80SplitDjnzCounters.cpp
+  Z80StaticFrameAlloc.cpp
   Z80Subtarget.cpp
   Z80TargetMachine.cpp
   Z80TargetObjectFile.cpp
-  Z80TargetTransformInfo.cpp
 
   DEPENDS
   intrinsics_gen
@@ -131,14 +111,7 @@ function(z80_build_builtins TRIPLE SUBDIR CRT0_ASM RT_DIR SDAS)
   list(APPEND ALL_RUNTIME_OUTPUTS ${OUT}/${SUBDIR}_crt0.o)
 
   file(GLOB RT_SOURCES ${RT_DIR}/*.asm)
-  # Exclude crt0 (linked separately) and all CP/M-.COM-specific variants.
-  # cpm_putchar.asm exports _putchar via BDOS as an ALTERNATE to the port-1
-  # putchar.asm; bundling both into one archive yields a duplicate _putchar
-  # that sdldz80 rejects ("Multiple definition of _putchar") when the archive
-  # is linked positionally.  The CP/M variants belong to the cpm_crt0 + cpm.ld
-  # path, not the general runtime.  Mirrors the exclusion in the test-runner's
-  # ELF staging (z80-utils/test-runner/src/runtime.rs: skip stem "cpm_*").
-  list(FILTER RT_SOURCES EXCLUDE REGEX "(crt0.*|cpm_.*)\\.asm$")
+  list(FILTER RT_SOURCES EXCLUDE REGEX "crt0.*\\.asm$")
   set(RT_OBJS "")
   foreach(src ${RT_SOURCES})
     get_filename_component(name ${src} NAME_WE)

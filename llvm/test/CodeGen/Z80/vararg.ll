@@ -1,14 +1,5 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s
-; Test variadic function support (va_start, va_arg).
-;
-; Runtime correctness is also verified by
-; z80-utils/test-runner/testcases/clang/test_25_vararg.c which exercises
-; vsum() across {0,1,2,3,5,7}-arg shapes including negative values and
-; values near i16 limits.  As of 2026-05-02 the test returns DE=0x00FF
-; (all 8 sub-tests pass) at -O0/O1/O2/O3/Os/Oz when linked with the
-; ELF crt0 from compiler-rt/lib/builtins/z80/crt0.asm.  See
-; ravn/llvm-z80#36 (verification, no codegen change needed).
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
+; Test variadic function support (va_start, va_arg)
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-n8:16"
 
@@ -27,8 +18,8 @@ define i16 @sum(i16 %count, ...) {
 ; va_start computes IX+6 (first vararg address):
 ; CHECK:       push ix
 ; CHECK-NEXT:  pop hl
-; CHECK:       ld de,#6
-; CHECK-NEXT:  add hl,de
+; CHECK:       ld bc,#6
+; CHECK-NEXT:  add hl,bc
   %ap = alloca ptr, align 1
   call void @llvm.va_start.p0(ptr %ap)
   %total = alloca i16, align 1

@@ -1,31 +1,49 @@
 ; SPDX-License-Identifier: Zlib OR Apache-2.0 WITH LLVM-exception OR MIT
 	.area _CODE
 	.globl _memcpy
-	; _memcpy_done is a local label (no .globl) so `jr z` stays 2 bytes
-	; rather than being promoted to a 3-byte relocated `jp z`.
+	.globl ___memcpy
+	.globl ___z80_memcpy_builtin
 
 ;===------------------------------------------------------------------------===;
-; _memcpy - Copy memory block
+; ___z80_memcpy_builtin - Copy memory block (CallingConv::Z80_Builtin)
+;
+; Input:  HL = dest, DE = src, BC = size
+; Output: none
+;
+; LDIR copies (HL)->(DE), the opposite of the C argument order, and decrements
+; BC before testing it, so a zero size would copy 65536 bytes.
+;===------------------------------------------------------------------------===;
+___z80_memcpy_builtin:
+	ex	de, hl		; HL = src, DE = dest (LDIR format)
+	ld	a, b
+	or	c
+	ret	z		; size == 0
+	ldir
+	ret
+
+;===------------------------------------------------------------------------===;
+; _memcpy - Copy memory block, C entry point
 ;
 ; Input:  HL = dest, DE = src, stack = size (i16)
 ; Output: DE = dest (original)
-; Uses LDIR: copies (HL)->(DE), HL++, DE++, BC--, repeat until BC=0
-; Note: LDIR source is HL, dest is DE, so we swap HL/DE from calling conv.
 ;
-; The stack arg (size) is read via the `pop iy` idiom rather than an IX frame:
-; IY is caller-saved (Z80CallingConv.td: Z80_CSR = CalleeSavedRegs<(add IX)> --
-; only IX is callee-saved), so this trampoline may clobber it freely. This is
-; ~17 B tighter than push ix / ld ix,0 / add ix,sp / ld b,5(ix).
+; SDCC lowers a struct assignment to __memcpy and keeps both names in one
+; library module, so defining only one of them pulls in SDCC's memcpy too and
+; the link fails on the duplicate.
 ;===------------------------------------------------------------------------===;
 _memcpy:
-	pop	iy		; return address (IY is caller-saved)
-	pop	bc		; BC = size (callee-cleanup of the stack arg)
-	ex	de, hl		; HL = src, DE = dest (LDIR format)
-	push	de		; save original dest for return value
-	ld	a, b
-	or	c
-	jr	z, _memcpy_done
-	ldir
-_memcpy_done:
+___memcpy:
+	push	ix
+	ld	ix, #0
+	add	ix, sp
+	ld	c, 4(ix)	; BC = size (3rd arg from stack)
+	ld	b, 5(ix)
+	push	hl		; save dest for return value
+	call	___z80_memcpy_builtin
 	pop	de		; DE = original dest (return value)
-	jp	(iy)
+	pop	ix
+	pop	bc		; save return address
+	inc	sp
+	inc	sp		; callee-cleanup: skip 2 bytes of stack args
+	push	bc		; re-push return address
+	ret

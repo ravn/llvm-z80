@@ -15,18 +15,15 @@
 //   or a         ; redundant — removed by this pass
 //   jr z, .label
 //
-// This pass removes OR_A when the Z flag is already valid from a preceding
-// instruction that defines FLAGS and operates on A.
-//
-// Cross-block: if ALL predecessors end with Z valid for A (no flag/A
-// clobbering between the last flag-setter and block exit), the successor
-// can start with ZFlagValid = true. This catches loop headers where both
-// the entry and back-edge set Z for A.
+// This pass removes OR A when a preceding instruction has already left every
+// flag exactly as OR A would.
 //
 //===----------------------------------------------------------------------===//
 
 #include "Z80PostRACompareMerge.h"
 #include "MCTargetDesc/Z80MCTargetDesc.h"
+#include "Z80InstrInfo.h"
+#include "Z80Subtarget.h"
 
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -64,6 +61,124 @@ static bool definesFlags(const MachineInstr &MI) {
   return false;
 }
 
+/// Whether Z, S and P/V describe the value now sitting in A after \p MI.
+///
+/// This is the question OR A answers, so an instruction on this list has
+/// already answered it. What is deliberately absent:
+///
+///   - The comparisons report Z for A minus their operand, not for A. Reading
+///     one would turn "if (a == 0)" into "if (a == operand)".
+///   - CPL and the accumulator rotates RLCA/RRCA/RLA/RRA write A and the flags
+///     together but leave Z untouched, so Z still describes whatever ran
+///     before them.
+///   - POP AF writes A and the flags together, but its Z is whatever was
+///     pushed rather than anything about the A it just loaded.
+static bool setsZeroFlagFromA(const MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  case Z80::AND_r:
+  case Z80::AND_n:
+  case Z80::AND_HLind:
+  case Z80::AND_IXd:
+  case Z80::AND_IYd:
+  case Z80::OR_r:
+  case Z80::OR_n:
+  case Z80::OR_HLind:
+  case Z80::OR_IXd:
+  case Z80::OR_IYd:
+  case Z80::XOR_r:
+  case Z80::XOR_n:
+  case Z80::XOR_HLind:
+  case Z80::XOR_IXd:
+  case Z80::XOR_IYd:
+  case Z80::ADD_A_r:
+  case Z80::ADD_A_n:
+  case Z80::ADD_A_HLind:
+  case Z80::ADD_A_IXd:
+  case Z80::ADD_A_IYd:
+  case Z80::ADC_A_r:
+  case Z80::ADC_A_n:
+  case Z80::ADC_A_HLind:
+  case Z80::ADC_A_IXd:
+  case Z80::ADC_A_IYd:
+  case Z80::SUB_r:
+  case Z80::SUB_n:
+  case Z80::SUB_HLind:
+  case Z80::SUB_IXd:
+  case Z80::SUB_IYd:
+  case Z80::SBC_A_r:
+  case Z80::SBC_A_n:
+  case Z80::SBC_A_HLind:
+  case Z80::SBC_A_IXd:
+  case Z80::SBC_A_IYd:
+  case Z80::NEG:
+    return true;
+  case Z80::INC_r:
+  case Z80::DEC_r:
+    return MI.getOperand(0).getReg() == Z80::A;
+  default:
+    return false;
+  }
+}
+
+/// Whether \p MI also leaves the carry clear, which is the other half of what
+/// OR A does. The logical operations do; the arithmetic ones leave a carry
+/// that means something, and INC/DEC leave the carry alone entirely.
+static bool clearsCarry(const MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  case Z80::AND_r:
+  case Z80::AND_n:
+  case Z80::AND_HLind:
+  case Z80::AND_IXd:
+  case Z80::AND_IYd:
+  case Z80::OR_r:
+  case Z80::OR_n:
+  case Z80::OR_HLind:
+  case Z80::OR_IXd:
+  case Z80::OR_IYd:
+  case Z80::XOR_r:
+  case Z80::XOR_n:
+  case Z80::XOR_HLind:
+  case Z80::XOR_IXd:
+  case Z80::XOR_IYd:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// Whether \p MI reads the flags and asks only about Z.
+static bool testsOnlyZeroFlag(const MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  case Z80::JP_Z_nn:
+  case Z80::JP_NZ_nn:
+  case Z80::JR_Z_e:
+  case Z80::JR_NZ_e:
+  case Z80::CALL_Z_nn:
+  case Z80::CALL_NZ_nn:
+  case Z80::RET_Z:
+  case Z80::RET_NZ:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// Whether the carry that OR A would have cleared is read before something
+/// writes the flags again. \p MI is the OR A under consideration.
+static bool carryIsReadAfter(MachineBasicBlock::iterator MI,
+                             MachineBasicBlock &MBB,
+                             const TargetRegisterInfo *TRI) {
+  for (auto I = std::next(MI), E = MBB.end(); I != E; ++I) {
+    if (I->readsRegister(Z80::FLAGS, TRI) && !testsOnlyZeroFlag(*I))
+      return true;
+    if (I->isInlineAsm())
+      return true;
+    if (I->definesRegister(Z80::FLAGS, TRI))
+      return false;
+  }
+  return Z80::isLiveAt(MBB, MBB.end(), Z80::FLAGS, TRI);
+}
+
 /// Returns true if MI modifies the A register without setting FLAGS.
 static bool modifiesAWithoutFlags(const MachineInstr &MI) {
   bool ModifiesA = false;
@@ -76,94 +191,50 @@ static bool modifiesAWithoutFlags(const MachineInstr &MI) {
   return ModifiesA && !definesFlags(MI);
 }
 
-/// Returns true if MI sets the Z flag to reflect (A == 0) — i.e., the
-/// instruction defines A and FLAGS together, and the Z flag of the result
-/// is the standard "result-is-zero" indication. This is what `OR A`
-/// computes, so any subsequent OR A is redundant.
-///
-/// CP r / CP n / CP (HL) / CP (IX+d) do NOT qualify: they leave A
-/// unchanged and set Z based on (A - operand), i.e. (A == operand).
-/// A subsequent OR A would test (A == 0), which is a different question.
-/// Treating CP as Z-for-A here was a long-standing miscompile.
-static bool setsZForA(const MachineInstr &MI) {
-  if (!definesFlags(MI))
-    return false;
-  // POP_AF defines both $a and $flags, but the flags are the value RESTORED
-  // from the stack (whatever PUSH_AF saved earlier), NOT a Z-reflects-(A==0)
-  // result.  A subsequent `OR A` is therefore NOT redundant after POP_AF.
-  // #265.  Example (from a static-stack reload-via-A that preserves A around
-  // the clobber):  call __umodqi3 (A=i%7); push af; ld a,(slot); ld d,a;
-  // pop af; or a; jr nz  -- the `or a` re-derives Z from A=i%7 and must survive.
-  if (MI.getOpcode() == Z80::POP_AF)
-    return false;
-  for (const MachineOperand &MO : MI.operands()) {
-    if (MO.isReg() && MO.isDef() && MO.getReg() == Z80::A)
-      return true;
-  }
-  if (MI.getDesc().hasImplicitDefOfPhysReg(Z80::A))
-    return true;
-  return false;
-}
-
-/// Scan a block and return the ZFlagValid state at its exit.
-/// Also optionally collect OR_A instructions to erase when ZFlagValid.
-static bool scanBlock(MachineBasicBlock &MBB, bool ZFlagValid,
-                      SmallVectorImpl<MachineInstr *> *ToErase) {
-  for (MachineInstr &MI : MBB) {
-    if (MI.getOpcode() == Z80::OR_A && ZFlagValid) {
-      if (ToErase)
-        ToErase->push_back(&MI);
-      continue;
-    }
-
-    if (MI.isCall() || MI.isReturn() || MI.isInlineAsm() || MI.isPseudo()) {
-      ZFlagValid = false;
-      continue;
-    }
-
-    // Branches don't clobber flags — they read them. Don't reset here;
-    // flags remain valid for the exit state (fall-through to successor).
-    if (MI.isBranch())
-      continue;
-
-    if (definesFlags(MI)) {
-      ZFlagValid = setsZForA(MI);
-      continue;
-    }
-
-    if (modifiesAWithoutFlags(MI))
-      ZFlagValid = false;
-  }
-  return ZFlagValid;
-}
-
 bool Z80PostRACompareMerge::runOnMachineFunction(MachineFunction &MF) {
+  const TargetRegisterInfo *TRI =
+      MF.getSubtarget<Z80Subtarget>().getRegisterInfo();
   bool Changed = false;
 
-  // Pass 1: compute ZFlagValidAtExit for each block (no erasure).
-  DenseMap<MachineBasicBlock *, bool> ExitValid;
-  for (MachineBasicBlock &MBB : MF)
-    ExitValid[&MBB] = scanBlock(MBB, /*ZFlagValid=*/false, nullptr);
-
-  // Pass 2: for each block, check if ALL predecessors have ZFlagValid
-  // at exit. If so, start with ZFlagValid = true. Then erase redundant OR A.
   for (MachineBasicBlock &MBB : MF) {
-    bool EntryValid = false;
-    if (!MBB.pred_empty()) {
-      EntryValid = true;
-      for (MachineBasicBlock *Pred : MBB.predecessors()) {
-        if (!ExitValid[Pred]) {
-          EntryValid = false;
-          break;
-        }
+    // The instruction that left Z describing what A currently holds, if one
+    // has run since the last thing that disturbed either.
+    const MachineInstr *ZSource = nullptr;
+    SmallVector<MachineInstr *, 4> ToErase;
+
+    for (MachineInstr &MI : MBB) {
+      // A debug instruction stands between nothing, and letting it clear the
+      // state below would make -g change the code that comes out.
+      if (MI.isDebugInstr())
+        continue;
+
+      // OR A re-tests what A already holds and clears the carry. Where
+      // something has already said the same about Z, the instruction is
+      // redundant as long as nobody wanted the carry it clears.
+      if (MI.getOpcode() == Z80::OR_r && MI.getOperand(0).getReg() == Z80::A &&
+          ZSource &&
+          (clearsCarry(*ZSource) || !carryIsReadAfter(MI, MBB, TRI))) {
+        LLVM_DEBUG(dbgs() << "  Removing redundant: " << MI);
+        ToErase.push_back(&MI);
+        continue;
       }
+
+      if (MI.isCall() || MI.isReturn() || MI.isInlineAsm() ||
+          MI.isBranch() || MI.isPseudo()) {
+        ZSource = nullptr;
+        continue;
+      }
+
+      if (definesFlags(MI)) {
+        ZSource = setsZeroFlagFromA(MI) ? &MI : nullptr;
+        continue;
+      }
+
+      if (modifiesAWithoutFlags(MI))
+        ZSource = nullptr;
     }
 
-    SmallVector<MachineInstr *, 4> ToErase;
-    scanBlock(MBB, EntryValid, &ToErase);
-
     for (MachineInstr *MI : ToErase) {
-      LLVM_DEBUG(dbgs() << "  Removing redundant: " << *MI);
       MI->eraseFromParent();
       Changed = true;
     }

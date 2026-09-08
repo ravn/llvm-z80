@@ -89,7 +89,7 @@ namespace clang {
     TST_typeof_unqualExpr, // C23 typeof_unqual(expression)
     TST_decltype,          // C++11 decltype
 #define TRANSFORM_TYPE_TRAIT_DEF(_, Trait) TST_##Trait,
-#include "clang/Basic/TransformTypeTraits.def"
+#include "clang/Basic/BuiltinTraits.inc"
     TST_auto,            // C++11 auto
     TST_decltype_auto,   // C++1y decltype(auto)
     TST_auto_type,       // __auto_type extension
@@ -289,7 +289,6 @@ namespace clang {
     CC_AAPCS,              // __attribute__((pcs("aapcs")))
     CC_AAPCS_VFP,          // __attribute__((pcs("aapcs-vfp")))
     CC_IntelOclBicc,       // __attribute__((intel_ocl_bicc))
-    CC_SpirFunction,       // default for OpenCL functions on SPIR target
     CC_DeviceKernel,       // __attribute__((device_kernel))
     CC_Swift,              // __attribute__((swiftcall))
     CC_SwiftAsync,         // __attribute__((swiftasynccall))
@@ -313,14 +312,16 @@ namespace clang {
     CC_RISCVVLSCall_16384, // __attribute__((riscv_vls_cc(16384)))
     CC_RISCVVLSCall_32768, // __attribute__((riscv_vls_cc(32768)))
     CC_RISCVVLSCall_65536, // __attribute__((riscv_vls_cc(65536)))
+    // The Z80 SDCC/z88dk conventions.  Each is an argument-passing base plus
+    // the orthogonal z88dk_callee modifier, so the combinations below have no
+    // single attribute spelling their name.  See composeZ80CallingConvs in
+    // SemaType.cpp.
     CC_Z80SDCCCall0,       // __attribute__((sdcccall(0)))
-    CC_Z80AllReg,          // __attribute__((z80_allreg))
-    CC_Z80FastCall,        // __attribute__((z80_fastcall))
-    CC_Z80Callee,          // __attribute__((z80_callee))
-    CC_Z80SmallC,          // __attribute__((z80_smallc))
-    CC_Z80SmallCCallee,    // __attribute__((z80_smallc)) __attribute__((z80_callee))
-                           // -- the composition of the L2R-order and callee-cleanup
-                           // axes; not spelled by any single attribute (ravn/llvm-z80#282)
+    CC_Z80SmallC,          // __attribute__((smallc))
+    CC_Z80Z88dkFastCall,   // __attribute__((z88dk_fastcall))
+    CC_Z80Z88dkCallee,     // __attribute__((z88dk_callee)), base sdcccall(1)
+    CC_Z80SDCCCall0Callee, // sdcccall(0) + z88dk_callee
+    CC_Z80SmallCCallee,    // smallc + z88dk_callee
   };
 
   /// Checks whether the given calling convention supports variadic
@@ -333,11 +334,18 @@ namespace clang {
     case CC_X86RegCall:
     case CC_X86Pascal:
     case CC_X86VectorCall:
-    case CC_SpirFunction:
     case CC_DeviceKernel:
     case CC_Swift:
     case CC_SwiftAsync:
     case CC_M68kRTD:
+    // SDCC's __smallc pushes arguments left-to-right, which leaves a variadic
+    // callee no way to find where the fixed arguments end.
+    case CC_Z80SmallC:
+    case CC_Z80SmallCCallee:
+    // A callee that pops its own arguments cannot pop a count only the caller
+    // knows, so __z88dk_callee rules out varargs whatever its base.
+    case CC_Z80Z88dkCallee:
+    case CC_Z80SDCCCall0Callee:
       return false;
     default:
       return true;

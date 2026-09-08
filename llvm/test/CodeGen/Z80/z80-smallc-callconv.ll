@@ -1,14 +1,13 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
 ;
-; SDCC has two distinct stack calling conventions with OPPOSITE argument order:
-;   __sdcccall(0) (cc128): right-to-left push -> first arg nearest return addr.
-;   __smallc      (cc132): left-to-right push -> last  arg nearest return addr.
-; They are identical for a single argument.  z88dk's classic C library is
-; compiled __smallc, so clang needs cc132 to call it correctly (ravn/llvm-z80#279,
-; ravn/z88dk#41).  Constants: 0x1111=4369, 0x2222=8738, 0x3333=13107.
+; SDCC has two distinct calling conventions with OPPOSITE argument order:
+;   __sdcccall(0) (cc128): all args on stack, right-to-left push.
+;   __smallc      (cc129): all args on stack, left-to-right push (first arg deepest).
+; They are identical for a single argument.  z88dk's Small-C library is
+; compiled __smallc.  Constants: 0x1111=4369, 0x2222=8738, 0x3333=13107.
 
 declare cc128 i16 @f0(i16, i16, i16)
-declare cc132 i16 @fs(i16, i16, i16)
+declare cc129 i16 @fs(i16, i16, i16)
 
 ; sdcccall(0): push 3rd, 2nd, 1st (first arg ends nearest the return address).
 define void @call_sdcccall0() {
@@ -24,7 +23,7 @@ define void @call_sdcccall0() {
   ret void
 }
 
-; __smallc: push 1st, 2nd, 3rd (last arg ends nearest the return address).
+; __smallc: push 1st, 2nd, 3rd (first arg ends deepest, last at top).
 define void @call_smallc() {
 ; CHECK-LABEL: _call_smallc:
 ; CHECK:       ld hl,#4369
@@ -34,6 +33,6 @@ define void @call_smallc() {
 ; CHECK:       ld hl,#13107
 ; CHECK:       push hl
 ; CHECK:       call _fs
-  call cc132 i16 @fs(i16 4369, i16 8738, i16 13107)
+  call cc129 i16 @fs(i16 4369, i16 8738, i16 13107)
   ret void
 }

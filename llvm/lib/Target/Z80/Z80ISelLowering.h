@@ -52,13 +52,22 @@ public:
     return !Fn->getFnAttribute("no-jump-tables").getValueAsBool();
   }
 
+  /// The wide compares this target legalizes to produce a zero-or-one
+  /// boolean, which nothing else can know about a target opcode.
+  void computeKnownBitsForTargetInstr(GISelValueTracking &Analysis, Register R,
+                                      KnownBits &Known,
+                                      const APInt &DemandedElts,
+                                      const MachineRegisterInfo &MRI,
+                                      unsigned Depth = 0) const override;
+
   ConstraintType getConstraintType(StringRef Constraint) const override;
 
-  MVT getRegisterType(MVT VT) const override;
+  MVT getRegisterTypeForCallingConv(LLVMContext &Context, CallingConv::ID CC,
+                                    EVT VT) const override;
 
-  unsigned
-  getNumRegisters(LLVMContext &Context, EVT VT,
-                  std::optional<MVT> RegisterVT = std::nullopt) const override;
+  unsigned getNumRegistersForCallingConv(LLVMContext &Context,
+                                         CallingConv::ID CC,
+                                         EVT VT) const override;
 
   bool preferNarrowTypes() const override { return true; }
 

@@ -12,34 +12,20 @@
 
 #include "Z80.h"
 #include "clang/Basic/MacroBuilder.h"
-#include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
+#include "llvm/ADT/STLExtras.h"
 
-using namespace clang;
 using namespace clang::targets;
-
-static constexpr int NumBuiltins =
-    clang::Z80::LastTSBuiltin - Builtin::FirstTSBuiltin;
-
-#define GET_BUILTIN_STR_TABLE
-#include "clang/Basic/BuiltinsZ80.inc"
-#undef GET_BUILTIN_STR_TABLE
-
-static constexpr Builtin::Info BuiltinInfos[] = {
-#define GET_BUILTIN_INFOS
-#include "clang/Basic/BuiltinsZ80.inc"
-#undef GET_BUILTIN_INFOS
-};
-static_assert(std::size(BuiltinInfos) == NumBuiltins);
-
-SmallVector<Builtin::InfosShard> Z80TargetInfo::getTargetBuiltins() const {
-  return {{&BuiltinStrings, BuiltinInfos}};
-}
 
 Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
     : TargetInfo(Triple) {
   // Must match Z80TargetMachine data layout
-  resetDataLayout("e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16");
+  resetDataLayout("e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-ve-n8:16");
+
+  // The data layout mangles globals with a leading underscore (sdas
+  // convention); the frontend prefix must agree, and a non-empty prefix is
+  // also what makes asm("name") renames emit their exact spelling.
+  UserLabelPrefix = "_";
 
   PointerWidth = 16;
   PointerAlign = 8;
@@ -54,21 +40,24 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
   FloatAlign = 8;
   DoubleAlign = 8;
   LongDoubleAlign = 8;
-  // `double`/`long double` are 32-bit IEEE-754 binary32, same width and
-  // format as `float` -- deliberate for this 8-bit target: the only
-  // reusable host-side float runtime is z88dk's `math32` (32-bit,
-  // IEEE-754-compatible); a real 64-bit binary64 would need its own
-  // from-scratch soft-float library with no equivalent host implementation
-  // to bridge to. The base TargetInfo default (double=64/IEEEdouble) would
-  // instead emit __adddf3/__muldf3/... (64-bit) libcalls that nothing on
-  // this target implements. Verified 2026-07-28: baseline (before this
-  // change) emitted `call ___adddf3` and `sizeof(double) == 8`.
-  DoubleWidth = 32;
-  DoubleFormat = &llvm::APFloat::IEEEsingle();
-  LongDoubleWidth = 32;
-  LongDoubleFormat = &llvm::APFloat::IEEEsingle();
+  // The fixed-point types (_Accum/_Fract) and the storage-only float types
+  // (__fp16, __bf16) have their own layout fields and default to their
+  // natural alignment; everything is byte-aligned here.
+  ShortAccumAlign = 8;
+  AccumAlign = 8;
+  LongAccumAlign = 8;
+  ShortFractAlign = 8;
+  FractAlign = 8;
+  LongFractAlign = 8;
+  HalfAlign = 8;
+  BFloat16Align = 8;
+  // Vectors take their element's byte alignment (the "ve" datalayout token);
+  // their natural alignment cannot be honored on a byte-aligned stack.
+  VectorsAreElementAligned = true;
+  MaxVectorAlign = 8;
   SuitableAlign = 8;
   DefaultAlignForAttributeAligned = 8;
+  MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 8;
   SizeType = UnsignedInt;
   PtrDiffType = SignedInt;
   IntPtrType = SignedInt;
@@ -82,36 +71,6 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
 
 bool Z80TargetInfo::validateAsmConstraint(
     const char *&Name, TargetInfo::ConstraintInfo &Info) const {
-  // Braced register constraints: {bc}, {de}, {hl}, {af}, {ix}, {iy}, {sp}.
-  // The caller iterates Name character by character; we must consume the
-  // entire {regname} sequence including the closing brace.
-  if (*Name == '{') {
-    const char *End = strchr(Name, '}');
-    if (End) {
-      StringRef RegName(Name + 1, End - Name - 1);
-      if (RegName == "bc" || RegName == "de" || RegName == "hl" ||
-          RegName == "af" || RegName == "ix" || RegName == "iy" ||
-          RegName == "sp" ||
-          RegName == "a" || RegName == "b" || RegName == "c" ||
-          RegName == "d" || RegName == "e" || RegName == "h" ||
-          RegName == "l") {
-        Name = End; // advance past closing brace (caller advances past first)
-        Info.setAllowsRegister();
-        return true;
-      }
-    }
-  }
-  // Multi-character register pair constraints (bc, de, hl, af, ix, iy, sp).
-  // Name points to the first char; advance past the second on success.
-  if (Name[0] && Name[1]) {
-    StringRef R(Name, 2);
-    if (R == "bc" || R == "de" || R == "hl" || R == "af" ||
-        R == "ix" || R == "iy" || R == "sp") {
-      ++Name; // advance past second char (caller advances past first)
-      Info.setAllowsRegister();
-      return true;
-    }
-  }
   switch (*Name) {
   default:
     return false;
@@ -127,35 +86,6 @@ bool Z80TargetInfo::validateAsmConstraint(
     Info.setAllowsRegister();
     return true;
   }
-}
-
-// Rewrite a bare two-letter register-pair name (hl, bc, de, af, ix, iy, sp)
-// into the braced specific-register form ({hl}, ...) for the emitted IR.
-// validateAsmConstraint accepts bare "hl", but LLVM's IR-level InlineAsm
-// parser splits a multi-letter constraint into single-register *alternatives*
-// ("hl" -> h|l), which then can't hold a 16-bit operand and fatally aborts
-// IRTranslator.  Emitting the braced form keeps it as one specific-register
-// token (the path that already works).  Braced constraints are passed through
-// verbatim so their inner letters are not re-interpreted as pair names.
-std::string Z80TargetInfo::convertConstraint(const char *&Constraint) const {
-  if (*Constraint == '{') {
-    std::string Result = "{";
-    while (*Constraint != '}' && Constraint[1]) {
-      ++Constraint;
-      Result += *Constraint;
-    }
-    // Constraint now points at '}'; the caller's loop advances past it.
-    return Result;
-  }
-  if (Constraint[0] && Constraint[1]) {
-    StringRef R(Constraint, 2);
-    if (R == "bc" || R == "de" || R == "hl" || R == "af" || R == "ix" ||
-        R == "iy" || R == "sp") {
-      ++Constraint; // consume the second char (caller advances past the first)
-      return std::string("{") + R.str() + "}";
-    }
-  }
-  return std::string(1, *Constraint);
 }
 
 static const char *const Z80GCCRegNames[] = {
@@ -178,12 +108,13 @@ Z80TargetInfo::checkCallingConvention(CallingConv CC) const {
   switch (CC) {
   case CC_C:
   case CC_Z80SDCCCall0:
-  case CC_Z80AllReg:
-  case CC_Z80FastCall:
-  case CC_Z80Callee:
   case CC_Z80SmallC:
+  case CC_Z80Z88dkCallee:
+  case CC_Z80SDCCCall0Callee:
   case CC_Z80SmallCCallee:
     return CCCR_OK;
+  case CC_Z80Z88dkFastCall:
+    return getTriple().isSM83() ? CCCR_Warning : CCCR_OK;
   default:
     return CCCR_Warning;
   }
@@ -199,24 +130,25 @@ void Z80TargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__z80__");
     Builder.defineMacro("__Z80__");
   }
+  // compiler-rt/{z80,sm83} has no complex helpers, so `a * b` and `a / b` on
+  // _Complex would only fail at link time with an undefined __mulsc3 or
+  // __divsc3. Say so up front instead; portable code guards <complex.h> on
+  // this macro.
+  Builder.defineMacro("__STDC_NO_COMPLEX__");
+
   // Z80/SM83 uses sdasz80 .rel object format, not ELF.
   // Do not define __ELF__.
 }
 
-bool Z80TargetInfo::initFeatureMap(
-    llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags, StringRef CPU,
-    const std::vector<std::string> &FeaturesVec) const {
-  bool Ok = TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
-  // The base Z80 ISA is implied for the z80 triple but not for sm83 (Game Boy),
-  // which has no interrupt modes and no I register.  This gates the z80-only
-  // builtins __builtin_z80_im2 / __builtin_z80_set_i (Features = "z80" in
-  // BuiltinsZ80.td) so Sema rejects them on sm83 with a clean diagnostic
-  // instead of a backend cannot-select.  ravn/llvm-z80#208.
-  if (!getTriple().isSM83())
-    Features["z80"] = true;
-  return Ok;
-}
-
-bool Z80TargetInfo::hasFeature(StringRef Feature) const {
-  return Feature == "z80" ? !getTriple().isSM83() : false;
+bool Z80TargetInfo::isValidFeatureName(StringRef Feature) const {
+  // The subtarget features Z80Features.td declares, which must be listed here
+  // to be spelled in a target attribute: without this the base class accepts
+  // every name, a misspelling reaches the backend as a feature it does not
+  // know, and the attribute quietly does nothing. Keep in step with that file.
+  static constexpr StringRef Known[] = {
+      "z80",          "z180",         "r800",
+      "ez80",         "sm83",         "undocumented",
+      "static-frame", "inline-i16-runtime",
+  };
+  return llvm::is_contained(Known, Feature);
 }

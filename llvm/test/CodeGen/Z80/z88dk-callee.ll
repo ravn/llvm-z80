@@ -1,98 +1,141 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 ;
-; IMPLEMENTED (cc 131 = CallingConv::Z80_Z88dkCallee): __z88dk_callee.  Arguments
-; are pushed on the stack exactly like __sdcccall(0), but the CALLEE cleans them
-; up on return (Z80 has no `ret N`, so the backend uses the RET_CLEANUP pseudo).
-; Return values use the z88dk classic registers (i8=L, i16=HL, i32=DE:HL), same
-; as sdcccall(0).  Callee cleanup is forced regardless of return size (unlike
-; sdcccall(1), which caller-cleans for >16-bit returns) -- see callee_reti32.
+; __z88dk_callee on its own (cc 131 = CallingConv::Z80_Z88dkCallee).  In SDCC
+; the keyword is a MODIFIER over whichever __sdcccall level is in effect, not a
+; convention of its own, so a bare __z88dk_callee keeps __sdcccall(1) argument
+; passing and return registers and only moves stack cleanup to the callee.
+; Spelling it __sdcccall(0) __z88dk_callee instead selects cc 132, where every
+; argument goes on the stack, see sdcccall0-callee.ll.
 ;
-; The pivotal invariant is EXACTLY-ONCE cleanup: the callee pops the N argument
-; bytes, and the caller does NOT.  A stale/no-op convention would either
-; double-pop (corruption) or never pop (leak).
-;
-; This started life as an expected-failure test written before the backend
-; support; the expected-failure directive was removed in the same changeset
-; that wired up the convention (leaving it stale would make lit report XPASS and
-; fail CI, the intended tripwire).
+; What makes cc 131 distinct from plain __sdcccall(1) is that cleanup is forced
+; regardless of the return size; __sdcccall(1) hands it back to the caller once
+; the return exceeds 16 bits.  Verified against SDCC 4.6.0: for a long return
+; `__sdcccall(1)` ends `pop ix / ret` while `__sdcccall(1) __z88dk_callee` ends
+; `pop ix / pop iy / pop af / jp (iy)`.
 
-; ============================================================================
-; (a) caller side -- pushes the args, does NOT clean up (the callee will)
-; ============================================================================
+declare cc 131 void @sink3(i16, i16, i16)
+declare cc 131 void @sink4(i16, i16, i16, i16)
 
-declare cc 131 void @sink2(i16, i16)
-
+; Caller side: the first two arguments still travel in HL and DE and only the
+; third is pushed, this is what separates cc 131 from cc 132.  The caller
+; does NOT clean up.
 ; CHECK-LABEL: _call_callee:
+; CHECK:      ld hl,#13107
 ; CHECK:      push hl
-; CHECK:      push hl
-; CHECK:      call _sink2
+; CHECK-DAG:  ld hl,#4369
+; CHECK-DAG:  ld de,#8738
+; CHECK:      call _sink3
 ; CHECK-NOT:  pop
 ; CHECK-NOT:  inc sp
 ; CHECK:      ret
 define void @call_callee() {
-  call cc 131 void @sink2(i16 1, i16 2)
+  call cc 131 void @sink3(i16 4369, i16 8738, i16 13107)
   ret void
 }
 
-; ============================================================================
-; (b) callee side -- reads args off the stack frame and callee-cleans them
-; ============================================================================
-
-; void return (HL dead): args come from 4(ix)/6(ix); cleanup uses the EX trick
-; (pop return addr into HL, drop the 4 arg bytes with inc sp x2, restore return
-; addr with ex (sp),hl).
-; CHECK-LABEL: _callee_void:
-; CHECK:      4(ix)
-; CHECK:      6(ix)
-; CHECK:      pop hl
-; CHECK:      inc sp
-; CHECK:      inc sp
-; CHECK:      ex (sp),hl
-; CHECK-NEXT: ret
-define cc 131 void @callee_void(i16 %a, i16 %b) {
-  %s = add i16 %a, %b
-  store i16 %s, ptr inttoptr(i16 16384 to ptr)
+; Caller side with 4 args: arg3 and arg4 overflow to the stack.
+; Overflow args are pushed right-to-left (arg4 first/deepest, arg3 second).
+; CHECK-LABEL: _call_callee4:
+; CHECK:      ld hl,#17476
+; CHECK-NEXT: push hl
+; CHECK:      ld hl,#13107
+; CHECK-NEXT: push hl
+; CHECK-DAG:  ld hl,#4369
+; CHECK-DAG:  ld de,#8738
+; CHECK:      call _sink4
+; CHECK-NOT:  pop
+; CHECK-NOT:  inc sp
+; CHECK:      ret
+define void @call_callee4() {
+  call cc 131 void @sink4(i16 4369, i16 8738, i16 13107, i16 17476)
   ret void
 }
 
-; i16 return: value comes back in HL (not DE, so no `ex de,hl`), and because HL
-; holds the return value the cleanup uses the BC fallback (pop return addr into
-; BC, drop 4 arg bytes with inc sp x4, push BC back).
-; CHECK-LABEL: _callee_reti16:
-; CHECK:      4(ix)
-; CHECK-NOT:  ex de,hl
-; CHECK:      pop bc
-; CHECK:      inc sp
-; CHECK:      inc sp
-; CHECK:      inc sp
-; CHECK:      inc sp
-; CHECK:      push bc
-; CHECK-NEXT: ret
-define cc 131 i16 @callee_reti16(i16 %a, i16 %b) {
-  %s = add i16 %a, %b
-  ret i16 %s
-}
-
-; i32 return: callee cleanup is FORCED even though the return is > 16 bits.
-; sdcccall(1) would caller-clean here; cc 131 must still pop its own 4 arg
-; bytes (BC-fallback pop/push).  Return value is in DE:HL.
+; Callee side with a 32-bit return: __sdcccall(1) alone would let the CALLER
+; pop the two argument bytes here, but the modifier forces the callee to do it.
+; Expression a-2b-c has coefficients +1,-2,-1 (all distinct), so any register
+; or stack-slot swap produces a detectably wrong result.
+; a is in HL, b is in DE, c is at SP+2 (arg3 stack overflow, shallower).
 ; CHECK-LABEL: _callee_reti32:
-; CHECK:      4(ix)
+; CHECK:      ld c,l
+; CHECK-NEXT: ld b,h
+; CHECK:      add hl,hl
+; CHECK:      ld hl,#4
+; CHECK-NEXT: add hl,sp
+; CHECK:      sbc hl,de
 ; CHECK:      pop bc
-; CHECK:      push bc
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: push bc
 ; CHECK-NEXT: ret
-define cc 131 i32 @callee_reti32(i16 %a, i16 %b) {
-  %z = zext i16 %a to i32
+define cc 131 i32 @callee_reti32(i16 %a, i16 %b, i16 %c) {
+  %b2 = shl i16 %b, 1
+  %ab = sub i16 %a, %b2
+  %abc = sub i16 %ab, %c
+  %z = sext i16 %abc to i32
   ret i32 %z
 }
 
-; ============================================================================
-; (d) boundary -- a 0-argument callee-cleanup fn must NOT emit a spurious pop
-; ============================================================================
+; A 16-bit return would be callee-cleaned under plain __sdcccall(1) too, so
+; this one only pins that the modifier does not double-clean.
+; CHECK-LABEL: _callee_reti16:
+; CHECK:      ld c,l
+; CHECK-NEXT: ld b,h
+; CHECK:      add hl,hl
+; CHECK:      ld hl,#4
+; CHECK-NEXT: add hl,sp
+; CHECK:      sbc hl,de
+; CHECK:      ex de,hl
+; CHECK-NEXT: pop bc
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: push bc
+; CHECK-NEXT: ret
+define cc 131 i16 @callee_reti16(i16 %a, i16 %b, i16 %c) {
+  %b2 = shl i16 %b, 1
+  %ab = sub i16 %a, %b2
+  %abc = sub i16 %ab, %c
+  ret i16 %abc
+}
 
-; CHECK-LABEL: _callee_noargs:
+; Four-argument callee: arg1=HL, arg2=DE, arg3=stack SP+2, arg4=stack SP+4.
+; Expression a-2b-c+2d has coefficients +1,-2,-1,+2 (all distinct).
+; Verifies that both stack overflow slots are read in the correct order.
+; Callee pops all 4 overflow bytes.
+; CHECK-LABEL: _callee_4arg:
+; CHECK:      ld c,l
+; CHECK-NEXT: ld b,h
+; CHECK:      ld l,e
+; CHECK-NEXT: ld h,d
+; CHECK:      ld hl,#4
+; CHECK-NEXT: add hl,sp
+; CHECK:      sbc hl,de
+; CHECK:      ld hl,#4
+; CHECK-NEXT: add hl,sp
+; CHECK:      add hl,hl
+; CHECK:      add hl,de
+; CHECK:      pop bc
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: inc sp
+; CHECK-NEXT: push bc
+; CHECK-NEXT: ret
+define cc 131 i16 @callee_4arg(i16 %a, i16 %b, i16 %c, i16 %d) {
+  %b2 = shl i16 %b, 1
+  %ab = sub i16 %a, %b2
+  %abc = sub i16 %ab, %c
+  %d2 = shl i16 %d, 1
+  %r = add i16 %abc, %d2
+  ret i16 %r
+}
+
+; No stack argument at all, nothing to clean, and no spurious pop.
+; CHECK-LABEL: _callee_tworegs:
+; CHECK-NOT:  pop
 ; CHECK-NOT:  inc sp
 ; CHECK:      ret
-define cc 131 void @callee_noargs() {
-  ret void
+define cc 131 i16 @callee_tworegs(i16 %a, i16 %b) {
+  %s = sub i16 %a, %b
+  ret i16 %s
 }

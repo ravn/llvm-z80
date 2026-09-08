@@ -103,26 +103,21 @@ class Z80RegPair<bits<16> num, string name, Register lo, Register hi>
 }
 
 // Main register pairs (encoding: BC=0, DE=1, HL=2, SP/AF=3)
-def BC : Z80RegPair<30, "bc", C, B>;
-def DE : Z80RegPair<31, "de", E, D>;
-def HL : Z80RegPair<32, "hl", L, H>;
-def AF : Z80RegPair<33, "af", F, A>;
+// The pair field of an opcode names BC=0, DE=1, HL=2 and then either SP or
+// AF depending on the instruction, so HWEncoding carries that rather than the
+// DWARF number the register is defined with.
+def BC : Z80RegPair<30, "bc", C, B> { let HWEncoding = 0; }
+def DE : Z80RegPair<31, "de", E, D> { let HWEncoding = 1; }
+def HL : Z80RegPair<32, "hl", L, H> { let HWEncoding = 2; }
+def AF : Z80RegPair<33, "af", F, A> { let HWEncoding = 3; }
 
 // Index registers
-// CostPerUse = [1]: every instruction using IX/IY costs +1 byte (DD/FD prefix).
-// The greedy allocator uses this to prefer spilling over allocating IX/IY when
-// a cheaper register would suffice with a short spill/reload sequence.
-// When IX is allocatable (hasFP=false), CostPerUse=2 discourages the
-// register allocator from using IX for short-lived values (each use adds
-// a DD prefix byte, plus CSR PUSH/POP overhead when first allocated).
-def IX : Z80RegPair<34, "ix", IXL, IXH> { let CostPerUse = [1]; }
-// IY costs more than IX: IY is never a frame pointer so the allocator picks
-// it freely, but every FD-prefixed instruction is +1 byte.  CostPerUse=2
-// makes the allocator prefer spilling over IY when register pressure is low.
-def IY : Z80RegPair<35, "iy", IYL, IYH> { let CostPerUse = [2]; }
+// A DD or FD prefix makes the HL encoding mean IX or IY.
+def IX : Z80RegPair<34, "ix", IXL, IXH> { let HWEncoding = 2; }
+def IY : Z80RegPair<35, "iy", IYL, IYH> { let HWEncoding = 2; }
 
 // Stack pointer (no accessible sub-registers)
-def SP : Z80Reg<36, "sp">;
+def SP : Z80Reg<36, "sp"> { let HWEncoding = 3; }
 
 // Program counter (not directly accessible but needed)
 def PC : Z80Reg<37, "pc">;
@@ -166,100 +161,43 @@ class Z80Reg16Class<dag RegList>: Z80RegClass<[i16], 8, RegList>;
 //  8-bit register classes
 //===----------------------------------------------------------------------===//
 
-// Main 8-bit GPRs: D, E, H, L preferred; B reserved for DJNZ.
-// Order mirrors GR16 (DE first, HL second, BC last) so that B stays
-// available for loop-counter hints that enable DJNZ.
-def GR8 : Z80Reg8Class<(add D, E, H, L, C, B, A)>;
-
-// Single-register class containing only B.  Used by Z80SplitDjnzCounters
-// to constrain the per-loop DJNZ counter vreg to B by class — bypassing
-// greedy's copy-elimination heuristic which otherwise routes the counter
-// to the same physreg as its preheader-COPY source instead of B.  See
-// tasks/regalloc-sequential-djnz-investigation.md (#98 / #94).
-def BReg : Z80Reg8Class<(add B)>;
-
-// Single-register class containing only A.  Used by Z80PinAluAccumulator
-// to pin 8-bit ALU accumulator vregs to A by class -- elides the
-// `ld a, r; ALU; ld r, a` shuttle that the greedy regalloc otherwise
-// produces around every XOR/AND/OR/ADD chain.  Sister of BReg (#94 / #98
-// DJNZ counter pinning).  See ravn/llvm-z80#172.
-def AReg : Z80Reg8Class<(add A)>;
-
-// Shadow-only register class (for constraints that need shadow specifically)
-def ShadowGR8 : Z80Reg8Class<(add Bp, Cp, Dp, Ep, Hp, Lp)>;
+// Main 8-bit GPRs: B, C, D, E, H, L, A
+// These can be used with most 8-bit operations
+def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
 
 //===----------------------------------------------------------------------===//
 //  16-bit register classes
 //===----------------------------------------------------------------------===//
 
-// General 16-bit registers: DE, HL preferred over BC.
-// BC is last because B is needed for DJNZ (loop counter).
-// IX/IY are last — they cost +1 byte (DD/FD prefix) per access but provide
-// 2 extra register pairs when not used as frame pointer (+static-stack).
-def GR16 : Z80Reg16Class<(add DE, HL, BC, IX, IY)>;
-
-// Shadow-only register class
-def ShadowGR16 : Z80Reg16Class<(add DEp, HLp, BCp)>;
+// General 16-bit registers: BC, DE, HL
+def GR16 : Z80Reg16Class<(add BC, DE, HL)>;
 
 // BC and DE only (for register scavenging temp in address computation)
-def GR16_BCDE : Z80Reg16Class<(add DE, BC)>;
+def GR16_BCDE : Z80Reg16Class<(add BC, DE)>;
 
-// Single-register class containing only BC.  Used by Z80SplitDjnzCounters
-// for the i16 self-loop counter case (#99): the counter vreg constrained
-// to BCReg forces greedy past its copy-elimination heuristic and frees
-// HL for the loop's pointer.  Sister of BReg (8-bit version, #94).
-def BCReg : Z80Reg16Class<(add BC)>;
+// 16-bit registers for PUSH/POP: BC, DE, HL, AF
+def GR16_AF : Z80Reg16Class<(add BC, DE, HL, AF)>;
 
-// Single-register class containing only HL.  Used by Z80PinLoopPointer
-// (ravn/llvm-z80#250 companion) to pin a byte-array pointer-walk induction
-// variable to HL: the store (`ld (hl),v`), the advance (`add hl,stride`) and
-// the 16-bit exit compare (`ld a,l; sub e; ...`) all want the pointer in HL,
-// but greedy's copy-elimination heuristic otherwise parks it in BC and emits
-// a per-iteration bc<->hl shuttle plus a stride BSS spill.  Constraining the
-// pointer vreg to HLReg by class forces greedy past that heuristic, the same
-// way BCReg does for the DJNZ counter (#94/#99).
-def HLReg : Z80Reg16Class<(add HL)>;
-
-// GR16 minus IX/IY (#112).  Used by pseudo expansions whose lowering
-// path operates on the 8-bit halves via SRL/SRA/RR/etc., which only
-// have documented forms for {A,B,C,D,E,H,L} — no IXH/IXL/IYH/IYL
-// equivalents are defined in the .td (and several would be undocumented
-// even if added).  Constraining the affected pseudo operands here makes
-// "regalloc never picks IX/IY for these tied operands" a TableGen-level
-// guarantee, so when IX/IY become un-reserved the existing expansions
-// remain correct.
-def GR16NoIR : Z80Reg16Class<(add DE, HL, BC)>;
-
-// 16-bit registers for PUSH/POP: DE, HL, BC, AF
-def GR16_AF : Z80Reg16Class<(add DE, HL, BC, AF)>;
-
-// 16-bit registers for ADD HL,rr: DE, BC, HL, SP
-def GR16_SP : Z80Reg16Class<(add DE, BC, HL, SP)>;
+// 16-bit registers for ADD HL,rr: BC, DE, HL, SP
+def GR16_SP : Z80Reg16Class<(add BC, DE, HL, SP)>;
 
 // 16-bit registers including SP (for LD rr,nn etc)
-def GR16_All : Z80Reg16Class<(add DE, HL, BC, SP)>;
+def GR16_All : Z80Reg16Class<(add BC, DE, HL, SP)>;
 
-// Index registers only.
-// CopyCost = 3: copying to/from IX/IY requires PUSH+POP (3B) without
-// +undocumented, or 2x undoc LD (4B) with it.  This is 1.5-2x the cost
-// of GR16↔GR16 copies (2B via 2x LD r,r').  The allocator uses CopyCost
-// to weigh copy-heavy assignments — higher cost discourages the allocator
-// from routing values through IX/IY when cheaper alternatives exist.
-def IR16 : Z80Reg16Class<(add IX, IY)> {
-  let CopyCost = 3;
-}
+// Index registers only
+def IR16 : Z80Reg16Class<(add IX, IY)>;
 
 // HL or index register (for indirect addressing)
 def HLI : Z80Reg16Class<(add HL, IX, IY)>;
 
 // Pointer registers (can hold addresses)
-def Ptr16 : Z80Reg16Class<(add DE, HL, BC, IX, IY, SP)>;
+def Ptr16 : Z80Reg16Class<(add BC, DE, HL, IX, IY, SP)>;
 
 // Stack pointer only
 def SPc : Z80Reg16Class<(add SP)>;
 
 // All 16-bit registers for PUSH/POP with indices
-def Push16 : Z80Reg16Class<(add DE, HL, BC, AF, IX, IY)>;
+def Push16 : Z80Reg16Class<(add BC, DE, HL, AF, IX, IY)>;
 
 //===----------------------------------------------------------------------===//
 //  Flag register classes

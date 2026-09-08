@@ -1,9 +1,5 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-enable-auto-static-stack=false < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 -z80-enable-auto-static-stack=false < %s | FileCheck %s --check-prefix=FP
-;
-; -z80-enable-auto-static-stack=false: these functions exercise the dynamic IX-frame
-; and SP-relative addressing paths, which auto-static-stack (#176, default on)
-; would bypass by routing their locals to BSS.  Pin the dynamic-frame path.
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s --check-prefix=FP
 
 ; Test: large frame with FP uses IX + large-offset HL-indirect sequence
 define i8 @large_frame_i8(i8 %val) "frame-pointer"="all" {
@@ -38,12 +34,15 @@ define i8 @small_frame_i8(i8 %val) "frame-pointer"="all" {
   ret i8 %v
 }
 
-; Test: SP-relative addressing (no frame pointer attribute)
-; At -O0, the compiler still sets up IX as frame pointer.
+; Test: SP-relative addressing (no frame pointer)
 define i8 @sp_relative_i8(i8 %val) {
 ; CHECK-LABEL: _sp_relative_i8:
-; CHECK:       push ix
-; CHECK:       ld -4(ix),a
+; CHECK:       ld hl,#0
+; CHECK-NEXT:  add hl,sp
+; CHECK-NEXT:  ld (hl),a
+; CHECK:       ld hl,#0
+; CHECK-NEXT:  add hl,sp
+; CHECK-NEXT:  ld a,(hl)
   %arr = alloca [4 x i8], align 1
   store i8 %val, ptr %arr
   %v = load i8, ptr %arr

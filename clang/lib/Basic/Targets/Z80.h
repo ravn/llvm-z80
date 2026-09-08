@@ -29,13 +29,9 @@ public:
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
 
-  bool initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
-                      StringRef CPU,
-                      const std::vector<std::string> &FeaturesVec) const override;
-
-  bool hasFeature(StringRef Feature) const override;
-
-  SmallVector<Builtin::InfosShard> getTargetBuiltins() const override;
+  SmallVector<Builtin::InfosShard> getTargetBuiltins() const override {
+    return {};
+  }
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::VoidPtrBuiltinVaList;
@@ -44,7 +40,7 @@ public:
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &Info) const override;
 
-  std::string convertConstraint(const char *&Constraint) const override;
+  bool isValidFeatureName(StringRef Feature) const override;
 
   std::string_view getClobbers() const override { return ""; }
 
@@ -56,6 +52,11 @@ public:
 
   bool hasBitIntType() const override { return true; }
   bool hasInt128Type() const override { return true; }
+
+  // Everything is byte-aligned; without this, clang gives long long and
+  // double locals their "natural" alignment, which the byte-aligned stack
+  // rejects. Same override as AVR and MSP430.
+  bool allowsLargerPreferedTypeAlignment() const override { return false; }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
 };

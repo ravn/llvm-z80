@@ -1,18 +1,20 @@
 ; SPDX-License-Identifier: Zlib OR Apache-2.0 WITH LLVM-exception OR MIT
 	.area _CODE
 	.globl _memchr
-	; _memchr_loop/_found/_notfound are local (no .globl) so the intra-function
-	; `jr` jumps stay 2 bytes rather than 3-byte relocated `jp`.
 
-; Input:  HL = ptr, DE = search byte (E), stack = size (i16)
-; Output: DE = pointer to match, or 0 (NULL) if not found
+;===------------------------------------------------------------------------===;
+; _memchr - Find byte in memory block
 ;
-; The stack arg (size) is read via the `pop iy` idiom rather than an IX frame:
-; IY is caller-saved (Z80_CSR = CalleeSavedRegs<(add IX)>), so this trampoline
-; may clobber it freely.
+; Input:  HL = ptr, DE = byte (E = value), stack = size (i16)
+; Output: DE = pointer to byte, or 0 if not found
+;===------------------------------------------------------------------------===;
+
 _memchr:
-	pop	iy		; return address (IY is caller-saved)
-	pop	bc		; BC = size (callee-cleanup of the stack arg)
+	push	ix
+	ld	ix, #0
+	add	ix, sp
+	ld	c, 4(ix)	; BC = size
+	ld	b, 5(ix)
 _memchr_loop:
 	ld	a, b
 	or	c
@@ -24,14 +26,18 @@ _memchr_loop:
 	dec	bc
 	jr	_memchr_loop
 _memchr_found:
-	ex	de, hl		; DE = pointer to match
-	jp	(iy)
+	ex	de, hl
+	pop	ix
+	pop	bc		; save return address
+	inc	sp
+	inc	sp		; callee-cleanup: skip 2 bytes of stack args
+	push	bc
+	ret
 _memchr_notfound:
-	ld	de, #0		; DE = NULL
-	jp	(iy)
-
-;===------------------------------------------------------------------------===;
-; _bzero - Zero out memory block
-;
-; Input:  HL = ptr, DE = size
-; Output: DE = ptr
+	ld	de, #0
+	pop	ix
+	pop	bc		; save return address
+	inc	sp
+	inc	sp		; callee-cleanup: skip 2 bytes of stack args
+	push	bc
+	ret

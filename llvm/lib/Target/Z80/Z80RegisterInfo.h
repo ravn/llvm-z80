@@ -60,39 +60,14 @@ public:
 
   Register getFrameRegister(const MachineFunction &MF) const override;
 
-  bool getRegAllocationHints(Register VirtReg, ArrayRef<MCPhysReg> Order,
-                             SmallVectorImpl<MCPhysReg> &Hints,
-                             const MachineFunction &MF,
-                             const VirtRegMap *VRM = nullptr,
-                             const LiveRegMatrix *Matrix = nullptr) const override;
-
   // Return the name of a register for inline assembly
   StringRef getRegAsmName(MCRegister Reg) const override;
 
-  // ravn/llvm-z80#23 Phase 2 (2026-06-08): override the auto-generated
-  // GR16 pressure limit to reflect Z80's practical 3-pair budget
-  // (HL/DE/BC) for short-lived values.  TableGen reports 12 register
-  // units for GR16 (counting IX/IY/AF), but regalloc empirically uses
-  // only HL/DE/BC for short-lived hoist candidates -- IX/IY incur a
-  // 1-byte FD/DD prefix per use.  When MachineLICM consults the
-  // higher limit, it over-hoists invariants that regalloc then
-  // spills to BSS (the autoload-in-c witness; AES gets the benefit
-  // because its leaf-loop hoists DO fit in HL).
-  //
-  // Gated by `-mllvm -z80-tiered-gr16-pressure` (default ON, since
-  // measurement shows AES -18 B at -Oz with no production regressions).
-  // Set OFF to restore pre-Phase-2 behavior.
-  //
-  // Path not taken (Phase 2 alternative considered): full TableGen
-  // sub-class reshuffle (GR16NoIR / IR16 each its own pressure set).
-  // TableGen merges pressure sets when one class is a strict subset
-  // of another, and GR16NoIR ⊂ GR16, so generating separate sets
-  // requires breaking that subset relationship -- invasive change to
-  // ISel patterns.  This override is the simpler "tell LICM what
-  // regalloc actually does" route; revisit the structural change if
-  // measurement shows it needed.
-  unsigned getRegPressureSetLimit(const MachineFunction &MF,
-                                  unsigned Idx) const override;
+private:
+  /// The elimination itself. The public entry point wraps it to carry the
+  /// pseudo's memory operands onto whatever performs the access.
+  bool eliminateFrameIndexImpl(MachineBasicBlock::iterator MI, int SPAdj,
+                               unsigned FIOperandNum, RegScavenger *RS) const;
 };
 
 } // namespace llvm
