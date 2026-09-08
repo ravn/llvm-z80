@@ -19,7 +19,6 @@
 ///
 //===----------------------------------------------------------------------===//
 
-
 #ifndef LLVM_CODEGEN_TARGETLOWERING_H
 #define LLVM_CODEGEN_TARGETLOWERING_H
 
@@ -2993,9 +2992,9 @@ public:
   /// If ScalableOffset is zero, there is no scalable offset.
   struct AddrMode {
     GlobalValue *BaseGV = nullptr;
-    int64_t BaseOffs = 0;
-    bool HasBaseReg = false;
-    int64_t Scale = 0;
+    int64_t      BaseOffs = 0;
+    bool         HasBaseReg = false;
+    int64_t      Scale = 0;
     int64_t ScalableOffset = 0;
     AddrMode() = default;
   };
@@ -3977,14 +3976,12 @@ private:
                                      unsigned &NumIntermediates,
                                      MVT &RegisterVT);
 
-protected:
   /// Return the type of registers that this ValueType will eventually require.
-  virtual MVT getCachedRegisterType(MVT VT) const {
+  MVT getCachedRegisterType(MVT VT) const {
     assert((unsigned)VT.SimpleTy < std::size(RegisterTypeForVT));
     return RegisterTypeForVT[VT.SimpleTy];
   }
 
-private:
   MVT getRegisterTypeImpl(LLVMContext &Context, EVT VT,
                           bool ForCallingConv) const {
     if (VT.isSimple() &&
