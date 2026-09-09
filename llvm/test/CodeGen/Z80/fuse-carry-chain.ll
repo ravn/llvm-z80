@@ -1,6 +1,5 @@
 ; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s --check-prefix=FUSE
 ; RUN: llc -mtriple=z80 -O2 -z80-enable-fuse-carry-chain=false < %s | FileCheck %s --check-prefix=CTRL
-; XFAIL: *
 ;
 ; add32g below carries debug info (#dbg_value -> DBG_VALUE between the carry
 ; pseudos); the pass skips debug instrs, so fusion must still fire under -g.

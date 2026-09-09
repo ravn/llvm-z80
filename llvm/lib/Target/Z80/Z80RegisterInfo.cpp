@@ -103,6 +103,18 @@ Z80RegisterInfo::getCallPreservedMask(const MachineFunction &MF,
   return Z80_CSR_RegMask;
 }
 
+// PR #40 reverted the #38 IY-un-reserve feature: getReservedRegs (below) now
+// reserves IY unconditionally, so IY is never allocatable in this tree. This
+// definition keeps the sole remaining caller (Z80NarrowNoIndex, which early-
+// returns when IY is not allocatable) consistent with that reality -- with IY
+// always reserved there is no IY-widening leak (#112/#189) for the pass to
+// guard against. Restoring the full #38 gate (thread through getReservedRegs +
+// getLargestLegalSuperClass) is a separate, parked decision: un-reserving IY
+// was re-measured worth ~0 on production (2026-07-14).
+namespace llvm {
+bool z80IsIYAllocatable(const MachineFunction &MF) { return false; }
+} // namespace llvm
+
 BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   const auto &STI = MF.getSubtarget<Z80Subtarget>();

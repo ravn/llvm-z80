@@ -1,5 +1,4 @@
 ; RUN: llc -mtriple=z80 -O2 -disable-lsr -z80-enable-cse < %s | FileCheck %s
-; XFAIL: *
 ;
 ; MITIGATED 2026-06-30 by ravn/llvm-z80#248 (i32 divrem fusion) -- XFAIL
 ; removed, now a regression guard.  #248 lowers the adjacent i32 udiv/urem

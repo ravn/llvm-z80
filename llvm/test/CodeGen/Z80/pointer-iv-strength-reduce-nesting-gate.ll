@@ -5,7 +5,6 @@
 ; RUN:     -z80-loop-instr-form-prep-allow-nested=false \
 ; RUN:     -z80-enable-pin-loop-pointer=false -z80-enable-hbf-branch=false \
 ; RUN:     -z80-enable-sink-cold-loop-iv=false < %s | FileCheck %s
-; XFAIL: *
 
 ; ravn/llvm-z80#250 nesting gate + cost gate.  Rewriting a loop that is NESTED
 ; inside another loop adds a 3rd live 16-bit value (new pointer + enclosing

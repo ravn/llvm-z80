@@ -202,14 +202,18 @@ static bool matchHotExit(MachineBasicBlock &MBB, const MachineDominatorTree &MDT
   if (!LhsLo || !RhsLo || !LhsHi || !RhsHi)
     return false;
   // Confirm the exact opcodes (guards against LD/ADD/LD/ADC and friends).
-  if (LdLo->getOpcode() != Z80::getLD8RegOpcode(Z80::A, LhsLo) ||
-      SubLo->getOpcode() != Z80::getSUBOpcode(RhsLo) ||
-      LdHi->getOpcode() != Z80::getLD8RegOpcode(Z80::A, LhsHi) ||
-      SbcHi->getOpcode() != Z80::getSBCOpcode(RhsHi))
+  // Post-PR#40 `LD A,r` is the register-operand LD_r_r and SUB/SBC are the
+  // register-operand SUB_r / SBC_A_r; the source registers are already pinned
+  // by gr8UseOf above, so the loads additionally need their destination == A.
+  auto isLdToA = [](const MachineInstr *MI) {
+    return MI->getOpcode() == Z80::LD_r_r && MI->getOperand(0).isReg() &&
+           MI->getOperand(0).getReg() == Z80::A;
+  };
+  if (!isLdToA(LdLo) || SubLo->getOpcode() != Z80::SUB_r ||
+      !isLdToA(LdHi) || SbcHi->getOpcode() != Z80::SBC_A_r)
     return false;
-  // Need CP opcodes for the high-byte-first rewrite.
-  if (!Z80::getCPOpcode(RhsLo) || !Z80::getCPOpcode(RhsHi))
-    return false;
+  // The high-byte-first rewrite emits `CP r`; CP_r accepts any GR8, and RhsLo/
+  // RhsHi are already GR8 (gr8UseOf), so the rewrite is always feasible here.
 
   // Profitability gate: only rewrite a genuine loop back-edge (Loop dominates
   // MBB), where the size-negative fast path pays off.
@@ -221,13 +225,14 @@ static bool matchHotExit(MachineBasicBlock &MBB, const MachineDominatorTree &MDT
   return true;
 }
 
-// Emit `LD A, <src8>` then `CP <cmp8>` at the end of \p BB (implicit-operand
-// opcodes, mirroring the CMP16_FLAGS expansion in Z80InstrInfo.cpp).
+// Emit `LD A, <src8>` then `CP <cmp8>` at the end of \p BB, mirroring the
+// CMP16_FLAGS expansion in Z80InstrInfo.cpp.  Post-PR#40 these are the
+// register-operand forms (LD_r_r / CP_r), built via the Z80InstrInfo.h helpers.
 static void emitByteCompare(MachineBasicBlock &BB, const DebugLoc &DL,
                             const TargetInstrInfo &TII, Register Src8,
                             Register Cmp8) {
-  BuildMI(&BB, DL, TII.get(Z80::getLD8RegOpcode(Z80::A, Src8)));
-  BuildMI(&BB, DL, TII.get(Z80::getCPOpcode(Cmp8)));
+  Z80::buildLD8(&BB, DL, TII, Z80::A, Src8);
+  Z80::buildAlu8(&BB, DL, TII, Z80::CP_r, Cmp8);
 }
 
 bool Z80HighByteFirstBranch::runOnMachineFunction(MachineFunction &MF) {
