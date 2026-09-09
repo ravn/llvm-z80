@@ -1,9 +1,9 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-stack=true  < %s | FileCheck %s --check-prefix=ON
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-stack=false < %s | FileCheck %s --check-prefix=OFF
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-frame=true  < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-frame=false < %s | FileCheck %s --check-prefix=OFF
 ; XFAIL: *
 ;
 ; ravn/llvm-z80#176: the Z80AutoStaticStack IR pass auto-injects
-; "target-features"="+static-stack" on provably-non-recursive functions, so
+; "target-features"="+static-frame" on provably-non-recursive functions, so
 ; their locals land in a fixed BSS frame (__sframe_<f>..__sfrend_<f>) instead
 ; of on the real stack.  This test pins the pass's safety gate:
 ;
@@ -16,7 +16,7 @@
 ;   (d) an address-taken function does NOT -- it could be installed as a
 ;       runtime interrupt vector or be the target of an opaque indirect call
 ;       the CallGraph cannot resolve;
-;   (e) -z80-enable-auto-static-stack=false disables the pass entirely (global
+;   (e) -z80-enable-auto-static-frame=false disables the pass entirely (global
 ;       opt-out): NO function gets a static frame.
 
 @sink = external global i16

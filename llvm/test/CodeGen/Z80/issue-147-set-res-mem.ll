@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#147: single-bit memory updates `mem |= 1<<N` and
 ; `mem &= ~(1<<N)` lower to 8 bytes (load + OR/AND immediate + store)

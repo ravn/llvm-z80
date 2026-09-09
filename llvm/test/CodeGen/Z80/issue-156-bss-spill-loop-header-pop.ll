@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#156: the cross-MBB BSS-spill → PUSH/POP peephole
 ; (`STI.staticStack()` branch in Z80LateOptimization.cpp) rewrote a
@@ -7,7 +7,7 @@
 ; inside the loop body.  Each loop iteration fell into the POP without
 ; a matching PUSH, leaking 2 bytes off SP per iteration; eventually
 ; SP wrapped through 0x0000 and the next RET popped garbage as the
-; return address.  The full AES-256 decrypt under -Oz +static-stack
+; return address.  The full AES-256 decrypt under -Oz +static-frame
 ; escaped via this PC-corruption path; gf_log was the trigger.
 ;
 ; Fix: require MBB_B (the LOAD-bearing successor of MBB_A) to have

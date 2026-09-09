@@ -52,7 +52,7 @@
 #include "Z80FixupImplicitDefs.h"
 #include "Z80FuseCarryChain.h"
 #include "Z80IndexIV.h"
-#include "Z80AutoStaticStack.h"
+#include "Z80AutoStaticFrame.h"
 #include "Z80PatternFillRecognize.h"
 #include "Z80LoopRotate.h"
 #include "Z80LoopInstrFormPrep.h"
@@ -137,7 +137,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80LateOptimizationPass(PR);
   initializeZ80PatternFillRecognizeLegacyPassPass(PR);
   initializeZ80LoopRotateLegacyPassPass(PR);
-  initializeZ80AutoStaticStackPass(PR);
+  initializeZ80AutoStaticFramePass(PR);
   initializeZ80LowerSelectPass(PR);
   initializeZ80PostRAScavengingPass(PR);
   initializeZ80PruneCallFrameDefsPass(PR);
@@ -727,13 +727,13 @@ void Z80PassConfig::addIRPasses() {
     addPass(createZ80NonReentrantPass(getZ80TargetMachine()));
 
   // ravn/llvm-z80#176/#40: auto-inject +static-stack on provably-non-recursive
-  // functions (default on; global opt-out via -mllvm -z80-auto-static-stack=
+  // functions (default on; global opt-out via -mllvm -z80-auto-static-frame=
   // false).  Gate the *registration* on the flag rather than early-returning
   // inside the pass when disabled: a registered no-op pass still shifts
   // downstream behavior (#187 pipeline-ordering side effect, ~2 B on cpnos
   // PROM1), so the opt-out path must omit the pass entirely.
-  if (isZ80AutoStaticStackEnabled())
-    addPass(createZ80AutoStaticStackPass());
+  if (isZ80AutoStaticFrameEnabled())
+    addPass(createZ80AutoStaticFramePass());
 
   TargetPassConfig::addIRPasses();
   if (getOptLevel() != CodeGenOptLevel::None) {

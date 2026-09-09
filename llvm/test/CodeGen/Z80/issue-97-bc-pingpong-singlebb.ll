@@ -1,5 +1,5 @@
 ; XFAIL: *
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -disable-lsr -z80-asm-format=sdasz80 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 -disable-lsr -z80-asm-format=sdasz80 < %s | FileCheck %s
 ;
 ; Session 73s: post-RA peephole removed per #180 C2 audit re-test.  The
 ; pattern this test exercised (Z80LoopRotate-rotated single-BB self-loops

@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 -verify-machineinstrs < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#197: a 16-bit i!=n loop-exit compare lowers to a byte-wise
 ; XOR/OR sequence, which the Z80LateOptimization peephole rewrites to
@@ -9,7 +9,7 @@
 ; register $a".  The peephole already proves A dead after the branch
 ; (isRegDeadAfter); it now marks the $a read undef.  This RUN line FAILS (verifier
 ; abort) without the fix.  Distilled from test_98 walk_three_buffers @ -O2
-; +static-stack.
+; +static-frame.
 ;
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"

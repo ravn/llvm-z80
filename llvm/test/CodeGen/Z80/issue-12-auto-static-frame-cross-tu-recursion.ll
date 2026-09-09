@@ -1,8 +1,8 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-stack=true  < %s | FileCheck %s --check-prefix=ON
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-stack=false < %s | FileCheck %s --check-prefix=OFF
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-frame=true  < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-enable-auto-static-frame=false < %s | FileCheck %s --check-prefix=OFF
 ; XFAIL: *
 ;
-; ravn/llvm-z80#12 (hasFP=false / static-stack reentrancy): the Z80AutoStaticStack
+; ravn/llvm-z80#12 (hasFP=false / static-frame reentrancy): the Z80AutoStaticStack
 ; IR pass proves "non-recursive" from the MODULE-LOCAL CallGraph, which is blind
 ; to cross-TU cycles.  Canonical miscompile:
 ;
@@ -10,12 +10,12 @@
 ;   // TU B (other):      u32 g(u32 n){ return n ? n + f(n-1) : 0; }   // f extern
 ;
 ; f and g are MUTUALLY recursive, but g is only a declaration here, so f sits in
-; its own single-node SCC and looks non-recursive.  Auto-injecting +static-stack
+; its own single-node SCC and looks non-recursive.  Auto-injecting +static-frame
 ; puts f's live-across-call spill of `n` in a FIXED BSS slot; the recursive
 ; re-entry (f -> g -> f) clobbers it and `n + g(n-1)` reads a corrupted `n`
 ; (observed: 32-bit cross-recursion returned 0x0002 instead of 0x000A).
 ;
-; The soundness gate: auto +static-stack on a non-leaf function is allowed only
+; The soundness gate: auto +static-frame on a non-leaf function is allowed only
 ; when a cross-TU cycle through it is impossible -- either it is not externally
 ; visible (local linkage; address-taken is a separate gate), or control never
 ; leaves the module while it is live (it reaches no opaque/external callee).

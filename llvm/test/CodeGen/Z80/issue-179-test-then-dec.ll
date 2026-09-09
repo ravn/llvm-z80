@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O2 -disable-lsr -mattr=+static-stack -z80-asm-format=sdasz80 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -disable-lsr -mattr=+static-frame -z80-asm-format=sdasz80 < %s | FileCheck %s
 ;
 ; Issue ravn/llvm-z80#179: GISel ISel + MachineScheduler don't reorder
 ; register-independent operations chained through implicit-use $a.

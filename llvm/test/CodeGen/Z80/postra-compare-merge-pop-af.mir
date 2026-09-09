@@ -2,13 +2,13 @@
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 # XFAIL: *
 #
-# ravn/llvm-z80#265 (found via the #263 static-stack direct-addressing lever):
+# ravn/llvm-z80#265 (found via the #263 static-frame direct-addressing lever):
 # Z80PostRACompareMerge removed an `OR A` as "redundant" whenever the
 # preceding instruction defined both $a and $flags -- treating POP_AF as such a
 # producer.  But POP_AF restores the flags SAVED earlier by PUSH_AF; its Z flag
 # does NOT reflect (A == 0).  The removal is therefore a miscompile.
 #
-# Worked example (static-stack reload-via-A that preserves A around the clobber):
+# Worked example (static-frame reload-via-A that preserves A around the clobber):
 #   call __umodqi3      ; A = i % 7, flags set by the call
 #   push af             ; save A (= i%7) and the call's flags
 #   ld a,(slot)         ; A = i   -- clobbers A

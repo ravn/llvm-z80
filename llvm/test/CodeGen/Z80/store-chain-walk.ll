@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #85: ≥3 consecutive byte stores to consecutive addresses
 ; should compile to a single `LD HL, base` followed by repeated

@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 
 ; Issue #92: in nested 8-bit countdown loops, the INNER loop counter must get
 ; B (DJNZ-eligible).  Before the fix, the outer counter took B and the inner

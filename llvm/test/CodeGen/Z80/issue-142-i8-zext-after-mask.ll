@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#142: when an i16 value is masked with a constant whose
 ; high byte is zero (e.g. `& 0x7F`), the result provably has high byte

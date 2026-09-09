@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #78: after LDIR, DE = dst+count and HL = src+count.  The
 ; reconstruction triple `LD HL,(slot); LD DE,N; ADD HL,DE` reads the

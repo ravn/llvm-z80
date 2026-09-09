@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#185.  The peephole `DEC A; LD B,A; [OR A;] JR NZ → DJNZ`
 ; (Z80LateOptimization.cpp:736) silently miscompiled when the body

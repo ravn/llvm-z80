@@ -6,7 +6,7 @@
 ; destination pointer when the function's static frame overlaps with
 ; the BSS region being cleared.
 ;
-; With +static-stack, function locals are in BSS.  If the compiler
+; With +static-frame, function locals are in BSS.  If the compiler
 ; stores p+1 to BSS before *p=0, the zero write corrupts the stored
 ; pointer, causing LDIR to write to the wrong address.  See issue #51.
 ;

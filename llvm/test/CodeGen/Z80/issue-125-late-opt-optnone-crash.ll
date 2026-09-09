@@ -1,13 +1,13 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; Regression test for ravn/llvm-z80#125 (RESOLVED 2026-05-28): Z80LateOptimization
 ; used to crash on `optnone`-marked IR (the shape clang produces at -O0) when
-; `+static-stack` is enabled — a function with two allocas, store-then-load
+; `+static-frame` is enabled — a function with two allocas, store-then-load
 ; through one slot into another, and a CALL of the second slot's loaded value.
 ; The crash was fixed incidentally by the frame-lowering / liveness hardening
 ; in the #210/#197 series; verified gone across llc -O0..-O3 and +shadow-regs,
 ; and the original broad trigger (test_99_bss_spill_lifo.c at clang -O0 with
-; +static-stack +shadow-regs -disable-lsr) now compiles cleanly.  This test
+; +static-frame +shadow-regs -disable-lsr) now compiles cleanly.  This test
 ; pins the no-crash behavior and the expected codegen (BSS frame + tail call).
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"

@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O1 < %s | FileCheck %s
 
 ; ravn/llvm-z80#193: the "BSS spill->PUSH/POP" peephole in Z80LateOptimization
 ; segfaulted (EXC_BAD_ACCESS) when a 16-bit BSS spill (LD (sfrend),DE) was
@@ -7,7 +7,7 @@
 ; dangling, and the subsequent `--MII` dereferenced freed memory.  Fix anchors
 ; resumption to the inserted PUSH instead of decrementing the post-erase
 ; iterator.  This must compile without crashing.  Reduced from test_40 (the
-; crash manifested in xorshift16 under +static-stack at all opt levels).
+; crash manifested in xorshift16 under +static-frame at all opt levels).
 
 ; ModuleID = 't40.c'
 source_filename = "t40.c"
@@ -325,7 +325,7 @@ define dso_local i16 @main() #0 {
   ret i16 %53
 }
 
-attributes #0 = { noinline nounwind optnone "frame-pointer"="all" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-features"="+static-stack" }
+attributes #0 = { noinline nounwind optnone "frame-pointer"="all" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-features"="+static-frame" }
 attributes #1 = { nobuiltin "no-builtins" }
 
 !llvm.module.flags = !{!0, !1}

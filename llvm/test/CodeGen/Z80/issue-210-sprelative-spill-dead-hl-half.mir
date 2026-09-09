@@ -2,7 +2,7 @@
 # RUN:   | FileCheck %s
 # XFAIL: *
 #
-# ravn/llvm-z80 #210: in the default config (no +static-stack, no frame
+# ravn/llvm-z80 #210: in the default config (no +static-frame, no frame
 # pointer) eliminateFrameIndex reaches a stack slot SP-relative by borrowing
 # HL (PUSH_HL; LD HL,nn; ADD HL,SP; LD r,(HL); POP_HL).  The borrow used to be
 # gated by `NeedSaveHL = isRegLiveAt(HL)` (and forced true for GR8 spills/

@@ -30,7 +30,7 @@ void initializeZ80PatternFillRecognizeLegacyPassPass(PassRegistry &);
 void initializeZ80LoopRotateLegacyPassPass(PassRegistry &);
 void initializeZ80LoopInstrFormPrepLegacyPassPass(PassRegistry &);
 void initializeZ80SinkColdLoopIVLegacyPassPass(PassRegistry &);
-void initializeZ80AutoStaticStackPass(PassRegistry &);
+void initializeZ80AutoStaticFramePass(PassRegistry &);
 void initializeZ80LowerSelectPass(PassRegistry &);
 void initializeZ80KeepLoopPointerInPairPass(PassRegistry &);
 void initializeZ80NarrowNoIndexPass(PassRegistry &);

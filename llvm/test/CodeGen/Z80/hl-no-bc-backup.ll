@@ -1,5 +1,5 @@
 ; XFAIL: *
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Session 73s: post-RA peephole "HL save-via-BC roundtrip" removed per
 ; #180 C2 audit re-test.  The GISel-emitted shape this test exercises

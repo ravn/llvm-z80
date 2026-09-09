@@ -1,7 +1,7 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O1 < %s | FileCheck %s
 
 ; ravn/llvm-z80#195: a loop-carried i32 value whose high half is homed in a BSS
-; slot under +static-stack.  The loop reads the slot at the top (`LD HL,(slot)`,
+; slot under +static-frame.  The loop reads the slot at the top (`LD HL,(slot)`,
 ; the back-edge reload) and writes the shifted half back at the bottom
 ; (`LD (slot),BC`).  The BSS-spill->PUSH/POP peephole matched the bottom
 ; store + its same-block BC reload and converted them to PUSH/POP, *dropping the

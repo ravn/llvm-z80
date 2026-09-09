@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#184: peephole #148 (`CP/XOR with 1 or 0xFF → DEC_A/INC_A`)
 ; had a too-loose safety check.  Before the fix, it would rewrite

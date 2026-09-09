@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 -verify-machineinstrs < %s | FileCheck %s
 ;
 ; ravn/llvm-z80: the i16 ==/!= -1 fast path (getMinusOneI16) builds the tied
 ; INC16 pseudo.  INC16 is tied ($dst = $src); in SSA the def must be a DISTINCT

@@ -1,8 +1,8 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#173.  The bare-store + 4-instruction reload-via-A
 ; pattern was the dominant residual bloat shape in AES `aes_subBytes`,
-; `aes_sb_inv`, and `aes_mc_inv` at -Oz +static-stack:
+; `aes_sb_inv`, and `aes_mc_inv` at -Oz +static-frame:
 ;
 ;   ld   (slot), a              ; bare store -- A held the value
 ;   ... call/intermediate ...

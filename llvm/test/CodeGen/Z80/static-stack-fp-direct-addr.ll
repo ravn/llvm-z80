@@ -5,13 +5,13 @@
 ; XFAIL: *
 ; Explicitly enabling it is equivalent:
 ; RUN: llc -mtriple=z80 --z80-static-frames -O2 -verify-machineinstrs \
-; RUN:     -z80-static-stack-fp-direct-addr < %s | FileCheck %s
+; RUN:     -z80-static-frame-fp-direct-addr < %s | FileCheck %s
 ; Passing =false restores the old IX-relative addressing (base + runtime add):
 ; RUN: llc -mtriple=z80 --z80-static-frames -O2 -verify-machineinstrs \
-; RUN:     -z80-static-stack-fp-direct-addr=false < %s | FileCheck %s --check-prefix=OFF
+; RUN:     -z80-static-frame-fp-direct-addr=false < %s | FileCheck %s --check-prefix=OFF
 ;
 ; ravn/llvm-z80#263: a local array (`int a[100]`) lowers to an `alloca`, which
-; forces `hasFP=true` under +static-stack.  The prologue then loads IX with the
+; forces `hasFP=true` under +static-frame.  The prologue then loads IX with the
 ; link-time-constant frame base `__sfrend_f`, and every fixed-offset frame slot
 ; access degrades to `ld hl,__sfrend_f ; ld de,off ; add hl,de ; ld e,(hl) ;
 ; inc hl ; ld d,(hl)` (~51 T) instead of direct absolute addressing

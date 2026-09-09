@@ -1,11 +1,11 @@
-//===-- Z80AutoStaticStack.cpp - Auto-enable +static-stack on leaves ------===//
+//===-- Z80AutoStaticFrame.cpp - Auto-enable +static-frame on leaves ------===//
 //
 // Part of LLVM-Z80, under the Apache License v2.0 with LLVM Exceptions.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
-// IR pass that adds "target-features"="+static-stack" to functions that
+// IR pass that adds "target-features"="+static-frame" to functions that
 // are provably non-recursive.  Two safety levels:
 //
 //   Level 1 (always on):  Leaf functions (no CALL / INVOKE).  Trivially
@@ -21,19 +21,19 @@
 // its own fixed BSS slots).  runOnModule builds an "unsafe" taint set --
 // everything reachable from an "interrupt"-attributed function, plus every
 // address-taken function (an opaque indirect-call / runtime-vector target) --
-// and processFunction refuses +static-stack on it.
+// and processFunction refuses +static-frame on it.
 //
 // Per-function opt-out: a user disables static-stack on one function with
-// __attribute__((target("no-static-stack"))), which clang lowers to
-// "target-features"="...,-static-stack"; the substring check below skips it,
-// and the feature parser clears the bit even if +static-stack were present.
+// __attribute__((target("no-static-frame"))), which clang lowers to
+// "target-features"="...,-static-frame"; the substring check below skips it,
+// and the feature parser clears the bit even if +static-frame were present.
 //
 // Per ravn/llvm-z80#176/#40.  Default on; global opt-out via
-// -mllvm -z80-auto-static-stack=false.
+// -mllvm -z80-auto-static-frame=false.
 //
 //===----------------------------------------------------------------------===//
 
-#include "Z80AutoStaticStack.h"
+#include "Z80AutoStaticFrame.h"
 #include "Z80.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SCCIterator.h"
@@ -48,22 +48,22 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "z80-auto-static-stack"
+#define DEBUG_TYPE "z80-auto-static-frame"
 
-static cl::opt<bool> EnableAutoStaticStack(
-    "z80-enable-auto-static-stack", cl::init(true), cl::Hidden,
-    cl::desc("Z80: auto-inject +static-stack on provably-non-recursive "
+static cl::opt<bool> EnableAutoStaticFrame(
+    "z80-enable-auto-static-frame", cl::init(true), cl::Hidden,
+    cl::desc("Z80: auto-inject +static-frame on provably-non-recursive "
              "functions (default on; global opt-out via "
-             "-mllvm -z80-auto-static-stack=false).  Includes leaves (Level 1) "
+             "-mllvm -z80-auto-static-frame=false).  Includes leaves (Level 1) "
              "and CallGraph-SCC-non-recursive functions (Level 2), minus the "
              "ISR-concurrency / address-taken safety gate."));
 
 namespace {
 
-class Z80AutoStaticStack : public ModulePass {
+class Z80AutoStaticFrame : public ModulePass {
 public:
   static char ID;
-  Z80AutoStaticStack() : ModulePass(ID) {}
+  Z80AutoStaticFrame() : ModulePass(ID) {}
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<CallGraphWrapperPass>();
@@ -71,7 +71,7 @@ public:
   }
 
   bool runOnModule(Module &M) override {
-    if (!EnableAutoStaticStack)
+    if (!EnableAutoStaticFrame)
       return false;
 
     // Build the set of non-recursive functions.
@@ -99,10 +99,10 @@ public:
     }
 
     // ISR-concurrency / opaque-target safety gate (ravn/llvm-z80#176).
-    // +static-stack puts locals in FIXED BSS slots, so a function that can run
+    // +static-frame puts locals in FIXED BSS slots, so a function that can run
     // CONCURRENTLY WITH ITSELF (it is executing when an interrupt fires and the
     // ISR path re-enters the same function, or a helper shared by main flow and
-    // an ISR) would clobber its own slots.  Conservatively refuse +static-stack
+    // an ISR) would clobber its own slots.  Conservatively refuse +static-frame
     // on two ORed predicates (kept separate so the address-taken half can be
     // relaxed later via a main-reachability analysis without touching the ISR
     // half):
@@ -145,14 +145,14 @@ public:
     //
     // f and g are MUTUALLY recursive, but in TU A the callee g is a declaration,
     // so f sits in its own single-node SCC and looks non-recursive.  Auto-
-    // injecting +static-stack on f puts its live-across-call spill of `n` in a
+    // injecting +static-frame on f puts its live-across-call spill of `n` in a
     // FIXED BSS slot; the recursive re-entry (f -> g -> f) then clobbers it, and
     // `n + g(n-1)` reads a corrupted `n` (observed: 32-bit cross-recursion
     // returns 0x0002 instead of 0x000A).
     //
     // Compute the set of functions from which control can LEAVE the visible
     // module (reach an opaque/external callee).  The gate below refuses
-    // +static-stack on an externally-VISIBLE member of that set: while such an
+    // +static-frame on an externally-VISIBLE member of that set: while such an
     // F's fixed BSS frame is live, the opaque callee may re-enter F from another
     // TU.  A function that is NOT externally visible (local linkage, and not
     // address-taken -- the latter already in `Unsafe`) cannot be named or
@@ -200,7 +200,7 @@ public:
   }
 
   StringRef getPassName() const override {
-    return "Z80 Auto +static-stack";
+    return "Z80 Auto +static-frame";
   }
 
 private:
@@ -215,8 +215,8 @@ private:
     StringRef Existing;
     if (F.hasFnAttribute("target-features"))
       Existing = F.getFnAttribute("target-features").getValueAsString();
-    if (Existing.contains("static-stack"))
-      return false; // already set (or explicitly disabled via -static-stack).
+    if (Existing.contains("static-frame"))
+      return false; // already set (or explicitly disabled via -static-frame).
 
     // ISR-concurrency / opaque-target safety gate (see runOnModule).  Refuse
     // BEFORE the leaf scan: even a leaf ISR helper can run concurrently with
@@ -254,9 +254,9 @@ private:
     // Apply.
     std::string NewFeatures;
     if (Existing.empty())
-      NewFeatures = "+static-stack";
+      NewFeatures = "+static-frame";
     else
-      NewFeatures = (Existing + ",+static-stack").str();
+      NewFeatures = (Existing + ",+static-frame").str();
     F.addFnAttr("target-features", NewFeatures);
     return true;
   }
@@ -264,23 +264,23 @@ private:
 
 } // end anonymous namespace
 
-char Z80AutoStaticStack::ID = 0;
+char Z80AutoStaticFrame::ID = 0;
 
 // NB: the pass registration name must differ from the cl::opt flag name
-// ("z80-auto-static-stack", == DEBUG_TYPE).  `opt` builds a PassNameParser
+// ("z80-auto-static-frame", == DEBUG_TYPE).  `opt` builds a PassNameParser
 // that registers every pass's name as a CLI literal option; if it equals an
 // existing cl::opt the CommandLine layer aborts with "registered more than
 // once" (crashes `opt -mtriple=z80` outright -- only `opt`, since llc/clang
 // don't build that parser).  Use a distinct "-pass" suffix here; DEBUG_TYPE
 // (for -debug-only) and the user-facing flag are unchanged.
-INITIALIZE_PASS_BEGIN(Z80AutoStaticStack, DEBUG_TYPE "-pass",
-                      "Z80 Auto +static-stack on non-recursive", false, false)
+INITIALIZE_PASS_BEGIN(Z80AutoStaticFrame, DEBUG_TYPE "-pass",
+                      "Z80 Auto +static-frame on non-recursive", false, false)
 INITIALIZE_PASS_DEPENDENCY(CallGraphWrapperPass)
-INITIALIZE_PASS_END(Z80AutoStaticStack, DEBUG_TYPE "-pass",
-                    "Z80 Auto +static-stack on non-recursive", false, false)
+INITIALIZE_PASS_END(Z80AutoStaticFrame, DEBUG_TYPE "-pass",
+                    "Z80 Auto +static-frame on non-recursive", false, false)
 
-ModulePass *llvm::createZ80AutoStaticStackPass() {
-  return new Z80AutoStaticStack();
+ModulePass *llvm::createZ80AutoStaticFramePass() {
+  return new Z80AutoStaticFrame();
 }
 
-bool llvm::isZ80AutoStaticStackEnabled() { return EnableAutoStaticStack; }
+bool llvm::isZ80AutoStaticFrameEnabled() { return EnableAutoStaticFrame; }

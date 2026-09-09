@@ -1,4 +1,4 @@
-; ravn/llvm-z80 #254: at -O0 hasFP is true, so a static-stack function uses the
+; ravn/llvm-z80 #254: at -O0 hasFP is true, so a static-frame function uses the
 ; frame-pointer path (IX == __sfrend_<fn>).  The callee-saved register saves
 ; (e.g. the caller's IX) live on the REAL stack via PUSH and are excluded from
 ; the BSS frame (Z80AsmPrinter: BSSSize = StackSize - CalleeSavedFrameSize).
@@ -29,9 +29,9 @@ target triple = "z80"
 ; callee), so the Z80AutoStaticStack heuristic no longer AUTO-selects it (a
 ; cross-TU caller could re-enter it -- see the #12 cross-TU-recursion test).
 ; This test pins the static-frame LAYOUT invariant, which is orthogonal to how
-; +static-stack got enabled, so opt in EXPLICITLY here (the production path:
-; autoload/BIOS pass `-target-feature +static-stack`).  The explicit attribute
-; is honored verbatim by the pass (Existing.contains("static-stack") early-out).
+; +static-frame got enabled, so opt in EXPLICITLY here (the production path:
+; autoload/BIOS pass `-target-feature +static-frame`).  The explicit attribute
+; is honored verbatim by the pass (Existing.contains("static-frame") early-out).
 define dso_local i16 @f() #1 {
   %d = alloca ptr, align 1
   %s = alloca ptr, align 1
@@ -124,4 +124,4 @@ define dso_local i16 @f() #1 {
 
 declare void @llvm.memmove.p0.p0.i16(ptr writeonly captures(none), ptr readonly captures(none), i16, i1 immarg)
 
-attributes #1 = { "target-features"="+static-stack" }
+attributes #1 = { "target-features"="+static-frame" }

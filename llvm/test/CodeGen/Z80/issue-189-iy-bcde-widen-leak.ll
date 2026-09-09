@@ -1,7 +1,7 @@
 ; RUN: llc -mtriple=z80 -verify-machineinstrs < %s | FileCheck %s
 ;
-; ravn/llvm-z80 #189 residual: when IY is allocatable (optsize + static-stack,
-; the path that auto-static-stack makes the default), a byte-decomposed 16-bit
+; ravn/llvm-z80 #189 residual: when IY is allocatable (optsize + static-frame,
+; the path that auto-static-frame makes the default), a byte-decomposed 16-bit
 ; value must never land in IY -- IX/IY have no documented 8-bit sub-register
 ; ops, so extracting its halves emits undocumented IYH/IYL.
 ;
@@ -72,5 +72,5 @@ define internal fastcc i16 @call_via_ptr() unnamed_addr #0 {
 declare void @llvm.lifetime.start.p0(ptr captures(none)) #1
 declare void @llvm.lifetime.end.p0(ptr captures(none)) #1
 
-attributes #0 = { minsize optsize "target-features"="+z80,+static-stack" }
+attributes #0 = { minsize optsize "target-features"="+z80,+static-frame" }
 attributes #1 = { nounwind }

@@ -1,8 +1,8 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -mattr=+static-frame < %s | FileCheck %s
 
 ; Regression test for IX constant propagation bug (ravn/llvm-z80#17).
 ;
-; When IX is allocatable (hasFP=false with static-stack), the register
+; When IX is allocatable (hasFP=false with static-frame), the register
 ; allocator may put a loop counter in IX.  The IX constant propagation
 ; peephole in Z80LateOptimization must NOT fold INC IX inside a loop
 ; body into the initial LD IX,0 — the delta is loop-variant, not constant.

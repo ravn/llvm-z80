@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; memmove with statically-determinable dst/src direction is inlined as
 ; LDIR (when dst <= src) or LDDR (when dst >= src) instead of falling

@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#152: extend #147's SET/RES n,(HL) peephole to fire
 ; when intervening insns READ A (but don't write it) — preserve A

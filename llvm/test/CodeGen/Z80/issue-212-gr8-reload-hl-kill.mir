@@ -2,7 +2,7 @@
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 # XFAIL: *
 #
-# ravn/llvm-z80 #212 -- at -O0 with +static-stack, fastregalloc kills $hl
+# ravn/llvm-z80 #212 -- at -O0 with +static-frame, fastregalloc kills $hl
 # at an XOR_CMP_EQ16 (consumed both halves into the flag result).  The
 # next instruction is a RELOAD_GR8 into $h (or $l) whose frame offset,
 # after Z80FrameLowering's __sfrend_-relative layout, falls outside the
@@ -30,13 +30,13 @@
   target triple = "z80"
   define dso_local void @reload_h_after_hl_kill() #0 {
     ; The alloca forces hasFP=true so PEI uses IX-relative addressing instead
-    ; of the +static-stack BSS direct-addressing short-circuit -- without it,
+    ; of the +static-frame BSS direct-addressing short-circuit -- without it,
     ; PEI would lower the RELOAD_GR8 to `LD A,(addr); LD H,A` and never reach
     ; the large-offset expander where #212 lives.
     %x = alloca i8, align 1
     ret void
   }
-  attributes #0 = { "target-features"="+static-stack" "frame-pointer"="all" }
+  attributes #0 = { "target-features"="+static-frame" "frame-pointer"="all" }
 ...
 ---
 name:            reload_h_after_hl_kill

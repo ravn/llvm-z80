@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #86: u8 switch range-check should use 8-bit CP, not 16-bit
 ; subtract.  GISel switch lowering widens the discriminator to i16

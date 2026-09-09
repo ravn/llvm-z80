@@ -8,7 +8,7 @@
 # `NeedSaveHL = contains(H) || contains(L)` but emitted unconditional
 # PUSH_HL — reading partial-undef $hl when only one half was live.
 #
-# Fixture: SPILL_GR16 $iy (no +static-stack => IX-indexed store path).
+# Fixture: SPILL_GR16 $iy (no +static-frame => IX-indexed store path).
 # $h live, $l undef => NeedSaveHL=true but $l is partial-undef.
 #
 # Fix: IMPLICIT_DEF dead half before PUSH_HL (same pattern as sites 1/1b).

@@ -1,14 +1,14 @@
 ; RUN: llc -mtriple=z80 --z80-static-frames -O0 -verify-machineinstrs \
-; RUN:     -z80-static-stack-fp-direct-addr < %s | FileCheck %s
+; RUN:     -z80-static-frame-fp-direct-addr < %s | FileCheck %s
 ; XFAIL: *
 ;
-; ravn/llvm-z80#264 (found via the #263 static-stack direct-addressing lever):
+; ravn/llvm-z80#264 (found via the #263 static-frame direct-addressing lever):
 ; the RMW->bit-set peephole in Z80LateOptimization rewrites
 ;   ld a,(mem) ; or <1<<n> ; ld (mem),a   ==>   ld hl,mem ; set n,(hl)
 ; but it built the `ld hl,mem` address with
 ;   NewLd.addSym(Addr.getMCSymbol(), Addr.getOffset())
 ; -- and addSym's SECOND argument is TargetFlags, NOT an offset.  For an
-; MCSymbol operand carrying a non-zero offset (a static-stack frame slot such
+; MCSymbol operand carrying a non-zero offset (a static-frame frame slot such
 ; as __sfrend_f-3) the offset was silently dropped, so the bit-set hit
 ; __sfrend_f+0 instead of __sfrend_f-3: a wrong-address miscompile.  (The
 ; GlobalAddress branch was unaffected: addGlobalAddress's 2nd arg IS the

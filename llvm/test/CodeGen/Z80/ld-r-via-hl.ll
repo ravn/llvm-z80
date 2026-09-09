@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #76: GISel sometimes emits the 2-instruction A-via path
 ;   LD A,(HL); LD r,A     (2 B / 11 T)

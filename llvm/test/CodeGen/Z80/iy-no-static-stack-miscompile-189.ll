@@ -6,7 +6,7 @@
 ; This i32 loop-carried CRC reduction used to MISCOMPILE at -O1 with
 ; -z80-unreserve-iy in the DEFAULT (IX-frame) configuration: crc_one(0xFF)
 ; returned 0x...0044 instead of the correct 0x...EF8D (witnessed at runtime by
-; z80-utils/test-runner test_171_iy_crc_default_config; the +static-stack form
+; z80-utils/test-runner test_171_iy_crc_default_config; the +static-frame form
 ; in test_168 stayed value-correct but paid a push/pop density penalty).
 ;
 ; Root cause: the byte-decomposed i32 halves are correctly created in GR16NoIR

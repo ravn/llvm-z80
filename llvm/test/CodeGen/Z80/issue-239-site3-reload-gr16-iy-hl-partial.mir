@@ -8,7 +8,7 @@
 # used `NeedSaveHL = contains(H) || contains(L)` but emitted unconditional
 # PUSH_HL — reading partial-undef $hl when only one half was live.
 #
-# Fixture: RELOAD_GR16 into $iy (no +static-stack => IX-indexed load path).
+# Fixture: RELOAD_GR16 into $iy (no +static-frame => IX-indexed load path).
 # $h live, $l undef => NeedSaveHL=true but $l is partial-undef.
 #
 # Fix: IMPLICIT_DEF dead half before PUSH_HL.

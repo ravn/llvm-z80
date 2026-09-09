@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#18: when A already holds a constant (from `xor a` / `sub a`
 ; → 0, or `ld a, n`), a subsequent immediate load of the SAME constant into

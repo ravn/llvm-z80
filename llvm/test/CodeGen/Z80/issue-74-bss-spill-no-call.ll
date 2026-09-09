@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 
 ; Issue #74: the BSS-spill→PUSH/POP peephole previously bailed when no CALL
 ; sat between the store and the matching load.  But pure register-pressure

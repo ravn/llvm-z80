@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#144: `(a == K) ? -1 : 0` for i16 was lowering via a
 ; 22-byte SBC + AND + RLCA + ADD-A-A + SBC chain because the i1

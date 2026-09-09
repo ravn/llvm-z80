@@ -1,9 +1,9 @@
 ; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -verify-machineinstrs \
-; RUN:   -z80-enable-auto-static-stack=false %s -o - | FileCheck %s
+; RUN:   -z80-enable-auto-static-frame=false %s -o - | FileCheck %s
 ; XFAIL: *
 ;
-; -z80-enable-auto-static-stack=false: this test exercises the dynamic IX-frame
-; prologue, which auto-static-stack (#176, default on) would bypass by routing
+; -z80-enable-auto-static-frame=false: this test exercises the dynamic IX-frame
+; prologue, which auto-static-frame (#176, default on) would bypass by routing
 ; @f's locals to BSS.  The IX-frame path is still reached for opted-out / ISR /
 ; address-taken / stack-arg functions, so we pin it here.
 ;

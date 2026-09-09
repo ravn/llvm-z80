@@ -1,6 +1,6 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O0 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O0 < %s | FileCheck %s
 ;
-; ravn/llvm-z80#202 (FIXED): at -O0 with +static-stack, a store to a frame (BSS)
+; ravn/llvm-z80#202 (FIXED): at -O0 with +static-frame, a store to a frame (BSS)
 ; slot in one block was dropped when the stored value is forwarded (via
 ; push/pop) to a load in a *successor* block while the same slot is reloaded
 ; across a loop back-edge.  The back-edge reload then read the stale initial
@@ -102,5 +102,5 @@ end:
 }
 
 ; The 16-bit right shift of v:
-; ...and its result must be stored back to v's static-stack frame slot before
+; ...and its result must be stored back to v's static-frame frame slot before
 ; the loop re-reads it (this store is the one currently missing):

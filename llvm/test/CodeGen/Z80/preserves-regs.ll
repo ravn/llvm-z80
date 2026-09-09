@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#131 — caller-side honoring of "z80-preserves-regs" function
 ; attribute.  Functions declared with this attribute tell the regalloc that

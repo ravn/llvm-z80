@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #75: CALL nn ; RET → JP nn (tail call) when CALL and RET are
 ; in different MachineBasicBlocks via fall-through.

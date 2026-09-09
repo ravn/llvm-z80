@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#135 — #131 caller-side HL/A preservation needs to also
 ; strip ADJCALLSTACKUP's pessimistic TableGen `Defs = [SP, HL, A]` for

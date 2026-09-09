@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#141: `icmp uge/ult i16 %r, K` where K is a multiple
 ; of 256 should fold to a single 8-bit test on the high byte instead

@@ -1,6 +1,6 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
-; ravn/llvm-z80#195/test_27: a +static-stack frame whose base address is
+; ravn/llvm-z80#195/test_27: a +static-frame frame whose base address is
 ; materialized into a register (`LD HL,__sfrend_main`, here for a volatile
 ; m[3][3] indexed in a loop) can be read INDIRECTLY via pointer arithmetic.
 ; The BSS-spill->PUSH/POP peephole's orphan scan only sees DIRECT `LD A,(nn)`
@@ -156,7 +156,7 @@ declare void @llvm.lifetime.start.p0(ptr captures(none)) #1
 ; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(ptr captures(none)) #1
 
-attributes #0 = { nofree norecurse nounwind optsize memory(inaccessiblemem: readwrite) "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-features"="+static-stack" }
+attributes #0 = { nofree norecurse nounwind optsize memory(inaccessiblemem: readwrite) "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-features"="+static-frame" }
 attributes #1 = { mustprogress nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
 attributes #2 = { nounwind }
 

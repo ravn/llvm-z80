@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#133 layer 1 — callee-side honoring of
 ; "z80-preserves-regs" function attribute.  A function declared with

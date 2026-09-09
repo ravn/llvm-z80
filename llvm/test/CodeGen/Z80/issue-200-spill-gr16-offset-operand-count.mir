@@ -1,5 +1,5 @@
 # RUN: llc -mtriple=z80 --z80-static-frames -run-pass=prologepilog \
-# RUN:     -z80-static-stack-fp-direct-addr=false \
+# RUN:     -z80-static-frame-fp-direct-addr=false \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 # XFAIL: *
 #
@@ -7,7 +7,7 @@
 # slots into direct absolute stores, bypassing the SPILL_GR16 frame-slot path
 # this test guards.  Pin the lever OFF to keep exercising the operand-count fix.
 #
-# ravn/llvm-z80 #200: under +static-stack, an address-taken local array forces
+# ravn/llvm-z80 #200: under +static-frame, an address-taken local array forces
 # an IX frame.  SPILL_GR16 / RELOAD_GR16 are declared with three operands
 # (src/dst, $fi, $offset), but eliminateFrameIndex folds the $offset
 # displacement into the resolved frame offset and removes it, leaving a

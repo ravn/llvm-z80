@@ -52,7 +52,7 @@ add_llvm_target(Z80CodeGen
   Z80StaticFrameAlloc.cpp
   Z80Subtarget.cpp
   Z80TargetMachine.cpp
-  Z80AutoStaticStack.cpp
+  Z80AutoStaticFrame.cpp
   Z80FuseCarryChain.cpp
   Z80HighByteFirstBranch.cpp
   Z80KeepLoopPointerInPair.cpp

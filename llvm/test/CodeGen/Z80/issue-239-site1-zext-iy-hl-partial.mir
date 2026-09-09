@@ -21,7 +21,7 @@
 --- |
   target triple = "z80"
   define void @zext_iy_h_live_l_undef() #0 { ret void }
-  attributes #0 = { "target-features"="+static-stack" optsize }
+  attributes #0 = { "target-features"="+static-frame" optsize }
 ...
 ---
 name:            zext_iy_h_live_l_undef

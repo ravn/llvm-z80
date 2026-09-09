@@ -1,7 +1,7 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O1 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O1 < %s | FileCheck %s
 
 ; ravn/llvm-z80#192: an i32 `select((crc&1)==0, 0, CONST)` reduction loop
-; miscompiled under +static-stack at -O1/-Os.  The i32 `icmp eq` is selected as
+; miscompiled under +static-frame at -O1/-Os.  The i32 `icmp eq` is selected as
 ; two XOR_CMP_EQ16 (one per 16-bit half) AND-combined.  The #173 peephole
 ; ("bare BSS store + 4-instr A-preserving reload -> LD r,A; PUSH/POP rr")
 ; relocated the first half's result (flag1) into register D and bracketed it

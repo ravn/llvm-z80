@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#148: `XOR $1; J{Z,NZ}` and `CP $FF; J{Z,NZ}` for
 ; the equality tests A == 1 and A == 0xFF compile in 4 bytes but

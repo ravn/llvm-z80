@@ -1,4 +1,4 @@
-# RUN: llc -mtriple=z80 -mattr=+static-stack -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 -mattr=+static-frame -run-pass=z80-late-opt \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 #
 # ravn/llvm-z80: the BSS-spill->PUSH/POP peephole must NOT convert a spill
@@ -9,7 +9,7 @@
 # tracks PUSH/POP, not direct SP defs.
 #
 # Surfaced via test_58_fixed_point under -z80-unreserve-iy (a spill whose
-# bracket spanned the i64-divide arg cleanup); also a latent +static-stack
+# bracket spanned the i64-divide arg cleanup); also a latent +static-frame
 # -O0 miscompile (test_58_O0_ss). Same family as #198.
 #
 # Expected: the store stays LD_nnind_BC (conversion refused); no PUSH_BC.

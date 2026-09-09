@@ -63,4 +63,4 @@ body:
 
 ; minsize/optsize are what shift greedy's copy/spill weighting into parking the
 ; pointer in IY (the bug only appears at -Oz/-Os, not -O2 without minsize).
-attributes #0 = { minsize optsize nounwind "target-features"="+static-stack,+z80" }
+attributes #0 = { minsize optsize nounwind "target-features"="+static-frame,+z80" }

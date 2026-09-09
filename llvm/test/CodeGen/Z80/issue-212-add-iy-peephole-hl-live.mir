@@ -7,7 +7,7 @@
 # into a single ADD_IY_rr.  That is correct ONLY if $hl is dead after the
 # closing $iy <- $hl copy: the fold drops the ADD_HL_rr, which also DEFINED
 # $hl, keeping the sum only in IY.  When IY is allocatable (-Os/-Oz +
-# static-stack) the allocator can leave $hl live across the copy-add-copy
+# static-frame) the allocator can leave $hl live across the copy-add-copy
 # because the same sum is reused by a following `XOR (HL)` / `LD A,(HL)`
 # (this is the AES key-expansion shape `k[i] ^= k[i-4]` at -Os).  Folding
 # then leaves that consumer reading a stale HL -> silent miscompile.

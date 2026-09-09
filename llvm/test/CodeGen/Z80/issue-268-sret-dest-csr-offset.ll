@@ -3,7 +3,7 @@
 ; callee's result into the WRONG destination slot when the function has
 ; callee-saved registers (CSR > 0).
 ;
-; Frame layout (static-stack + frame pointer, IX == saved-IX):
+; Frame layout (static-frame + frame pointer, IX == saved-IX):
 ;   [ix+2,+3]  return address (pushed by CALL)
 ;   [ix+4,+5]  sret return pointer   (fixed object, ObjOff=2)   <-- @bug's own
 ;   [ix+6..13] incoming arg a        (fixed object, ObjOff=4)
@@ -11,7 +11,7 @@
 ; The CSR saves live BELOW IX on the real stack, NOT above it, so incoming
 ; args and the sret pointer (all fixed objects, Idx < 0) must NOT be shifted
 ; by CalleeSavedFrameSize.  The pre-fix code unconditionally added CSR in the
-; static-stack + frame-pointer branch of eliminateFrameIndex, so with CSR=2 the
+; static-frame + frame-pointer branch of eliminateFrameIndex, so with CSR=2 the
 ; sret pointer at [ix+4] was misread as [ix+6] (== arg a's low word).  The
 ; __memmove_rt that copies g()'s result into @bug's sret buffer then loaded its
 ; DESTINATION from [ix+6] instead of [ix+4]; with a==3.0 (low word 0x0000) the

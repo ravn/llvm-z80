@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #93 (path b -- post-RA peephole).  GISel + LSR rewrites a
 ; constant-trip-count countdown to a count-up-from-(-N) form, where

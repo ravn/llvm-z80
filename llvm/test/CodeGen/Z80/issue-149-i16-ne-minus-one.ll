@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#149: `icmp {eq,ne} i16 r, -1` (≡ ne/eq with constant
 ; 0xFFFF) was lowering via the XOR-based EQ/NE path:

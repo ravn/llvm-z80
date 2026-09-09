@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -mattr=+static-stack -O2 < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 < %s | FileCheck %s
 
 ; Issue #88 / #205: pattern-fill loops with constant trip count get rewritten
 ; in the IR as the target intrinsic llvm.z80.pattern.fill(base, pattern, K, N),
