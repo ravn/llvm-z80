@@ -83,7 +83,10 @@ public:
   bool useAA() const override { return true; }
 
   bool hasStaticFrame() const { return StaticFrame; }
+  bool hasShadowRegs() const { return ShadowRegs; }
   bool inlineI16Runtime() const { return InlineI16Runtime; }
+
+  void initLibcallLoweringInfo(LibcallLoweringInfo &Info) const override;
 
   // Feature queries
   bool hasZ80() const { return HasZ80; }
@@ -110,6 +113,7 @@ private:
   bool HasSM83 = false;
 
   bool StaticFrame = false;
+  bool ShadowRegs = false;
   bool InlineI16Runtime = false;
 
   Z80InstrInfo InstrInfo;

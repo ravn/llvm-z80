@@ -165,12 +165,36 @@ class Z80Reg16Class<dag RegList>: Z80RegClass<[i16], 8, RegList>;
 // These can be used with most 8-bit operations
 def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
 
+// Single-register class containing only B.  Used by Z80SplitDjnzCounters
+// to constrain the per-loop DJNZ counter vreg to B by class.
+def BReg : Z80Reg8Class<(add B)>;
+
+// Single-register class containing only A.  Used by Z80PinAluAccumulator
+// to pin 8-bit ALU accumulator vregs to A by class.
+def AReg : Z80Reg8Class<(add A)>;
+
 //===----------------------------------------------------------------------===//
 //  16-bit register classes
 //===----------------------------------------------------------------------===//
 
 // General 16-bit registers: BC, DE, HL
 def GR16 : Z80Reg16Class<(add BC, DE, HL)>;
+
+// Single-register class containing only BC.  Used by Z80SplitDjnzCounters
+// for the i16 self-loop counter case: the counter vreg constrained to BCReg
+// forces greedy past its copy-elimination heuristic and frees HL for the
+// loop's pointer.
+def BCReg : Z80Reg16Class<(add BC)>;
+
+// Single-register class containing only HL.  Used by Z80PinLoopPointer
+// to pin a byte-array pointer-walk induction variable to HL.
+def HLReg : Z80Reg16Class<(add HL)>;
+
+// GR16 minus IX/IY.  Used by pseudo expansions whose lowering path operates
+// on the 8-bit halves via SRL/SRA/RR/etc., which only have documented forms
+// for {A,B,C,D,E,H,L}.  Also used by Z80NarrowNoIndex and
+// Z80KeepLoopPointerInPair.
+def GR16NoIR : Z80Reg16Class<(add DE, HL, BC)>;
 
 // BC and DE only (for register scavenging temp in address computation)
 def GR16_BCDE : Z80Reg16Class<(add BC, DE)>;
