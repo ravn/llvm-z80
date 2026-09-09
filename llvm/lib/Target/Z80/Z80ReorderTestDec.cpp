@@ -178,6 +178,15 @@ static bool matchSharedShape(MachineBasicBlock::iterator MII,
 
   I1 = nextNonMeta(std::next(I0), MIE);
   if (I1 == MIE || I1->getOpcode() != AluOpc) return false;
+  // Post-PR#40 DEC_r / ADD_A_r are register-operand forms; the counter was
+  // just copied into A at I0, so require the ALU op to reference A explicitly
+  // (guards against matching a same-opcode op on some other register).
+  {
+    bool ActsOnA = false;
+    for (const MachineOperand &MO : I1->operands())
+      if (MO.isReg() && MO.getReg() == Z80::A) { ActsOnA = true; break; }
+    if (!ActsOnA) return false;
+  }
 
   I2 = nextNonMeta(std::next(I1), MIE);
   if (I2 == MIE || !isCopyFromA(*I2)) return false;
@@ -200,9 +209,9 @@ static bool matchSharedShape(MachineBasicBlock::iterator MII,
   return true;
 }
 
-// True iff MI is `OR_A` or `OR_r $a` (both encode the same byte).
+// True iff MI is `OR_r $a` (i.e. `or a`, the A self-test).  Post-PR#40 the
+// A-implicit OR_A form is gone; the register-operand OR_r encodes the byte.
 static bool isOrATest(const MachineInstr &MI) {
-  if (MI.getOpcode() == Z80::OR_A) return true;
   if (MI.getOpcode() == Z80::OR_r &&
       MI.getNumOperands() >= 1 && MI.getOperand(0).isReg() &&
       MI.getOperand(0).getReg() == Z80::A)
@@ -230,7 +239,7 @@ bool Z80ReorderTestDec::rewriteInMBB(MachineBasicBlock &MBB) {
     unsigned CarryOpc = 0;
 
     // P1: DEC + OR_A test.  Rewrite to SUB_n 1; ...; JR_C.
-    bool P1 = matchSharedShape(MII, MIE, Z80::DEC_A, isOrATest,
+    bool P1 = matchSharedShape(MII, MIE, Z80::DEC_r, isOrATest,
                                I0, I1, I2, I3, I4, I5, CounterVReg);
     if (P1) {
       CarryOpc = getCarryFormOpcode(I5->getOpcode());
@@ -245,7 +254,7 @@ bool Z80ReorderTestDec::rewriteInMBB(MachineBasicBlock &MBB) {
     // CounterVReg isn't redefined between the two loads.
     bool P2 = false;
     if (!P1) {
-      P2 = matchSharedShape(MII, MIE, Z80::ADD_A_A, isRLCA,
+      P2 = matchSharedShape(MII, MIE, Z80::ADD_A_r, isRLCA,
                             I0, I1, I2, I3, I4, I5, CounterVReg);
       if (P2) {
         // I5 must be a flag-conditional branch (JR_C, JR_NC, JP_C, JP_NC).

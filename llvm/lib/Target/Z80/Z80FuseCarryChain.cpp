@@ -124,16 +124,9 @@ static bool isChainConsumer(const MachineInstr &MI, CarryKind &K) {
   }
 }
 
-/// Map the GR16_BCDE rhs register to the real flag-resident opcode.
-static unsigned realAddOpc(Register RHS) {
-  return RHS == Z80::BC ? Z80::ADC_HL_BC : Z80::ADC_HL_DE;
-}
-static unsigned realSubOpc(Register RHS) {
-  return RHS == Z80::BC ? Z80::SBC_HL_BC : Z80::SBC_HL_DE;
-}
-static unsigned realHeadAddOpc(Register RHS) {
-  return RHS == Z80::BC ? Z80::ADD_HL_BC : Z80::ADD_HL_DE;
-}
+// Post-PR#40 the flag-resident 16-bit ADC/SBC/ADD are register-operand forms
+// (ADC_HL_rr / SBC_HL_rr / ADD_HL_rr): the rhs pair is an explicit operand
+// rather than baked into the opcode, so the emit sites below add `.addReg(RHS)`.
 
 /// Scan (P, C) exclusive for flag-safety: no instruction may define FLAGS, and
 /// the carry register A must not be read or redefined between the producer and
@@ -232,10 +225,11 @@ bool Z80FuseCarryChain::processBlock(MachineBasicBlock &MBB) {
         Register HeadRHS = Head.getOperand(0).getReg();
         DebugLoc DL = Head.getDebugLoc();
         if (HK == CarryKind::Add) {
-          BuildMI(MBB, Head, DL, TII->get(realHeadAddOpc(HeadRHS)));
+          BuildMI(MBB, Head, DL, TII->get(Z80::ADD_HL_rr)).addReg(HeadRHS);
         } else {
-          BuildMI(MBB, Head, DL, TII->get(Z80::AND_A)); // clear CF for low sub
-          BuildMI(MBB, Head, DL, TII->get(realSubOpc(HeadRHS)));
+          // AND A clears CF for the low SBC (A unchanged); A is a live input.
+          BuildMI(MBB, Head, DL, TII->get(Z80::AND_r)).addReg(Z80::A);
+          BuildMI(MBB, Head, DL, TII->get(Z80::SBC_HL_rr)).addReg(HeadRHS);
         }
         MachineBasicBlock::iterator AfterHead = std::next(I);
         Head.eraseFromParent();
@@ -244,8 +238,8 @@ bool Z80FuseCarryChain::processBlock(MachineBasicBlock &MBB) {
         // Rewrite each consumer to its flag-resident real instruction.
         for (MachineInstr *C : Consumers) {
           Register RHS = C->getOperand(0).getReg();
-          unsigned Opc = (HK == CarryKind::Add) ? realAddOpc(RHS) : realSubOpc(RHS);
-          BuildMI(MBB, *C, C->getDebugLoc(), TII->get(Opc));
+          unsigned Opc = (HK == CarryKind::Add) ? Z80::ADC_HL_rr : Z80::SBC_HL_rr;
+          BuildMI(MBB, *C, C->getDebugLoc(), TII->get(Opc)).addReg(RHS);
           C->eraseFromParent();
         }
 

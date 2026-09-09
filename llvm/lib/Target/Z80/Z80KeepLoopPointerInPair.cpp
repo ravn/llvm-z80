@@ -116,13 +116,9 @@ INITIALIZE_PASS(Z80KeepLoopPointerInPair, DEBUG_TYPE,
 // second operand of the `$hl = COPY %ptr` store idiom.
 static bool isStoreThroughHL(const MachineInstr &MI) {
   switch (MI.getOpcode()) {
-  case Z80::LD_HLind_A:
-  case Z80::LD_HLind_B:
-  case Z80::LD_HLind_C:
-  case Z80::LD_HLind_D:
-  case Z80::LD_HLind_E:
-  case Z80::LD_HLind_H:
-  case Z80::LD_HLind_L:
+  // Post-PR#40 the per-source `ld (hl),r` defs collapsed into one
+  // register-operand form (LD_HLind_r); LD_HLind_n is the immediate store.
+  case Z80::LD_HLind_r:
   case Z80::LD_HLind_n:
     return true;
   default:
@@ -169,11 +165,11 @@ static bool hasVirtCopyDef(Register Reg, const MachineRegisterInfo &MRI,
   return false;
 }
 
-// True iff Reg has an INC16 or DEC16 def -- i.e. it is really advanced, not a
+// True iff Reg has an INC_rr or DEC_rr def -- i.e. it is really advanced, not a
 // bare copy of the pointer (guards against a degenerate ptr==next identity).
 static bool hasStrideDef(Register Reg, const MachineRegisterInfo &MRI) {
   for (const MachineInstr &Def : MRI.def_instructions(Reg))
-    if (Def.getOpcode() == Z80::INC16 || Def.getOpcode() == Z80::DEC16)
+    if (Def.getOpcode() == Z80::INC_rr || Def.getOpcode() == Z80::DEC_rr)
       return true;
   return false;
 }
@@ -181,7 +177,7 @@ static bool hasStrideDef(Register Reg, const MachineRegisterInfo &MRI) {
 // Find the i16 store-pointer walk and report the pointer vreg Ptr and its
 // advanced-next vreg Next.  Anchor: `$hl = COPY %Ptr` immediately followed by a
 // `ld (hl),.` store.  Then require the loop-carried cycle %Ptr = COPY %Next and
-// %Next = COPY %Ptr with %Next advanced by INC16/DEC16.  That def-use cycle only
+// %Next = COPY %Ptr with %Next advanced by INC_rr/DEC_rr.  That def-use cycle only
 // exists for a loop-carried recurrence, so no MachineLoopInfo is needed (and the
 // pass stays inert -- no forced analysis -- when the flag is off).
 static bool findWordPointerWalk(MachineBasicBlock &MBB,

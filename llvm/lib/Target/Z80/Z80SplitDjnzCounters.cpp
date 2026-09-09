@@ -77,14 +77,14 @@ INITIALIZE_PASS(Z80SplitDjnzCounters, DEBUG_TYPE,
                 "Z80 Split DJNZ-loop counter live ranges", false, false)
 
 // Find the i16 counter vreg in a self-back-edge loop MBB.  The pattern
-// is `%new = DEC16 %old (tied)` where the result feeds a 16-bit zero-
+// is `%new = DEC_rr %old (tied)` where the result feeds a 16-bit zero-
 // test (LD A,lo / OR hi or KILL+sub-reg) that the same MBB's JR_NZ
 // terminator branches on.  Returns the COUNTER (the %old / tied source)
 // or Register() if no match.
 static Register findCounter16VReg(MachineBasicBlock &MBB,
                                   const MachineRegisterInfo &MRI) {
   for (auto It = MBB.begin(), E = MBB.end(); It != E; ++It) {
-    if (It->getOpcode() != Z80::DEC16)
+    if (It->getOpcode() != Z80::DEC_rr)
       continue;
     if (It->getNumOperands() < 2)
       continue;
@@ -101,7 +101,7 @@ static Register findCounter16VReg(MachineBasicBlock &MBB,
 }
 
 // A DJNZ-eligible self-loop MBB ends with `JR_NZ_e <self>` or
-// `JP_NZ_nn <self>`.  The body contains a `COPY $a, %v; DEC_A;
+// `JP_NZ_nn <self>`.  The body contains a `COPY $a, %v; DEC_r $a;
 // COPY %v, $a` triplet (with optional intermediate ops); %v is the
 // counter vreg.  Returns the counter vreg or Register() if not found.
 static Register findCounterVReg(MachineBasicBlock &MBB,
@@ -124,7 +124,12 @@ static Register findCounterVReg(MachineBasicBlock &MBB,
     auto J = std::next(It);
     while (J != E && J->isMetaInstruction())
       ++J;
-    if (J == E || J->getOpcode() != Z80::DEC_A)
+    // Post-PR#40 `dec a` is the register-operand form DEC_r; require it acts
+    // on A (operand 0 is the tied def) so we don't match `dec b`/`dec c`/...
+    if (J == E || J->getOpcode() != Z80::DEC_r)
+      continue;
+    if (J->getNumOperands() < 1 || !J->getOperand(0).isReg() ||
+        J->getOperand(0).getReg() != Z80::A)
       continue;
     // Find `%v = COPY $a` somewhere in the rest of the MBB.
     for (auto K = std::next(J); K != E; ++K) {

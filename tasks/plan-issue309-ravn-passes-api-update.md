@@ -4,7 +4,7 @@ Status: IN PROGRESS — do NOT start from scratch next session; read this first.
 
 ## Situation (as of 2026-09-09)
 
-After merging llvm-z80/llvm-z80 PR #40 (@zlfn's z88dk CC refactoring), the
+After merging llvm-z80/llvm-z80 PR #40 (the fork owner's z88dk CC refactoring), the
 build was falsely green: ninja was using STALE `.o` files from before the merge.
 When we forced a real rebuild (rm libLLVMZ80CodeGen.a), real errors surfaced.
 
@@ -30,7 +30,7 @@ a 17th ravn-authored file not on the provenance list below).
 | `llvm/lib/Analysis/TargetLibraryInfo.cpp` | Removed Z80_AllReg case (CC no longer exists) |
 | `llvm/lib/Target/Z80/CMakeLists.txt` | Added all 16 ravn-local .cpp files (required by LLVM cmake check) |
 | `llvm/lib/Target/Z80/SM83CallLowering.cpp` | Folded 3rd CallingConvRegs into 2nd (constructor takes 2, not 3) |
-| `llvm/lib/Target/Z80/SM83InstrInfo.td` | GR16NoIR → GR16 (register class renamed by @zlfn) |
+| `llvm/lib/Target/Z80/SM83InstrInfo.td` | GR16NoIR → GR16 (register class renamed upstream in PR #40) |
 | `llvm/lib/Target/Z80/Z80AsmPrinter.cpp` | STI.staticStack() → STI.hasStaticFrame() |
 | `llvm/lib/Target/Z80/Z80CallingConv.td` | Removed unused Z80_AllReg_CSR definition |
 | `llvm/lib/Target/Z80/Z80InstrInfo.td` | Restored TAILJMP pseudo (ravn tail-call optimization, lost in merge) |
@@ -100,7 +100,7 @@ This file needs the most rework — retarget every call against the new
 ## Root cause
 
 The 16 (now 17, incl. Z80IndexIV) ravn-local files are ALL authored by
-tra@ravnand.dk (2026-05-02 → 2026-07-13). @zlfn never had them. PR #40 overwrote
+tra@ravnand.dk (2026-05-02 → 2026-07-13). The fork owner never had them. PR #40 overwrote
 TD files, headers, and shared .cpp files. Breakage is **broader than "renames"** —
 four distinct classes (A–D above): deleted register classes, restructured
 instruction defs, a changed opcode-helper API, and a half-removed subtarget feature.
