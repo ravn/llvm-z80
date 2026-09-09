@@ -81,7 +81,6 @@ static bool isCallingConvCCompatible(CallingConv::ID CC, const Triple &TT,
   // replacement puts/putchar is stamped cc132 by -z80-classic-libc-cc in
   // BuildLibCalls), so treating them as C-compatible here is safe.
   case llvm::CallingConv::Z80_SDCCCall0:
-  case llvm::CallingConv::Z80_AllReg:
   case llvm::CallingConv::Z80_Z88dkFastCall:
   case llvm::CallingConv::Z80_Z88dkCallee:
   case llvm::CallingConv::Z80_SmallC:

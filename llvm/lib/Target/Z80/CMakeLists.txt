@@ -44,6 +44,7 @@ add_llvm_target(Z80CodeGen
   Z80MCInstLower.cpp
   Z80NonReentrant.cpp
   Z80PostRACompareMerge.cpp
+  Z80RemoveJumpToNext.cpp
   Z80PostRAScavenging.cpp
   Z80RegisterBankInfo.cpp
   Z80RegisterInfo.cpp
@@ -51,6 +52,21 @@ add_llvm_target(Z80CodeGen
   Z80StaticFrameAlloc.cpp
   Z80Subtarget.cpp
   Z80TargetMachine.cpp
+  Z80AutoStaticStack.cpp
+  Z80FuseCarryChain.cpp
+  Z80HighByteFirstBranch.cpp
+  Z80KeepLoopPointerInPair.cpp
+  Z80LoopInstrFormPrep.cpp
+  Z80LoopRotate.cpp
+  Z80NarrowNoIndex.cpp
+  Z80PatternFillRecognize.cpp
+  Z80PinAluAccumulator.cpp
+  Z80PinLoopPointer.cpp
+  Z80PruneCallFrameDefs.cpp
+  Z80ReorderTestDec.cpp
+  Z80SinkColdLoopIV.cpp
+  Z80SplitDjnzCounters.cpp
+  Z80TargetTransformInfo.cpp
   Z80TargetObjectFile.cpp
 
   DEPENDS

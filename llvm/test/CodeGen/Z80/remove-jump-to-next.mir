@@ -1,5 +1,4 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-remove-jump-to-next %s -o - | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#250: general late peephole removing an unconditional branch to
 # the block's own layout-next successor (a jump to the immediately-following

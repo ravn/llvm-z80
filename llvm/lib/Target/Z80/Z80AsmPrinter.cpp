@@ -257,7 +257,7 @@ void Z80AsmPrinter::emitFunctionBodyEnd() {
   // If this function uses static stack, record it for BSS emission.
   const auto &STI = MF->getSubtarget<Z80Subtarget>();
   const MachineFrameInfo &MFI = MF->getFrameInfo();
-  if (STI.staticStack() && MFI.getStackSize() > 0 &&
+  if (STI.hasStaticFrame() && MFI.getStackSize() > 0 &&
       MFI.getNumFixedObjects() == 0 && !MFI.hasVarSizedObjects()) {
     // BSS size = locals only.  MFI.getStackSize() may include callee-saved
     // register pushes (e.g. IX when hasFP=false).  Subtract those — CSR

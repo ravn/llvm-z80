@@ -1007,6 +1007,9 @@ let isPseudo = true, isReturn = true, isTerminator = true, isBarrier = true,
     Defs = [SP, HL, BC], Uses = [SP], hasSideEffects = true,
     mayLoad = false, mayStore = false in {
 def RET_CLEANUP : Z80Pseudo<(outs), (ins i16imm:$bytes)>;
+
+// Tail call: JP to an external function as a return.
+def TAILJMP : Z80Pseudo<(outs), (ins i16imm:$target)>;
 }
 
 // SM83-only instructions and pseudos

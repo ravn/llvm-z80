@@ -40,33 +40,12 @@ SM83CallLowering::SM83CallLowering(const TargetLowering *TL)
                                 /*Half_2=*/Z80::C,
                                 /*Half_3=*/Z80::L,
                             },
-                            // z88dk/SDCC block registers.  The First_* fields
-                            // stay invalid: __z88dk_fastcall's SM83 ABI has
-                            // not been specified, and both the frontend and
-                            // Z80CallLoweringCommon reject it there.
+                            // z88dk block: stack conventions and __z88dk_fastcall.
+                            // __z88dk_fastcall on SM83 is UNVERIFIED (not a shipping path).
                             CallingConvRegs{
                                 /*First_I16=*/Register(),
                                 /*First_I32_Hi=*/Register(),
                                 /*First_I32_Lo=*/Register(),
-                                /*Second_AfterI8_I8=*/Register(),
-                                /*Second_AfterI8_I16=*/Register(),
-                                /*Second_AfterI16_I8=*/Register(),
-                                /*Second_AfterI16_I16=*/Register(),
-                                /*Ret_I8=*/Z80::E,
-                                /*Ret_I16=*/Z80::DE,
-                                /*Ret_I32_Hi=*/Z80::HL,
-                                /*Ret_I32_Lo=*/Z80::DE,
-                                /*IndirectCallReg=*/Z80::HL,
-                                /*IndirectCallOpc=*/Z80::CALL_HL,
-                            },
-                            // z88dk-fastcall registers (SM83).  UNVERIFIED: not
-                            // a shipping path — SM83 (Game Boy) is not the RC700
-                            // target.  Mirrors the SM83 sdcccall(0) registers so
-                            // the config is internally consistent.  First_I8 = E.
-                            CallingConvRegs{
-                                /*First_I16=*/Z80::DE,
-                                /*First_I32_Hi=*/Z80::HL,
-                                /*First_I32_Lo=*/Z80::DE,
                                 /*Second_AfterI8_I8=*/Register(),
                                 /*Second_AfterI8_I16=*/Register(),
                                 /*Second_AfterI16_I8=*/Register(),
