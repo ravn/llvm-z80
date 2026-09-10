@@ -12,10 +12,43 @@
 
 #include "Z80.h"
 #include "clang/Basic/MacroBuilder.h"
+#include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/STLExtras.h"
 
+using namespace clang;
 using namespace clang::targets;
+
+static constexpr int NumBuiltins =
+    clang::Z80::LastTSBuiltin - clang::Builtin::FirstTSBuiltin;
+
+#define GET_BUILTIN_STR_TABLE
+#include "clang/Basic/BuiltinsZ80.inc"
+#undef GET_BUILTIN_STR_TABLE
+
+static constexpr clang::Builtin::Info BuiltinInfos[] = {
+#define GET_BUILTIN_INFOS
+#include "clang/Basic/BuiltinsZ80.inc"
+#undef GET_BUILTIN_INFOS
+};
+static_assert(std::size(BuiltinInfos) == NumBuiltins);
+
+llvm::SmallVector<clang::Builtin::InfosShard>
+Z80TargetInfo::getTargetBuiltins() const {
+  return {{&BuiltinStrings, BuiltinInfos}};
+}
+
+bool Z80TargetInfo::initFeatureMap(
+    llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags, StringRef CPU,
+    const std::vector<std::string> &FeaturesVec) const {
+  // The Z80 triple implies the base "z80" feature (IM 2, the I register, and
+  // other Z80-only facilities that some builtins/intrinsics require). SM83
+  // (Game Boy) lacks these, so it does not get the feature. Explicit
+  // -target-feature flags still layer on top via the base implementation.
+  if (!getTriple().isSM83())
+    Features["z80"] = true;
+  return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
+}
 
 Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
     : TargetInfo(Triple) {

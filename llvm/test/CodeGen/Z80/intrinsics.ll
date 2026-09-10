@@ -48,8 +48,8 @@ define void @test_set_i(i8 %v) {
   ret void
 }
 ; CHECK-LABEL: test_im2:
-; CHECK:      	call	_llvm.z80.im2
+; CHECK:      	im	2
 ; CHECK:      	ret
 ; CHECK-LABEL: test_set_i:
-; CHECK:      	call	_llvm.z80.set.i
+; CHECK:      	ld	i,a
 ; CHECK:      	ret
