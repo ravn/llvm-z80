@@ -41,6 +41,7 @@
 
 #include "Z80FuseCarryChain.h"
 #include "MCTargetDesc/Z80MCTargetDesc.h"
+#include "Z80InstrInfo.h"
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -227,8 +228,13 @@ bool Z80FuseCarryChain::processBlock(MachineBasicBlock &MBB) {
         if (HK == CarryKind::Add) {
           BuildMI(MBB, Head, DL, TII->get(Z80::ADD_HL_rr)).addReg(HeadRHS);
         } else {
-          // AND A clears CF for the low SBC (A unchanged); A is a live input.
-          BuildMI(MBB, Head, DL, TII->get(Z80::AND_r)).addReg(Z80::A);
+          // AND A clears CF for the low SBC. A is left unchanged and its value
+          // is a don't-care here, so mark the read undef -- otherwise the
+          // machine verifier demands a prior def of A that the fused chain does
+          // not provide (e.g. sub64, where A is never materialized).
+          Z80::markUndefUse(
+              BuildMI(MBB, Head, DL, TII->get(Z80::AND_r)).addReg(Z80::A),
+              Z80::A);
           BuildMI(MBB, Head, DL, TII->get(Z80::SBC_HL_rr)).addReg(HeadRHS);
         }
         MachineBasicBlock::iterator AfterHead = std::next(I);
