@@ -1,6 +1,5 @@
 ; RUN: llc -mtriple=z80  -verify-machineinstrs < %s | FileCheck %s --check-prefix=Z80
 ; RUN: llc -mtriple=sm83 -verify-machineinstrs < %s | FileCheck %s --check-prefix=SM83
-; XFAIL: *
 ;
 ; ravn/llvm-z80#205: the defined target intrinsic llvm.z80.pattern.fill replaces
 ; Z80PatternFillRecognize's old UB-in-IR overlapping-memcpy representation of a

@@ -14,15 +14,14 @@
 
 ; --- 1-byte pattern (memset shape) ----------------------------------
 ; CHECK-LABEL: fill_byte:
-; CHECK:      	ld	b,32
+; CHECK:      	ld	bc,_buf1
 ; CHECK:      	ld	de,_buf1
-; CHECK:      	ld	a,255
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,b
-; CHECK:      	dec	a
-; CHECK:      	ld	b,a
 ; CHECK:      	inc	de
-; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ld	a,255
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	hl,_buf1
+; CHECK:      	ld	bc,31
+; CHECK:      	ldir
 ; CHECK:      	ret
 define void @fill_byte() {
 entry:
@@ -50,19 +49,19 @@ loop:
   %p = getelementptr inbounds nuw [16 x i16], ptr @buf2, i16 0, i16 %i16
   store i16 -13570, ptr %p, align 1
 ; CHECK-LABEL: fill_word:
-; CHECK:      	ld	a,16
 ; CHECK:      	ld	bc,_buf2
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
 ; CHECK:      	ld	de,51966
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
+; CHECK:      	ld	hl,_buf2
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
-; CHECK:      	dec	a
-; CHECK:      	ld	a,a
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ld	hl,_buf2
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
+; CHECK:      	ld	bc,30
+; CHECK:      	ldir
 ; CHECK:      	ret
   %i.next = add i8 %i, 1
   %done = icmp eq i8 %i.next, 16
@@ -88,25 +87,25 @@ loop:
   %i.next = add i8 %i, 1
   %done = icmp eq i8 %i.next, 16
 ; CHECK-LABEL: fill_ivt:
+; CHECK:      	ld	bc,_ivt
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	ld	de,195
+; CHECK:      	ld	hl,_ivt
+; CHECK:      	ld	(hl),e
+; CHECK:      	inc	hl
+; CHECK:      	ld	(hl),d
 ; CHECK:      	ld	de,_ivt
 ; CHECK:      	inc	de
-; CHECK:      	ld	b,16
-; CHECK:      	ld	l,e
-; CHECK:      	ld	h,d
-; CHECK:      	dec	hl
-; CHECK:      	ld	a,195
-; CHECK:      	ld	(hl),a
-; CHECK:      	xor	a
-; CHECK:      	ld	(de),a
 ; CHECK:      	inc	de
 ; CHECK:      	ld	a,243
 ; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,b
-; CHECK:      	dec	a
-; CHECK:      	ld	b,a
-; CHECK:      	inc	de
-; CHECK:      	inc	de
-; CHECK:      	jr	nz,.LBB2_1
+; CHECK:      	ld	hl,_ivt
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
+; CHECK:      	ld	bc,45
+; CHECK:      	ldir
 ; CHECK:      	ret
   br i1 %done, label %exit, label %loop
 exit:
@@ -129,14 +128,17 @@ loop:
 exit:
   ret void
 }
+; The volatile store must NOT be rewritten to seed + LDIR: it stays an
+; open-coded loop, and no LDIR may appear anywhere in the function.
 ; CHECK-LABEL: fill_volatile_noop:
-; CHECK:      	ld	b,32
-; CHECK:      	ld	de,_buf1
+; CHECK:      	ld	d,32
+; CHECK:      	ld	bc,_buf1
 ; CHECK:      	ld	a,255
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,b
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	a,d
 ; CHECK:      	dec	a
-; CHECK:      	ld	b,a
-; CHECK:      	inc	de
+; CHECK:      	inc	bc
+; CHECK:      	ld	d,a
 ; CHECK:      	jr	nz,.LBB3_1
+; CHECK-NOT:  	ldir
 ; CHECK:      	ret

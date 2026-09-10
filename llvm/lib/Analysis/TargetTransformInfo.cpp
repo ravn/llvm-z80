@@ -1535,11 +1535,6 @@ bool TargetTransformInfo::shouldExpandReduction(const IntrinsicInst *II) const {
   return TTIImpl->shouldExpandReduction(II);
 }
 
-bool TargetTransformInfo::shouldExpandExperimentalMemSetPattern(
-    const IntrinsicInst *II) const {
-  return TTIImpl->shouldExpandExperimentalMemSetPattern(II);
-}
-
 TargetTransformInfo::ReductionShuffle
 TargetTransformInfo::getPreferredExpandedReductionShuffle(
     const IntrinsicInst *II) const {

@@ -1186,11 +1186,6 @@ public:
     return true;
   }
 
-  virtual bool
-  shouldExpandExperimentalMemSetPattern(const IntrinsicInst *II) const {
-    return true;
-  }
-
   virtual TTI::ReductionShuffle
   getPreferredExpandedReductionShuffle(const IntrinsicInst *II) const {
     return TTI::ReductionShuffle::SplitHalf;
