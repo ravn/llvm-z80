@@ -1,0 +1,1 @@
+- 2026-09-10: memset.pattern efter PR#40 - valgt target-ejet vej (drop generisk TTI-hook, brug kun z80_pattern_fill)
