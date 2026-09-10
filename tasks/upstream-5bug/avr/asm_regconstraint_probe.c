@@ -7,7 +7,7 @@
  *   "r"                               OK   -- any 8/16-bit register
  *   "{de}" / "{a}" (braced)           ERROR "invalid ... constraint"  <-- firmware uses this
  *   "de" (bare two-letter)            BACKEND CRASH (IRTranslator "unable to translate call")
- *   register T x asm("de"); "+r"(x)   OK -> emits `lddr` / `ldir`      <-- upstream-standard
+ *   register T x __asm__("de"); "+r"(x)   OK -> emits `lddr` / `ldir`      <-- upstream-standard
  *
  * Root cause: clang's C-level constraint model has NO rule that "two letters =
  * 16-bit pair". Each letter is a separate single-letter (8-bit) constraint, so
@@ -20,7 +20,7 @@
  *
  * The upstream-blessed way to bind an operand to a specific Z80 pair is a GCC
  * local register variable + a plain "+r"/"r" constraint (bottom of file). The
- * register NAMES (a/bc/de/hl/af/ix/iy) are in getGCCRegNames(), so asm("de") is
+ * register NAMES (a/bc/de/hl/af/ix/iy) are in getGCCRegNames(), so __asm__("de") is
  * validated and binds the value to the physical pair.
  */
 #include <stddef.h>
@@ -37,12 +37,12 @@ static inline void ld_i_a_BROKEN(unsigned char page) {
 
 /* ---- WORKS on upstream-current clang: GCC local register variables --------- */
 void mem_copy_backwards(void *de_end, const void *hl_end, size_t n) {
-    register void *de       asm("de") = de_end;
-    register const void *hl asm("hl") = hl_end;
-    register size_t bc      asm("bc") = n;
+    register void *de       __asm__("de") = de_end;
+    register const void *hl __asm__("hl") = hl_end;
+    register size_t bc      __asm__("bc") = n;
     __asm__ volatile("lddr" : "+r"(de), "+r"(hl), "+r"(bc) :: "memory");
 }
 void intrinsic_ld_i_a(unsigned char page) {
-    register unsigned char a asm("a") = page;
+    register unsigned char a __asm__("a") = page;
     __asm__ volatile("ld i, a" :: "r"(a));
 }
