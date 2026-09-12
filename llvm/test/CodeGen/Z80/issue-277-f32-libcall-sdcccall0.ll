@@ -1,6 +1,5 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 -z80-float-sdcccall0 %s -o - | FileCheck %s
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 %s -o - | FileCheck --check-prefix=DEFAULT %s
-; XFAIL: *
 ;
 ; ravn/llvm-z80 #277: under the opt-in flag `-z80-float-sdcccall0`, the f32
 ; arithmetic libcalls (__addsf3/__subsf3/__mulsf3/__divsf3, and their _fast
@@ -34,40 +33,14 @@
 ; float) before `call ___addsf3`, and the 32-bit result comes back through an
 ; `ex de,hl` (i.e. DE:HL with D=MSB, not the caller's native HL:DE).
 
-; CHECK-LABEL: add:
-; CHECK:      	ld	c,l
-; CHECK:      	ld	b,h
-; CHECK:      	push	bc
-; CHECK:      	ld	hl,#6
-; CHECK:      	add	hl,sp
-; CHECK:      	ld	c,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	b,(hl)
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	pop	bc
-; CHECK:      	push	hl
-; CHECK:      	push	bc
-; CHECK:      	ld	hl,#6
-; CHECK:      	add	hl,sp
-; CHECK:      	ld	c,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	b,(hl)
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	pop	bc
-; CHECK:      	push	hl
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	call	___addsf3
-; CHECK:      	pop	bc
-; CHECK:      	inc	sp
-; CHECK:      	inc	sp
-; CHECK:      	inc	sp
-; CHECK:      	inc	sp
-; CHECK:      	push	bc
-; CHECK:      	ret
 define float @add(float %a, float %b) {
+; CHECK-LABEL: _add:
+; CHECK: push hl
+; CHECK: push hl
+; CHECK: push hl
+; CHECK: push hl
+; CHECK: call ___addsf3
+; CHECK: ex de,hl
 ;
 ; DEFAULT-LABEL: _add:
 ; DEFAULT: push hl
