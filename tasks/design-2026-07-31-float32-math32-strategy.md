@@ -245,6 +245,131 @@ if it demonstrably pays off; otherwise prefer glue code), the current
 `-z80-float-sdcccall0` flag + math32-glue design is confirmed as the right
 call, not just the pragmatic one.
 
+### 9b. All 7 float ops, math32 vs compiler-rt (2026-08-01, reproducible) — is "route everything to math32" actually optimal?
+
+§9 only covered add/mul/div. This extends the comparison to all 7 f32
+libcalls clang can emit (add/sub/mul/div, `<` compare, float->int, int->float),
+to check whether the flag's current "always bridge to math32" behaviour is
+uniformly the right choice, or only right for some ops.
+
+**Reproducible**: `z88dk/test/clang/bench_math32_vs_compilerrt.sh`
+regenerates this whole table (both sides, all 7 ops, plus the
+`-ffast-math` compare row in §9c) deterministically — nothing here is
+hand-copied from a since-deleted `/tmp` script.
+
+**Method (both sides cycle-accurate via `z88dk-ticks`, N=2000 loop, fixed
+operands every iteration):**
+
+- **compiler-rt side**: a standalone freestanding binary (no CP/M CRT) —
+  plain portable C compiled `--target=z80 -Os` with no z88dk/sdcccall0
+  flag, so clang emits the libcall under its own default ABI; linked
+  directly against the prebuilt compiler-rt `.o` for that op;
+  `z88dk-ticks -pc <_start> -end <_bench_halt>`. Operands 3.14159f/2.71828f
+  (12345.678f for f2i, 12345 for i2f).
+- **math32 side**: real `zcc +cpm -compiler=llvmz80 -mllvm
+  -z80-float-sdcccall0 -lmath32` build (the exact production pipeline,
+  already correctness-verified by `runtime_float.sh`/`runtime_fcmp.sh`/
+  `runtime_fconv.sh`), same loop body, `z88dk-ticks` on the resulting
+  `.com`.
+
+**Two pitfalls hit while building the script (documented so they aren't
+rediscovered):**
+- `z88dk-ticks` requires the input file to be *named* `*.com` — it
+  string-matches the filename (`ticks_main.c`) to decide whether to
+  install the CP/M warm-boot/BDOS trap vectors at addresses 0/5/8/11 *and*
+  load the binary at 0x100. Without it, the same bytes load at address 0
+  instead (a 0x100 offset error), corrupting the emulated environment from
+  the first instruction and reliably segfaulting the *host* `z88dk-ticks`
+  process itself (confirmed via `lldb`: a NULL string reaches
+  `strcasecmp_l` a few calls deep in the resulting garbage execution). This
+  was the earlier session's "math32 side crashes z88dk-ticks" blocker.
+- On the standalone compiler-rt side, a `noreturn`-only halt function gets
+  **inlined** at `-Os`, so its out-of-line copy (whose address `-end`
+  looks up) is dead code the loop never reaches — `z88dk-ticks` then hits
+  its internal 200M-cycle safety timeout instead of stopping at the real
+  exit point. Fix: also mark it `noinline`.
+
+| op | math32 (T/call) | compiler-rt (T/call) | winner |
+|---|---|---|---|
+| add | 978.2 | 1877.0 | **math32 ~1.9x** |
+| sub | 1202.4 | 2254.0 | **math32 ~1.9x** |
+| mul | 2354.2 | 8931.0 | **math32 ~3.8x** |
+| div | 24596.3 | 10797.0 | **compiler-rt ~2.3x** |
+| compare (`<`) | 1115.4 | 663.0 | **compiler-rt ~1.7x** |
+| float->int | 1425.4 | 799.0 | **compiler-rt ~1.8x** |
+| int->float | 583.9 | 615.0 | math32 ~1.05x (near tie) |
+
+**Conclusion:** the flag's current "always route to math32" behaviour is
+**not uniformly optimal** — it is a clear win for add/sub/mul (the
+overwhelmingly common ops in real code) and a clear loss for div, compare,
+and f2i, with i2f close to a wash either way. math32's `m32_compare`
+(sign/magnitude bit-fiddling plus this session's NaN short-circuit, see
+`__cmpsf2.asm`) costs more than compiler-rt's direct IEEE-754 bit-pattern
+compare. A future per-op hybrid (bridge add/sub/mul to math32, leave
+div/compare/f2i on compiler-rt) is possible in principle, but — per the
+project's stated decision rule — is not proposed as a change here without
+separate user sign-off; this section only answers the measurement
+question asked.
+
+**Why div specifically loses, and a possible upstream angle:** this is
+architectural, not glue overhead (unlike compare above). math32 computes
+`a/b` as `a * (1/b)` via a **Newton-Raphson reciprocal iteration**
+(`m32_fsinv_fastcall` in `f32_fsdiv.asm`: a degree-2 polynomial seed plus
+two `X := X + X*(1 - D'*X)` refinement steps) — roughly 8 full float
+multiplies + 7 float adds worth of sub-calls. compiler-rt's `___divsf3`
+instead does **24-bit restoring binary long division** directly on the
+unpacked mantissas — a 24-iteration compare/subtract/shift loop, no
+multiply at all. NR needs fewer iterations, but each iteration is an
+expensive Z80 shift-and-add float multiply; direct long division needs
+more iterations, each a cheap single compare-subtract-shift. On this ISA
+(no hardware multiplier) the many-cheap-steps approach wins by ~2.3x.
+This is also the source of the 1-ULP `-3/3` rounding discrepancy (§9,
+NR's accumulated rounding vs. a direct divider's exact guard/round/sticky
+tracking). Full algorithmic writeup with source excerpts:
+`z88dk/libsrc/l/llvmz80/MATH32_BRIDGE.md` §5 ("Why div is ~2.3x slower in
+math32"). A trade-off report to the z88dk maintainers (compiler-rt's
+divider as an alternative/option for `m32_fsdiv` on z80/z180/z80n) is
+worth considering but **not filed yet** — it would need to be framed
+honestly as a trade-off (NR is a legitimate, correct design choice that
+simply loses on this specific ISA), not as a math32 bug, per the
+project's explain-before-filing discipline.
+
+### 9c. Isolating the compare NaN-check glue, and closing it under `-ffast-math` (2026-08-01)
+
+Follow-up question: is compare's ~1.7x gap (§9b) the NaN-check glue in
+`__cmpsf2.asm`, or `m32_compare` itself? Isolated with matched raw-asm
+loop shapes (same driver structure, `z88dk-ticks`): `m32_compare` called
+directly (via the nested-return-address wrapper its own contract
+requires, see `f32_fscompare.asm`) = **619 T-states/call**; the full
+`___cmpsf2` bridge (two `CheckNaN` calls + Z/C-to-tri-state translation)
+= **946 T-states/call**. The glue itself costs **327 T-states/call**, most
+of the gap to compiler-rt.
+
+math32 has no NaN awareness at all (§4 of the design, `f32_fscompare.asm`
+never inspects the exponent/mantissa for a NaN pattern) — the NaN check
+exists purely in the bridge, to give correct IEEE semantics under plain
+C. LLVM's existing convention for "caller doesn't need NaN correctness"
+is `-ffast-math`'s `nnan` flag, not an opt-level gate (opt level must
+never change FP semantics). Z80's GlobalISel legalizer already had a
+`hasAllFastFlags`-gated `__cmpsf2_fast` dispatch for exactly this case
+(pre-existing, `Z80LegalizerInfo.cpp`, zlfn, commit `31997a65c57fe`,
+2026-03-12) and compiler-rt already implements `__cmpsf2_fast` for the
+default ABI — but the z88dk/math32 sdcccall(0) bridge did not, so
+`-ffast-math` builds against math32 failed to link
+(`undefined symbol: ___cmpsf2_fast`).
+
+Fixed: `z88dk/libsrc/l/llvmz80/__cmpsf2.asm` gained `___cmpsf2_fast`
+(same entry contract as `___cmpsf2`, `m32_compare` direct, no `CheckNaN`
+calls). Verified red (undefined-symbol link failure pre-fix) / green
+(links + correct on all six ordered predicates, non-NaN operands) via
+`z88dk/test/clang/runtime_fcmp_fast.{c,sh}`, and measured reproducibly via
+`bench_math32_vs_compilerrt.sh`'s `compare`/`compare_fast` rows: math32
+1115.4 -> 811.4 T-states/call = **304 T-states/call** saved, matching the
+327 T-state isolated estimate within ~7% (compiler-rt also gains a little,
+663.0 -> 602.0, from its own `__cmpsf2_fast`, so the gap narrows from
+~1.7x to ~1.3x rather than closing fully). Full writeup:
+`z88dk/libsrc/l/llvmz80/MATH32_BRIDGE.md` §5a.
+
 ---
 
 ## 10. Path X caveat, RESOLVED: the conditional-CC gate
