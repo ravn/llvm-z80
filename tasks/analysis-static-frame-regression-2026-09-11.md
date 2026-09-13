@@ -1,5 +1,30 @@
 # Static-frame regression analysis (llvmz80-23.1.0-r1 / PR #40) — 2026-09-11
 
+## RESOLVED 2026-09-14 (commit `147d6f43`, merged `5fcf1c5b`)
+
+Both of the R3-class hypotheses below (attribute drift, inverted safety gate)
+were investigated with real pass output and **ruled out**. The actual root
+cause: `Z80NonReentrant.cpp`'s context-reachability walk (the sole gate for
+the `"nonreentrant"` attribute, which `usesStaticFrame()` requires) routes
+inline-asm calls through the same "opaque call reaches every
+externally-callable function" escalation as genuine indirect calls through
+function pointers, because LLVM's generic `CallGraph` builder cannot tell
+them apart (`Call->getCalledFunction()` returns null for both). The
+ubiquitous Z80 ISR epilogue `__asm__ volatile("ei")` was, on its own, enough
+to poison every non-`static` function in the module — including totally
+unrelated zero-call leaves like `compare_6bytes` — via the pass's artificial
+`CallsExternalNode -> ExternalCallingNode` edge combined with stock LLVM
+already fanning `ExternalCallingNode` out to every externally-linked
+function. Fixed by excluding inline-asm call records (`CallBase::isInlineAsm()`)
+from both `markReentrantReachable` and `visitContext`'s traversal. See the
+commit message on `147d6f43` for full before/after evidence (autoload: 0→27
+functions get `"nonreentrant"`, `add hl,sp` 128→104) and the `#316` GitHub
+comment thread. rcbios's separate `.bss` overflow is **not** fixed by this —
+confirmed byte-identical before/after — and needs its own investigation
+(likely the BIOS jump-vector table's genuinely address-taken shims, a real
+reachability concern, not the inline-asm bug).
+
+
 Root-cause analysis of the rcbios/autoload size regression tracked as
 ravn/llvm-z80#314. **The "broad ~14% regression" is one bug, not many:** the
 static-frame transformation (auto-inject `+static-frame` on non-reentrant
