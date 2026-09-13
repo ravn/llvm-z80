@@ -32,7 +32,7 @@ gen:
 gen-cats:
 	python3 $(GEN) 1 1 $(SEED) --categories
 
-PROM_FLAGS = -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr
+PROM_FLAGS = -Xclang -target-feature -Xclang +static-frame -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr
 # Max tests per file at O2/O3 (64KB binary limit, ~22B/test, 3KB headroom)
 TESTS_O2O3 = 2850
 
