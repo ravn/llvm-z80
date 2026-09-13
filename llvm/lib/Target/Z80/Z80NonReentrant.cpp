@@ -41,6 +41,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/CallGraph.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/LTO/LTO.h"
@@ -83,11 +84,39 @@ static bool callsSelf(const CallGraphNode &N) {
   return false;
 }
 
+// Inline asm has no callee at all: it cannot transfer control to another
+// function, unlike an indirect call through a function pointer. The
+// generic CallGraph builder cannot tell the two apart (Call->getCalledFunction()
+// is null for both, so populateCallGraphNode() routes both to
+// CallsExternalNode), which lets a call record's own instruction, when
+// present, distinguish them. A record with no instruction (CR.first ==
+// std::nullopt) is a reference edge such as the pass's own artificial
+// CallsExternalNode -> ExternalCallingNode edge or the declaration-node's
+// "could call back into anything" edge, neither of which is inline asm, so
+// only a genuine present instruction can make this true.
+//
+// Example: the ubiquitous Z80 ISR epilogue `__asm__("ei")` is, in IR, a
+// `call void asm sideeffect "ei", ""()`. Before this fix, that call's edge
+// into CallsExternalNode fed the pass's artificial
+// CallsExternalNode -> ExternalCallingNode edge, which stock LLVM's
+// ExternalCallingNode already fans out to every externally-linked function
+// in the module (see CallGraph::addToCallGraph) -- so an ISR containing
+// nothing but `ei` made every non-static function in the translation unit,
+// however unrelated (e.g. a zero-call `compare_6bytes` leaf), reachable
+// from the ISR's context and thus ineligible for a static frame.
+static bool isInlineAsmEdge(const CallGraphNode::CallRecord &CR) {
+  if (!CR.first)
+    return false;
+  auto *CB = dyn_cast_or_null<CallBase>(*CR.first);
+  return CB && CB->isInlineAsm();
+}
+
 // A function entered from a context the module analysis cannot see keeps
 // its stack frame, and so must everything it can reach: any of it may run
 // concurrently with any other context. The walk happens with the
 // artificial external edge in place, so an indirect or external call in
 // the tree conservatively spreads to every externally-callable function.
+// Inline asm is excluded: it cannot call back into the module at all.
 void Z80NonReentrantImpl::markReentrantReachable(const CallGraphNode &CGN) {
   if (!Reentrant.insert(&CGN).second)
     return;
@@ -95,8 +124,11 @@ void Z80NonReentrantImpl::markReentrantReachable(const CallGraphNode &CGN) {
     if (const Function *F = CGN.getFunction())
       dbgs() << "Reachable from a foreign context: " << F->getName() << "\n";
   });
-  for (const CallGraphNode::CallRecord &CR : CGN)
+  for (const CallGraphNode::CallRecord &CR : CGN) {
+    if (isInlineAsmEdge(CR))
+      continue;
     markReentrantReachable(*CR.second);
+  }
 }
 
 void Z80NonReentrantImpl::visitContext(const CallGraphNode &CGN) {
@@ -111,7 +143,12 @@ void Z80NonReentrantImpl::visitContext(const CallGraphNode &CGN) {
   }
   // A context does not extend into another context's root: an interrupt
   // handler reached from here still only ever runs in its own context.
+  // Inline asm is excluded (see isInlineAsmEdge): it cannot call back into
+  // the module, so it must not carry this context out to every
+  // externally-callable function via CallsExternalNode.
   for (const CallGraphNode::CallRecord &CR : CGN) {
+    if (isInlineAsmEdge(CR))
+      continue;
     const Function *Callee = CR.second->getFunction();
     if (Callee && isContextRoot(*Callee))
       continue;
