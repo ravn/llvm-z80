@@ -56,6 +56,21 @@ STATISTIC(NumNonReentrant, "Number of functions marked nonreentrant");
 
 using namespace llvm;
 
+static cl::opt<bool> ClosedWorld(
+    "z80-closed-world",
+    cl::desc("Treat the module as a closed world or freestanding environment "
+             "(external code cannot call back into the module)"),
+    cl::init(false), cl::Hidden);
+
+static bool isFreestandingModule(const Module &M) {
+  if (ClosedWorld)
+    return true;
+  if (const auto *Flag = mdconst::extract_or_null<ConstantInt>(
+          M.getModuleFlag("Freestanding")))
+    return Flag->getZExtValue() != 0;
+  return false;
+}
+
 namespace {
 
 class Z80NonReentrantImpl {
@@ -189,12 +204,23 @@ bool Z80NonReentrantImpl::run(Module &M) {
       Changed = true;
     }
 
-  // Any external call may end up calling any externally-callable function,
-  // which lets the SCC walk see recursion that passes through code outside
-  // the module or through a function pointer.
   assert(CG.getCallsExternalNode()->empty());
-  CG.getCallsExternalNode()->addCalledFunction(nullptr,
-                                               CG.getExternalCallingNode());
+  if (isFreestandingModule(M)) {
+    // In a freestanding / closed-world module (e.g. firmware ROM or OS kernel),
+    // foreign code outside the module does not exist, so external calls cannot
+    // re-enter arbitrary module functions. Indirect calls through function
+    // pointers still conservatively reach any locally address-taken function.
+    for (Function &F : M.functions()) {
+      if (!F.isDeclaration() && F.hasAddressTaken())
+        CG.getCallsExternalNode()->addCalledFunction(nullptr, CG[&F]);
+    }
+  } else {
+    // In an open-world library under separate compilation, any external call
+    // may end up calling any externally-callable function, which lets the SCC
+    // walk see recursion that passes through code outside the module.
+    CG.getCallsExternalNode()->addCalledFunction(nullptr,
+                                                 CG.getExternalCallingNode());
+  }
 
   // Operations like block copies and wide arithmetic only become calls
   // during instruction selection, so their callees have no edge in the IR
