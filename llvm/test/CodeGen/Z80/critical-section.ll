@@ -8,9 +8,8 @@
 @counter = external global i8
 
 ; CHECK-LABEL: atomic_update:
-; CHECK:      	ld	a,(_counter)
-; CHECK:      	inc	a
-; CHECK:      	ld	(_counter),a
+; CHECK:      	ld	hl,_counter
+; CHECK-NEXT: 	inc	(hl)
 ; CHECK:      	ret
 define void @atomic_update() #0 {
   %v = load i8, ptr @counter

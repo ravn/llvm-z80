@@ -70,6 +70,8 @@ STATISTIC(NumSlotForwarded,
 STATISTIC(NumStoreForwarded, "Number of stores forwarded to a following load");
 STATISTIC(NumI16ByteXorToSbc,
           "Number of i16 EQ/NE byte-XOR compares rewritten to SBC HL");
+STATISTIC(NumInMemIncDec,
+          "Number of in-memory byte increments/decrements folded to (HL)");
 
 using namespace llvm;
 
@@ -912,6 +914,111 @@ static bool optimizeI16CompareByteXOR(MachineBasicBlock &MBB,
     I5->eraseFromParent();
     I6->eraseFromParent();
     ++NumI16ByteXorToSbc;
+    Changed = true;
+  }
+
+  return Changed;
+}
+
+// --- Peephole: in-memory INC/DEC ---
+//
+// Replaces:
+//   LD A, (addr)        ; 3 B
+//   INC A / DEC A       ; 1 B
+//   LD (addr), A        ; 3 B (was 7 B total with direct addressing)
+// with:
+//   LD HL, addr         ; 3 B
+//   INC (HL) / DEC (HL) ; 1 B (4 B total -> saves 3 B vs 7 B)
+//
+// Worked example (from inmem-incdec-positive.ll @bump_counter):
+//   Input MIR:
+//     $a = LD_A_nnind @counter
+//     $a = INC_r killed $a, implicit-def $flags
+//     LD_nnind_A @counter, killed $a
+//   Output:
+//     $hl = LD_rr_nn @counter
+//     INC_HLind implicit $hl, implicit-def $flags
+//
+// Soundness guards:
+//   - Addresses in load and store must match identically (same symbol + offset).
+//   - A must be dead after the store (the rewrite never writes to A).
+//   - H and L must both be dead before the load (LD HL clobbers HL).
+//   - HL must be dead after the store.
+static bool optimizeInMemoryIncDec(MachineBasicBlock &MBB,
+                                   const TargetInstrInfo *TII,
+                                   const TargetRegisterInfo *TRI,
+                                   const Z80Subtarget &STI) {
+  if (!STI.hasZ80())
+    return false;
+
+  bool Changed = false;
+  for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+    // I0: LD A, (addr)
+    if (MII->getOpcode() != Z80::LD_A_nnind) { ++MII; continue; }
+    auto I0 = MII;
+    const MachineOperand &LoadAddr = I0->getOperand(0);
+    // skip if address is not a global or external symbol
+    if (!LoadAddr.isGlobal() && !LoadAddr.isSymbol()) { ++MII; continue; }
+
+    // I1: INC A or DEC A
+    auto I1 = MBB.SkipPHIsLabelsAndDebug(std::next(I0));
+    // skip if block ends before sequence completes
+    if (I1 == MIE) { ++MII; continue; }
+    bool IsInc = (I1->getOpcode() == Z80::INC_r && I1->getOperand(0).getReg() == Z80::A);
+    bool IsDec = (I1->getOpcode() == Z80::DEC_r && I1->getOperand(0).getReg() == Z80::A);
+    // skip if I1 is not INC A or DEC A
+    if (!IsInc && !IsDec) { ++MII; continue; }
+
+    // I2: LD (addr), A
+    auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+    // skip if block ends before sequence completes
+    if (I2 == MIE) { ++MII; continue; }
+    if (I2->getOpcode() != Z80::LD_nnind_A) { ++MII; continue; }
+    const MachineOperand &StoreAddr = I2->getOperand(0);
+
+    // Verify addresses match
+    bool AddrMatch = false;
+    if (LoadAddr.isGlobal() && StoreAddr.isGlobal()) {
+      AddrMatch = (LoadAddr.getGlobal() == StoreAddr.getGlobal() &&
+                   LoadAddr.getOffset() == StoreAddr.getOffset());
+    } else if (LoadAddr.isSymbol() && StoreAddr.isSymbol()) {
+      AddrMatch = (StringRef(LoadAddr.getSymbolName()) == StoreAddr.getSymbolName() &&
+                   LoadAddr.getOffset() == StoreAddr.getOffset());
+    }
+    // skip if load and store targets differ
+    if (!AddrMatch) { ++MII; continue; }
+
+    auto AfterStore = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+
+    // A must be dead after the store
+    // skip if A is live after store (INC/DEC (HL) leaves A untouched)
+    if (!isRegDeadAfter(AfterStore, MBB, TRI, Z80::A)) { ++MII; continue; }
+
+    // H and L must be dead before I0 so LD HL doesn't clobber a live value
+    auto HQ = MBB.computeRegisterLiveness(TRI, Z80::H, I0);
+    auto LQ = MBB.computeRegisterLiveness(TRI, Z80::L, I0);
+    // skip if H or L is live before the load
+    if (HQ != MachineBasicBlock::LQR_Dead || LQ != MachineBasicBlock::LQR_Dead) {
+      ++MII; continue;
+    }
+
+    // HL must be dead after the store
+    // skip if HL is live after the store
+    if (!isRegDeadAfter(AfterStore, MBB, TRI, Z80::HL)) { ++MII; continue; }
+
+    LLVM_DEBUG(dbgs() << "  in-memory " << (IsInc ? "INC" : "DEC")
+                      << " (HL) for " << LoadAddr << "\n");
+
+    DebugLoc DL = I0->getDebugLoc();
+    BuildMI(MBB, *I0, DL, TII->get(Z80::LD_rr_nn), Z80::HL).add(LoadAddr);
+    unsigned IncDecOpc = IsInc ? Z80::INC_HLind : Z80::DEC_HLind;
+    BuildMI(MBB, *I0, DL, TII->get(IncDecOpc));
+
+    MII = std::next(I2);
+    I0->eraseFromParent();
+    I1->eraseFromParent();
+    I2->eraseFromParent();
+    ++NumInMemIncDec;
     Changed = true;
   }
 
@@ -2721,6 +2828,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     Changed |= foldSingleBitMask(MBB, TII, TRI);
     Changed |= directIncDec(MBB, TII, TRI);
     Changed |= optimizeI16CompareByteXOR(MBB, TII, TRI, STI);
+    Changed |= optimizeInMemoryIncDec(MBB, TII, TRI, STI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
   }

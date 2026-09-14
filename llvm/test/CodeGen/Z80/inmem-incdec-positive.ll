@@ -23,9 +23,9 @@
 
 ; Plain increment of a global byte; A is dead after the store.
 ; CHECK-LABEL: bump_counter:
-; CHECK:      	ld	a,(_counter)
-; CHECK:      	inc	a
-; CHECK:      	ld	(_counter),a
+; CHECK:      	ld	hl,#_counter
+; CHECK-NEXT: 	inc	(hl)
+; CHECK-NOT:  	ld	a,(_counter)
 ; CHECK:      	ret
 define void @bump_counter() nounwind {
   %v = load i8, ptr @counter, align 1
@@ -36,9 +36,9 @@ define void @bump_counter() nounwind {
 
 ; Decrement: same shape, DEC (HL) form.
 ; CHECK-LABEL: drop_counter:
-; CHECK:      	ld	a,(_counter)
-; CHECK:      	dec	a
-; CHECK:      	ld	(_counter),a
+; CHECK:      	ld	hl,#_counter
+; CHECK-NEXT: 	dec	(hl)
+; CHECK-NOT:  	ld	a,(_counter)
 ; CHECK:      	ret
 define void @drop_counter() nounwind {
   %v = load i8, ptr @counter, align 1
@@ -55,15 +55,13 @@ define void @drop_counter() nounwind {
 @c = dso_local global i8 0, align 1
 
 ; CHECK-LABEL: bump_three:
-; CHECK:      	ld	a,(_a)
-; CHECK:      	inc	a
-; CHECK:      	ld	(_a),a
-; CHECK:      	ld	a,(_b)
-; CHECK:      	inc	a
-; CHECK:      	ld	(_b),a
-; CHECK:      	ld	a,(_c)
-; CHECK:      	inc	a
-; CHECK:      	ld	(_c),a
+; CHECK:      	ld	hl,#_a
+; CHECK-NEXT: 	inc	(hl)
+; CHECK:      	ld	hl,#_b
+; CHECK-NEXT: 	inc	(hl)
+; CHECK:      	ld	hl,#_c
+; CHECK-NEXT: 	inc	(hl)
+; CHECK-NOT:  	ld	a,(_a)
 ; CHECK:      	ret
 define void @bump_three() nounwind {
   %va = load i8, ptr @a, align 1
