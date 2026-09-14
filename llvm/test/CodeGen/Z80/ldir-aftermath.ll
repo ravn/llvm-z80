@@ -26,8 +26,8 @@
 ; CHECK:      	ld	h,b
 ; CHECK:      	ld	bc,128
 ; CHECK:      	ldir
-; CHECK:      	ld	hl,(L_read_seq_iter.frame)
 ; CHECK:      	ld	bc,128
+; CHECK:      	ld	hl,(L_read_seq_iter.frame)
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ld	hl,_dma
