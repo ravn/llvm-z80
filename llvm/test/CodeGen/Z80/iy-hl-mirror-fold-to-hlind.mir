@@ -1,4 +1,4 @@
-# RUN: llc -mtriple=z80 -run-pass=z80-late-opt -verify-machineinstrs %s -o - \
+# RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
 # XFAIL: *
 #

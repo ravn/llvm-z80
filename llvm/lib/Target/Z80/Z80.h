@@ -20,12 +20,14 @@
 namespace llvm {
 
 void initializeZ80BranchCleanupPass(PassRegistry &);
+void initializeZ80CheckUnsupportedPass(PassRegistry &);
+void initializeZ80DanglingDebugCleanupPass(PassRegistry &);
 void initializeZ80PreLegalizerCombinerPass(PassRegistry &);
 void initializeZ80PostLegalizerCombinerPass(PassRegistry &);
 void initializeZ80ExpandPseudoPass(PassRegistry &);
 void initializeZ80FixupImplicitDefsPass(PassRegistry &);
 void initializeZ80IndexIVPass(PassRegistry &);
-void initializeZ80LateOptimizationPass(PassRegistry &);
+void initializeZ80PreEmitPeepholePass(PassRegistry &);
 void initializeZ80PatternFillRecognizeLegacyPassPass(PassRegistry &);
 void initializeZ80LoopRotateLegacyPassPass(PassRegistry &);
 void initializeZ80LoopInstrFormPrepLegacyPassPass(PassRegistry &);
@@ -39,7 +41,6 @@ void initializeZ80PinLoopPointerPass(PassRegistry &);
 void initializeZ80HighByteFirstBranchPass(PassRegistry &);
 void initializeZ80RemoveJumpToNextPass(PassRegistry &);
 void initializeZ80PruneCallFrameDefsPass(PassRegistry &);
-void initializeZ80PostRAScavengingPass(PassRegistry &);
 void initializeZ80ReorderTestDecPass(PassRegistry &);
 void initializeZ80ShiftRotateChainPass(PassRegistry &);
 void initializeZ80SplitDjnzCountersPass(PassRegistry &);

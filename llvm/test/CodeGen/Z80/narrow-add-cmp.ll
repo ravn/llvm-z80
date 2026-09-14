@@ -16,7 +16,9 @@
 ; CHECK:      	ld	bc,#_var2
 ; CHECK:      	ld	a,(bc)
 ; CHECK:      	ld	c,a
+; CHECK:      	ld	b,#0
 ; CHECK:      	ld	a,h
+; CHECK:      	xor	b
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	a,l
 ; CHECK:      	xor	c
@@ -43,11 +45,6 @@ else:
 }
 
 ; NE branch: ADD A,C; JR C,target; CP r; JR NZ,target
-define i16 @narrow_add_cmp_ne() {
-entry:
-  %a = load i8, ptr @var1
-  %ext_a = zext i8 %a to i16
-  %sum = add nuw nsw i16 %ext_a, 32
 ; CHECK-LABEL: narrow_add_cmp_ne:
 ; CHECK:      	ld	bc,#_var1
 ; CHECK:      	ld	a,(bc)
@@ -58,7 +55,9 @@ entry:
 ; CHECK:      	ld	bc,#_var2
 ; CHECK:      	ld	a,(bc)
 ; CHECK:      	ld	c,a
+; CHECK:      	ld	b,#0
 ; CHECK:      	ld	a,h
+; CHECK:      	xor	b
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	a,l
 ; CHECK:      	xor	c
@@ -69,6 +68,11 @@ entry:
 ; CHECK:      	ret
 ; CHECK:      	ld	de,#0
 ; CHECK:      	ret
+define i16 @narrow_add_cmp_ne() {
+entry:
+  %a = load i8, ptr @var1
+  %ext_a = zext i8 %a to i16
+  %sum = add nuw nsw i16 %ext_a, 32
   %b = load i8, ptr @var2
   %ext_b = zext i8 %b to i16
   %cmp = icmp ne i16 %sum, %ext_b
@@ -80,16 +84,6 @@ else:
 }
 
 ; Commuted: add on RHS instead of LHS
-define i16 @narrow_add_cmp_commuted() {
-entry:
-  %a = load i8, ptr @var1
-  %ext_a = zext i8 %a to i16
-  %b = load i8, ptr @var2
-  %ext_b = zext i8 %b to i16
-  %sum = add nuw nsw i16 %ext_b, 32
-  %cmp = icmp ne i16 %ext_a, %sum
-  br i1 %cmp, label %then, label %else
-then:
 ; CHECK-LABEL: narrow_add_cmp_commuted:
 ; CHECK:      	ld	bc,#_var1
 ; CHECK:      	ld	a,(bc)
@@ -101,7 +95,8 @@ then:
 ; CHECK:      	ld	h,#0
 ; CHECK:      	ld	de,#32
 ; CHECK:      	add	hl,de
-; CHECK:      	ld	a,h
+; CHECK:      	ld	a,b
+; CHECK:      	xor	h
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	a,c
 ; CHECK:      	xor	l
@@ -112,6 +107,16 @@ then:
 ; CHECK:      	ret
 ; CHECK:      	ld	de,#0
 ; CHECK:      	ret
+define i16 @narrow_add_cmp_commuted() {
+entry:
+  %a = load i8, ptr @var1
+  %ext_a = zext i8 %a to i16
+  %b = load i8, ptr @var2
+  %ext_b = zext i8 %b to i16
+  %sum = add nuw nsw i16 %ext_b, 32
+  %cmp = icmp ne i16 %ext_a, %sum
+  br i1 %cmp, label %then, label %else
+then:
   ret i16 1
 else:
   ret i16 0

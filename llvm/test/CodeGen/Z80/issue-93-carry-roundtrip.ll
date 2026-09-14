@@ -31,10 +31,7 @@
 
 ; CHECK-LABEL: const_trip_50:
 ; CHECK:      	ld	c,206
-; CHECK:      	ld	hl,_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
 ; CHECK:      	ld	b,0
@@ -67,19 +64,9 @@ exit:
 
 
 ; A larger constant trip count (255) should also fold.
-define void @const_trip_255() {
-entry:
-  br label %loop
-loop:
-  %i = phi i8 [ 255, %entry ], [ %i.next, %loop ]
-  %p = load volatile ptr, ptr @port, align 2
-  store volatile i8 0, ptr %p, align 1
 ; CHECK-LABEL: const_trip_255:
 ; CHECK:      	ld	c,1
-; CHECK:      	ld	hl,_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
 ; CHECK:      	ld	b,0
@@ -94,6 +81,13 @@ loop:
 ; CHECK:      	xor	1
 ; CHECK:      	jr	nz,.LBB1_1
 ; CHECK:      	ret
+define void @const_trip_255() {
+entry:
+  br label %loop
+loop:
+  %i = phi i8 [ 255, %entry ], [ %i.next, %loop ]
+  %p = load volatile ptr, ptr @port, align 2
+  store volatile i8 0, ptr %p, align 1
   %i.next = add i8 %i, -1
   %cond = icmp ne i8 %i.next, 0
   br i1 %cond, label %loop, label %exit

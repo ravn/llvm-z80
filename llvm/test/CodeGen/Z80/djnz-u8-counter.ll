@@ -18,10 +18,7 @@ declare void @write_byte(i8 zeroext)
 ; do { body; } while (--n)  -- DJNZ is the canonical lowering.
 ; CHECK-LABEL: do_while_dec:
 ; CHECK:      	ld	b,a
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
 ; CHECK:      	dec	b
@@ -45,10 +42,6 @@ exit:
 
 ; Sanity: a body that calls a function (clobbers B per sdcccall) cannot
 ; use DJNZ.  Pin the fallback shape.
-define void @do_while_dec_with_call(i8 zeroext %n) {
-entry:
-  br label %loop
-loop:
 ; CHECK-LABEL: do_while_dec_with_call:
 ; CHECK:      	dec	sp
 ; CHECK:      	ld	b,a
@@ -65,6 +58,10 @@ loop:
 ; CHECK:      	jr	nz,.LBB1_1
 ; CHECK:      	inc	sp
 ; CHECK:      	ret
+define void @do_while_dec_with_call(i8 zeroext %n) {
+entry:
+  br label %loop
+loop:
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   call void @write_byte(i8 zeroext %i)
   %i.next = add i8 %i, -1

@@ -16,30 +16,24 @@
 ; ---- HL is loop-carried (held across iterations): peephole must NOT
 ;      fire, because SBC would clobber the loop-carried value.  Falls
 ;      back to the byte-XOR shape.
+; CHECK-LABEL: count_to_end:
+; CHECK:      	ex	de,hl
+; CHECK:      	ld	hl,(_end_idx)
+; CHECK:      	inc	de
+; CHECK:      	ld	a,d
+; CHECK:      	xor	h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	xor	l
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	ret
 define i16 @count_to_end(i16 %start) {
 entry:
   %end = load i16, ptr @end_idx, align 1
   br label %loop
 
 loop:
-; CHECK-LABEL: count_to_end:
-; CHECK:      	ld	c,l
-; CHECK:      	ld	b,h
-; CHECK:      	ld	hl,#_end_idx
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	inc	bc
-; CHECK:      	ld	a,b
-; CHECK:      	xor	d
-; CHECK:      	ld	h,a
-; CHECK:      	ld	a,c
-; CHECK:      	xor	e
-; CHECK:      	or	h
-; CHECK:      	jr	nz,.LBB0_1
-; CHECK:      	ld	e,c
-; CHECK:      	ld	d,b
-; CHECK:      	ret
   %i = phi i16 [ %start, %entry ], [ %i.next, %loop ]
   %i.next = add i16 %i, 1
   %done = icmp eq i16 %i.next, %end
@@ -52,6 +46,18 @@ ret:
 ; ---- HL is freshly loaded each iteration AND dead after the compare:
 ;      peephole fires.  Loop body shrinks from 12 B (XOR shape) to 9 B
 ;      (SBC shape).
+; CHECK-LABEL: loop_dead_hl:
+; CHECK:      	ld	de,#0
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,(_end_idx)
+; CHECK:      	ld	a,d
+; CHECK:      	xor	b
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,e
+; CHECK:      	xor	c
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	ret
 define void @loop_dead_hl(i16 %v) {
 entry:
   br label %loop
@@ -65,19 +71,4 @@ loop:
 
 ret:
   ret void
-; CHECK-LABEL: loop_dead_hl:
-; CHECK:      	ld	bc,#0
-; CHECK:      	inc	bc
-; CHECK:      	ld	hl,#_end_idx
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	a,b
-; CHECK:      	xor	d
-; CHECK:      	ld	d,a
-; CHECK:      	ld	a,c
-; CHECK:      	xor	e
-; CHECK:      	or	d
-; CHECK:      	jr	nz,.LBB1_1
-; CHECK:      	ret
 }

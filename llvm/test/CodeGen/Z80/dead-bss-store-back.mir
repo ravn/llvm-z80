@@ -1,6 +1,6 @@
-# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-pre-emit-peephole \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
-# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-late-opt \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-pre-emit-peephole \
 # RUN:     -verify-machineinstrs --debugify-and-strip-all-safe %s -o - | FileCheck %s
 # XFAIL: *
 #

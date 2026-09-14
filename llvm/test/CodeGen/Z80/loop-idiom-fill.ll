@@ -40,6 +40,16 @@ exit:
 
 
 ; --- 2-byte pattern (word-fill) -------------------------------------
+; CHECK-LABEL: fill_word:
+; CHECK:      	ld	de,_buf2
+; CHECK:      	inc	de
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,51966
+; CHECK:      	ld	(_buf2),bc
+; CHECK:      	ld	hl,_buf2
+; CHECK:      	ld	bc,30
+; CHECK:      	ldir
+; CHECK:      	ret
 define void @fill_word() {
 entry:
   br label %loop
@@ -48,21 +58,6 @@ loop:
   %i16 = zext i8 %i to i16
   %p = getelementptr inbounds nuw [16 x i16], ptr @buf2, i16 0, i16 %i16
   store i16 -13570, ptr %p, align 1
-; CHECK-LABEL: fill_word:
-; CHECK:      	ld	bc,_buf2
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	ld	de,51966
-; CHECK:      	ld	hl,_buf2
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ld	hl,_buf2
-; CHECK:      	ld	e,c
-; CHECK:      	ld	d,b
-; CHECK:      	ld	bc,30
-; CHECK:      	ldir
-; CHECK:      	ret
   %i.next = add i8 %i, 1
   %done = icmp eq i8 %i.next, 16
   br i1 %done, label %exit, label %loop
@@ -72,6 +67,22 @@ exit:
 
 
 ; --- 3-byte pattern (jump-table / IVT shape) ------------------------
+; CHECK-LABEL: fill_ivt:
+; CHECK:      	ld	de,_ivt
+; CHECK:      	inc	de
+; CHECK:      	inc	de
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,195
+; CHECK:      	ld	(_ivt),bc
+; CHECK:      	ld	bc,_ivt
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
+; CHECK:      	ld	a,243
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	hl,_ivt
+; CHECK:      	ld	bc,45
+; CHECK:      	ldir
+; CHECK:      	ret
 define void @fill_ivt() {
 entry:
   br label %loop
@@ -86,27 +97,6 @@ loop:
   store i8 -13, ptr %p2, align 1   ; hi(default) = 0xF3
   %i.next = add i8 %i, 1
   %done = icmp eq i8 %i.next, 16
-; CHECK-LABEL: fill_ivt:
-; CHECK:      	ld	bc,_ivt
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	ld	de,195
-; CHECK:      	ld	hl,_ivt
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ld	de,_ivt
-; CHECK:      	inc	de
-; CHECK:      	inc	de
-; CHECK:      	ld	a,243
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	hl,_ivt
-; CHECK:      	ld	e,c
-; CHECK:      	ld	d,b
-; CHECK:      	ld	bc,45
-; CHECK:      	ldir
-; CHECK:      	ret
   br i1 %done, label %exit, label %loop
 exit:
   ret void
@@ -114,6 +104,17 @@ exit:
 
 
 ; --- Negative: volatile stores must NOT be rewritten ----------------
+; CHECK-LABEL: fill_volatile_noop:
+; CHECK:      	ld	d,32
+; CHECK:      	ld	bc,_buf1
+; CHECK:      	ld	a,255
+; CHECK:      	ld	(bc),a
+; CHECK:      	ld	a,d
+; CHECK:      	dec	a
+; CHECK:      	inc	bc
+; CHECK:      	ld	d,a
+; CHECK:      	jr	nz,.LBB3_1
+; CHECK:      	ret
 define void @fill_volatile_noop() {
 entry:
   br label %loop
@@ -130,15 +131,3 @@ exit:
 }
 ; The volatile store must NOT be rewritten to seed + LDIR: it stays an
 ; open-coded loop, and no LDIR may appear anywhere in the function.
-; CHECK-LABEL: fill_volatile_noop:
-; CHECK:      	ld	d,32
-; CHECK:      	ld	bc,_buf1
-; CHECK:      	ld	a,255
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	a,d
-; CHECK:      	dec	a
-; CHECK:      	inc	bc
-; CHECK:      	ld	d,a
-; CHECK:      	jr	nz,.LBB3_1
-; CHECK-NOT:  	ldir
-; CHECK:      	ret

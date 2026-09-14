@@ -19,10 +19,6 @@ target triple = "z80"
 @buf_b = internal constant [8 x i8] c"\0A\14\1E(2<FP", align 1
 @buf_c = internal constant [8 x i8] c"dcba`_^]", align 1
 
-define internal fastcc zeroext i16 @walk_three_buffers(i16 zeroext %0) unnamed_addr {
-  %2 = icmp eq i16 %0, 0
-  br i1 %2, label %3, label %5
-3:
 ; CHECK-LABEL: walk_three_buffers:
 ; CHECK:      	push	af
 ; CHECK:      	push	af
@@ -46,13 +42,18 @@ define internal fastcc zeroext i16 @walk_three_buffers(i16 zeroext %0) unnamed_a
 ; CHECK:      	ld	(hl),c
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),b
-; CHECK:      	ld	hl,_buf_a
-; CHECK:      	push	hl
-; CHECK:      	ld	hl,6
+; CHECK:      	ld	hl,4
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	hl,_buf_a
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,6
+; CHECK:      	add	hl,sp
+; CHECK:      	ld	e,(hl)
+; CHECK:      	inc	hl
+; CHECK:      	ld	d,(hl)
 ; CHECK:      	pop	hl
 ; CHECK:      	call	_fetch_byte
 ; CHECK:      	ld	hl,2
@@ -149,6 +150,10 @@ define internal fastcc zeroext i16 @walk_three_buffers(i16 zeroext %0) unnamed_a
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	sp,hl
 ; CHECK:      	ret
+define internal fastcc zeroext i16 @walk_three_buffers(i16 zeroext %0) unnamed_addr {
+  %2 = icmp eq i16 %0, 0
+  br i1 %2, label %3, label %5
+3:
   %4 = phi i16 [ 0, %1 ], [ %13, %5 ]
   ret i16 %4
 5:
@@ -169,11 +174,6 @@ define internal fastcc zeroext i16 @fetch_byte(ptr readonly captures(none) %0, i
   %3 = getelementptr inbounds nuw i8, ptr %0, i16 %1
   %4 = load i8, ptr %3, align 1
   %5 = zext i8 %4 to i16
-; CHECK-LABEL: fetch_byte:
-; CHECK:      	add	hl,de
-; CHECK:      	ld	e,(hl)
-; CHECK:      	ld	d,0
-; CHECK:      	ret
   ret i16 %5
 }
 
@@ -181,6 +181,11 @@ define internal fastcc zeroext i16 @accumulate(i16 zeroext %0, i16 zeroext %1) u
   %3 = add i16 %1, %0
   ret i16 %3
 }
+; CHECK-LABEL: fetch_byte:
+; CHECK:      	add	hl,de
+; CHECK:      	ld	e,(hl)
+; CHECK:      	ld	d,0
+; CHECK:      	ret
 ; CHECK-LABEL: accumulate:
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl

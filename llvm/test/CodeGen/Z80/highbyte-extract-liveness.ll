@@ -11,12 +11,6 @@
 
 @v8 = internal global i8 0, align 1
 
-define dso_local i16 @f() #0 {
-  %1 = alloca i16, align 1
-  %2 = alloca i8, align 1
-  store volatile i8 -1, ptr @v8, align 1
-  %3 = load volatile i8, ptr @v8, align 1
-  %4 = zext i8 %3 to i16
 ; CHECK-LABEL: f:
 ; CHECK:      	push	ix
 ; CHECK:      	ld	ix,0
@@ -32,11 +26,15 @@ define dso_local i16 @f() #0 {
 ; CHECK:      	ld	(ix+-2),c
 ; CHECK:      	ld	(ix+-1),b
 ; CHECK:      	ld	(ix+-3),1
+; CHECK:      	ld	c,(ix+-2)
+; CHECK:      	ld	b,(ix+-1)
+; CHECK:      	ld	d,(ix+-3)
+; CHECK:      	ld	e,d
 ; CHECK:      	ld	d,0
-; CHECK:      	ld	a,(ix+-3)
-; CHECK:      	sub	(ix+-2)
+; CHECK:      	ld	a,e
+; CHECK:      	sub	c
 ; CHECK:      	ld	a,d
-; CHECK:      	sbc	a,(ix+-1)
+; CHECK:      	sbc	a,b
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	1
 ; CHECK:      	ld	e,a
@@ -44,6 +42,12 @@ define dso_local i16 @f() #0 {
 ; CHECK:      	ld	sp,ix
 ; CHECK:      	pop	ix
 ; CHECK:      	ret
+define dso_local i16 @f() #0 {
+  %1 = alloca i16, align 1
+  %2 = alloca i8, align 1
+  store volatile i8 -1, ptr @v8, align 1
+  %3 = load volatile i8, ptr @v8, align 1
+  %4 = zext i8 %3 to i16
   store i16 %4, ptr %1, align 1
   store i8 1, ptr %2, align 1
   %5 = load i16, ptr %1, align 1

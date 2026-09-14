@@ -24,25 +24,19 @@ else:
 }
 
 ; Test 8-bit equality comparison
-define i8 @icmp_eq8(i8 %a, i8 %b) {
-  %c = icmp eq i8 %a, %b
-  %r = zext i1 %c to i8
-  ret i8 %r
 ; CHECK-LABEL: icmp_eq8:
 ; CHECK:      	sub	l
 ; CHECK:      	sub	#1
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
 ; CHECK:      	ret
-}
-
-; Test 16-bit unsigned less-than (8-bit SUB/SBC chain)
-define i8 @icmp_ult16(i16 %a, i16 %b) {
-  %c = icmp ult i16 %a, %b
+define i8 @icmp_eq8(i8 %a, i8 %b) {
+  %c = icmp eq i8 %a, %b
   %r = zext i1 %c to i8
   ret i8 %r
 }
 
+; Test 16-bit unsigned less-than (8-bit SUB/SBC chain)
 ; CHECK-LABEL: icmp_ult16:
 ; CHECK:      	ld	a,l
 ; CHECK:      	sub	e
@@ -51,22 +45,18 @@ define i8 @icmp_ult16(i16 %a, i16 %b) {
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
 ; CHECK:      	ret
-; Test conditional branch for SGT X, 0 (fused: non-negative AND non-zero)
-define i16 @branch_sgt_zero(i16 %a) {
-  %cond = icmp sgt i16 %a, 0
-  br i1 %cond, label %then, label %else
-then:
-  ret i16 42
-else:
-  ret i16 0
+define i8 @icmp_ult16(i16 %a, i16 %b) {
+  %c = icmp ult i16 %a, %b
+  %r = zext i1 %c to i8
+  ret i8 %r
 }
 
-; Test conditional branch for SLE X, 0 (fused: inverted SGT zero)
-define i16 @branch_sle_zero(i16 %a) {
+; Test conditional branch for SGT X, 0 (fused: non-negative AND non-zero)
 ; CHECK-LABEL: branch_sgt_zero:
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ld	bc,#0
-; CHECK:      	ld	a,d
+; CHECK:      	ld	a,b
+; CHECK:      	xor	d
 ; CHECK:      	rlca
 ; CHECK:      	sbc	a,a
 ; CHECK:      	ld	b,a
@@ -86,23 +76,28 @@ define i16 @branch_sle_zero(i16 %a) {
 ; CHECK:      	and	#1
 ; CHECK:      	and	b
 ; CHECK:      	or	c
+; CHECK:      	or	a
 ; CHECK:      	jp	nz,.LBB3_1
 ; CHECK:      	jp	.LBB3_2
 ; CHECK:      	ld	de,#42
 ; CHECK:      	ret
 ; CHECK:      	ld	de,#0
 ; CHECK:      	ret
-  %cond = icmp sle i16 %a, 0
+define i16 @branch_sgt_zero(i16 %a) {
+  %cond = icmp sgt i16 %a, 0
   br i1 %cond, label %then, label %else
 then:
   ret i16 42
 else:
   ret i16 0
 }
+
+; Test conditional branch for SLE X, 0 (fused: inverted SGT zero)
 ; CHECK-LABEL: branch_sle_zero:
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ld	bc,#0
-; CHECK:      	ld	a,d
+; CHECK:      	ld	a,b
+; CHECK:      	xor	d
 ; CHECK:      	rlca
 ; CHECK:      	sbc	a,a
 ; CHECK:      	ld	b,a
@@ -123,9 +118,18 @@ else:
 ; CHECK:      	and	b
 ; CHECK:      	or	c
 ; CHECK:      	xor	#1
+; CHECK:      	or	a
 ; CHECK:      	jp	nz,.LBB4_1
 ; CHECK:      	jp	.LBB4_2
 ; CHECK:      	ld	de,#42
 ; CHECK:      	ret
 ; CHECK:      	ld	de,#0
 ; CHECK:      	ret
+define i16 @branch_sle_zero(i16 %a) {
+  %cond = icmp sle i16 %a, 0
+  br i1 %cond, label %then, label %else
+then:
+  ret i16 42
+else:
+  ret i16 0
+}

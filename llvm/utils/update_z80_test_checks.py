@@ -116,19 +116,19 @@ def update_test(test_path: Path, llc_binary: str):
     # them immediately before each IR function definition.
     lines = text.splitlines(keepends=True)
 
-    # Build map of function name -> IR define line number
-    func_line = {}
-    for i, line in enumerate(lines):
-        m = re.match(r'^define\b.*@(\w+)\s*\(', line)
-        if m:
-            func_line[m.group(1)] = i
-
     # Remove all ; CHECK lines
     kept = []
     for line in lines:
         if re.match(r';\s*CHECK', line):
             continue
         kept.append(line)
+
+    # Build map of function name -> IR define line number (in kept lines)
+    func_line = {}
+    for i, line in enumerate(kept):
+        m = re.match(r'^define\b.*@(\w+)\s*\(', line)
+        if m:
+            func_line[m.group(1)] = i
 
     # Re-insert CHECK blocks before each define line
     # (adjust line numbers after each insertion)

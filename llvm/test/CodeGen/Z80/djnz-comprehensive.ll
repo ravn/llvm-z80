@@ -36,10 +36,7 @@ declare i8 @produce()
 ; Argument counter (already in A) -> copied to B -> DJNZ.
 ; CHECK-LABEL: arg_counter_djnz:
 ; CHECK:      	ld	b,a
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
 ; CHECK:      	dec	b
@@ -61,10 +58,6 @@ exit:
 
 
 ; Pointer-walk + countdown (canonical sum_array shape).
-define i8 @sum_walk(ptr %p, i8 zeroext %n) {
-entry:
-  br label %loop
-loop:
 ; CHECK-LABEL: sum_walk:
 ; CHECK:      	push	hl
 ; CHECK:      	ld	hl,#4
@@ -84,6 +77,10 @@ loop:
 ; CHECK:      	inc	sp
 ; CHECK:      	push	bc
 ; CHECK:      	ret
+define i8 @sum_walk(ptr %p, i8 zeroext %n) {
+entry:
+  br label %loop
+loop:
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   %ptr = phi ptr [ %p, %entry ], [ %ptr.next, %loop ]
   %sum = phi i8 [ 0, %entry ], [ %sum.next, %loop ]
@@ -99,6 +96,15 @@ exit:
 
 
 ; Counter is observably 0 after the loop -- DJNZ-clobber-B is fine.
+; CHECK-LABEL: counter_used_after:
+; CHECK:      	ld	b,#10
+; CHECK:      	ld	de,(_port)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB2_1
+; CHECK:      	ld	a,b
+; CHECK:      	ret
 define i8 @counter_used_after() {
 entry:
   br label %loop
@@ -106,18 +112,6 @@ loop:
   %i = phi i8 [ 10, %entry ], [ %i.next, %loop ]
   %p = load volatile ptr, ptr @port, align 2
   store volatile i8 0, ptr %p, align 1
-; CHECK-LABEL: counter_used_after:
-; CHECK:      	ld	b,#10
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	xor	a
-; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB2_1
-; CHECK:      	ld	a,b
-; CHECK:      	ret
   %i.next = add i8 %i, -1
   %cond = icmp ne i8 %i.next, 0
   br i1 %cond, label %loop, label %exit
@@ -131,17 +125,6 @@ exit:
 ;==============================================================================
 
 ; Loop body has a CALL: B is caller-clobbered per sdcccall.
-define void @call_in_body_no_djnz(i8 zeroext %n) {
-entry:
-  br label %loop
-loop:
-  %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
-  call void @sink(i8 zeroext %i)
-  %i.next = add i8 %i, -1
-  %cond = icmp ne i8 %i.next, 0
-  br i1 %cond, label %loop, label %exit
-exit:
-  ret void
 ; CHECK-LABEL: call_in_body_no_djnz:
 ; CHECK:      	dec	sp
 ; CHECK:      	ld	b,a
@@ -158,10 +141,32 @@ exit:
 ; CHECK:      	jr	nz,.LBB3_1
 ; CHECK:      	inc	sp
 ; CHECK:      	ret
+define void @call_in_body_no_djnz(i8 zeroext %n) {
+entry:
+  br label %loop
+loop:
+  %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
+  call void @sink(i8 zeroext %i)
+  %i.next = add i8 %i, -1
+  %cond = icmp ne i8 %i.next, 0
+  br i1 %cond, label %loop, label %exit
+exit:
+  ret void
 }
 
 
 ; i16 counter cannot use DJNZ (B is 8-bit only).
+; CHECK-LABEL: i16_counter_no_djnz:
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
+; CHECK:      	ld	de,(_port)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	bc
+; CHECK:      	ld	a,c
+; CHECK:      	or	b
+; CHECK:      	jr	nz,.LBB4_1
+; CHECK:      	ret
 define void @i16_counter_no_djnz(i16 %n) {
 entry:
   br label %loop
@@ -177,26 +182,26 @@ exit:
 }
 
 
-; CHECK-LABEL: i16_counter_no_djnz:
-; CHECK:      	ld	c,l
-; CHECK:      	ld	b,h
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	xor	a
-; CHECK:      	ld	(de),a
-; CHECK:      	dec	bc
-; CHECK:      	ld	a,c
-; CHECK:      	or	b
-; CHECK:      	jr	nz,.LBB4_1
-; CHECK:      	ret
 ;==============================================================================
 ; SEQUENTIAL LOOPS: each loop should independently use DJNZ.
 ; B is freed by the first loop (DJNZ leaves B=0) and rehinted for
 ; the second.
 ;==============================================================================
 
+; CHECK-LABEL: two_sequential_loops:
+; CHECK:      	ld	b,a
+; CHECK:      	ld	de,(_port)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB5_1
+; CHECK:      	ld	b,l
+; CHECK:      	ld	de,(_port)
+; CHECK:      	ld	a,#1
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB5_3
+; CHECK:      	ret
 define void @two_sequential_loops(i8 zeroext %n, i8 zeroext %m) {
 entry:
   br label %loop1
@@ -215,27 +220,6 @@ loop2:
   store volatile i8 1, ptr %p2, align 1
   %j.next = add i8 %j, -1
   %c2 = icmp ne i8 %j.next, 0
-; CHECK-LABEL: two_sequential_loops:
-; CHECK:      	ld	b,a
-; CHECK:      	ld	c,l
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	xor	a
-; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB5_1
-; CHECK:      	ld	b,c
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	a,#1
-; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB5_3
-; CHECK:      	ret
   br i1 %c2, label %loop2, label %exit
 exit:
   ret void
@@ -257,6 +241,17 @@ exit:
 ; more total bytes per call.  See ravn/llvm-z80#92.
 ;==============================================================================
 
+; CHECK-LABEL: nested_djnz:
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,l
+; CHECK:      	ld	de,(_port)
+; CHECK:      	xor	a
+; CHECK:      	ld	(de),a
+; CHECK:      	dec	b
+; CHECK:      	jr	nz,.LBB6_2
+; CHECK:      	dec	c
+; CHECK:      	jr	nz,.LBB6_1
+; CHECK:      	ret
 define void @nested_djnz(i8 zeroext %m, i8 zeroext %n) {
 entry:
   br label %outer
@@ -279,23 +274,6 @@ exit:
 }
 ; Today exactly one DJNZ fires (on the outer, sub-optimally).  When
 ; the regalloc hint is fixed to prefer inner, swap which loop has
-; CHECK-LABEL: nested_djnz:
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,l
-; CHECK:      	ld	(L_nested_djnz.frame),a
-; CHECK:      	ld	a,(L_nested_djnz.frame)
-; CHECK:      	ld	b,a
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	xor	a
-; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB6_2
-; CHECK:      	dec	c
-; CHECK:      	jr	nz,.LBB6_1
-; CHECK:      	ret
 ; `dec r; jr nz` vs `djnz`.
 
 
@@ -329,25 +307,9 @@ exit:
 ; needs path (a) (#95) or a count-up -> count-down rewrite + B hint.
 ;==============================================================================
 
-define void @const_trip_inc_jrnz() {
-entry:
-  br label %loop
-loop:
-  %i = phi i8 [ 50, %entry ], [ %i.next, %loop ]
-  %p = load volatile ptr, ptr @port, align 2
-  store volatile i8 0, ptr %p, align 1
-  %i.next = add i8 %i, -1
-  %cond = icmp ne i8 %i.next, 0
-  br i1 %cond, label %loop, label %exit
-exit:
-  ret void
-}
 ; CHECK-LABEL: const_trip_inc_jrnz:
 ; CHECK:      	ld	c,#206
-; CHECK:      	ld	hl,#_port
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
+; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
 ; CHECK:      	ld	b,#0
@@ -362,3 +324,16 @@ exit:
 ; CHECK:      	xor	#1
 ; CHECK:      	jr	nz,.LBB7_1
 ; CHECK:      	ret
+define void @const_trip_inc_jrnz() {
+entry:
+  br label %loop
+loop:
+  %i = phi i8 [ 50, %entry ], [ %i.next, %loop ]
+  %p = load volatile ptr, ptr @port, align 2
+  store volatile i8 0, ptr %p, align 1
+  %i.next = add i8 %i, -1
+  %cond = icmp ne i8 %i.next, 0
+  br i1 %cond, label %loop, label %exit
+exit:
+  ret void
+}

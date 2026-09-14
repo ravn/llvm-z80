@@ -40,6 +40,7 @@
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
@@ -49,6 +50,9 @@
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "z80-nonreentrant"
+
+STATISTIC(NumDoesNotRecurse, "Number of functions proved not to recurse");
+STATISTIC(NumNonReentrant, "Number of functions marked nonreentrant");
 
 using namespace llvm;
 
@@ -222,6 +226,7 @@ bool Z80NonReentrantImpl::run(Module &M) {
     if (!F || F->isDeclaration() || F->doesNotRecurse() || callsSelf(N))
       continue;
     F->setDoesNotRecurse();
+    ++NumDoesNotRecurse;
     Changed = true;
   }
 
@@ -261,6 +266,7 @@ bool Z80NonReentrantImpl::run(Module &M) {
     if (Analyzed.contains(CG[&F]) && F.doesNotRecurse() &&
         !Reentrant.contains(CG[&F])) {
       F.addFnAttr("nonreentrant");
+      ++NumNonReentrant;
       Changed = true;
     }
   }

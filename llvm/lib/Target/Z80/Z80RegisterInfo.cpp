@@ -238,8 +238,7 @@ static void emitFlagSavePush(MachineBasicBlock &MBB,
       MBB.getParent()->getSubtarget().getRegisterInfo();
   MachineInstrBuilder Push =
       BuildMI(MBB, InsertBefore, DL, TII.get(Z80::PUSH_AF));
-  for (MachineBasicBlock::iterator I = Push->getIterator();
-       I != MBB.begin();) {
+  for (MachineBasicBlock::iterator I = Push->getIterator(); I != MBB.begin();) {
     --I;
     if (I->modifiesRegister(Z80::A, TRI)) {
       if (MachineOperand *MO = I->findRegisterDefOperand(Z80::A, TRI))
@@ -1036,9 +1035,9 @@ static bool rewriteStaticSlotAccess(MachineBasicBlock::iterator MI,
       Z80::emitPairSavePush(MBB, MI, DL, TII, TempReg);
 
     if (!IsSM83) {
-      AddSlot(BuildMI(MBB, MI, DL,
-                      TII.get(TempReg == Z80::BC ? Z80::LD_BC_nnind
-                                                 : Z80::LD_DE_nnind)));
+      AddSlot(BuildMI(
+          MBB, MI, DL,
+          TII.get(TempReg == Z80::BC ? Z80::LD_BC_nnind : Z80::LD_DE_nnind)));
     } else {
       // The slot is read through a pointer, and HL holds the accumulated
       // value, so park it on the stack around the reload.
@@ -1339,8 +1338,7 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
       emitSlotAddr(MBB, MI, DL, TII, false, Offset, SPDelta, PreserveFlags);
       BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n)).addImm(Val & 0xFF);
       Z80::buildIncDec16(MBB, MI, DL, TII, Z80::INC_rr, Z80::HL);
-      BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n))
-          .addImm((Val >> 8) & 0xFF);
+      BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n)).addImm((Val >> 8) & 0xFF);
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
       MI->eraseFromParent();
@@ -1402,8 +1400,8 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
           break;
         }
       bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, this);
-      Register TempPair = (TempReg == Z80::B || TempReg == Z80::C) ? Z80::BC
-                                                                   : Z80::DE;
+      Register TempPair =
+          (TempReg == Z80::B || TempReg == Z80::C) ? Z80::BC : Z80::DE;
 
       if (NeedSaveTemp)
         Z80::emitPairSavePush(MBB, MI, DL, TII, TempPair);
@@ -1429,8 +1427,8 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
       emitHLSavePush(MBB, MI, DL, TII);
 
       int SPAdj = 2 + (NeedSaveTemp ? 2 : 0);
-      expandReloadGR16SPRelative(false, MBB, MI, DL, TII, TempReg, Offset + SPAdj,
-                                 this);
+      expandReloadGR16SPRelative(false, MBB, MI, DL, TII, TempReg,
+                                 Offset + SPAdj, this);
 
       BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
 
@@ -1599,8 +1597,7 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
       Z80::emitPairSavePush(MBB, MI, DL, TII, TempReg);
     emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, TempReg,
                         /*PreserveFlags=*/false);
-    BuildMI(MBB, MI, DL, TII.get(Z80::getAluHLindOpcode(Op)))
-        .cloneMemRefs(*MI);
+    BuildMI(MBB, MI, DL, TII.get(Z80::getAluHLindOpcode(Op))).cloneMemRefs(*MI);
     if (NeedSaveTemp)
       BuildMI(MBB, MI, DL, TII.get(getPopOpcode(TempReg)));
     if (NeedSaveHL)
