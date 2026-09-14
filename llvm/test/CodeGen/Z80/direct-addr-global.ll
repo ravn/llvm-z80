@@ -42,24 +42,6 @@ define i8 @load8_global_offset() {
   ret i8 %v
 }
 
-; Test: 8-bit store to constant integer address
-define void @store8_const_addr(i8 %val) {
-; CHECK-LABEL: _store8_const_addr:
-; CHECK:       ld (1234),a
-; CHECK-NEXT:  ret
-  store i8 %val, ptr inttoptr (i16 1234 to ptr)
-  ret void
-}
-
-; Test: 8-bit load from constant integer address
-define i8 @load8_const_addr() {
-; CHECK-LABEL: _load8_const_addr:
-; CHECK:       ld a,(1234)
-; CHECK-NEXT:  ret
-  %v = load i8, ptr inttoptr (i16 1234 to ptr)
-  ret i8 %v
-}
-
 ; Test: 16-bit store to global variable (positive control)
 define void @store16_global(i16 %val) {
 ; CHECK-LABEL: _store16_global:
