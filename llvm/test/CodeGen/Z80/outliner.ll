@@ -1,5 +1,8 @@
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s --check-prefix=Z80
 ; RUN: llc -verify-machineinstrs -mtriple=sm83 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s --check-prefix=SM83
+; XFAIL: *
+; ravn/llvm-z80#322: Machine Outliner is explicitly disabled in Z80TargetMachine::createPassConfig
+; (EnableMachineOutliner = false) due to 4B call/ret overhead.
 ;
 ; A run of instructions that repeats is worth three bytes of CALL and one of
 ; RET. The call is smaller and slower than what it replaces, so only minsize
