@@ -36,16 +36,17 @@ PreservedAnalyses Z80IndexIV::run(Loop &L, LoopAnalysisManager &AM,
   LLVM_DEBUG(dbgs() << "***************************** Z80 INDEX IV PASS "
                        "*****************************\n");
 
-  // With +static-stack, locals are in BSS, not IX-relative. Pointer-increment
-  // (INC HL, 1B) is far cheaper than base+index (LD HL,base; ADD HL,BC, 4+B).
-  // Skip this pass to preserve pointer-increment loops.
-  // TODO: investigate whether this pass helps non-static-stack code where
-  // IX+d indexed addressing is available for stack-relative accesses.
+  // ravn/llvm-z80#324: with +static-frame, locals are in BSS, not IX-relative.
+  // Pointer-increment (INC HL, 1B) is far cheaper than base+index (LD HL,base;
+  // ADD HL,BC, 4+B). Skip this pass to preserve pointer-increment loops.
+  // E.g., for `for (i=0; i<100; ++i) sum += p[i]`:
+  // Under +static-frame, keeping %gep lets codegen emit `INC HL` each iteration
+  // rather than rewriting into an 8-bit IV with indexed pointer arithmetic.
   const Function *F = L.getHeader()->getParent();
   if (F->hasFnAttribute("target-features")) {
     StringRef Features = F->getFnAttribute("target-features").getValueAsString();
-    if (Features.contains("+static-stack"))
-      return PreservedAnalyses::all();
+    if (Features.contains("+static-frame"))
+      return PreservedAnalyses::all(); // skip rewrite when static frames preserve cheap INC HL
   }
 
   auto &SE = AR.SE;
