@@ -69,7 +69,7 @@ define i8 @keep_multiuse(ptr %dst, ptr %src) {
 ; CHECK:      	ld	e,(hl)
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_keep_volatile.frame+2),de
+; CHECK:      	push	de
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	inc	hl
@@ -94,7 +94,7 @@ define i8 @keep_multiuse(ptr %dst, ptr %src) {
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	d,(hl)
 ; CHECK:      	ld	(L_keep_volatile.frame+8),de
-; CHECK:      	ld	de,(L_keep_volatile.frame+2)
+; CHECK:      	pop	de
 ; CHECK:      	ld	bc,(L_keep_volatile.frame)
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
@@ -152,7 +152,7 @@ define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
 ; CHECK:      	ld	e,(hl)
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_keep_multiuse.frame+4),de
+; CHECK:      	push	de
 ; CHECK:      	ld	de,4
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
@@ -180,7 +180,7 @@ define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
 ; CHECK:      	ld	h,b
 ; CHECK:      	inc	hl
 ; CHECK:      	inc	hl
-; CHECK:      	ld	de,(L_keep_multiuse.frame+4)
+; CHECK:      	pop	de
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d

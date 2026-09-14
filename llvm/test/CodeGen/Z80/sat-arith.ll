@@ -61,7 +61,7 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; CHECK:      	rrca
 ; CHECK:      	rrca
 ; CHECK:      	and	#1
-; CHECK:      	ld	(L_test_saddsat.frame),a
+; CHECK:      	push	af
 ; CHECK:      	ld	a,b
 ; CHECK:      	add	a,a
 ; CHECK:      	sbc	a,a
@@ -70,7 +70,7 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; CHECK:      	ld	de,#32768
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	a,(L_test_saddsat.frame)
+; CHECK:      	pop	af
 ; CHECK:      	or	a
 ; CHECK:      	ret	nz
 ; CHECK:      	ld	e,c
@@ -99,7 +99,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	rrca
 ; CHECK:      	rrca
 ; CHECK:      	and	#1
-; CHECK:      	ld	(L_test_ssubsat.frame),a
+; CHECK:      	push	af
 ; CHECK:      	ld	a,b
 ; CHECK:      	add	a,a
 ; CHECK:      	sbc	a,a
@@ -108,7 +108,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	ld	de,#32768
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	a,(L_test_ssubsat.frame)
+; CHECK:      	pop	af
 ; CHECK:      	or	a
 ; CHECK:      	ret	nz
 ; CHECK:      	ld	e,c
@@ -144,7 +144,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	xor	d
 ; CHECK:      	rlca
 ; CHECK:      	sbc	a,a
-; CHECK:      	ld	(L_test_scmp.frame+1),a
+; CHECK:      	push	af
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	and	a
@@ -152,7 +152,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
 ; CHECK:      	ld	d,a
-; CHECK:      	ld	a,(L_test_scmp.frame+1)
+; CHECK:      	pop	af
 ; CHECK:      	ld	c,a
 ; CHECK:      	cpl
 ; CHECK:      	and	d

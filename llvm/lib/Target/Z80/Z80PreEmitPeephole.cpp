@@ -80,6 +80,8 @@ STATISTIC(NumInMemBitSetRes,
           "Number of in-memory bit sets/resets folded to SET/RES (HL)");
 STATISTIC(NumDjnz,
           "Number of decrement-and-branch sequences folded to DJNZ");
+STATISTIC(NumBssSpillsToPushPop,
+          "Number of BSS spill/reload pairs converted to PUSH/POP");
 
 using namespace llvm;
 
@@ -1327,6 +1329,363 @@ static bool optimizeDJNZ(MachineBasicBlock &MBB,
     BuildMI(MBB, MII, DL, TII->get(Z80::DJNZ_e)).addMBB(TargetMBB);
     ++NumDjnz;
     Changed = true;
+  }
+
+  return Changed;
+}
+
+// --- Peephole: BSS spill/reload → PUSH/POP across CALLs and register pressure ---
+//
+// WHAT: In +static-frame / +static-stack code, register-allocator spills use direct
+// memory addressing to function frame slots in BSS:
+//   LD (slot), rr       (3-4 bytes, 13-20 T)
+//   ... [intervening code / CALLs] ...
+//   LD rr, (slot)       (3-4 bytes, 13-20 T)
+// Total cost per spill/reload pair: 6-8 bytes, 26-40 T.
+//
+// When the stack depth is net-zero across the region (all intervening PUSH/POP
+// instructions are balanced and SP is unmodified), the memory spill can be
+// replaced with stack operations:
+//   PUSH rr             (1 byte, 11 T)
+//   ...
+//   POP rr              (1 byte, 10 T)
+// Total cost: 2 bytes, 21 T.
+// Saves 4-6 bytes and 5-19 T per pair.
+//
+// WORKED EXAMPLE (from issue-74-bss-spill-no-call.ll, delete_line shape):
+// Input MIR:
+//   LD_nnind_HL @delete_line.frame + 2, implicit $hl  ; (3 B) spill temp
+//   $a = LD_r_n 24
+//   $hl = LD_rr_nn @delete_line.frame + 4
+//   $b = LD_r_HLind implicit $hl
+//   SUB_r killed renamable $b ...
+//   ...
+//   renamable $hl = LD_HL_nnind @delete_line.frame + 2 ; (3 B) reload temp
+// StackDepth is 0 (no intervening stack operations).
+// Transformed to:
+//   PUSH_HL             ; (1 B) replaces store
+//   $a = LD_r_n 24
+//   ...
+//   POP_HL              ; (1 B) replaces reload
+// Net win: 6 B → 2 B (saves 4 B).
+//
+// SAFETY GUARDS:
+//   1. STI.hasStaticFrame(): Only applies when static frames are used.
+//   2. isStaticFrameSlot(): Only applies to static frame symbols (.frame,
+//      __sfrend, __sframe, static_frame). Global variables must not be converted.
+//   3. Address-taken guard (collectAddrTakenFrameSyms): If a frame symbol appears
+//      in an instruction other than a direct BSS access (e.g. `LD HL, sym` for
+//      pointer arithmetic or &local), the slot may be read indirectly. Refuse
+//      conversion (issue #195/test_27).
+//   4. Loop-carried guard (isSlotReadBeforeStoreInBlock): If the slot is read
+//      earlier in the basic block before the store, it is the back-edge reload of
+//      a loop-carried value. Dropping the store would leave the loop top reading
+//      stale data (issue #195/test_166).
+//   5. Cross-block orphan guard (isSlotUsedInOtherBlock): If another basic block
+//      references the slot, it expects the value in BSS memory. Refuse conversion.
+//   6. In-block orphan & conflict guard: If another store to the slot intervenes,
+//      or an orphan load to a different register class appears, refuse conversion.
+//   7. Stack balance: Intervening PUSH/POP must have net depth 0 at each reload.
+//      Any intervening explicit SP modification (isExplicitSPWrite) bails.
+//   8. POP AF safety: POP AF overwrites FLAGS; safe only when FLAGS is dead after.
+
+static bool isAnyBssLoad(unsigned Opc) {
+  return Opc == Z80::LD_A_nnind || Opc == Z80::LD_HL_nnind ||
+         Opc == Z80::LD_DE_nnind || Opc == Z80::LD_BC_nnind;
+}
+
+static bool isAnyBssStore(unsigned Opc) {
+  return Opc == Z80::LD_nnind_A || Opc == Z80::LD_nnind_HL ||
+         Opc == Z80::LD_nnind_DE || Opc == Z80::LD_nnind_BC;
+}
+
+static bool isAnyBssAccess(unsigned Opc) {
+  return isAnyBssLoad(Opc) || isAnyBssStore(Opc);
+}
+
+static bool isAnyPush(unsigned Opc) {
+  return Opc == Z80::PUSH_AF || Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
+         Opc == Z80::PUSH_HL || Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY;
+}
+
+static bool isAnyPop(unsigned Opc) {
+  return Opc == Z80::POP_AF || Opc == Z80::POP_BC || Opc == Z80::POP_DE ||
+         Opc == Z80::POP_HL || Opc == Z80::POP_IX || Opc == Z80::POP_IY;
+}
+
+static bool isExplicitSPWrite(const MachineInstr &MI,
+                              const TargetRegisterInfo *TRI) {
+  unsigned Opc = MI.getOpcode();
+  return !isAnyPush(Opc) && !isAnyPop(Opc) && !MI.isCall() &&
+         MI.modifiesRegister(Z80::SP, TRI);
+}
+
+static bool isStaticFrameSlot(const MachineOperand &MO) {
+  if (MO.isGlobal()) {
+    StringRef Name = MO.getGlobal()->getName();
+    return Name.ends_with(".frame") || Name.starts_with("__sfrend") ||
+           Name.starts_with("__sframe") || Name.contains("static_frame");
+  }
+  if (MO.isMCSymbol()) {
+    StringRef Name = MO.getMCSymbol()->getName();
+    return Name.contains(".frame") || Name.starts_with("__sfrend") ||
+           Name.starts_with("__sframe") || Name.contains("static_frame");
+  }
+  return false;
+}
+
+static bool sameBssAddress(const MachineInstr &A, const MachineInstr &B) {
+  if (A.getNumOperands() == 0 || B.getNumOperands() == 0)
+    return false;
+  const MachineOperand &MA = A.getOperand(0);
+  const MachineOperand &MB = B.getOperand(0);
+  if (MA.isGlobal() && MB.isGlobal())
+    return MA.getGlobal() == MB.getGlobal() && MA.getOffset() == MB.getOffset();
+  if (MA.isMCSymbol() && MB.isMCSymbol())
+    return MA.getMCSymbol() == MB.getMCSymbol() && MA.getOffset() == MB.getOffset();
+  return false;
+}
+
+static void collectAddrTakenFrameSyms(
+    MachineFunction &MF,
+    SmallSet<std::pair<const void *, int64_t>, 8> &Out,
+    SmallPtrSetImpl<const void *> &BaseAddrTaken) {
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if (isAnyBssAccess(MI.getOpcode()))
+        continue;
+      for (const MachineOperand &MO : MI.operands()) {
+        const void *Key = nullptr;
+        if (MO.isGlobal())
+          Key = MO.getGlobal();
+        else if (MO.isMCSymbol())
+          Key = MO.getMCSymbol();
+        if (!Key)
+          continue;
+        int64_t Off = MO.getOffset();
+        Out.insert({Key, Off});
+        if (Off == 0)
+          BaseAddrTaken.insert(Key);
+      }
+    }
+  }
+}
+
+static bool isSlotAddrTaken(
+    const MachineInstr &StoreMI,
+    const SmallSet<std::pair<const void *, int64_t>, 8> &Set,
+    const SmallPtrSetImpl<const void *> &BaseAddrTaken) {
+  const MachineOperand &A = StoreMI.getOperand(0);
+  const void *Key = A.isGlobal() ? (const void *)A.getGlobal()
+                    : (A.isMCSymbol() ? (const void *)A.getMCSymbol() : nullptr);
+  if (!Key)
+    return false;
+  if (BaseAddrTaken.count(Key))
+    return true;
+  return Set.count({Key, A.getOffset()});
+}
+
+static bool isSlotReadBeforeStoreInBlock(MachineBasicBlock &MBB,
+                                         MachineBasicBlock::iterator StoreIt) {
+  for (auto P = MBB.begin(); P != StoreIt; ++P)
+    if (isAnyBssAccess(P->getOpcode()) && sameBssAddress(*StoreIt, *P))
+      return true;
+  return false;
+}
+
+static bool isSlotUsedInOtherBlock(MachineFunction &MF,
+                                   const MachineBasicBlock &StoreMBB,
+                                   const MachineInstr &StoreMI) {
+  for (MachineBasicBlock &MBB : MF) {
+    if (&MBB == &StoreMBB)
+      continue;
+    for (MachineInstr &MI : MBB) {
+      if (isAnyBssAccess(MI.getOpcode()) && sameBssAddress(StoreMI, MI))
+        return true;
+    }
+  }
+  return false;
+}
+
+struct SpillInfo {
+  unsigned StoreOpc;
+  unsigned LoadOpc;
+  unsigned PushOpc;
+  unsigned PopOpc;
+  unsigned StoreBytes;
+  unsigned LoadBytes;
+};
+
+static const SpillInfo SpillPairs[] = {
+    {Z80::LD_nnind_A,  Z80::LD_A_nnind,  Z80::PUSH_AF, Z80::POP_AF, 3, 3},
+    {Z80::LD_nnind_HL, Z80::LD_HL_nnind, Z80::PUSH_HL, Z80::POP_HL, 3, 3},
+    {Z80::LD_nnind_DE, Z80::LD_DE_nnind, Z80::PUSH_DE, Z80::POP_DE, 4, 4},
+    {Z80::LD_nnind_BC, Z80::LD_BC_nnind, Z80::PUSH_BC, Z80::POP_BC, 4, 4},
+};
+
+static const SpillInfo *getSpillInfo(unsigned Opc) {
+  for (const auto &SI : SpillPairs)
+    if (SI.StoreOpc == Opc)
+      return &SI;
+  return nullptr;
+}
+
+static bool isMatchingLoad(unsigned StoreOpc, unsigned Opc) {
+  for (const auto &SI : SpillPairs)
+    if (SI.StoreOpc == StoreOpc && SI.LoadOpc == Opc)
+      return true;
+  return false;
+}
+
+static bool optimizeBssSpills(MachineFunction &MF,
+                              const TargetInstrInfo *TII,
+                              const TargetRegisterInfo *TRI,
+                              const Z80Subtarget &STI) {
+  if (!STI.hasStaticFrame())
+    return false; // only applicable for static-frame targets
+
+  SmallSet<std::pair<const void *, int64_t>, 8> AddrTakenSlots;
+  SmallPtrSet<const void *, 4> BaseAddrTakenSyms;
+  collectAddrTakenFrameSyms(MF, AddrTakenSlots, BaseAddrTakenSyms);
+
+  bool Changed = false;
+
+  for (MachineBasicBlock &MBB : MF) {
+    bool BlockChanged = false;
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      const SpillInfo *SI = getSpillInfo(MII->getOpcode());
+      if (!SI) {
+        ++MII;
+        continue; // not a known BSS spill store
+      }
+      if (!isStaticFrameSlot(MII->getOperand(0))) {
+        ++MII;
+        continue; // not a static frame slot (e.g. general global variable)
+      }
+      if (isSlotAddrTaken(*MII, AddrTakenSlots, BaseAddrTakenSyms)) {
+        ++MII;
+        continue; // slot address materialized into a register (issue #195)
+      }
+      if (isSlotReadBeforeStoreInBlock(MBB, MII)) {
+        ++MII;
+        continue; // loop-carried value read at top of loop (issue #195)
+      }
+
+      bool Conflict = false;
+      int LoadCount = 0;
+      SmallVector<MachineBasicBlock::iterator, 4> Loads;
+      int StackDepth = 0;
+
+      for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
+        unsigned SOpc = Scan->getOpcode();
+
+        // Another store to the same slot indicates value reuse/overwrite.
+        if (SOpc == SI->StoreOpc && sameBssAddress(*MII, *Scan)) {
+          Conflict = true;
+          break;
+        }
+
+        // Orphan BSS load from same slot to a different register class (issue #82).
+        if (isAnyBssLoad(SOpc) && !isMatchingLoad(SI->StoreOpc, SOpc) &&
+            sameBssAddress(*MII, *Scan)) {
+          Conflict = true;
+          break;
+        }
+
+        // Track stack depth across all PUSH/POP instructions.
+        if (isAnyPush(SOpc))
+          ++StackDepth;
+        if (isAnyPop(SOpc)) {
+          --StackDepth;
+          if (StackDepth < 0) {
+            Conflict = true;
+            break;
+          }
+        }
+
+        // Intervening explicit SP writes make PUSH/POP displacement invalid.
+        if (isExplicitSPWrite(*Scan, TRI)) {
+          Conflict = true;
+          break;
+        }
+
+        // Matching load from the same address.
+        if (isMatchingLoad(SI->StoreOpc, SOpc) && sameBssAddress(*MII, *Scan)) {
+          // Stack depth must be balanced at each reload point.
+          if (StackDepth != 0) {
+            Conflict = true;
+            break;
+          }
+          Loads.push_back(Scan);
+          ++LoadCount;
+        }
+
+        if (Scan->isTerminator())
+          break;
+      }
+
+      // Stack must be balanced and at least one matching load found.
+      if (StackDepth != 0 || Conflict || LoadCount == 0) {
+        ++MII;
+        continue;
+      }
+
+      // Ensure the slot is not referenced by any other basic block.
+      if (isSlotUsedInOtherBlock(MF, MBB, *MII)) {
+        ++MII;
+        continue;
+      }
+
+      int PushPopBytes = 2 * LoadCount; // PUSH + N*POP + (N-1)*re-PUSH
+      int BssBytes = SI->StoreBytes + LoadCount * SI->LoadBytes;
+      if (PushPopBytes >= BssBytes) {
+        ++MII;
+        continue; // no size win
+      }
+
+      // For POP AF: verify FLAGS register is dead after each reload.
+      if (SI->PopOpc == Z80::POP_AF) {
+        bool FlagsSafe = true;
+        for (auto &LoadIt : Loads) {
+          auto After = std::next(LoadIt);
+          if (!isRegDeadAfter(After, MBB, TRI, Z80::FLAGS)) {
+            FlagsSafe = false;
+            break;
+          }
+        }
+        if (!FlagsSafe) {
+          ++MII;
+          continue;
+        }
+      }
+
+      LLVM_DEBUG(dbgs() << "  BSS spill→PUSH/POP: " << *MII
+                        << "  " << LoadCount << " loads, saves "
+                        << (BssBytes - PushPopBytes) << "B\n");
+
+      DebugLoc DL = MII->getDebugLoc();
+      MachineInstr *PushMI = BuildMI(MBB, *MII, DL, TII->get(SI->PushOpc));
+      auto StoreIt = MII;
+
+      for (int i = 0; i < LoadCount; ++i) {
+        auto &LoadMI = *Loads[i];
+        DebugLoc LoadDL = LoadMI.getDebugLoc();
+        BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PopOpc));
+        if (i < LoadCount - 1) {
+          // Re-PUSH to preserve on stack for subsequent loads.
+          BuildMI(MBB, LoadMI, LoadDL, TII->get(SI->PushOpc));
+        }
+        MBB.erase(Loads[i]);
+      }
+      MBB.erase(StoreIt);
+
+      ++NumBssSpillsToPushPop;
+      Changed = BlockChanged = true;
+      MII = PushMI->getIterator();
+      ++MII;
+    }
+    if (BlockChanged)
+      recomputeLivenessFlags(MBB);
   }
 
   return Changed;
@@ -3462,6 +3821,8 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     if (BlockChanged)
       recomputeLivenessFlags(MBB);
   }
+
+  Changed |= optimizeBssSpills(MF, TII, TRI, STI);
 
   // Run last: earlier peepholes pattern-match LDHL-based slot accesses
   // (redundant store elimination keys slot identity on them), so the

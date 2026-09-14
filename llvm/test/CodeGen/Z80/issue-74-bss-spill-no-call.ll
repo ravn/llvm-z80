@@ -45,7 +45,7 @@ declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 ; CHECK:      	add	hl,hl
 ; CHECK:      	ld	de,63568
 ; CHECK:      	add	hl,de
-; CHECK:      	ld	(L_delete_line.frame+2),hl
+; CHECK:      	push	hl
 ; CHECK:      	ld	a,24
 ; CHECK:      	ld	hl,L_delete_line.frame+4
 ; CHECK:      	ld	b,(hl)
@@ -63,7 +63,7 @@ declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 ; CHECK:      	add	hl,hl
 ; CHECK:      	ld	c,l
 ; CHECK:      	ld	b,h
-; CHECK:      	ld	hl,(L_delete_line.frame+2)
+; CHECK:      	pop	hl
 ; CHECK:      	ld	de,(L_delete_line.frame)
 ; CHECK:      	ld	a,b
 ; CHECK:      	or	c

@@ -15,13 +15,13 @@
 ; CHECK:      	ld	b,h
 ; CHECK:      	ld	de,15
 ; CHECK:      	add	hl,de
-; CHECK:      	ld	(L_memmove_dst_after_src.frame),hl
+; CHECK:      	push	hl
 ; CHECK:      	ld	de,19
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	hl,(L_memmove_dst_after_src.frame)
+; CHECK:      	pop	hl
 ; CHECK:      	ld	bc,16
 ; CHECK:      	lddr
 ; CHECK:      	ret
