@@ -76,6 +76,8 @@ STATISTIC(NumConsecutiveStores,
           "Number of consecutive byte stores folded to LD (HL),n chains");
 STATISTIC(NumConstReused,
           "Number of 8-bit immediate loads rewritten to register copies");
+STATISTIC(NumInMemBitSetRes,
+          "Number of in-memory bit sets/resets folded to SET/RES (HL)");
 
 using namespace llvm;
 
@@ -1023,6 +1025,180 @@ static bool optimizeInMemoryIncDec(MachineBasicBlock &MBB,
     I1->eraseFromParent();
     I2->eraseFromParent();
     ++NumInMemIncDec;
+    Changed = true;
+  }
+
+  return Changed;
+}
+
+// --- Peephole #147: `mem |= 1<<N` / `mem &= ~(1<<N)` → SET/RES n,(HL) ---
+//
+// Three-instruction sequence:
+//   LD A, (addr)            (3 B)
+//   {OR, AND} K             (2 B)
+//   LD (addr), A            (3 B)   ; same address as load
+// For single-bit ops (popcount(K)==1 for OR, popcount(~K & 0xFF)==1 for AND),
+// replace with:
+//   LD HL, addr             (3 B)
+//   {SET, RES} b, (HL)      (2 B)
+// Total: 5 B vs 8 B (saves 3 B).
+// For two-bit ops, emit two SET/RES: 3 + 2*2 = 7 B vs 8 B (saves 1 B).
+//
+// Worked example (from issue-147-set-res-mem.ll @set_bit_0):
+//   Input:
+//     LD_A_nnind @flag
+//     OR_n 1
+//     LD_nnind_A @flag
+//   Output:
+//     $hl = LD_rr_nn @flag
+//     SET_0_HLind implicit $hl
+//
+// Soundness guards:
+//   - A must be dead after the store (we don't preserve OR/AND result in A).
+//   - H and L must be dead before the load (LD HL clobbers HL).
+//   - HL must be dead after the store.
+//   - Any intervening instructions must not access memory, touch HL, or write A.
+//     If an intervening instruction reads A, emit `LD A,(HL)` right after
+//     `LD HL,addr` to preserve A for the reader (#152).
+static bool optimizeInMemoryBitSetRes(MachineBasicBlock &MBB,
+                                      const TargetInstrInfo *TII,
+                                      const TargetRegisterInfo *TRI,
+                                      const Z80Subtarget &STI) {
+  if (!STI.hasZ80())
+    return false;
+
+  static const unsigned SetOps[8] = {
+      Z80::SET_0_HLind, Z80::SET_1_HLind, Z80::SET_2_HLind, Z80::SET_3_HLind,
+      Z80::SET_4_HLind, Z80::SET_5_HLind, Z80::SET_6_HLind, Z80::SET_7_HLind,
+  };
+  static const unsigned ResOps[8] = {
+      Z80::RES_0_HLind, Z80::RES_1_HLind, Z80::RES_2_HLind, Z80::RES_3_HLind,
+      Z80::RES_4_HLind, Z80::RES_5_HLind, Z80::RES_6_HLind, Z80::RES_7_HLind,
+  };
+
+  auto sameAddrOp = [](const MachineOperand &A, const MachineOperand &B) -> bool {
+    if (A.isGlobal() && B.isGlobal())
+      return A.getGlobal() == B.getGlobal() && A.getOffset() == B.getOffset();
+    if (A.isSymbol() && B.isSymbol())
+      return StringRef(A.getSymbolName()) == B.getSymbolName() &&
+             A.getOffset() == B.getOffset();
+    if (A.isMCSymbol() && B.isMCSymbol())
+      return A.getMCSymbol() == B.getMCSymbol() &&
+             A.getOffset() == B.getOffset();
+    if (A.isImm() && B.isImm())
+      return A.getImm() == B.getImm();
+    return false;
+  };
+
+  bool Changed = false;
+  for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+    auto LdIt = MII++;
+    // Match LD A,(addr)
+    if (LdIt->getOpcode() != Z80::LD_A_nnind)
+      continue;
+    if (MII == MIE)
+      continue;
+
+    // Search forward for OR_n or AND_n
+    auto OpIt = MII;
+    bool BailIntervening = false;
+    bool HadAReader = false;
+    while (OpIt != MIE) {
+      unsigned O = OpIt->getOpcode();
+      if (O == Z80::OR_n || O == Z80::AND_n)
+        break;
+      // Bail on branches, calls, or unmodeled side effects
+      if (OpIt->isTerminator() || OpIt->isCall() || OpIt->hasUnmodeledSideEffects()) {
+        BailIntervening = true;
+        break;
+      }
+      // Bail on any memory access
+      if (!OpIt->memoperands_empty() || OpIt->mayLoad() || OpIt->mayStore()) {
+        BailIntervening = true;
+        break;
+      }
+      for (const MachineOperand &MO : OpIt->operands()) {
+        if (!MO.isReg() || !MO.getReg().isPhysical())
+          continue;
+        // Bail if intervening instruction uses or defines HL
+        if (TRI->regsOverlap(MO.getReg(), Z80::HL)) {
+          BailIntervening = true;
+          break;
+        }
+        if (TRI->regsOverlap(MO.getReg(), Z80::A)) {
+          // Bail if intervening instruction overwrites A
+          if (MO.isDef()) {
+            BailIntervening = true;
+            break;
+          }
+          HadAReader = true;
+        }
+      }
+      if (BailIntervening)
+        break;
+      ++OpIt;
+    }
+    if (BailIntervening || OpIt == MIE)
+      continue;
+
+    unsigned Opc = OpIt->getOpcode();
+    bool IsOr = (Opc == Z80::OR_n);
+    bool IsAnd = (Opc == Z80::AND_n);
+    if (!IsOr && !IsAnd)
+      continue;
+
+    // Next instruction after OR/AND must be the matching store LD (addr),A
+    auto StIt = MBB.SkipPHIsLabelsAndDebug(std::next(OpIt));
+    if (StIt == MIE || StIt->getOpcode() != Z80::LD_nnind_A)
+      continue;
+    if (!sameAddrOp(LdIt->getOperand(0), StIt->getOperand(0)))
+      continue;
+
+    // A must be dead after the store
+    auto AfterSt = MBB.SkipPHIsLabelsAndDebug(std::next(StIt));
+    if (!isRegDeadAfter(AfterSt, MBB, TRI, Z80::A))
+      continue;
+
+    // H and L must be dead before the load
+    auto HQ = MBB.computeRegisterLiveness(TRI, Z80::H, LdIt);
+    auto LQ = MBB.computeRegisterLiveness(TRI, Z80::L, LdIt);
+    if (HQ != MachineBasicBlock::LQR_Dead || LQ != MachineBasicBlock::LQR_Dead)
+      continue;
+
+    // HL must be dead after the store
+    if (!isRegDeadAfter(AfterSt, MBB, TRI, Z80::HL))
+      continue;
+
+    // Compute effective bitmask and popcount
+    int64_t K = OpIt->getOperand(0).getImm() & 0xFF;
+    unsigned EffMask = IsOr ? (unsigned)K : ((~(unsigned)K) & 0xFF);
+    unsigned Pop = llvm::popcount(EffMask);
+    if (Pop == 0 || Pop > 2)
+      continue;
+    // With an intervening reader, Pop 2 breaks even on size but adds latency, so skip
+    if (HadAReader && Pop != 1)
+      continue;
+
+    LLVM_DEBUG(dbgs() << "  in-memory bit " << (IsOr ? "SET" : "RES")
+                      << " (HL) for " << LdIt->getOperand(0) << "\n");
+
+    DebugLoc DL = LdIt->getDebugLoc();
+    BuildMI(MBB, *LdIt, DL, TII->get(Z80::LD_rr_nn), Z80::HL)
+        .add(LdIt->getOperand(0));
+    if (HadAReader)
+      BuildMI(MBB, *LdIt, DL, TII->get(Z80::LD_r_HLind), Z80::A);
+
+    const auto *Table = IsOr ? SetOps : ResOps;
+    for (unsigned Bit = 0; Bit < 8; ++Bit) {
+      if (EffMask & (1u << Bit))
+        BuildMI(MBB, *OpIt, DL, TII->get(Table[Bit]));
+    }
+
+    MII = std::next(StIt);
+    LdIt->eraseFromParent();
+    OpIt->eraseFromParent();
+    StIt->eraseFromParent();
+    ++NumInMemBitSetRes;
     Changed = true;
   }
 
@@ -2078,6 +2254,21 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
         LLVM_DEBUG(dbgs() << "  Removing redundant: " << *NextIt);
         NextIt->eraseFromParent();
         ++NumAluImmMerges;
+        Changed = BlockChanged = true;
+        continue;
+      }
+      ++MII;
+    }
+
+    // --- Peephole: LD r, r (self-copy) → (remove) ---
+    // A register copy to itself is a 1-byte, 4-T no-op that modifies no flags.
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+         MII != MIE;) {
+      MachineInstr &MI = *MII;
+      if (isLD8(MI) &&
+          MI.getOperand(0).getReg() == MI.getOperand(1).getReg()) {
+        LLVM_DEBUG(dbgs() << "  Removing redundant self-copy: " << MI);
+        MII = MBB.erase(MII);
         Changed = BlockChanged = true;
         continue;
       }
@@ -3168,6 +3359,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     Changed |= optimizeConstantReuse(MBB, TII, TRI);
     Changed |= optimizeI16CompareByteXOR(MBB, TII, TRI, STI);
     Changed |= optimizeInMemoryIncDec(MBB, TII, TRI, STI);
+    Changed |= optimizeInMemoryBitSetRes(MBB, TII, TRI, STI);
     Changed |= optimizeConsecutiveStores(MBB, TII, TRI, STI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);

@@ -21,10 +21,9 @@
 ; Set bit 0: |= 1
 ;
 ; CHECK-LABEL: set_bit_0:
-; CHECK:      	ld	a,(_flag)
-; CHECK:      	or	1
-; CHECK:      	ld	(_flag),a
-; CHECK:      	ret
+; CHECK:      	ld	hl,_flag
+; CHECK-NEXT: 	set	0,(hl)
+; CHECK-NEXT: 	ret
 define void @set_bit_0() {
   %v = load i8, ptr @flag
   %or = or i8 %v, 1
@@ -36,10 +35,9 @@ define void @set_bit_0() {
 ; Set bit 1: |= 2
 ;
 ; CHECK-LABEL: set_bit_1:
-; CHECK:      	ld	a,(_flag)
-; CHECK:      	or	2
-; CHECK:      	ld	(_flag),a
-; CHECK:      	ret
+; CHECK:      	ld	hl,_flag
+; CHECK-NEXT: 	set	1,(hl)
+; CHECK-NEXT: 	ret
 define void @set_bit_1() {
   %v = load i8, ptr @flag
   %or = or i8 %v, 2
@@ -51,10 +49,9 @@ define void @set_bit_1() {
 ; Clear bit 0: &= ~1
 ;
 ; CHECK-LABEL: clear_bit_0:
-; CHECK:      	ld	a,(_flag)
-; CHECK:      	and	254
-; CHECK:      	ld	(_flag),a
-; CHECK:      	ret
+; CHECK:      	ld	hl,_flag
+; CHECK-NEXT: 	res	0,(hl)
+; CHECK-NEXT: 	ret
 define void @clear_bit_0() {
   %v = load i8, ptr @flag
   %and = and i8 %v, -2          ; ~1 = 0xFE
@@ -67,10 +64,10 @@ define void @clear_bit_0() {
 ; vs `or 3; store` (3+2+3 = 8 B → 3+2+2 = 7 B).
 ;
 ; CHECK-LABEL: set_bits_01:
-; CHECK:      	ld	a,(_flag)
-; CHECK:      	or	3
-; CHECK:      	ld	(_flag),a
-; CHECK:      	ret
+; CHECK:      	ld	hl,_flag
+; CHECK-NEXT: 	set	0,(hl)
+; CHECK-NEXT: 	set	1,(hl)
+; CHECK-NEXT: 	ret
 define void @set_bits_01() {
   %v = load i8, ptr @flag
   %or = or i8 %v, 3
