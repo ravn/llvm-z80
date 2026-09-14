@@ -20,14 +20,15 @@
 @buf = external global [8 x i8], align 1
 
 ; CHECK-LABEL: seed_buf:
-; CHECK:      	ld	a,#16
-; CHECK:      	ld	(_buf),a
-; CHECK:      	ld	a,#32
-; CHECK:      	ld	(_buf+1),a
-; CHECK:      	ld	a,#48
-; CHECK:      	ld	(_buf+2),a
-; CHECK:      	ld	a,#64
-; CHECK:      	ld	(_buf+3),a
+; CHECK:      	ld	hl,#_buf
+; CHECK-NEXT: 	ld	(hl),#16
+; CHECK-NEXT: 	inc	hl
+; CHECK-NEXT: 	ld	(hl),#32
+; CHECK-NEXT: 	inc	hl
+; CHECK-NEXT: 	ld	(hl),#48
+; CHECK-NEXT: 	inc	hl
+; CHECK-NEXT: 	ld	(hl),#64
+; CHECK-NOT:  	inc	hl
 ; CHECK:      	ret
 define void @seed_buf() {
   store i8 16, ptr @buf, align 1

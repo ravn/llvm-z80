@@ -72,6 +72,8 @@ STATISTIC(NumI16ByteXorToSbc,
           "Number of i16 EQ/NE byte-XOR compares rewritten to SBC HL");
 STATISTIC(NumInMemIncDec,
           "Number of in-memory byte increments/decrements folded to (HL)");
+STATISTIC(NumConsecutiveStores,
+          "Number of consecutive byte stores folded to LD (HL),n chains");
 
 using namespace llvm;
 
@@ -1020,6 +1022,182 @@ static bool optimizeInMemoryIncDec(MachineBasicBlock &MBB,
     I2->eraseFromParent();
     ++NumInMemIncDec;
     Changed = true;
+  }
+
+  return Changed;
+}
+
+// --- Peephole #85: consecutive `LD A,n; LD (addr),A` chain ---
+//
+// When >= 3 consecutive byte stores write to consecutive addresses:
+//   LD A, imm0; LD (addr0), A     (2+3 = 5 B)
+//   LD A, imm1; LD (addr0+1), A   (2+3 = 5 B)
+//   LD A, imm2; LD (addr0+2), A   (2+3 = 5 B)
+// replace with:
+//   LD HL, addr0                  (3 B)
+//   LD (HL), imm0                 (2 B)
+//   INC HL                        (1 B)
+//   LD (HL), imm1                 (2 B)
+//   INC HL                        (1 B)
+//   LD (HL), imm2                 (2 B)
+// (Omits the trailing INC HL after the last store).
+// Total: 3 + 3*2 + 2*1 = 11 B vs 15 B (saves 4 B for N=3, 6 B for N=4, etc.).
+//
+// Worked example (from store-chain-walk.ll @seed_buf):
+//   Input MIR:
+//     $a = LD_r_n 16
+//     LD_nnind_A @buf, killed $a
+//     $a = LD_r_n 32
+//     LD_nnind_A @buf+1, killed $a
+//     $a = LD_r_n 48
+//     LD_nnind_A @buf+2, killed $a
+//     $a = LD_r_n 64
+//     LD_nnind_A @buf+3, killed $a
+//   Output:
+//     $hl = LD_rr_nn @buf
+//     LD_HLind_n 16, implicit $hl
+//     $hl = INC_rr killed $hl
+//     LD_HLind_n 32, implicit $hl
+//     $hl = INC_rr killed $hl
+//     LD_HLind_n 48, implicit $hl
+//     $hl = INC_rr killed $hl
+//     LD_HLind_n 64, implicit $hl
+//
+// Soundness guards:
+//   - Must have >= 3 consecutive byte stores to addr+k.
+//   - H and L must be dead before the chain (LD HL clobbers HL).
+//   - HL and A must be dead after the chain.
+static bool optimizeConsecutiveStores(MachineBasicBlock &MBB,
+                                      const TargetInstrInfo *TII,
+                                      const TargetRegisterInfo *TRI,
+                                      const Z80Subtarget &STI) {
+  if (!STI.hasZ80())
+    return false;
+
+  struct AddrKey {
+    const GlobalValue *GV = nullptr;
+    const char *SymbolName = nullptr;
+    int64_t Off = 0;
+  };
+
+  auto getStoreAddr = [](const MachineInstr &MI) -> std::optional<AddrKey> {
+    if (MI.getOpcode() != Z80::LD_nnind_A)
+      return std::nullopt;
+    const MachineOperand &Op = MI.getOperand(0);
+    if (Op.isImm())
+      return AddrKey{nullptr, nullptr, Op.getImm()};
+    if (Op.isGlobal())
+      return AddrKey{Op.getGlobal(), nullptr, (int64_t)Op.getOffset()};
+    if (Op.isSymbol())
+      return AddrKey{nullptr, Op.getSymbolName(), (int64_t)Op.getOffset()};
+    return std::nullopt;
+  };
+
+  bool Changed = false;
+  auto MII = MBB.begin();
+  const auto MIE = MBB.end();
+  while (MII != MIE) {
+    // Match head of run: LD A, imm0
+    if (!isLD8n(*MII) || MII->getOperand(0).getReg() != Z80::A ||
+        !MII->getOperand(1).isImm()) {
+      ++MII;
+      continue;
+    }
+
+    auto It2 = MBB.SkipPHIsLabelsAndDebug(std::next(MII));
+    // skip if block ends before the store
+    if (It2 == MIE)
+      break;
+    auto firstAddr = getStoreAddr(*It2);
+    // skip if It2 is not a direct store of A to memory
+    if (!firstAddr) {
+      ++MII;
+      continue;
+    }
+
+    struct Pair {
+      MachineInstr *LdAn;
+      MachineInstr *LdNnA;
+      uint8_t Imm;
+    };
+    SmallVector<Pair, 8> Run;
+    Run.push_back({&*MII, &*It2, (uint8_t)MII->getOperand(1).getImm()});
+
+    auto It3 = MBB.SkipPHIsLabelsAndDebug(std::next(It2));
+    while (It3 != MIE) {
+      if (!isLD8n(*It3) || It3->getOperand(0).getReg() != Z80::A ||
+          !It3->getOperand(1).isImm())
+        break;
+      auto It4 = MBB.SkipPHIsLabelsAndDebug(std::next(It3));
+      if (It4 == MIE)
+        break;
+      auto a = getStoreAddr(*It4);
+      if (!a)
+        break;
+      bool Matches = false;
+      int64_t ExpectedOff = firstAddr->Off + (int64_t)Run.size();
+      if (firstAddr->GV && a->GV == firstAddr->GV && a->Off == ExpectedOff)
+        Matches = true;
+      else if (firstAddr->SymbolName && a->SymbolName &&
+               StringRef(a->SymbolName) == firstAddr->SymbolName &&
+               a->Off == ExpectedOff)
+        Matches = true;
+      else if (!firstAddr->GV && !firstAddr->SymbolName && !a->GV &&
+               !a->SymbolName && a->Off == ExpectedOff)
+        Matches = true;
+
+      if (!Matches)
+        break;
+
+      Run.push_back({&*It3, &*It4, (uint8_t)It3->getOperand(1).getImm()});
+      It3 = MBB.SkipPHIsLabelsAndDebug(std::next(It4));
+    }
+
+    // Minimum 3 consecutive stores required for size win
+    if (Run.size() >= 3) {
+      // H and L must be dead before the chain (LD HL clobbers HL)
+      auto HQ = MBB.computeRegisterLiveness(TRI, Z80::H, MII);
+      auto LQ = MBB.computeRegisterLiveness(TRI, Z80::L, MII);
+      if (HQ != MachineBasicBlock::LQR_Dead || LQ != MachineBasicBlock::LQR_Dead) {
+        MII = std::next(It2);
+        continue;
+      }
+
+      auto AfterLastStore = MBB.SkipPHIsLabelsAndDebug(std::next(MachineBasicBlock::iterator(Run.back().LdNnA)));
+      // HL must be dead after the chain
+      if (!isRegDeadAfter(AfterLastStore, MBB, TRI, Z80::HL)) {
+        MII = std::next(It2);
+        continue;
+      }
+      // A must be dead after the chain
+      if (!isRegDeadAfter(AfterLastStore, MBB, TRI, Z80::A)) {
+        MII = std::next(It2);
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  folding " << Run.size()
+                        << " consecutive stores to (HL)\n");
+
+      DebugLoc DL = MII->getDebugLoc();
+      BuildMI(MBB, MII, DL, TII->get(Z80::LD_rr_nn), Z80::HL)
+          .add(Run[0].LdNnA->getOperand(0));
+      for (size_t k = 0; k < Run.size(); ++k) {
+        BuildMI(MBB, MII, DL, TII->get(Z80::LD_HLind_n)).addImm(Run[k].Imm);
+        if (k + 1 < Run.size())
+          Z80::buildIncDec16(MBB, MII, DL, *TII, Z80::INC_rr, Z80::HL);
+      }
+
+      for (auto &P : Run) {
+        P.LdAn->eraseFromParent();
+        P.LdNnA->eraseFromParent();
+      }
+      ++NumConsecutiveStores;
+      Changed = true;
+      MII = It3;
+      continue;
+    }
+
+    MII = std::next(It2);
   }
 
   return Changed;
@@ -2829,6 +3007,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     Changed |= directIncDec(MBB, TII, TRI);
     Changed |= optimizeI16CompareByteXOR(MBB, TII, TRI, STI);
     Changed |= optimizeInMemoryIncDec(MBB, TII, TRI, STI);
+    Changed |= optimizeConsecutiveStores(MBB, TII, TRI, STI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
   }
