@@ -68,6 +68,8 @@ STATISTIC(NumHLPostIncLoads, "Number of 16-bit HL loads rewritten through HL+");
 STATISTIC(NumSlotForwarded,
           "Number of SM83 SP-relative slot accesses forwarded");
 STATISTIC(NumStoreForwarded, "Number of stores forwarded to a following load");
+STATISTIC(NumI16ByteXorToSbc,
+          "Number of i16 EQ/NE byte-XOR compares rewritten to SBC HL");
 
 using namespace llvm;
 
@@ -685,6 +687,234 @@ static bool directIncDec(MachineBasicBlock &MBB, const TargetInstrInfo *TII,
   }
   if (Changed)
     recomputeLivenessFlags(MBB);
+  return Changed;
+}
+
+// --- Peephole #116 / #117: i16 EQ/NE byte-XOR -> AND A; SBC HL,rr ---
+//
+// Variable-RHS i16 EQ/NE compare-and-branch is emitted by ISel as a
+// 6-byte byte-level XOR sequence:
+//
+//   LD A, X        ; X = sub_{hi,lo} of QPair (e.g. D of DE)
+//   XOR R1         ; R1 = sub_{hi,lo} of PPair (e.g. B of BC)
+//   LD T, A        ; T = some GR8 scratch (e.g. H)
+//   LD A, Y        ; Y = the other half of QPair (e.g. E of DE)
+//   XOR R2         ; R2 = the other half of PPair (e.g. C of BC)
+//   OR T           ; combine; Z=1 iff QPair == PPair
+//   JR Z|NZ / JP Z|NZ
+//
+// Worked example 1 (Peephole #116, clean HL case from issue-117 @eq_hl_de):
+//   Input MIR:
+//     $a = LD_r_r $h
+//     XOR_r $d, implicit-def $a, implicit-def $flags, implicit $a
+//     $b = LD_r_r $a
+//     $a = LD_r_r $l
+//     XOR_r $e, implicit-def $a, implicit-def $flags, implicit $a
+//     OR_r $b, implicit-def $a, implicit-def $flags, implicit $a
+//     JR_Z_e %bb.1, implicit $flags
+//   Here QPair = HL, PPair = DE, T = B.
+//   Output:
+//     AND_r undef $a
+//     SBC_HL_rr $de
+//     JR_Z_e %bb.1
+//   Shrinks sequence from 6 bytes (28 T) to 3 bytes (19 T) -> -3 B, -9 T.
+//
+// Worked example 2 (Peephole #117, neither-in-HL case from issue-117 @eq_bc_de):
+//   Input MIR:
+//     $a = LD_r_r $b
+//     XOR_r $d, implicit-def $a, implicit-def $flags, implicit $a
+//     $h = LD_r_r $a
+//     $a = LD_r_r $c
+//     XOR_r $e, implicit-def $a, implicit-def $flags, implicit $a
+//     OR_r $h, implicit-def $a, implicit-def $flags, implicit $a
+//     JR_Z_e %bb.1, implicit $flags
+//   Here QPair = BC, PPair = DE, T = H.
+//   Output:
+//     PUSH_BC
+//     POP_HL
+//     AND_r undef $a
+//     SBC_HL_rr $de
+//     JR_Z_e %bb.1
+//   Replaces 6 B XOR sequence with PUSH + POP + AND A + SBC (5 B) -> -1 B.
+//   Requires HL to be dead at entry so POP HL does not clobber a live value.
+//
+// Soundness guards:
+//   - Branch after sequence must only consume Z flag (JR/JP Z/NZ).
+//   - A, T, and HL must all be dead after the branch.
+//   - In the neither-in-HL case, H and L must both be LQR_Dead at I1.
+static bool optimizeI16CompareByteXOR(MachineBasicBlock &MBB,
+                                      const TargetInstrInfo *TII,
+                                      const TargetRegisterInfo *TRI,
+                                      const Z80Subtarget &STI) {
+  // Only valid for Z80; SM83 lacks SBC HL,rr.
+  if (!STI.hasZ80() || STI.hasSM83())
+    return false;
+
+  auto isAluReg = [](const MachineInstr &MI, unsigned Opc) -> Register {
+    return MI.getOpcode() == Opc ? MI.getOperand(0).getReg() : Register();
+  };
+
+  auto pairOf = [](Register R) -> Register {
+    switch (R) {
+    case Z80::B: case Z80::C: return Z80::BC;
+    case Z80::D: case Z80::E: return Z80::DE;
+    case Z80::H: case Z80::L: return Z80::HL;
+    default: return Register();
+    }
+  };
+
+  auto isHiByte = [](Register R) -> bool {
+    return R == Z80::B || R == Z80::D || R == Z80::H;
+  };
+
+  bool Changed = false;
+  for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+    // I1: LD A, X
+    Register X = getLD8Src(*MII, Z80::A);
+    // skip instructions that are not a copy of an 8-bit GP reg into A
+    if (!X || !pairOf(X)) { ++MII; continue; }
+
+    auto I1 = MII;
+    auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+    // skip if block ends before sequence completes
+    if (I2 == MIE) { ++MII; continue; }
+
+    // I2: XOR R1
+    Register R1 = isAluReg(*I2, Z80::XOR_r);
+    // skip if I2 is not XOR r with an 8-bit GP reg
+    if (!R1 || !pairOf(R1)) { ++MII; continue; }
+
+    auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+    // skip if block ends before sequence completes
+    if (I3 == MIE) { ++MII; continue; }
+
+    // I3: LD T, A
+    Register T = getLD8Dst(*I3, Z80::A);
+    // skip if I3 does not spill intermediate XOR result from A into a scratch reg
+    if (!T || !pairOf(T)) { ++MII; continue; }
+
+    auto I4 = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
+    // skip if block ends before sequence completes
+    if (I4 == MIE) { ++MII; continue; }
+
+    // I4: LD A, Y
+    Register Y = getLD8Src(*I4, Z80::A);
+    // skip if I4 is not loading the other half of the first pair into A
+    if (!Y || !pairOf(Y)) { ++MII; continue; }
+
+    auto I5 = MBB.SkipPHIsLabelsAndDebug(std::next(I4));
+    // skip if block ends before sequence completes
+    if (I5 == MIE) { ++MII; continue; }
+
+    // I5: XOR R2
+    Register R2 = isAluReg(*I5, Z80::XOR_r);
+    // skip if I5 is not XOR r with the other half of the second pair
+    if (!R2 || !pairOf(R2)) { ++MII; continue; }
+
+    auto I6 = MBB.SkipPHIsLabelsAndDebug(std::next(I5));
+    // skip if block ends before sequence completes
+    if (I6 == MIE) { ++MII; continue; }
+
+    // I6: OR T
+    Register OrSrc = isAluReg(*I6, Z80::OR_r);
+    // skip if I6 does not combine with the scratch register T
+    if (OrSrc != T) { ++MII; continue; }
+
+    // Structural pairing validation:
+    // (X, Y) must form one 16-bit register pair (QPair).
+    // (R1, R2) must form the other 16-bit register pair (PPair).
+    // The (hi, lo) polarities must match: both high or both low.
+    Register QPair = pairOf(X);
+    Register PPair = pairOf(R1);
+    // skip if halves do not form consistent 16-bit pairs
+    if (pairOf(Y) != QPair || pairOf(R2) != PPair) { ++MII; continue; }
+    // skip if byte polarities don't correspond (e.g. X is hi but R1 is lo)
+    if (isHiByte(X) != isHiByte(R1) || isHiByte(Y) != isHiByte(R2)) { ++MII; continue; }
+    // skip if X and Y are the same byte half
+    if (isHiByte(X) == isHiByte(Y)) { ++MII; continue; }
+
+    // Scratch register T must not overwrite operands still needed at I4/I5.
+    // T can legally be X or R1 (which have already been read at I1/I2), but
+    // must not be Y or R2.
+    if (T == Y || T == R2) { ++MII; continue; }
+
+    // Identify which pair is HL and which is the SBC operand (BC or DE)
+    Register SbcRR;
+    bool NeedMoveToHL = false;
+    Register MoveToHL;
+    if (QPair == Z80::HL && (PPair == Z80::BC || PPair == Z80::DE)) {
+      SbcRR = PPair;
+    } else if (PPair == Z80::HL && (QPair == Z80::BC || QPair == Z80::DE)) {
+      SbcRR = QPair;
+    } else if ((QPair == Z80::BC || QPair == Z80::DE) &&
+               (PPair == Z80::BC || PPair == Z80::DE) &&
+               QPair != PPair) {
+      // #117: Neither side is HL, but both are BC/DE. Move QPair to HL via PUSH/POP.
+      NeedMoveToHL = true;
+      MoveToHL = QPair;
+      SbcRR = PPair;
+    } else {
+      // skip when neither pairing satisfies Z80 SBC HL,rr constraints
+      ++MII; continue;
+    }
+
+    // I7 must consume ONLY the Z flag (JR/JP Z/NZ).
+    auto I7 = MBB.SkipPHIsLabelsAndDebug(std::next(I6));
+    // skip if there is no branch instruction following the comparison
+    if (I7 == MIE) { ++MII; continue; }
+    unsigned BrOpc = I7->getOpcode();
+    // skip if the branch relies on flags other than Z (SBC sets C/S/V differently than XOR)
+    if (BrOpc != Z80::JR_Z_e && BrOpc != Z80::JR_NZ_e &&
+        BrOpc != Z80::JP_Z_nn && BrOpc != Z80::JP_NZ_nn) {
+      ++MII; continue;
+    }
+
+    // After the branch, A, T, and HL must all be dead.
+    auto AfterBr = MBB.SkipPHIsLabelsAndDebug(std::next(I7));
+    // skip if A is live past the branch (original sequence set A; rewrite leaves it dead/undef)
+    if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::A)) { ++MII; continue; }
+    // skip if scratch register T is live past the branch
+    if (!isRegDeadAfter(AfterBr, MBB, TRI, T)) { ++MII; continue; }
+    // skip if HL is live past the branch (SBC HL,rr clobbers HL with difference)
+    if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::HL)) { ++MII; continue; }
+
+    // In the neither-in-HL path, HL must be dead at I1 so POP HL does not overwrite a live value.
+    if (NeedMoveToHL) {
+      auto HQ = MBB.computeRegisterLiveness(TRI, Z80::H, I1);
+      auto LQ = MBB.computeRegisterLiveness(TRI, Z80::L, I1);
+      // skip if either H or L could be live at the comparison site
+      if (HQ != MachineBasicBlock::LQR_Dead || LQ != MachineBasicBlock::LQR_Dead) {
+        ++MII; continue;
+      }
+    }
+
+    LLVM_DEBUG(dbgs() << "  i16 EQ/NE byte-XOR -> "
+                      << (NeedMoveToHL ? "PUSH/POP HL; " : "")
+                      << "SBC HL," << TRI->getName(SbcRR) << "\n");
+
+    DebugLoc DL = I1->getDebugLoc();
+    if (NeedMoveToHL) {
+      unsigned PushOpc = Z80::getPushOpcode(MoveToHL);
+      BuildMI(MBB, *I1, DL, TII->get(PushOpc));
+      BuildMI(MBB, *I1, DL, TII->get(Z80::POP_HL));
+    }
+    Z80::markUndefUse(
+        BuildMI(MBB, *I1, DL, TII->get(Z80::AND_r)).addReg(Z80::A),
+        Z80::A);
+    BuildMI(MBB, *I1, DL, TII->get(Z80::SBC_HL_rr)).addReg(SbcRR);
+
+    // Erase I1..I6 and advance iterator.
+    MII = std::next(I6);
+    I1->eraseFromParent();
+    I2->eraseFromParent();
+    I3->eraseFromParent();
+    I4->eraseFromParent();
+    I5->eraseFromParent();
+    I6->eraseFromParent();
+    ++NumI16ByteXorToSbc;
+    Changed = true;
+  }
+
   return Changed;
 }
 
@@ -2490,6 +2720,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
       Changed |= materializeIXConstantStores(MBB, TII, TRI);
     Changed |= foldSingleBitMask(MBB, TII, TRI);
     Changed |= directIncDec(MBB, TII, TRI);
+    Changed |= optimizeI16CompareByteXOR(MBB, TII, TRI, STI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
   }
