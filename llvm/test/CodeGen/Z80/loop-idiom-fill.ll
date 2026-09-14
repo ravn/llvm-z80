@@ -14,11 +14,10 @@
 
 ; --- 1-byte pattern (memset shape) ----------------------------------
 ; CHECK-LABEL: fill_byte:
-; CHECK:      	ld	bc,_buf1
 ; CHECK:      	ld	de,_buf1
 ; CHECK:      	inc	de
 ; CHECK:      	ld	a,255
-; CHECK:      	ld	(bc),a
+; CHECK:      	ld	(_buf1),a
 ; CHECK:      	ld	hl,_buf1
 ; CHECK:      	ld	bc,31
 ; CHECK:      	ldir
@@ -74,11 +73,8 @@ exit:
 ; CHECK:      	inc	de
 ; CHECK:      	ld	bc,195
 ; CHECK:      	ld	(_ivt),bc
-; CHECK:      	ld	bc,_ivt
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
 ; CHECK:      	ld	a,243
-; CHECK:      	ld	(bc),a
+; CHECK:      	ld	(_ivt+2),a
 ; CHECK:      	ld	hl,_ivt
 ; CHECK:      	ld	bc,45
 ; CHECK:      	ldir

@@ -24,8 +24,7 @@ declare void @case_default()
 ; case 2   → case_two()
 ; case 3   → case_default()
 ; CHECK-LABEL: switch_byte_field:
-; CHECK:      	ld	bc,#_iobyte
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_iobyte)
 ; CHECK:      	srl	a
 ; CHECK:      	srl	a
 ; CHECK:      	and	#3

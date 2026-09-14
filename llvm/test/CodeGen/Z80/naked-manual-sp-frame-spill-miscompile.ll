@@ -1,5 +1,4 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 -disable-lsr < %s | FileCheck %s
-; XFAIL: *
 ;
 ; Miscompile: a function that resets SP itself (inline asm `ld sp, imm`, as the
 ; RC700 autoload `main_relocated` does via SET_SP(ROM_STACK)) must not keep any

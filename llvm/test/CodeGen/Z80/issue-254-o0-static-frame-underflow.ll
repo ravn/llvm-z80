@@ -32,44 +32,28 @@ target triple = "z80"
 ; +static-frame got enabled, so opt in EXPLICITLY here (the production path:
 ; autoload/BIOS pass `-target-feature +static-frame`).  The explicit attribute
 ; is honored verbatim by the pass (Existing.contains("static-frame") early-out).
-define dso_local i16 @f() #1 {
-  %d = alloca ptr, align 1
-  %s = alloca ptr, align 1
-  store ptr @g, ptr %d, align 1
-  %kv = load volatile i8, ptr @k, align 1
-  %kz = zext i8 %kv to i16
-  %sp = getelementptr inbounds i8, ptr @g, i16 %kz
 ; CHECK-LABEL: f:
 ; CHECK:      	push	af
 ; CHECK:      	push	af
-; CHECK:      	push	af
-; CHECK:      	ld	de,_g
 ; CHECK:      	ld	bc,_g
-; CHECK:      	inc	bc
-; CHECK:      	ld	hl,0
+; CHECK:      	ld	hl,2
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	(hl),c
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),b
-; CHECK:      	ld	hl,4
-; CHECK:      	add	hl,sp
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ld	bc,_k
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_k)
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,0
 ; CHECK:      	ld	hl,_g
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	e,l
 ; CHECK:      	ld	d,h
-; CHECK:      	ld	hl,2
+; CHECK:      	ld	hl,0
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
-; CHECK:      	ld	hl,4
+; CHECK:      	ld	hl,2
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	c,(hl)
 ; CHECK:      	inc	hl
@@ -77,36 +61,37 @@ define dso_local i16 @f() #1 {
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	push	hl
-; CHECK:      	ld	hl,4
+; CHECK:      	ld	hl,2
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	e,(hl)
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	d,(hl)
 ; CHECK:      	pop	hl
-; CHECK:      	ld	bc,_n
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_n)
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,0
 ; CHECK:      	call	___z80_memmove_builtin
-; CHECK:      	ld	bc,_g
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_g)
 ; CHECK:      	ld	h,a
 ; CHECK:      	ld	l,0
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	hl,0
-; CHECK:      	add	hl,sp
-; CHECK:      	ld	c,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	b,(hl)
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_g+1)
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	a,e
 ; CHECK:      	or	b
 ; CHECK:      	ld	e,a
-; CHECK:      	ld	hl,6
-; CHECK:      	add	hl,sp
-; CHECK:      	ld	sp,hl
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
+; CHECK:      	inc	sp
 ; CHECK:      	ret
+define dso_local i16 @f() #1 {
+  %d = alloca ptr, align 1
+  %s = alloca ptr, align 1
+  store ptr @g, ptr %d, align 1
+  %kv = load volatile i8, ptr @k, align 1
+  %kz = zext i8 %kv to i16
+  %sp = getelementptr inbounds i8, ptr @g, i16 %kz
   store ptr %sp, ptr %s, align 1
   %dl = load ptr, ptr %d, align 1
   %sl = load ptr, ptr %s, align 1

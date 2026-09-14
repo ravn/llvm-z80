@@ -15,12 +15,8 @@ declare void @llvm.memcpy.p0.p0.i16(ptr noalias nocapture writeonly, ptr noalias
 declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 
 ; The peephole should remove at least one of the BSS spill/reload pairs.
-define void @delete_line() {
-entry:
-  %0 = load i8, ptr @cury, align 1
 ; CHECK-LABEL: delete_line:
-; CHECK:      	ld	bc,_cury
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_cury)
 ; CHECK:      	cp	24
 ; CHECK:      	jr	nc,.LBB0_2
 ; CHECK:      	ld	e,a
@@ -78,6 +74,9 @@ entry:
 ; CHECK:      	ld	bc,80
 ; CHECK:      	call	___z80_memset_builtin
 ; CHECK:      	ret
+define void @delete_line() {
+entry:
+  %0 = load i8, ptr @cury, align 1
   %1 = zext i8 %0 to i16
   %2 = add i16 %1, 1
   %3 = icmp ult i16 %2, 25

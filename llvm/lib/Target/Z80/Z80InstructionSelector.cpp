@@ -1835,6 +1835,24 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    // Direct addressing for 8-bit global loads on Z80.
+    if (DstTy.getSizeInBits() == 8 && MI.hasOneMemOperand() &&
+        !MBB.getParent()->getSubtarget<Z80Subtarget>().hasSM83()) {
+      const GlobalValue *GV = nullptr;
+      int64_t Offset = 0;
+      if (getGlobalAddr(AddrReg, MRI, GV, Offset)) {
+        if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(Z80::LD_A_nnind))
+            .addGlobalAddress(GV, Offset)
+            .cloneMemRefs(MI);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
+
     // A pair read from an address the linker settles takes one instruction,
     // against putting the address in a pointer register and reading the two
     // bytes through it. SM83 has no such instruction.
@@ -2075,6 +2093,24 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
             .addReg(SrcReg);
         BuildMI(MBB, MI, DL, TII.get(Opc))
             .addImm(HighPage ? (*Addr & 0xFF) : *Addr)
+            .cloneMemRefs(MI);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
+
+    // Direct addressing for 8-bit global stores on Z80.
+    if (SrcTy.getSizeInBits() == 8 && MI.hasOneMemOperand() &&
+        !MBB.getParent()->getSubtarget<Z80Subtarget>().hasSM83()) {
+      const GlobalValue *GV = nullptr;
+      int64_t Offset = 0;
+      if (getGlobalAddr(AddrReg, MRI, GV, Offset)) {
+        if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(SrcReg);
+        BuildMI(MBB, MI, DL, TII.get(Z80::LD_nnind_A))
+            .addGlobalAddress(GV, Offset)
             .cloneMemRefs(MI);
         MI.eraseFromParent();
         return true;
