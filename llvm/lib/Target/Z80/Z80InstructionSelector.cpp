@@ -710,8 +710,46 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
   Register LHS = CmpMI.getOperand(2).getReg();
   Register RHS = CmpMI.getOperand(3).getReg();
   MachineBasicBlock *TargetMBB = MI.getOperand(1).getMBB();
-  const LLT LHSTy = MRI.getType(LHS);
   const DebugLoc &DL = MI.getDebugLoc();
+
+  // Narrow comparison through zext/sext: if both operands are extended from
+  // the same smaller type, compare the pre-extension values.
+  // EQ/NE: always safe. Unsigned: both must be zext. Signed: both must be sext.
+  {
+    MachineInstr *LDef = MRI.getVRegDef(LHS);
+    MachineInstr *RDef = MRI.getVRegDef(RHS);
+    if (LDef && RDef) {
+      unsigned LOpc = LDef->getOpcode();
+      unsigned ROpc = RDef->getOpcode();
+      bool LExt = (LOpc == TargetOpcode::G_ZEXT ||
+                   LOpc == TargetOpcode::G_SEXT ||
+                   LOpc == TargetOpcode::G_ANYEXT);
+      bool RExt = (ROpc == TargetOpcode::G_ZEXT ||
+                   ROpc == TargetOpcode::G_SEXT ||
+                   ROpc == TargetOpcode::G_ANYEXT);
+      if (LExt && RExt) {
+        Register LSrc = LDef->getOperand(1).getReg();
+        Register RSrc = RDef->getOperand(1).getReg();
+        if (MRI.getType(LSrc) == MRI.getType(RSrc)) {
+          bool CanNarrow = false;
+          if (CmpInst::isEquality(Pred))
+            CanNarrow = true;
+          else if (CmpInst::isUnsigned(Pred))
+            CanNarrow = (LOpc == TargetOpcode::G_ZEXT &&
+                         ROpc == TargetOpcode::G_ZEXT);
+          else if (CmpInst::isSigned(Pred))
+            CanNarrow = (LOpc == TargetOpcode::G_SEXT &&
+                         ROpc == TargetOpcode::G_SEXT);
+          if (CanNarrow) {
+            LHS = LSrc;
+            RHS = RSrc;
+          }
+        }
+      }
+    }
+  }
+
+  const LLT LHSTy = MRI.getType(LHS);
 
   // Normalize: convert GT/LE to LT/GE by swapping operands.
   switch (Pred) {
