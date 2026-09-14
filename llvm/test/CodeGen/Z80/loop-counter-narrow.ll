@@ -21,12 +21,10 @@ declare void @use_byte(i8 zeroext) nounwind
 ; CHECK-LABEL: loop_counter_narrow:
 ; CHECK:      	push	af
 ; CHECK:      	ld	bc,#0
-; CHECK:      	jp	.LBB0_1
 ; CHECK:      	ld	a,c
 ; CHECK:      	sub	#7
 ; CHECK:      	or	b
 ; CHECK:      	jp	z,.LBB0_3
-; CHECK:      	jp	.LBB0_2
 ; CHECK:      	ld	hl,#_buf
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	a,(hl)
@@ -75,7 +73,6 @@ loop:
 ; CHECK-LABEL: loop_counter_narrow_ne:
 ; CHECK:      	push	af
 ; CHECK:      	ld	bc,#0
-; CHECK:      	jp	.LBB1_1
 ; CHECK:      	ld	a,c
 ; CHECK:      	sub	#7
 ; CHECK:      	or	b
@@ -130,12 +127,10 @@ body:
 ; CHECK-LABEL: loop_counter_no_nuw:
 ; CHECK:      	push	af
 ; CHECK:      	ld	bc,#0
-; CHECK:      	jp	.LBB2_1
 ; CHECK:      	ld	a,c
 ; CHECK:      	sub	#7
 ; CHECK:      	or	b
 ; CHECK:      	jp	z,.LBB2_3
-; CHECK:      	jp	.LBB2_2
 ; CHECK:      	ld	hl,#_buf
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	a,(hl)
@@ -184,12 +179,10 @@ body:
 ; CHECK:      	push	af
 ; CHECK:      	ld	c,l
 ; CHECK:      	ld	b,h
-; CHECK:      	jp	.LBB3_1
 ; CHECK:      	ld	a,c
 ; CHECK:      	sub	#7
 ; CHECK:      	or	b
 ; CHECK:      	jp	z,.LBB3_3
-; CHECK:      	jp	.LBB3_2
 ; CHECK:      	ld	hl,#_buf
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	a,(hl)

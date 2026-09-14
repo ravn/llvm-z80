@@ -13,7 +13,7 @@ declare void @helper(i16)
 ; CHECK-LABEL: cond_call:
 ; CHECK:      	ld	a,l
 ; CHECK:      	or	h
-; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	ret	z
 ; CHECK:      	ex	de,hl
 ; CHECK:      	call	_helper
 ; CHECK:      	ret

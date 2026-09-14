@@ -69,17 +69,17 @@ loop:
 ; CHECK:      	push	hl
 ; CHECK:      	ld	hl,#4
 ; CHECK:      	add	hl,sp
-; CHECK:      	ld	c,(hl)
+; CHECK:      	ld	b,(hl)
 ; CHECK:      	pop	hl
-; CHECK:      	ld	b,#0
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	a,b
-; CHECK:      	add	a,d
-; CHECK:      	ld	b,a
+; CHECK:      	ld	d,#0
+; CHECK:      	ld	c,(hl)
+; CHECK:      	ld	a,d
+; CHECK:      	add	a,c
+; CHECK:      	ld	d,a
 ; CHECK:      	inc	hl
-; CHECK:      	dec	c
+; CHECK:      	dec	b
 ; CHECK:      	jr	nz,.LBB1_1
-; CHECK:      	ld	a,b
+; CHECK:      	ld	a,d
 ; CHECK:      	pop	bc
 ; CHECK:      	inc	sp
 ; CHECK:      	push	bc
@@ -216,16 +216,17 @@ loop2:
   %j.next = add i8 %j, -1
   %c2 = icmp ne i8 %j.next, 0
 ; CHECK-LABEL: two_sequential_loops:
-; CHECK:      	ld	c,a
-; CHECK:      	ld	b,l
+; CHECK:      	ld	b,a
+; CHECK:      	ld	c,l
 ; CHECK:      	ld	hl,#_port
 ; CHECK:      	ld	e,(hl)
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	d,(hl)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	c
+; CHECK:      	dec	b
 ; CHECK:      	jr	nz,.LBB5_1
+; CHECK:      	ld	b,c
 ; CHECK:      	ld	hl,#_port
 ; CHECK:      	ld	e,(hl)
 ; CHECK:      	inc	hl
@@ -233,7 +234,7 @@ loop2:
 ; CHECK:      	ld	a,#1
 ; CHECK:      	ld	(de),a
 ; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB5_2
+; CHECK:      	jr	nz,.LBB5_3
 ; CHECK:      	ret
   br i1 %c2, label %loop2, label %exit
 exit:

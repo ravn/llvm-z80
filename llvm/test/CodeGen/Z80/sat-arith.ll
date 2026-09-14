@@ -16,7 +16,7 @@ declare i8 @llvm.ucmp.i8.i16(i16, i16)
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
 ; CHECK:      	ld	de,#65535
-; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ret	nz
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ret
 define i16 @test_uaddsat(i16 %a, i16 %b) {
@@ -36,7 +36,7 @@ define i16 @test_usubsat(i16 %a, i16 %b) {
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
 ; CHECK:      	ld	de,#0
-; CHECK:      	jr	nz,.LBB1_2
+; CHECK:      	ret	nz
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ret
 ; Test: signed add saturating (uses P/V flag capture via CAPTURE_PV pseudo)
@@ -53,16 +53,16 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; CHECK-LABEL: test_saddsat:
 ; CHECK:      	and	a
 ; CHECK:      	adc	hl,de
-; CHECK:      	ex	de,hl
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
 ; CHECK:      	push	af
 ; CHECK:      	pop	hl
 ; CHECK:      	ld	a,l
 ; CHECK:      	rrca
 ; CHECK:      	rrca
 ; CHECK:      	and	#1
-; CHECK:      	ld	b,a
-; CHECK:      	ld	(L_test_saddsat.frame),de
-; CHECK:      	ld	a,d
+; CHECK:      	ld	(L_test_saddsat.frame),a
+; CHECK:      	ld	a,b
 ; CHECK:      	add	a,a
 ; CHECK:      	sbc	a,a
 ; CHECK:      	ld	l,a
@@ -70,10 +70,11 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; CHECK:      	ld	de,#32768
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	a,b
+; CHECK:      	ld	a,(L_test_saddsat.frame)
 ; CHECK:      	or	a
-; CHECK:      	jr	nz,.LBB2_2
-; CHECK:      	ld	de,(L_test_saddsat.frame)
+; CHECK:      	ret	nz
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
 ; CHECK:      	ret
 
 ; Test: three-way signed comparison
@@ -90,16 +91,16 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK-LABEL: test_ssubsat:
 ; CHECK:      	and	a
 ; CHECK:      	sbc	hl,de
-; CHECK:      	ex	de,hl
+; CHECK:      	ld	c,l
+; CHECK:      	ld	b,h
 ; CHECK:      	push	af
 ; CHECK:      	pop	hl
 ; CHECK:      	ld	a,l
 ; CHECK:      	rrca
 ; CHECK:      	rrca
 ; CHECK:      	and	#1
-; CHECK:      	ld	b,a
-; CHECK:      	ld	(L_test_ssubsat.frame),de
-; CHECK:      	ld	a,d
+; CHECK:      	ld	(L_test_ssubsat.frame),a
+; CHECK:      	ld	a,b
 ; CHECK:      	add	a,a
 ; CHECK:      	sbc	a,a
 ; CHECK:      	ld	l,a
@@ -107,10 +108,11 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	ld	de,#32768
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	a,b
+; CHECK:      	ld	a,(L_test_ssubsat.frame)
 ; CHECK:      	or	a
-; CHECK:      	jr	nz,.LBB3_2
-; CHECK:      	ld	de,(L_test_ssubsat.frame)
+; CHECK:      	ret	nz
+; CHECK:      	ld	e,c
+; CHECK:      	ld	d,b
 ; CHECK:      	ret
 ; CHECK-LABEL: test_scmp:
 ; CHECK:      	ld	c,l

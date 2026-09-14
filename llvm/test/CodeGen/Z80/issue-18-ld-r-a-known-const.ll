@@ -16,7 +16,7 @@ entry:
   br i1 %c, label %done, label %call
 ; CHECK-LABEL: f_zero:
 ; CHECK:      	or	a
-; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	ret	z
 ; CHECK:      	xor	a
 ; CHECK:      	ld	l,0
 ; CHECK:      	call	_take2
@@ -39,7 +39,7 @@ call:
 done:
 ; CHECK-LABEL: f_const:
 ; CHECK:      	or	a
-; CHECK:      	jr	z,.LBB1_2
+; CHECK:      	ret	z
 ; CHECK:      	ld	a,5
 ; CHECK:      	ld	l,5
 ; CHECK:      	call	_take2
