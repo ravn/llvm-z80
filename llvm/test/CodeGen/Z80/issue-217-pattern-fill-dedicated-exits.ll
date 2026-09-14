@@ -21,9 +21,9 @@ target triple = "z80"
 @a = dso_local global [100 x i8] zeroinitializer, align 1
 
 ; CHECK-LABEL: define dso_local void @g()
-; The first loop must be rewritten to a memset.pattern call (the
+; The first loop must be rewritten to a pattern_fill call (the
 ; pattern-fill recognizer fired and deleteDeadLoop succeeded).
-; CHECK: call void @llvm.experimental.memset.pattern
+; CHECK: call void @llvm.z80.pattern.fill.i8
 ; The second loop must survive intact (it loads + increments, not a
 ; constant fill, so it doesn't match the recognizer).
 ; CHECK: load i8

@@ -14,7 +14,7 @@
 ;
 ; With the fix, on a z80 target the Z80 clib CCs are treated as C-compatible for
 ; the purpose of libcall simplification, so the transform fires; the synthesized
-; replacement (puts/putchar/...) is stamped cc132 (Z80_SmallC) by
+; replacement (puts/putchar/...) is stamped cc129 (Z80_SmallC) by
 ; -z80-classic-libc-cc.  On any other target the Z80 CC stays non-C-compatible,
 ; so the transform must NOT fire.
 ;
@@ -26,14 +26,14 @@
 @.str.only = private unnamed_addr constant [4 x i8] c"abc\00"
 
 declare z80_sdcccall0 i16 @printf(ptr, ...)
-declare cc132 i16 @puts(ptr)
+declare cc129 i16 @puts(ptr)
 
 ;======================================================================
-; (a) EXACT bug pattern: printf("foo\n"), sdcccall(0) -> puts, cc132.
+; (a) EXACT bug pattern: printf("foo\n"), sdcccall(0) -> puts, cc129.
 ;======================================================================
 define void @print_banner() {
 ; Z80-LABEL: define void @print_banner()
-; Z80:         call cc132 i16 @puts(
+; Z80:         call cc129 i16 @puts(
 ; Z80-NOT:     ) @printf(
 ;
 ; OTHER-LABEL: define void @print_banner()
@@ -49,22 +49,22 @@ define void @print_banner() {
 ;======================================================================
 
 ; printf of a single-char string "x" folds to putchar; the synthesized putchar
-; must also carry cc132.
+; must also carry cc129.
 define void @print_char() {
 ; Z80-LABEL: define void @print_char()
-; Z80:         call cc132 i16 @putchar(i16 120)
+; Z80:         call cc129 i16 @putchar(i16 120)
 ; Z80-NOT:     ) @printf(
   %call = call z80_sdcccall0 i16 (ptr, ...) @printf(ptr @.str.1)
   ret void
 }
 
-; A direct puts declared __smallc (z80_smallc, cc132) must survive
-; simplification with its cc132 intact (isCallingConvCCompatible must accept
+; A direct puts declared __smallc (z80_smallc, cc129) must survive
+; simplification with its cc129 intact (isCallingConvCCompatible must accept
 ; z80_smallc so the call is not left in an inconsistent state).
 define i16 @keep_puts() {
 ; Z80-LABEL: define i16 @keep_puts()
-; Z80:         call cc132 i16 @puts(
-  %r = call cc132 i16 @puts(ptr @.str.only)
+; Z80:         call cc129 i16 @puts(
+  %r = call cc129 i16 @puts(ptr @.str.only)
   ret i16 %r
 }
 
