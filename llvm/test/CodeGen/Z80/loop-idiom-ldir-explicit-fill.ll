@@ -38,7 +38,7 @@ declare void @llvm.memset.p0.i16(ptr writeonly captures(none), i8, i16, i1 immar
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	a,l
 ; CHECK:      	or	a
-; CHECK:      	jr	z,.LBB0_2
+; CHECK:      	ret	z
 ; CHECK:      	ld	b,l
 ; CHECK:      	ld	e,c
 ; CHECK:      	ld	d,#0

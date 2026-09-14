@@ -11,70 +11,8 @@
 ; addressing; Z80's idiomatic answer is the block move.
 
 ; CHECK-LABEL: copy8:
-; CHECK:      	ld	(L_copy8.frame),hl
-; CHECK:      	ld	c,e
-; CHECK:      	ld	b,d
-; CHECK:      	ld	l,e
-; CHECK:      	ld	h,d
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_copy8.frame+2),de
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	inc	hl
-; CHECK:      	inc	hl
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_copy8.frame+4),de
-; CHECK:      	ld	de,4
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	add	hl,de
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_copy8.frame+6),de
-; CHECK:      	ld	de,6
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	add	hl,de
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_copy8.frame+8),de
-; CHECK:      	ld	de,(L_copy8.frame+2)
-; CHECK:      	ld	bc,(L_copy8.frame)
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	inc	hl
-; CHECK:      	inc	hl
-; CHECK:      	ld	de,(L_copy8.frame+4)
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	de,4
-; CHECK:      	add	hl,de
-; CHECK:      	ld	de,(L_copy8.frame+6)
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	bc,6
-; CHECK:      	add	hl,bc
-; CHECK:      	ld	de,(L_copy8.frame+8)
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
+; CHECK:      	ld	bc,8
+; CHECK:      	call	___z80_memmove_builtin
 ; CHECK:      	ret
 define void @copy8(ptr %dst, ptr %src) {
   %v = load i64, ptr %src, align 1
@@ -82,43 +20,13 @@ define void @copy8(ptr %dst, ptr %src) {
   ret void
 }
 
+; CHECK-LABEL: copy4:
+; CHECK:      	ld	bc,4
+; CHECK:      	call	___z80_memmove_builtin
+; CHECK:      	ret
 define void @copy4(ptr %dst, ptr %src) {
   %v = load i32, ptr %src, align 1
   store i32 %v, ptr %dst, align 1
-; CHECK-LABEL: copy4:
-; CHECK:      	ld	(L_copy4.frame),hl
-; CHECK:      	ld	c,e
-; CHECK:      	ld	b,d
-; CHECK:      	ld	l,e
-; CHECK:      	ld	h,d
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_copy4.frame+2),de
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	e,(hl)
-; CHECK:      	inc	hl
-; CHECK:      	ld	d,(hl)
-; CHECK:      	ld	(L_copy4.frame+4),de
-; CHECK:      	ld	de,(L_copy4.frame+2)
-; CHECK:      	ld	bc,(L_copy4.frame)
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	ld	de,(L_copy4.frame+4)
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	ret
   ret void
 }
 
@@ -201,18 +109,18 @@ define i8 @keep_multiuse(ptr %dst, ptr %src) {
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	de,4
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	ld	de,4
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_volatile.frame+6)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	de,6
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	ld	bc,6
-; CHECK:      	add	hl,bc
+; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_volatile.frame+8)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
@@ -276,18 +184,18 @@ define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	de,4
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	ld	de,4
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_multiuse.frame+6)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	de,6
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	ld	bc,6
-; CHECK:      	add	hl,bc
+; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_multiuse.frame+8)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
@@ -355,18 +263,18 @@ define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	de,4
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	ld	de,4
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_intervening_store.frame+6)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
+; CHECK:      	ld	de,6
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	ld	bc,6
-; CHECK:      	add	hl,bc
+; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_intervening_store.frame+8)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl

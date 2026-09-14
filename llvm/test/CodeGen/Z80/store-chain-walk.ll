@@ -20,19 +20,24 @@
 @buf = external global [8 x i8], align 1
 
 ; CHECK-LABEL: seed_buf:
-; CHECK:      	ld	hl,#_buf
+; CHECK:      	ld	bc,#_buf
+; CHECK:      	inc	bc
+; CHECK:      	ld	(L_seed_buf.frame),bc
 ; CHECK:      	ld	de,#_buf
 ; CHECK:      	inc	de
-; CHECK:      	ld	c,e
-; CHECK:      	ld	b,d
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,#_buf
+; CHECK:      	inc	bc
+; CHECK:      	inc	bc
 ; CHECK:      	inc	bc
 ; CHECK:      	ld	a,#16
+; CHECK:      	ld	hl,#_buf
 ; CHECK:      	ld	(hl),a
 ; CHECK:      	ld	a,#32
-; CHECK:      	ld	(de),a
+; CHECK:      	ld	hl,(L_seed_buf.frame)
+; CHECK:      	ld	(hl),a
 ; CHECK:      	ld	a,#48
-; CHECK:      	ld	(bc),a
-; CHECK:      	inc	bc
+; CHECK:      	ld	(de),a
 ; CHECK:      	ld	a,#64
 ; CHECK:      	ld	(bc),a
 ; CHECK:      	ret
