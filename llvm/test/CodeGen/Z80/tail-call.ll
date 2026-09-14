@@ -3,8 +3,8 @@
 declare void @callee_void()
 declare void @callee_args(i16 %x)
 
-; Simple single-MBB tail call
-define void @test_tailcall_simple() {
+; Simple single-MBB tail call under minsize
+define void @test_tailcall_simple() minsize {
 ; CHECK-LABEL: _test_tailcall_simple:
 ; CHECK:       jp _callee_void
 ; CHECK-NOT:   call _callee_void
@@ -12,8 +12,8 @@ define void @test_tailcall_simple() {
   ret void
 }
 
-; Single-MBB with register argument
-define void @test_tailcall_arg(i16 %x) {
+; Single-MBB with register argument under minsize
+define void @test_tailcall_arg(i16 %x) minsize {
 ; CHECK-LABEL: _test_tailcall_arg:
 ; CHECK:       jp _callee_args
 ; CHECK-NOT:   call _callee_args
@@ -21,8 +21,8 @@ define void @test_tailcall_arg(i16 %x) {
   ret void
 }
 
-; Cross-MBB tail call
-define void @test_tailcall_cross_mbb(i16 %flag, i16 %x) {
+; Cross-MBB tail call under minsize
+define void @test_tailcall_cross_mbb(i16 %flag, i16 %x) minsize {
 ; CHECK-LABEL: _test_tailcall_cross_mbb:
 ; CHECK:       jp _callee_args
 ; CHECK-NOT:   call _callee_args
@@ -32,5 +32,14 @@ call:
   call void @callee_args(i16 %x)
   br label %done
 done:
+  ret void
+}
+
+; Negative control: function without minsize keeps standard call + ret
+define void @test_no_tailcall_without_minsize() {
+; CHECK-LABEL: _test_no_tailcall_without_minsize:
+; CHECK:       call _callee_void
+; CHECK-NEXT:  ret
+  call void @callee_void()
   ret void
 }

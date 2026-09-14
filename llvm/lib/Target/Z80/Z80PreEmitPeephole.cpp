@@ -82,6 +82,8 @@ STATISTIC(NumDjnz,
           "Number of decrement-and-branch sequences folded to DJNZ");
 STATISTIC(NumBssSpillsToPushPop,
           "Number of BSS spill/reload pairs converted to PUSH/POP");
+STATISTIC(NumTailCalls,
+          "Number of tail calls optimized (CALL; RET -> JP)");
 
 using namespace llvm;
 
@@ -2554,6 +2556,157 @@ static bool reuseLDHLAddress(MachineBasicBlock &MBB, const TargetInstrInfo *TII,
   return Changed;
 }
 
+/// --- Tail call optimization: CALL nn; RET -> JP nn ---
+///
+/// WHAT:
+/// When a function's last action is CALL_nn followed by RET (or RET_CLEANUP 0),
+/// replace the CALL + RET pair with TAILJMP target (lowered to JP target).
+///
+/// WHY:
+/// A CALL pushes a 2-byte return address to the stack, branches to the callee,
+/// and upon return immediately executes RET which pops the caller's return
+/// address. By jumping directly to the callee (JP), the callee's RET returns
+/// directly to the original caller, saving:
+///   - 1 byte in code size (JP is 3 bytes, CALL+RET is 3+1 = 4 bytes)
+///   - 17 T-states (CALL=17T, RET=10T -> 27T; JP=10T, difference = 17T saved).
+///
+/// SOUNDNESS & ORDERING:
+/// 1. Stack arguments: If the caller pushed arguments onto the stack for the
+///    callee, SP is offset. A normal CALL would have the return address at
+///    SP=SP_initial-2, with callee arguments below it. A bare JP would cause the
+///    callee's RET to pop the top argument instead of the return address!
+///    Guard: ensure NO PUSH instructions exist in the MBB before CALL.
+/// 2. Epilogue: If the function has a stack frame (e.g., dynamic frame with
+///    frame pointer or callee-saved registers), frame tear-down instructions
+///    (POP IX, ADD SP, n) sit between the last logical action and RET. Because
+///    this pass requires CALL_nn to be immediately adjacent to RET (or
+///    cross-block fall-through directly to bare RET), functions with active
+///    frame tear-down are naturally excluded without special casing.
+/// 3. TAILJMP is marked isReturn + isTerminator + isBarrier + isCall, but NOT
+///    isBranch. This prevents BranchRelaxation and BranchCleanup from mistaking
+///    it for an internal control flow branch with MBB targets.
+///
+/// WORKED EXAMPLE:
+/// Input:
+///   _test_tailcall_simple:
+///     call _callee_void
+///     ret
+/// Data structures:
+///   Term: RET (opcode Z80::RET)
+///   CallIt: CALL_nn (opcode Z80::CALL_nn, operand 0 = @_callee_void)
+///   HasPush: false
+/// Output:
+///   _test_tailcall_simple:
+///     TAILJMP @_callee_void  ; lowered to "jp _callee_void" in Z80AsmPrinter
+static bool optimizeTailCalls(MachineFunction &MF, const TargetInstrInfo *TII,
+                              const TargetRegisterInfo *TRI,
+                              const Z80Subtarget &STI) {
+  // Tail calls save 1 byte and 17 T-states, but change CALL; RET to JP.
+  // When optimizing for minimum size (-Oz / minsize attribute), enable this
+  // transformation unconditionally. For general builds, keep standard call/ret
+  // to preserve full ABI stack frames and avoid regressing standard test suites.
+  if (!MF.getFunction().hasMinSize())
+    return false;
+
+  bool Changed = false;
+
+  // Single-MBB form: CALL_nn immediately followed by RET or RET_CLEANUP 0.
+  for (auto &MBB : MF) {
+    auto Term = MBB.getLastNonDebugInstr();
+    if (Term == MBB.end())
+      continue; // Skip empty blocks.
+
+    // Match RET or RET_CLEANUP 0.
+    unsigned TermOpc = Term->getOpcode();
+    bool IsRet = (TermOpc == Z80::RET);
+    bool IsRetCleanup0 = (TermOpc == Z80::RET_CLEANUP &&
+                          Term->getOperand(0).getImm() == 0);
+    if (!IsRet && !IsRetCleanup0)
+      continue; // Block does not end with a zero-cleanup return.
+
+    // Check for CALL_nn immediately before RET.
+    auto CallIt = Term;
+    if (CallIt == MBB.begin())
+      continue; // No preceding instruction in block.
+    --CallIt;
+    while (CallIt != MBB.begin() && CallIt->isDebugInstr())
+      --CallIt;
+    if (CallIt->getOpcode() != Z80::CALL_nn)
+      continue; // Preceding instruction is not a direct CALL_nn.
+
+    // Verify no PUSHes in this MBB before the CALL (stack args would make
+    // the tail call unsafe — callee expects a return address at SP).
+    bool HasPush = false;
+    for (auto It = MBB.begin(); It != CallIt; ++It) {
+      if (It->isDebugInstr())
+        continue;
+      unsigned Opc = It->getOpcode();
+      if (Opc == Z80::PUSH_AF || Opc == Z80::PUSH_BC || Opc == Z80::PUSH_DE ||
+          Opc == Z80::PUSH_HL || Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY) {
+        HasPush = true;
+        break;
+      }
+    }
+    if (HasPush)
+      continue; // Caller pushed stack arguments; unsafe to tail-call.
+
+    // Replace CALL nn; RET with TAILJMP (JP to external function).
+    MachineOperand &CallTarget = CallIt->getOperand(0);
+    LLVM_DEBUG(dbgs() << "  CALL; RET -> JP (tail call): " << *CallIt);
+    DebugLoc DL = CallIt->getDebugLoc();
+    BuildMI(MBB, *CallIt, DL, TII->get(Z80::TAILJMP)).add(CallTarget);
+    Term->eraseFromParent();
+    CallIt->eraseFromParent();
+    ++NumTailCalls;
+    Changed = true;
+  }
+
+  // Cross-MBB form:
+  // When an MBB ends with CALL_nn (no explicit branch) and falls through
+  // to an MBB whose first instruction is RET, the CALL can become a
+  // TAILJMP -- the callee's RET will return directly to our caller.
+  for (auto &MBB : MF) {
+    auto Term = MBB.getLastNonDebugInstr();
+    if (Term == MBB.end() || Term->getOpcode() != Z80::CALL_nn)
+      continue; // Block must end with CALL_nn.
+    if (MBB.succ_size() != 1)
+      continue; // Must have a single fall-through successor.
+    MachineBasicBlock *Next = *MBB.succ_begin();
+    auto NextFirst = Next->getFirstNonDebugInstr();
+    if (NextFirst == Next->end() || NextFirst->getOpcode() != Z80::RET)
+      continue; // Successor must begin with bare RET.
+
+    // Stack-args safety check.
+    bool HasPush = false;
+    for (auto It = MBB.begin(); It != Term; ++It) {
+      if (It->isDebugInstr())
+        continue;
+      unsigned Opc = It->getOpcode();
+      if (Opc == Z80::PUSH_AF || Opc == Z80::PUSH_BC ||
+          Opc == Z80::PUSH_DE || Opc == Z80::PUSH_HL ||
+          Opc == Z80::PUSH_IX || Opc == Z80::PUSH_IY) {
+        HasPush = true;
+        break;
+      }
+    }
+    if (HasPush)
+      continue; // Caller pushed stack arguments; unsafe to tail-call.
+
+    // Replace CALL with TAILJMP, drop the fall-through to the RET MBB.
+    LLVM_DEBUG(dbgs() << "  CALL -> JP (cross-MBB tail call): " << *Term);
+    MachineOperand &CallTarget = Term->getOperand(0);
+    DebugLoc DL = Term->getDebugLoc();
+    BuildMI(MBB, *Term, DL, TII->get(Z80::TAILJMP)).add(CallTarget);
+    Term->eraseFromParent();
+    // TAILJMP is isReturn, so no fall-through happens. Remove CFG edge.
+    MBB.removeSuccessor(Next);
+    ++NumTailCalls;
+    Changed = true;
+  }
+
+  return Changed;
+}
+
 bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -3853,6 +4006,8 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
   }
+
+  Changed |= optimizeTailCalls(MF, TII, TRI, STI);
 
   return Changed;
 }
