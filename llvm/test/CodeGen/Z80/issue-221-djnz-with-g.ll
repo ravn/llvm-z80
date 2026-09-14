@@ -59,19 +59,18 @@ entry:
   br i1 %t, label %exit, label %outer_hdr
 
 ; CHECK-LABEL: triple_nest:
-; CHECK:      	ld	b,a
+; CHECK:      	ld	d,a
 ; CHECK:      	or	a
-; CHECK:      	jr	z,.LBB0_7
+; CHECK:      	ret	z
 ; CHECK:      	ld	c,l
-; CHECK:      	ld	d,0
-; CHECK:      	dec	d
+; CHECK:      	ld	b,0
+; CHECK:      	dec	b
 ; CHECK:      	jr	nz,.LBB0_4
 ; CHECK:      	dec	c
 ; CHECK:      	jr	nz,.LBB0_3
-; CHECK:      	ld	a,b
+; CHECK:      	ld	a,d
 ; CHECK:      	dec	a
 ; CHECK:      	jr	.LBB0_1
-; CHECK:      	ret
 outer_hdr:
   %o = phi i8 [ %outer, %entry ], [ %o.next, %outer_latch ]
   br label %mid_hdr

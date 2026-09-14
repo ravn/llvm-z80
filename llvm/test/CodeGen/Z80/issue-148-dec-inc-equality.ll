@@ -29,7 +29,7 @@ act:
 ; CHECK-LABEL: eq_1:
 ; CHECK:      	call	_getbyte
 ; CHECK:      	cp	1
-; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ret	nz
 ; CHECK:      	xor	a
 ; CHECK:      	call	_sink
 ; CHECK:      	ret
@@ -76,7 +76,7 @@ skip:
 ; CHECK-LABEL: eq_2:
 ; CHECK:      	call	_getbyte
 ; CHECK:      	cp	2
-; CHECK:      	jr	nz,.LBB2_2
+; CHECK:      	ret	nz
 ; CHECK:      	xor	a
 ; CHECK:      	call	_sink
 ; CHECK:      	ret

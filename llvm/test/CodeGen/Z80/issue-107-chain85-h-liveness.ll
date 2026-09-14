@@ -33,17 +33,20 @@ entry:
   store volatile i8 17, ptr %p0, align 1
   store volatile i8 34, ptr %p1, align 1
 ; CHECK-LABEL: hold_hl_across_chain:
+; CHECK:      	ld	hl,#_buf
+; CHECK:      	inc	hl
 ; CHECK:      	ld	de,#_buf
-; CHECK:      	ld	bc,#_buf
-; CHECK:      	inc	bc
+; CHECK:      	inc	de
+; CHECK:      	inc	de
 ; CHECK:      	ld	a,#17
-; CHECK:      	ld	(de),a
+; CHECK:      	ld	bc,#_buf
+; CHECK:      	ld	(bc),a
 ; CHECK:      	ld	a,#34
-; CHECK:      	ld	(bc),a
-; CHECK:      	inc	bc
+; CHECK:      	ld	(hl),a
 ; CHECK:      	ld	a,#51
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	a,(hl)
+; CHECK:      	ld	(de),a
+; CHECK:      	ld	bc,(L_hold_hl_across_chain.frame)
+; CHECK:      	ld	a,(bc)
 ; CHECK:      	ret
   store volatile i8 51, ptr %p2, align 1
   %v = load volatile i8, ptr %ptr, align 1
