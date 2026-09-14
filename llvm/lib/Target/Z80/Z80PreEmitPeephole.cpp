@@ -74,6 +74,8 @@ STATISTIC(NumInMemIncDec,
           "Number of in-memory byte increments/decrements folded to (HL)");
 STATISTIC(NumConsecutiveStores,
           "Number of consecutive byte stores folded to LD (HL),n chains");
+STATISTIC(NumConstReused,
+          "Number of 8-bit immediate loads rewritten to register copies");
 
 using namespace llvm;
 
@@ -1199,6 +1201,164 @@ static bool optimizeConsecutiveStores(MachineBasicBlock &MBB,
 
     MII = std::next(It2);
   }
+
+  return Changed;
+}
+
+// --- Peephole #18/#206: `LD r, n` → `LD r, r'` when r' already holds n ---
+//
+// When any tracked 8-bit register r' already holds constant n, emit the
+// cheaper `LD r, r'` (1 B, 4 T) instead of `LD r, n` (2 B, 7 T), saving 1 B
+// and 3 T per fire.
+// Source preference: A first (so existing XOR A zero-init sequences keep their
+// canonical shape), then B, C, D, E, H, L in register-file order.
+// Tracking is strictly within one basic block; any def of a register
+// (including calls and RegMask clobbers) invalidates that register's entry.
+//
+// Worked example (from issue-206-const-reuse-non-a.mir @single_reuse):
+//   Input MIR:
+//     $b = LD_r_n 7
+//     $c = LD_r_n 7
+//     RET implicit $b, implicit $c
+//   Execution:
+//     $b = LD_r_n 7 records KnownVal[B] = 7.
+//     $c = LD_r_n 7 queries tracker for constant 7 -> finds B.
+//   Output:
+//     $b = LD_r_n 7
+//     $c = LD_r_r $b
+//     RET implicit $b, implicit $c
+//
+// Soundness guards:
+//   - Only replaces LD r, n when Dst != Src (no self-copies `LD r, r`).
+//   - Calls and unmodeled side effects clear all known constants.
+//   - Any instruction defining or clobbering an overlapping register
+//     invalidates that register's tracked constant.
+static bool optimizeConstantReuse(MachineBasicBlock &MBB,
+                                  const TargetInstrInfo *TII,
+                                  const TargetRegisterInfo *TRI) {
+  static const MCPhysReg GR8Regs[] = {
+      Z80::A, Z80::B, Z80::C, Z80::D, Z80::E, Z80::H, Z80::L};
+
+  bool Changed = false;
+  int64_t KnownVal[7];
+  std::fill(std::begin(KnownVal), std::end(KnownVal), -1);
+
+  auto setKnown = [&](MCPhysReg Reg, int64_t Val) {
+    for (int i = 0; i < 7; ++i) {
+      if (GR8Regs[i] == Reg) {
+        KnownVal[i] = Val & 0xFF;
+        return;
+      }
+    }
+  };
+
+  auto clearKnown = [&](MCPhysReg Reg) {
+    for (int i = 0; i < 7; ++i) {
+      if (TRI->regsOverlap(GR8Regs[i], Reg))
+        KnownVal[i] = -1;
+    }
+  };
+
+  for (auto MII = MBB.begin(); MII != MBB.end();) {
+    MachineInstr &MI = *MII;
+
+    // Calls and unmodeled side effects may clobber arbitrary registers
+    if (MI.isCall() || MI.hasUnmodeledSideEffects()) {
+      std::fill(std::begin(KnownVal), std::end(KnownVal), -1);
+      ++MII;
+      continue;
+    }
+
+    // Match 8-bit immediate load: LD r, n
+    if (isLD8n(MI)) {
+      Register Dst = MI.getOperand(0).getReg();
+      if (Dst.isPhysical() && MI.getOperand(1).isImm()) {
+        int64_t N = MI.getOperand(1).getImm() & 0xFF;
+        MCPhysReg FoundSrc = 0;
+        for (int i = 0; i < 7; ++i) {
+          // skip self-copy since LD r,r is a no-op that doesn't set value
+          if (GR8Regs[i] == Dst)
+            continue;
+          // select first matching register in priority order (A first)
+          if (KnownVal[i] == N) {
+            FoundSrc = GR8Regs[i];
+            break;
+          }
+        }
+        if (FoundSrc) {
+          LLVM_DEBUG(dbgs() << "  LD " << printReg(Dst, TRI) << ", " << N
+                            << " -> LD " << printReg(Dst, TRI) << ", "
+                            << printReg(FoundSrc, TRI) << "\n");
+          DebugLoc DL = MI.getDebugLoc();
+          Z80::buildLD8(MBB, MII, DL, *TII, Dst, FoundSrc);
+          MII = MBB.erase(MII);
+          clearKnown(Dst);
+          setKnown(Dst, N);
+          ++NumConstReused;
+          Changed = true;
+          continue;
+        }
+        // No source found — record that Dst now holds N
+        clearKnown(Dst);
+        setKnown(Dst, N);
+        ++MII;
+        continue;
+      }
+    }
+
+    // Match zeroing of A: XOR A
+    if (isZeroA(MI)) {
+      clearKnown(Z80::A);
+      setKnown(Z80::A, 0);
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isReg() && MO.isDef() && MO.getReg().isValid() &&
+            MO.getReg().isPhysical() && MO.getReg() != Z80::A)
+          clearKnown(MO.getReg());
+      }
+      ++MII;
+      continue;
+    }
+
+    // Propagate constant across register copy: LD r, r'
+    if (isLD8(MI)) {
+      Register Dst = MI.getOperand(0).getReg();
+      Register Src = MI.getOperand(1).getReg();
+      if (Dst.isPhysical() && Src.isPhysical()) {
+        int64_t SrcVal = -1;
+        for (int i = 0; i < 7; ++i) {
+          if (GR8Regs[i] == Src) {
+            SrcVal = KnownVal[i];
+            break;
+          }
+        }
+        clearKnown(Dst);
+        if (SrcVal != -1)
+          setKnown(Dst, SrcVal);
+        ++MII;
+        continue;
+      }
+    }
+
+    // Invalidate any defined or clobbered registers
+    for (const MachineOperand &MO : MI.operands()) {
+      if (MO.isRegMask()) {
+        for (MCPhysReg R : GR8Regs) {
+          if (MO.clobbersPhysReg(R))
+            clearKnown(R);
+        }
+      } else if (MO.isReg() && MO.isDef() && MO.getReg().isValid() &&
+                 MO.getReg().isPhysical()) {
+        clearKnown(MO.getReg());
+      }
+    }
+    for (MCPhysReg Def : TII->get(MI.getOpcode()).implicit_defs())
+      clearKnown(Def);
+
+    ++MII;
+  }
+
+  if (Changed)
+    recomputeLivenessFlags(MBB);
 
   return Changed;
 }
@@ -3005,6 +3165,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
       Changed |= materializeIXConstantStores(MBB, TII, TRI);
     Changed |= foldSingleBitMask(MBB, TII, TRI);
     Changed |= directIncDec(MBB, TII, TRI);
+    Changed |= optimizeConstantReuse(MBB, TII, TRI);
     Changed |= optimizeI16CompareByteXOR(MBB, TII, TRI, STI);
     Changed |= optimizeInMemoryIncDec(MBB, TII, TRI, STI);
     Changed |= optimizeConsecutiveStores(MBB, TII, TRI, STI);

@@ -94,7 +94,7 @@ define i16 @ret_i16(i8 %a, i8 %b, i8 %c, i8 %d, i8 %e, i8 %f) {
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,0
 ; CHECK:      	ld	e,l
-; CHECK:      	ld	d,0
+; CHECK:      	ld	d,b
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	add	hl,de

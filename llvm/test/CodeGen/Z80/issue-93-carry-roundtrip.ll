@@ -34,7 +34,7 @@
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	ld	b,0
+; CHECK:      	ld	b,a
 ; CHECK:      	inc	bc
 ; CHECK:      	ld	e,c
 ; CHECK:      	ld	a,c
@@ -69,7 +69,7 @@ exit:
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	ld	b,0
+; CHECK:      	ld	b,a
 ; CHECK:      	inc	bc
 ; CHECK:      	ld	e,c
 ; CHECK:      	ld	a,c

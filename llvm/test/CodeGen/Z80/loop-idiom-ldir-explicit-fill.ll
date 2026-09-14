@@ -45,7 +45,7 @@ declare void @llvm.memset.p0.i16(ptr writeonly captures(none), i8, i16, i1 immar
 ; CHECK:      	ld	hl,#_bgbuf
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	c,b
-; CHECK:      	ld	b,#0
+; CHECK:      	ld	b,d
 ; CHECK:      	ld	de,#0
 ; CHECK:      	call	___z80_memset_builtin
 ; CHECK:      	ret
