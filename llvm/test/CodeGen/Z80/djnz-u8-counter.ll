@@ -21,8 +21,7 @@ declare void @write_byte(i8 zeroext)
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	djnz	.LBB0_1
 ; CHECK:      	ret
 define void @do_while_dec(i8 zeroext %n) {
 entry:

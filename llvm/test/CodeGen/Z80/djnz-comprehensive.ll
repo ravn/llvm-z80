@@ -39,8 +39,7 @@ declare i8 @produce()
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	djnz	.LBB0_1
 ; CHECK:      	ret
 define void @arg_counter_djnz(i8 zeroext %n) {
 entry:
@@ -70,8 +69,7 @@ exit:
 ; CHECK:      	add	a,c
 ; CHECK:      	ld	d,a
 ; CHECK:      	inc	hl
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	djnz	.LBB1_1
 ; CHECK:      	ld	a,d
 ; CHECK:      	pop	bc
 ; CHECK:      	inc	sp
@@ -101,8 +99,7 @@ exit:
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB2_1
+; CHECK:      	djnz	.LBB2_1
 ; CHECK:      	ld	a,b
 ; CHECK:      	ret
 define i8 @counter_used_after() {
@@ -193,14 +190,12 @@ exit:
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB5_1
+; CHECK:      	djnz	.LBB5_1
 ; CHECK:      	ld	b,l
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	ld	a,#1
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB5_3
+; CHECK:      	djnz	.LBB5_3
 ; CHECK:      	ret
 define void @two_sequential_loops(i8 zeroext %n, i8 zeroext %m) {
 entry:
@@ -235,23 +230,19 @@ exit:
 
 ;==============================================================================
 ; NESTED LOOPS: only one of inner/outer can DJNZ -- they share B.
-; Today the backend gives B (DJNZ) to the OUTER loop, leaving the
-; INNER as `dec r; jr nz`.  This is the opposite of optimal: the
-; inner runs N×M iterations vs the outer's M, so DJNZ on inner saves
-; more total bytes per call.  See ravn/llvm-z80#92.
+; With #92 fixed, the backend assigns B (DJNZ) to the INNER loop.
 ;==============================================================================
 
 ; CHECK-LABEL: nested_djnz:
 ; CHECK:      	ld	c,a
-; CHECK:      	ld	b,l
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB6_2
+; CHECK:      	djnz	.LBB6_1
 ; CHECK:      	dec	c
-; CHECK:      	jr	nz,.LBB6_1
-; CHECK:      	ret
+; CHECK:      	ret	z
+; CHECK:      	ld	b,l
+; CHECK:      	jr	.LBB6_1
 define void @nested_djnz(i8 zeroext %m, i8 zeroext %n) {
 entry:
   br label %outer

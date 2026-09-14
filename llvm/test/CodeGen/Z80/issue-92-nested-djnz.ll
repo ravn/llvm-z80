@@ -11,17 +11,16 @@
 @port = external global ptr
 
 ; The outer is allowed to use any non-B 8-bit register (anti-hint cluster).
-; CHECK-LABEL: nested_djnz:
+; CHECK-LABEL: _nested_djnz:
 ; CHECK:      	ld	c,a
-; CHECK:      	ld	b,l
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	djnz	.LBB0_1
 ; CHECK:      	dec	c
-; CHECK:      	jr	nz,.LBB0_1
-; CHECK:      	ret
+; CHECK:      	ret	z
+; CHECK:      	ld	b,l
+; CHECK:      	jr	.LBB0_1
 define void @nested_djnz(i8 zeroext %m, i8 zeroext %n) {
 entry:
   br label %outer
@@ -48,13 +47,12 @@ exit:
 }
 
 ; A single self-looping countdown still gets DJNZ (no regression).
-; CHECK-LABEL: single_djnz:
+; CHECK-LABEL: _single_djnz:
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	djnz	.LBB1_1
 ; CHECK:      	ret
 define void @single_djnz(i8 zeroext %n) {
 entry:

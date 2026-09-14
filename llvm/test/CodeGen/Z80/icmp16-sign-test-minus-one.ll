@@ -87,7 +87,7 @@ loop:
   br i1 %neg, label %noxor, label %doxor
 doxor:
   %x = xor i16 %sh, 4129
-; CHECK-LABEL: crc16_byte:
+; CHECK-LABEL: _crc16_byte:
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ld	hl,2
 ; CHECK:      	add	hl,sp
@@ -96,7 +96,7 @@ doxor:
 ; CHECK:      	xor	b
 ; CHECK:      	ld	e,a
 ; CHECK:      	ld	b,8
-; CHECK:      	jr	.LBB2_2
+; CHECK:      	jr	.LBB2_4
 ; CHECK:      	ld	de,(L_crc16_byte.frame)
 ; CHECK:      	ld	a,e
 ; CHECK:      	xor	33
@@ -104,8 +104,11 @@ doxor:
 ; CHECK:      	ld	a,d
 ; CHECK:      	xor	16
 ; CHECK:      	ld	d,a
-; CHECK:      	dec	b
-; CHECK:      	jr	z,.LBB2_4
+; CHECK:      	djnz	.LBB2_4
+; CHECK:      	pop	bc
+; CHECK:      	inc	sp
+; CHECK:      	push	bc
+; CHECK:      	ret
 ; CHECK:      	ld	l,e
 ; CHECK:      	ld	h,d
 ; CHECK:      	add	hl,hl
@@ -133,12 +136,7 @@ doxor:
 ; CHECK:      	or	d
 ; CHECK:      	jr	z,.LBB2_1
 ; CHECK:      	ld	de,(L_crc16_byte.frame)
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB2_2
-; CHECK:      	pop	bc
-; CHECK:      	inc	sp
-; CHECK:      	push	bc
-; CHECK:      	ret
+; CHECK:      	jr	.LBB2_2
   br label %cont
 noxor:
   br label %cont

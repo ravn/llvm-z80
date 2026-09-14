@@ -6,8 +6,7 @@
 
 ; CHECK-LABEL: delay:
 ; CHECK:      	ld	b,a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	djnz	.LBB0_1
 ; CHECK:      	ret
 define void @delay(i8 %n) {
 entry:
@@ -39,8 +38,7 @@ entry:
 ; CHECK:      	add	a,c
 ; CHECK:      	ld	d,a
 ; CHECK:      	inc	hl
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	djnz	.LBB1_1
 ; CHECK:      	ld	a,d
 ; CHECK:      	pop	bc
 ; CHECK:      	inc	sp
