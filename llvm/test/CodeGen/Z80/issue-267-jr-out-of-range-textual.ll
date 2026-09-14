@@ -20,11 +20,10 @@
 ; line then.  The .LBB labels below reflect llc at filing time; if they renumber
 ; when the bug is fixed, refresh them.
 ;
-;
 ; CHECK-LABEL: sf_fix:
-; CHECK-NOT: jr nc,.LBB0_15
-; CHECK-NOT: jr z,.LBB0_22
-; CHECK-NOT: jr .LBB0_21
+; Verify that far branches are relaxed to jp in textual output:
+; CHECK:       jp	nc,
+; CHECK:       jp	.LBB0_
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"

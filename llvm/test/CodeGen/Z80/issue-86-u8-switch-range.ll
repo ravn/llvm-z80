@@ -23,7 +23,7 @@ declare void @f1e()
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	a,29
 ; CHECK:      	cp	b
-; CHECK:      	jr	c,.LBB0_11
+; CHECK:      	ret	c
 ; CHECK:      	ld	l,b
 ; CHECK:      	ld	h,0
 ; CHECK:      	add	hl,hl
