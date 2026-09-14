@@ -84,29 +84,30 @@ static bool callsSelf(const CallGraphNode &N) {
   return false;
 }
 
-// Inline asm has no callee at all: it cannot transfer control to another
-// function, unlike an indirect call through a function pointer. The
-// generic CallGraph builder cannot tell the two apart (Call->getCalledFunction()
-// is null for both, so populateCallGraphNode() routes both to
-// CallsExternalNode), which lets a call record's own instruction, when
-// present, distinguish them. A record with no instruction (CR.first ==
-// std::nullopt) is a reference edge such as the pass's own artificial
-// CallsExternalNode -> ExternalCallingNode edge or the declaration-node's
-// "could call back into anything" edge, neither of which is inline asm, so
-// only a genuine present instruction can make this true.
+// WHAT: Identify call-graph records that represent inline assembly rather
+// than true function calls or indirect calls through function pointers.
 //
-// Example: the ubiquitous Z80 ISR epilogue `__asm__("ei")` is, in IR, a
-// `call void asm sideeffect "ei", ""()`. Before this fix, that call's edge
-// into CallsExternalNode fed the pass's artificial
-// CallsExternalNode -> ExternalCallingNode edge, which stock LLVM's
-// ExternalCallingNode already fans out to every externally-linked function
-// in the module (see CallGraph::addToCallGraph) -- so an ISR containing
-// nothing but `ei` made every non-static function in the translation unit,
-// however unrelated (e.g. a zero-call `compare_6bytes` leaf), reachable
-// from the ISR's context and thus ineligible for a static frame.
+// WHY: Stock LLVM's generic CallGraph builder routes any call where
+// Call->getCalledFunction() is null to CallsExternalNode. This lumps
+// indirect calls through function pointers together with inline assembly.
+// In this pass, CallsExternalNode connects to ExternalCallingNode, so
+// treating inline asm as an external edge would falsely treat an asm
+// statement as a potential indirect callback into the module.
+//
+// GOTCHA: Reference/synthetic edges (such as CallsExternalNode ->
+// ExternalCallingNode) have CR.first == std::nullopt. Only call records
+// with a genuine instruction can be inline assembly.
+//
+// EXAMPLE: In firmware (e.g. autoload-in-c/rom.c), an ISR epilogue
+// contains `__asm__("ei")`, lowered to `call void asm sideeffect "ei",
+// ""()`. Without this check:
+//   isr -> CallsExternalNode -> ExternalCallingNode -> {compare_6bytes...}
+// This falsely marked `compare_6bytes` (a pure leaf) as reachable from
+// both main and the ISR context, stripping its static frame and adding
+// 39 `add hl,sp` instructions. With this filter, the edge is ignored.
 static bool isInlineAsmEdge(const CallGraphNode::CallRecord &CR) {
   if (!CR.first)
-    return false;
+    return false; // synthetic edges have no instruction; cannot be asm
   auto *CB = dyn_cast_or_null<CallBase>(*CR.first);
   return CB && CB->isInlineAsm();
 }
@@ -126,7 +127,7 @@ void Z80NonReentrantImpl::markReentrantReachable(const CallGraphNode &CGN) {
   });
   for (const CallGraphNode::CallRecord &CR : CGN) {
     if (isInlineAsmEdge(CR))
-      continue;
+      continue; // inline asm has no callee; do not route to CallsExternalNode
     markReentrantReachable(*CR.second);
   }
 }
@@ -148,10 +149,10 @@ void Z80NonReentrantImpl::visitContext(const CallGraphNode &CGN) {
   // externally-callable function via CallsExternalNode.
   for (const CallGraphNode::CallRecord &CR : CGN) {
     if (isInlineAsmEdge(CR))
-      continue;
+      continue; // inline asm cannot call back into the module; skip
     const Function *Callee = CR.second->getFunction();
     if (Callee && isContextRoot(*Callee))
-      continue;
+      continue; // do not cross into an independent interrupt context
     visitContext(*CR.second);
   }
 }
