@@ -21,33 +21,12 @@ define dso_local i16 @sge_zero(i16 %x) {
   br i1 %c, label %t, label %f
 t:
 ; CHECK-LABEL: sge_zero:
-; CHECK:      	ex	de,hl
-; CHECK:      	ld	bc,65535
-; CHECK:      	ld	a,b
-; CHECK:      	xor	d
-; CHECK:      	rlca
-; CHECK:      	sbc	a,a
-; CHECK:      	ld	b,a
-; CHECK:      	ld	hl,65535
-; CHECK:      	and	a
-; CHECK:      	sbc	hl,de
-; CHECK:      	sbc	a,a
-; CHECK:      	and	1
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,b
-; CHECK:      	cpl
-; CHECK:      	and	c
-; CHECK:      	ld	c,a
-; CHECK:      	ld	de,65535
-; CHECK:      	ld	a,d
-; CHECK:      	rlca
-; CHECK:      	and	1
-; CHECK:      	and	b
-; CHECK:      	or	c
-; CHECK:      	xor	1
-; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	ld	a,h
+; CHECK:      	add	a,a
+; CHECK:      	jr	c,.LBB0_2
 ; CHECK:      	ld	de,100
 ; CHECK:      	ret
+; CHECK:      .LBB0_2:
 ; CHECK:      	ld	de,200
 ; CHECK:      	ret
   ret i16 100
@@ -60,22 +39,24 @@ define dso_local i16 @slt_zero(i16 %x) {
   %c = icmp sle i16 %x, -1
   br i1 %c, label %t, label %f
 t:
-  ret i16 100
-f:
-  ret i16 200
-}
 ; CHECK-LABEL: slt_zero:
 ; CHECK:      	ld	a,h
 ; CHECK:      	add	a,a
 ; CHECK:      	jr	c,.LBB1_2
 ; CHECK:      	ld	de,200
 ; CHECK:      	ret
+; CHECK:      .LBB1_2:
 ; CHECK:      	ld	de,100
 ; CHECK:      	ret
+  ret i16 100
+f:
+  ret i16 200
+}
 
-; Full CRC-16 byte step: the natural `if (crc & 0x8000)` idiom.  The inner
-; sign test must be ADD A,A (no 16-bit SBC), and the poly XOR uses immediates.
-define dso_local i16 @crc16_byte(i16 %crc, i8 zeroext %b) {
+; Real-world witness: CRC-16 loop from rcbios/cpnos.
+; The inner loop has `if (c & 0x8000)` which clang canonicalises to
+; `icmp sgt i16 %c, -1`.  This must NOT emit a 16-bit compare inside the loop.
+define dso_local i16 @crc16_byte(i16 %crc, i8 %b) {
   %b16  = zext i8 %b to i16
   %init = xor i16 %crc, %b16
   br label %loop
@@ -97,45 +78,27 @@ doxor:
 ; CHECK:      	ld	e,a
 ; CHECK:      	ld	b,8
 ; CHECK:      	jr	.LBB2_4
-; CHECK:      	ld	de,(L_crc16_byte.frame)
-; CHECK:      	ld	a,e
+; CHECK:      .LBB2_1:
+; CHECK:      	ld	a,l
 ; CHECK:      	xor	33
 ; CHECK:      	ld	e,a
-; CHECK:      	ld	a,d
+; CHECK:      	ld	a,h
 ; CHECK:      	xor	16
 ; CHECK:      	ld	d,a
+; CHECK:      .LBB2_2:
 ; CHECK:      	djnz	.LBB2_4
 ; CHECK:      	pop	bc
 ; CHECK:      	inc	sp
 ; CHECK:      	push	bc
 ; CHECK:      	ret
+; CHECK:      .LBB2_4:
 ; CHECK:      	ld	l,e
 ; CHECK:      	ld	h,d
 ; CHECK:      	add	hl,hl
-; CHECK:      	ld	(L_crc16_byte.frame),hl
-; CHECK:      	ld	hl,65535
-; CHECK:      	ld	a,h
-; CHECK:      	xor	d
-; CHECK:      	rlca
-; CHECK:      	sbc	a,a
-; CHECK:      	ld	c,a
-; CHECK:      	and	a
-; CHECK:      	sbc	hl,de
-; CHECK:      	sbc	a,a
-; CHECK:      	and	1
-; CHECK:      	ld	d,a
-; CHECK:      	ld	a,c
-; CHECK:      	cpl
-; CHECK:      	and	d
-; CHECK:      	ld	d,a
-; CHECK:      	ld	hl,65535
-; CHECK:      	ld	a,h
-; CHECK:      	rlca
-; CHECK:      	and	1
-; CHECK:      	and	c
-; CHECK:      	or	d
-; CHECK:      	jr	z,.LBB2_1
-; CHECK:      	ld	de,(L_crc16_byte.frame)
+; CHECK:      	ld	a,d
+; CHECK:      	add	a,a
+; CHECK:      	jr	c,.LBB2_1
+; CHECK:      	ex	de,hl
 ; CHECK:      	jr	.LBB2_2
   br label %cont
 noxor:

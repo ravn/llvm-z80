@@ -861,14 +861,68 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
     std::swap(LHS, RHS);
     break;
   }
-  case CmpInst::ICMP_SGT:
+  case CmpInst::ICMP_SGT: {
+    if (LHSTy.getSizeInBits() <= 16 && LHSTy.getSizeInBits() > 8) {
+      auto getSConst16 = [&](Register Reg) -> std::optional<int64_t> {
+        MachineInstr *Def = MRI.getVRegDef(Reg);
+        if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+          return Def->getOperand(1).getCImm()->getSExtValue();
+        return std::nullopt;
+      };
+      auto CRHS = getSConst16(RHS);
+      auto CLHS = getSConst16(LHS);
+      if (CRHS && *CRHS < 32767) {
+        // Var > C <=> Var >= C + 1 (issue #329)
+        LLVMContext &Ctx = MBB.getParent()->getFunction().getContext();
+        Register NewRHS = MRI.createGenericVirtualRegister(LLT::scalar(16));
+        BuildMI(MBB, CmpMI, DL, TII.get(TargetOpcode::G_CONSTANT), NewRHS)
+            .addCImm(ConstantInt::get(Type::getInt16Ty(Ctx), (*CRHS + 1) & 0xFFFF));
+        RHS = NewRHS;
+        Pred = CmpInst::ICMP_SGE;
+        break;
+      }
+      if (CLHS) {
+        // C > Var <=> Var < C
+        std::swap(LHS, RHS);
+        Pred = CmpInst::ICMP_SLT;
+        break;
+      }
+    }
     Pred = CmpInst::ICMP_SLT;
     std::swap(LHS, RHS);
     break;
-  case CmpInst::ICMP_SLE:
+  }
+  case CmpInst::ICMP_SLE: {
+    if (LHSTy.getSizeInBits() <= 16 && LHSTy.getSizeInBits() > 8) {
+      auto getSConst16 = [&](Register Reg) -> std::optional<int64_t> {
+        MachineInstr *Def = MRI.getVRegDef(Reg);
+        if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+          return Def->getOperand(1).getCImm()->getSExtValue();
+        return std::nullopt;
+      };
+      auto CRHS = getSConst16(RHS);
+      auto CLHS = getSConst16(LHS);
+      if (CRHS && *CRHS < 32767) {
+        // Var <= C <=> Var < C + 1 (issue #329)
+        LLVMContext &Ctx = MBB.getParent()->getFunction().getContext();
+        Register NewRHS = MRI.createGenericVirtualRegister(LLT::scalar(16));
+        BuildMI(MBB, CmpMI, DL, TII.get(TargetOpcode::G_CONSTANT), NewRHS)
+            .addCImm(ConstantInt::get(Type::getInt16Ty(Ctx), (*CRHS + 1) & 0xFFFF));
+        RHS = NewRHS;
+        Pred = CmpInst::ICMP_SLT;
+        break;
+      }
+      if (CLHS) {
+        // C <= Var <=> Var >= C
+        std::swap(LHS, RHS);
+        Pred = CmpInst::ICMP_SGE;
+        break;
+      }
+    }
     Pred = CmpInst::ICMP_SGE;
     std::swap(LHS, RHS);
     break;
+  }
   default:
     break;
   }
@@ -1189,14 +1243,16 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         }
       }
     } else if (IsSigned) {
-      // Special case: SLT/SGE against 0 → test sign bit directly.
-      auto isConstZero = [&](Register R) -> bool {
-        MachineInstr *Def = MRI.getVRegDef(R);
-        if (!Def || Def->getOpcode() != TargetOpcode::G_CONSTANT)
-          return false;
-        return Def->getOperand(1).getCImm()->isZero();
-      };
-      if (isConstZero(RHS)) {
+      int64_t CVal = 0;
+      bool RHSIsConst = false;
+      MachineInstr *RHSDef = MRI.getVRegDef(RHS);
+      if (RHSDef && RHSDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+        CVal = RHSDef->getOperand(1).getCImm()->getSExtValue();
+        RHSIsConst = true;
+      }
+
+      if (RHSIsConst && CVal == 0) {
+        // Special case: SLT/SGE against 0 → test sign bit directly.
         // SLT X, 0: branch if sign bit set (bit 7 of high byte)
         // SGE X, 0: branch if sign bit clear
         if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI))
@@ -1209,6 +1265,29 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         // ADD A,A shifts bit 7 into carry
         Z80::buildAlu8(MBB, MI, DL, TII, Z80::ADD_A_r, Z80::A);
         // SLT: branch on carry; SGE: branch on no carry
+        JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_C_nn : Z80::JP_NC_nn;
+      } else if (RHSIsConst) {
+        // General 16-bit signed comparison with constant (issue #329):
+        // Maps signed comparison to unsigned by flipping bit 15:
+        //   X < C (signed) <=> (X ^ 0x8000) < (C ^ 0x8000) (unsigned)
+        // Low byte subtract sets carry, high byte sbc finishes the compare.
+        // Saves ~15-20 bytes vs the 21-instruction emitSigned16BitCompare.
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR16RegClass, MRI))
+          return false;
+        uint16_t CUnsigned = ((uint16_t)CVal) ^ 0x8000;
+        uint8_t CLo = CUnsigned & 0xFF;
+        uint8_t CHi = (CUnsigned >> 8) & 0xFF;
+
+        Register Tmp = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(LHS, RegState{}, Z80::sub_hi);
+        BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Tmp).addReg(Z80::A);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(LHS, RegState{}, Z80::sub_lo);
+        BuildMI(MBB, MI, DL, TII.get(Z80::SUB_n)).addImm(CLo);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(Tmp);
+        BuildMI(MBB, MI, DL, TII.get(Z80::SBC_A_n)).addImm(CHi);
         JumpOpc = (Pred == CmpInst::ICMP_SLT) ? Z80::JP_C_nn : Z80::JP_NC_nn;
       } else {
         // Signed 16-bit: compute SLT boolean in A, then OR A to set Z flag.
