@@ -51,10 +51,7 @@ target triple = "z80"
 ; CHECK:      	xor	e
 ; CHECK:      	or	b
 ; CHECK:      	add	a,255
-; CHECK:      	sbc	a,a
-; CHECK:      	and	1
-; CHECK:      	xor	1
-; CHECK:      	jr	nz,.LBB0_3
+; CHECK:      	jr	nc,.LBB0_3
 ; CHECK:      	dec	l
 ; CHECK:      	jr	nz,.LBB0_2
 ; CHECK:      	ld	a,h

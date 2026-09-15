@@ -41,10 +41,7 @@
 ; CHECK:      	xor	e
 ; CHECK:      	or	b
 ; CHECK:      	add	a,255
-; CHECK:      	sbc	a,a
-; CHECK:      	and	1
-; CHECK:      	xor	1
-; CHECK:      	jr	nz,.LBB0_1
+; CHECK:      	jr	nc,.LBB0_1
 ; CHECK:      	ret
 define void @const_trip_50() {
 entry:
@@ -76,10 +73,7 @@ exit:
 ; CHECK:      	xor	e
 ; CHECK:      	or	b
 ; CHECK:      	add	a,255
-; CHECK:      	sbc	a,a
-; CHECK:      	and	1
-; CHECK:      	xor	1
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	jr	nc,.LBB1_1
 ; CHECK:      	ret
 define void @const_trip_255() {
 entry:

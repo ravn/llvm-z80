@@ -233,6 +233,7 @@ exit:
 
 ; CHECK-LABEL: nested_djnz:
 ; CHECK:      	ld	c,a
+; CHECK:      	jr	.LBB6_3
 ; CHECK:      	ld	de,(_port)
 ; CHECK:      	xor	a
 ; CHECK:      	ld	(de),a
@@ -308,10 +309,7 @@ exit:
 ; CHECK:      	xor	e
 ; CHECK:      	or	b
 ; CHECK:      	add	a,#255
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
-; CHECK:      	xor	#1
-; CHECK:      	jr	nz,.LBB7_1
+; CHECK:      	jr	nc,.LBB7_1
 ; CHECK:      	ret
 define void @const_trip_inc_jrnz() {
 entry:

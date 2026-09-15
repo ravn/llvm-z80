@@ -95,6 +95,8 @@ STATISTIC(NumRedundantLdAR,
           "Number of redundant LD A,r instructions eliminated");
 STATISTIC(NumCrossClassBssSpills,
           "Number of cross-class BSS spill/reload pairs converted to PUSH/POP");
+STATISTIC(NumCarryRoundtrips,
+          "Number of carry flag roundtrips folded to direct branch");
 
 using namespace llvm;
 
@@ -3625,6 +3627,257 @@ static bool eliminateRedundantLdAR(MachineFunction &MF,
   return true;
 }
 
+// --- Peephole: Carry Flag Roundtrip to Branch Elimination (issue #93) ---
+//
+// WHAT it does:
+//   Folds roundtrips where a Carry Flag produced by arithmetic (such as
+//   ADD HL,rr or ADD A,n) is captured into register A via SBC A,A; AND 1,
+//   optionally inverted (XOR 1) and/or rotated back to CF (RRCA), and finally
+//   tested by a conditional branch (JR/JP C, NC, Z, NZ).
+//   When A and intermediate flags are dead after the branch, eliminates the
+//   SBC/AND/[XOR]/[RRCA] sequence and branches directly on the original CF.
+//
+// WHY it's there:
+//   GlobalISel lowers comparisons and overflow checks (e.g. `add i16 %t, 1;
+//   icmp eq %t.next, 0` for `do { ... } while (++t);`) by capturing CF into an
+//   s1 register in A via ADD_HL_rr_CO (SBC A,A; AND 1).
+//   When the branch condition later tests this s1, it rotates bit 0 back into
+//   CF via RRCA (or tests Z after XOR 1).
+//   Any intervening instructions (such as `LD c,l; LD b,h` saving the counter)
+//   do not alter FLAGS. Roundtripping CF -> A -> CF costs 4 to 6 bytes per loop!
+//   Branching directly on CF saves 4 to 6 bytes per site.
+//
+// Worked example (from fdc_write_when_ready / test_u16_loop_overflow):
+//   Before:
+//     add hl, bc        ; sets CF on wrap to 0 (hl+bc >= 0x10000)
+//     sbc a, a          ; A = CF ? 0xFF : 0x00
+//     and 1             ; A = CF ? 0x01 : 0x00
+//     ld c, l           ; flag-neutral counter save
+//     ld b, h           ; flag-neutral counter save
+//     xor 1             ; A = CF ? 0x00 : 0x01
+//     rrca              ; CF_new = bit 0 of A (inverted original CF)
+//     jr c, .loop       ; loop if CF_new == 1 (i.e. original CF == 0)
+//   After:
+//     add hl, bc        ; sets CF on wrap to 0
+//     ld c, l           ; flag-neutral counter save
+//     ld b, h           ; flag-neutral counter save
+//     jr nc, .loop      ; loop directly if original CF == 0! (-6 bytes)
+static bool optimizeCarryFlagRoundtrip(MachineFunction &MF,
+                                       const TargetInstrInfo *TII,
+                                       const TargetRegisterInfo *TRI) {
+  bool Changed = false;
+
+  auto isSbcAA = [](const MachineInstr &MI) {
+    return MI.getOpcode() == Z80::SBC_A_r &&
+           MI.getNumOperands() >= 1 &&
+           MI.getOperand(0).isReg() &&
+           MI.getOperand(0).getReg() == Z80::A;
+  };
+
+  auto isAndOne = [](const MachineInstr &MI) {
+    return MI.getOpcode() == Z80::AND_n &&
+           MI.getNumOperands() >= 1 &&
+           MI.getOperand(0).isImm() &&
+           (MI.getOperand(0).getImm() & 0xFF) == 1;
+  };
+
+  auto isXorOne = [](const MachineInstr &MI) {
+    return MI.getOpcode() == Z80::XOR_n &&
+           MI.getNumOperands() >= 1 &&
+           MI.getOperand(0).isImm() &&
+           (MI.getOperand(0).getImm() & 0xFF) == 1;
+  };
+
+  auto isOrA = [](const MachineInstr &MI) {
+    return MI.getOpcode() == Z80::OR_r &&
+           MI.getNumOperands() >= 1 &&
+           MI.getOperand(0).isReg() &&
+           MI.getOperand(0).getReg() == Z80::A;
+  };
+
+  for (MachineBasicBlock &MBB : MF) {
+    bool BlockChanged = false;
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      MachineInstr &SbcMI = *MII;
+      if (!isSbcAA(SbcMI)) {
+        ++MII;
+        continue;
+      }
+
+      auto SbcIt = MII;
+      auto AndIt = std::next(SbcIt);
+      if (AndIt == MIE || !isAndOne(*AndIt)) {
+        ++MII;
+        continue;
+      }
+
+      // Verify that an instruction before SbcIt defines FLAGS and CF has not
+      // been clobbered between that producer and SbcIt.
+      auto ProdIt = SbcIt;
+      bool FoundProducer = false;
+      while (ProdIt != MBB.begin()) {
+        --ProdIt;
+        if (ProdIt->isDebugInstr())
+          continue;
+        if (ProdIt->definesRegister(Z80::FLAGS, TRI)) {
+          FoundProducer = true;
+          break;
+        }
+        // Intervening instructions before SbcIt must not read or clobber FLAGS.
+        if (ProdIt->readsRegister(Z80::FLAGS, TRI))
+          break;
+      }
+      if (!FoundProducer) {
+        ++MII;
+        continue;
+      }
+
+      SmallVector<MachineInstr *, 5> ToErase;
+      ToErase.push_back(&*SbcIt);
+      ToErase.push_back(&*AndIt);
+
+      bool HasXorOne = false;
+      bool HasRrca = false;
+      MachineBasicBlock::iterator BranchIt = MBB.end();
+      bool ValidChain = true;
+
+      for (auto It = std::next(AndIt); It != MIE; ++It) {
+        if (It->isDebugInstr())
+          continue;
+
+        if (!HasXorOne && !HasRrca && isXorOne(*It)) {
+          HasXorOne = true;
+          ToErase.push_back(&*It);
+          continue;
+        }
+
+        if (!HasRrca && It->getOpcode() == Z80::RRCA) {
+          HasRrca = true;
+          ToErase.push_back(&*It);
+          continue;
+        }
+
+        // OR A is redundant flag test from A often emitted before JR NZ/Z
+        if (isOrA(*It)) {
+          ToErase.push_back(&*It);
+          continue;
+        }
+
+        if (It->isBranch()) {
+          BranchIt = It;
+          break;
+        }
+
+        // Mid instructions must be completely flag-neutral and A-neutral.
+        if (It->readsRegister(Z80::FLAGS, TRI) ||
+            It->definesRegister(Z80::FLAGS, TRI) ||
+            It->readsRegister(Z80::A, TRI) ||
+            It->definesRegister(Z80::A, TRI) ||
+            It->isCall() || It->hasUnmodeledSideEffects()) {
+          ValidChain = false;
+          break;
+        }
+      }
+
+      if (!ValidChain || BranchIt == MBB.end()) {
+        ++MII;
+        continue;
+      }
+
+      unsigned CurBranchOpc = BranchIt->getOpcode();
+      unsigned NewBranchOpc = 0;
+
+      if (HasRrca) {
+        if (HasXorOne) {
+          // CF is inverted
+          switch (CurBranchOpc) {
+          case Z80::JR_C_e:  NewBranchOpc = Z80::JR_NC_e; break;
+          case Z80::JR_NC_e: NewBranchOpc = Z80::JR_C_e; break;
+          case Z80::JP_C_nn: NewBranchOpc = Z80::JP_NC_nn; break;
+          case Z80::JP_NC_nn: NewBranchOpc = Z80::JP_C_nn; break;
+          default: break;
+          }
+        } else {
+          // CF is identical
+          switch (CurBranchOpc) {
+          case Z80::JR_C_e:  NewBranchOpc = Z80::JR_C_e; break;
+          case Z80::JR_NC_e: NewBranchOpc = Z80::JR_NC_e; break;
+          case Z80::JP_C_nn: NewBranchOpc = Z80::JP_C_nn; break;
+          case Z80::JP_NC_nn: NewBranchOpc = Z80::JP_NC_nn; break;
+          default: break;
+          }
+        }
+      } else if (HasXorOne) {
+        // Zero flag from XOR 1:
+        // CF=1 -> A=1 -> XOR 1 -> A=0 (Z)
+        // CF=0 -> A=0 -> XOR 1 -> A=1 (NZ)
+        switch (CurBranchOpc) {
+        case Z80::JR_NZ_e:  NewBranchOpc = Z80::JR_NC_e; break;
+        case Z80::JR_Z_e:   NewBranchOpc = Z80::JR_C_e; break;
+        case Z80::JP_NZ_nn: NewBranchOpc = Z80::JP_NC_nn; break;
+        case Z80::JP_Z_nn:  NewBranchOpc = Z80::JP_C_nn; break;
+        default: break;
+        }
+      } else {
+        // Zero flag from AND 1:
+        // CF=1 -> A=1 (NZ)
+        // CF=0 -> A=0 (Z)
+        switch (CurBranchOpc) {
+        case Z80::JR_NZ_e:  NewBranchOpc = Z80::JR_C_e; break;
+        case Z80::JR_Z_e:   NewBranchOpc = Z80::JR_NC_e; break;
+        case Z80::JP_NZ_nn: NewBranchOpc = Z80::JP_C_nn; break;
+        case Z80::JP_Z_nn:  NewBranchOpc = Z80::JP_NC_nn; break;
+        default: break;
+        }
+      }
+
+      if (!NewBranchOpc) {
+        ++MII;
+        continue;
+      }
+
+      // Safety guard: A must be dead after the branch.
+      if (!isRegDeadAfter(std::next(BranchIt), MBB, TRI, Z80::A)) {
+        ++MII;
+        continue;
+      }
+
+      // Safety guard: if there are instructions after BranchIt in MBB,
+      // FLAGS must be dead after BranchIt.
+      if (std::next(BranchIt) != MIE &&
+          !isRegDeadAfter(std::next(BranchIt), MBB, TRI, Z80::FLAGS)) {
+        ++MII;
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  Carry flag roundtrip fold: " << *BranchIt
+                        << " -> opcode " << NewBranchOpc << "\n");
+
+      if (NewBranchOpc != CurBranchOpc)
+        BranchIt->setDesc(TII->get(NewBranchOpc));
+
+      // Advance MII past SbcIt to next non-erased instruction or BranchIt
+      auto ResumeIt = std::next(AndIt);
+      while (ResumeIt != MIE && is_contained(ToErase, &*ResumeIt))
+        ++ResumeIt;
+      MII = ResumeIt;
+
+      for (MachineInstr *MI : ToErase) {
+        LLVM_DEBUG(dbgs() << "    erasing: " << *MI);
+        MI->eraseFromParent();
+      }
+
+      ++NumCarryRoundtrips;
+      Changed = BlockChanged = true;
+    }
+
+    if (BlockChanged)
+      recomputeLivenessFlags(MBB);
+  }
+
+  return Changed;
+}
+
 // --- Pass: JP -> JR branch shortening (issue #58) ---
 // Convert all unconditional JP and conditional JP (Z, NZ, C, NC) instructions
 // with MachineBasicBlock targets to their 2-byte JR equivalents.
@@ -5065,6 +5318,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
 
   Changed |= optimizeTailCalls(MF, TII, TRI, STI);
   Changed |= eliminateRedundantLdAR(MF, TRI);
+  Changed |= optimizeCarryFlagRoundtrip(MF, TII, TRI);
   Changed |= shortenBranches(MF, TII);
 
   return Changed;
