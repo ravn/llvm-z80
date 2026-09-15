@@ -1495,15 +1495,23 @@ static bool isSlotReadBeforeStoreInBlock(MachineBasicBlock &MBB,
   return false;
 }
 
-static bool isSlotUsedInOtherBlock(MachineFunction &MF,
-                                   const MachineBasicBlock &StoreMBB,
-                                   const MachineInstr &StoreMI) {
+static bool isSlotReadBeforeWrittenInOtherBlock(
+    MachineFunction &MF, const MachineBasicBlock &StoreMBB,
+    const MachineInstr &StoreMI) {
   for (MachineBasicBlock &MBB : MF) {
     if (&MBB == &StoreMBB)
       continue;
     for (MachineInstr &MI : MBB) {
-      if (isAnyBssAccess(MI.getOpcode()) && sameBssAddress(StoreMI, MI))
-        return true;
+      if (sameBssAddress(StoreMI, MI)) {
+        // If the first access in this other block is a load, it reads a value
+        // that could have been written by StoreMBB; unsafe to convert to stack.
+        if (isAnyBssLoad(MI.getOpcode()))
+          return true;
+        // If the first access is a store, this block overwrites the slot with
+        // its own value before reading; it does not depend on StoreMBB.
+        if (isAnyBssStore(MI.getOpcode()))
+          break;
+      }
     }
   }
   return false;
@@ -1632,8 +1640,8 @@ static bool optimizeBssSpills(MachineFunction &MF,
         continue;
       }
 
-      // Ensure the slot is not referenced by any other basic block.
-      if (isSlotUsedInOtherBlock(MF, MBB, *MII)) {
+      // Ensure the slot is not read before written in any other basic block.
+      if (isSlotReadBeforeWrittenInOtherBlock(MF, MBB, *MII)) {
         ++MII;
         continue;
       }
