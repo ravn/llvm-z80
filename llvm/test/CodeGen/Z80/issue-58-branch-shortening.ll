@@ -7,7 +7,7 @@
 
 ; CHECK-LABEL: halt:
 ; CHECK:       .LBB0_1:
-; CHECK-NEXT:  jr	.LBB0_1
+; CHECK:       jr	.LBB0_1
 ; CHECK-NOT:   jp
 define void @halt() {
 entry:

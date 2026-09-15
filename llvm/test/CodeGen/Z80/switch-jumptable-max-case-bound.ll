@@ -30,7 +30,7 @@ declare void @def()
 ; CHECK:      	ld	b,a
 ; CHECK:      	ld	a,9
 ; CHECK:      	cp	b
-; CHECK:      	jp	c,.LBB0_11
+; CHECK:      	jr	c,.LBB0_11
 ; CHECK:      	ld	l,b
 ; CHECK:      	ld	h,0
 ; CHECK:      	add	hl,hl

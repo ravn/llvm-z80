@@ -89,6 +89,7 @@ STATISTIC(NumAndRotateFolds,
           "Number of AND 1/0x80 folded to RRCA/RLCA");
 STATISTIC(NumDecIncEquality,
           "Number of CP/XOR 1/0xFF folded to DEC_A/INC_A");
+STATISTIC(NumBranchesShortened, "Number of JP branches shortened to JR");
 
 using namespace llvm;
 
@@ -3193,6 +3194,54 @@ static bool optimizeDecIncEquality(MachineFunction &MF,
   return Changed;
 }
 
+// --- Pass: JP -> JR branch shortening (issue #58) ---
+// Convert all unconditional JP and conditional JP (Z, NZ, C, NC) instructions
+// with MachineBasicBlock targets to their 2-byte JR equivalents.
+//
+// WHY it's there:
+// InstructionSelector emits 3-byte JP instructions (JP_nn, JP_cc_nn) for all
+// branches. While BranchFolder rematerializes some branches as JR via
+// insertBranch, branches that bypass BranchFolder (such as tight self-loops,
+// unfolded blocks, or error handlers) retain the 3-byte JP encoding.
+//
+// Soundness & Ordering:
+// BranchRelaxation runs immediately after this pass in addPreEmitPass.
+// Any JR whose target is beyond +-127 bytes will be relaxed back to JP by
+// BranchRelaxation. Converting greedily to JR here guarantees that every branch
+// that CAN fit in +-127 bytes uses the compact 2-byte form, saving 1 byte each.
+// Must run after tail-call optimization so tail jumps (TAILJMP / external JP)
+// are already finalized.
+//
+// Worked example (from issue-58-branch-shortening.ll @halt):
+//   .LBB0_1:
+//     JP .LBB0_1     ; 3 B (ISel emit for self-loop `for (;;);`)
+//   Rewritten to:
+//     JR .LBB0_1     ; 2 B (saves 1 B; in-range displacement = -2)
+static bool shortenBranches(MachineFunction &MF, const TargetInstrInfo *TII) {
+  bool Changed = false;
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      unsigned NewOpc = 0;
+      switch (MI.getOpcode()) {
+      case Z80::JP_nn:    NewOpc = Z80::JR_e; break;
+      case Z80::JP_Z_nn:  NewOpc = Z80::JR_Z_e; break;
+      case Z80::JP_NZ_nn: NewOpc = Z80::JR_NZ_e; break;
+      case Z80::JP_C_nn:  NewOpc = Z80::JR_C_e; break;
+      case Z80::JP_NC_nn: NewOpc = Z80::JR_NC_e; break;
+      default: continue; // not a conditional/unconditional relative-capable JP
+      }
+      // Only convert MBB-target branches, never function symbols or indirects.
+      if (MI.getNumOperands() == 0 || !MI.getOperand(0).isMBB())
+        continue; // skip non-MBB jump targets (e.g. TAILJMP, symbol targets)
+      LLVM_DEBUG(dbgs() << "  JP->JR shortening: " << MI);
+      MI.setDesc(TII->get(NewOpc));
+      ++NumBranchesShortened;
+      Changed = true;
+    }
+  }
+  return Changed;
+}
+
 bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -4583,6 +4632,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   }
 
   Changed |= optimizeTailCalls(MF, TII, TRI, STI);
+  Changed |= shortenBranches(MF, TII);
 
   return Changed;
 }
