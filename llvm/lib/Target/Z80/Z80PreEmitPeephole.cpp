@@ -86,6 +86,8 @@ STATISTIC(NumTailCalls,
           "Number of tail calls optimized (CALL; RET -> JP)");
 STATISTIC(NumAndRotateFolds,
           "Number of AND 1/0x80 folded to RRCA/RLCA");
+STATISTIC(NumDecIncEquality,
+          "Number of CP/XOR 1/0xFF folded to DEC_A/INC_A");
 
 using namespace llvm;
 
@@ -2717,11 +2719,183 @@ static bool optimizeTailCalls(MachineFunction &MF, const TargetInstrInfo *TII,
   return Changed;
 }
 
+/// --- Peephole: CP/XOR with 1 or 0xFF → DEC_A/INC_A (when A dead) ---
+/// Z80 has 1-byte equivalents of the equality tests A == 1 and
+/// A == 0xFF when A's modified value isn't needed afterward:
+///   `DEC A`  (1 B) sets Z iff A was 1
+///   `INC A`  (1 B) sets Z iff A was 0xFF
+/// vs `{CP,XOR}_n K` (2 B).  `OR A` (1 B) for A == 0 already fires.
+/// This closes K ∈ {1, 0xFF}.  ravn/llvm-z80#148.
+static bool optimizeDecIncEquality(MachineFunction &MF,
+                                   const TargetInstrInfo *TII,
+                                   const TargetRegisterInfo *TRI) {
+  if (MF.empty())
+    return false;
+
+  bool Changed = false;
+
+  auto isCpOrXor = [](unsigned Opc) {
+    return Opc == Z80::CP_n || Opc == Z80::XOR_n;
+  };
+  auto isCondJp = [](unsigned Opc) {
+    switch (Opc) {
+    case Z80::JP_Z_nn:
+    case Z80::JP_NZ_nn:
+    case Z80::JR_Z_e:
+    case Z80::JR_NZ_e:
+      return true;
+    default:
+      return false;
+    }
+  };
+  auto isCondRet = [](unsigned Opc) {
+    return Opc == Z80::RET_Z || Opc == Z80::RET_NZ;
+  };
+
+  auto targetDeadA = [&TRI](MachineBasicBlock *TargetMBB) -> bool {
+    if (!TargetMBB)
+      return false;
+    // Walk target's instructions: if A is defined before being
+    // read, it was dead at entry; if it's read before defined,
+    // it's live at entry.  If we reach a terminator without seeing
+    // either, fall through to the MBB's liveouts.
+    for (const MachineInstr &MI : *TargetMBB) {
+      if (MI.isDebugInstr())
+        continue;
+      // XOR_A is the canonical "clear A" idiom: `xor a` zeros A.
+      if (isZeroA(MI))
+        return true;
+      bool ReadsA = false, DefsA = false;
+      for (const MachineOperand &MO : MI.operands()) {
+        if (!MO.isReg() || !MO.getReg().isPhysical())
+          continue;
+        if (!TRI->regsOverlap(MO.getReg(), Z80::A))
+          continue;
+        if (MO.readsReg())
+          ReadsA = true;
+        if (MO.isDef())
+          DefsA = true;
+      }
+      if (ReadsA)
+        return false;
+      if (DefsA)
+        return true;
+      if (MI.isCall())
+        return false;
+      // For a return terminator, check the MBB's liveouts.
+      if (MI.isReturn()) {
+        for (MachineBasicBlock *Succ : TargetMBB->successors()) {
+          for (const auto &LI : Succ->liveins())
+            if (TRI->regsOverlap(LI.PhysReg, Z80::A))
+              return false;
+        }
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isReg() && MO.isImplicit() && MO.readsReg() &&
+              MO.getReg().isPhysical() &&
+              TRI->regsOverlap(MO.getReg(), Z80::A))
+            return false;
+        }
+        return true;  // A dead at return.
+      }
+      if (MI.isBranch())
+        return false;  // give up at non-return terminator
+    }
+    return false;
+  };
+
+  for (MachineBasicBlock &MBB : MF) {
+    bool BlockChanged = false;
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      auto OpIt = MII++;
+      if (!isCpOrXor(OpIt->getOpcode()))
+        continue;
+      if (MII == MIE)
+        continue;
+      auto BrIt = MII;
+      unsigned BrOpc = BrIt->getOpcode();
+      bool IsJp = isCondJp(BrOpc);
+      bool IsRet = isCondRet(BrOpc);
+      if (!IsJp && !IsRet)
+        continue;
+      int64_t K = OpIt->getOperand(0).getImm() & 0xFF;
+      unsigned NewOpc = 0;
+      if (K == 1)
+        NewOpc = Z80::DEC_r;
+      else if (K == 0xFF)
+        NewOpc = Z80::INC_r;
+      else
+        continue;
+      // A must be dead after the branch on both paths.
+      auto AfterBr = std::next(BrIt);
+      if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::A))
+        continue;
+      if (IsJp) {
+        if (!BrIt->getOperand(0).isMBB())
+          continue;
+        if (!targetDeadA(BrIt->getOperand(0).getMBB()))
+          continue;
+      }
+      // ravn/llvm-z80#184 fix: the fall-through MBB also needs an
+      // explicit A-dead check.
+      if (MachineBasicBlock *Fall = MBB.getNextNode()) {
+        if (!targetDeadA(Fall))
+          continue;
+      }
+      // FLAGS must be dead after the branch too.  CP/XOR set C
+      // (and other flags) but DEC_A / INC_A leave C unchanged.
+      if (!isRegDeadAfter(AfterBr, MBB, TRI, Z80::FLAGS))
+        continue;
+      if (IsJp) {
+        MachineBasicBlock *TargetMBB = BrIt->getOperand(0).getMBB();
+        bool TgtFlagsOK = false;
+        for (const MachineInstr &MI : *TargetMBB) {
+          if (MI.isDebugInstr())
+            continue;
+          bool ReadsF = false, DefsF = false;
+          for (const MachineOperand &MO : MI.operands()) {
+            if (!MO.isReg() || !MO.getReg().isPhysical())
+              continue;
+            if (!TRI->regsOverlap(MO.getReg(), Z80::FLAGS))
+              continue;
+            if (MO.readsReg())
+              ReadsF = true;
+            if (MO.isDef())
+              DefsF = true;
+          }
+          if (ReadsF)
+            break;       // FLAGS live at target → unsafe
+          if (DefsF) {
+            TgtFlagsOK = true;
+            break;
+          }
+          if (MI.isReturn() || MI.isCall()) {
+            TgtFlagsOK = true;
+            break;
+          }
+        }
+        if (!TgtFlagsOK)
+          continue;
+      }
+
+      DebugLoc DL = OpIt->getDebugLoc();
+      Z80::buildIncDec8(MBB, *OpIt, DL, *TII, NewOpc, Z80::A);
+      OpIt->eraseFromParent();
+      ++NumDecIncEquality;
+      Changed = BlockChanged = true;
+    }
+    if (BlockChanged)
+      recomputeLivenessFlags(MBB);
+  }
+  return Changed;
+}
+
 bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
   const auto *TRI = STI.getRegisterInfo();
   bool Changed = false;
+
+  Changed |= optimizeDecIncEquality(MF, TII, TRI);
 
   for (MachineBasicBlock &MBB : MF) {
     // The peepholes written inline below move reads past the point where
