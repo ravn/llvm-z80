@@ -55,10 +55,8 @@ define void @switch_range(i8 zeroext %v) {
 c:  tail call void @callee() ret void
 d:  tail call void @def() ret void
 ; CHECK-LABEL: switch_range:
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#11
-; CHECK:      	cp	b
-; CHECK:      	jr	c,.LBB1_2
+; CHECK:      	cp	#12
+; CHECK:      	jr	nc,.LBB1_2
 ; CHECK:      	call	_callee
 ; CHECK:      	ret
 ; CHECK:      	call	_def

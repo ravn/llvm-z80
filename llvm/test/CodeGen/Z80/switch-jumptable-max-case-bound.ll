@@ -27,11 +27,9 @@ declare void @c9()
 declare void @def()
 
 ; CHECK-LABEL: dispatch:
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,9
-; CHECK:      	cp	b
-; CHECK:      	jr	c,.LBB0_11
-; CHECK:      	ld	l,b
+; CHECK:      	cp	10
+; CHECK:      	jr	nc,.LBB0_11
+; CHECK:      	ld	l,a
 ; CHECK:      	ld	h,0
 ; CHECK:      	add	hl,hl
 ; CHECK:      	ld	c,l

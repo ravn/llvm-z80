@@ -713,7 +713,8 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
   const DebugLoc &DL = MI.getDebugLoc();
 
   // Narrow comparison through zext/sext: if both operands are extended from
-  // the same smaller type, compare the pre-extension values.
+  // the same smaller type (or one is an extension and the other is a constant
+  // that fits in the smaller type), compare the pre-extension values.
   // EQ/NE: always safe. Unsigned: both must be zext. Signed: both must be sext.
   {
     MachineInstr *LDef = MRI.getVRegDef(LHS);
@@ -745,22 +746,121 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
             RHS = RSrc;
           }
         }
+      } else if (LExt && ROpc == TargetOpcode::G_CONSTANT) {
+        // VarExt vs Constant (issue #328).
+        Register LSrc = LDef->getOperand(1).getReg();
+        if (MRI.getType(LSrc) == LLT::scalar(8)) {
+          int64_t C = RDef->getOperand(1).getCImm()->getSExtValue();
+          bool CanNarrow = false;
+          if (LOpc == TargetOpcode::G_ZEXT) {
+            uint64_t ZC = RDef->getOperand(1).getCImm()->getZExtValue();
+            if (ZC <= 255 && (CmpInst::isEquality(Pred) || CmpInst::isUnsigned(Pred)))
+              CanNarrow = true;
+          } else if (LOpc == TargetOpcode::G_SEXT) {
+            if (C >= -128 && C <= 127 && (CmpInst::isEquality(Pred) || CmpInst::isSigned(Pred)))
+              CanNarrow = true;
+          }
+          if (CanNarrow) {
+            LLVMContext &Ctx = MBB.getParent()->getFunction().getContext();
+            Register NarrowRHS = MRI.createGenericVirtualRegister(LLT::scalar(8));
+            BuildMI(MBB, CmpMI, DL, TII.get(TargetOpcode::G_CONSTANT), NarrowRHS)
+                .addCImm(ConstantInt::get(Type::getInt8Ty(Ctx), C & 0xFF));
+            LHS = LSrc;
+            RHS = NarrowRHS;
+          }
+        }
+      } else if (RExt && LOpc == TargetOpcode::G_CONSTANT) {
+        // Constant vs VarExt (issue #328).
+        Register RSrc = RDef->getOperand(1).getReg();
+        if (MRI.getType(RSrc) == LLT::scalar(8)) {
+          int64_t C = LDef->getOperand(1).getCImm()->getSExtValue();
+          bool CanNarrow = false;
+          if (ROpc == TargetOpcode::G_ZEXT) {
+            uint64_t ZC = LDef->getOperand(1).getCImm()->getZExtValue();
+            if (ZC <= 255 && (CmpInst::isEquality(Pred) || CmpInst::isUnsigned(Pred)))
+              CanNarrow = true;
+          } else if (ROpc == TargetOpcode::G_SEXT) {
+            if (C >= -128 && C <= 127 && (CmpInst::isEquality(Pred) || CmpInst::isSigned(Pred)))
+              CanNarrow = true;
+          }
+          if (CanNarrow) {
+            LLVMContext &Ctx = MBB.getParent()->getFunction().getContext();
+            Register NarrowLHS = MRI.createGenericVirtualRegister(LLT::scalar(8));
+            BuildMI(MBB, CmpMI, DL, TII.get(TargetOpcode::G_CONSTANT), NarrowLHS)
+                .addCImm(ConstantInt::get(Type::getInt8Ty(Ctx), C & 0xFF));
+            LHS = NarrowLHS;
+            RHS = RSrc;
+          }
+        }
       }
     }
   }
 
   const LLT LHSTy = MRI.getType(LHS);
 
-  // Normalize: convert GT/LE to LT/GE by swapping operands.
+  // Normalize: convert GT/LE to LT/GE.
+  // For 8-bit unsigned comparisons with a constant, convert Var > C to Var >= C+1
+  // and Var <= C to Var < C+1 instead of swapping operands (issue #328).
+  // This keeps the variable in A and the constant as an immediate operand to CP,
+  // preventing unnecessary register copies and register clobbers.
+  auto getConstVal8 = [&](Register Reg) -> std::optional<uint64_t> {
+    MachineInstr *Def = MRI.getVRegDef(Reg);
+    if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+      return Def->getOperand(1).getCImm()->getZExtValue();
+    return std::nullopt;
+  };
+
   switch (Pred) {
-  case CmpInst::ICMP_UGT:
+  case CmpInst::ICMP_UGT: {
+    if (LHSTy.getSizeInBits() <= 8) {
+      auto CRHS = getConstVal8(RHS);
+      auto CLHS = getConstVal8(LHS);
+      if (CRHS && *CRHS < 255) {
+        // Var > C <=> Var >= C + 1
+        LLVMContext &Ctx = MBB.getParent()->getFunction().getContext();
+        Register NewRHS = MRI.createGenericVirtualRegister(LLT::scalar(8));
+        BuildMI(MBB, CmpMI, DL, TII.get(TargetOpcode::G_CONSTANT), NewRHS)
+            .addCImm(ConstantInt::get(Type::getInt8Ty(Ctx), (*CRHS + 1) & 0xFF));
+        RHS = NewRHS;
+        Pred = CmpInst::ICMP_UGE;
+        break;
+      }
+      if (CLHS) {
+        // C > Var <=> Var < C
+        std::swap(LHS, RHS);
+        Pred = CmpInst::ICMP_ULT;
+        break;
+      }
+    }
     Pred = CmpInst::ICMP_ULT;
     std::swap(LHS, RHS);
     break;
-  case CmpInst::ICMP_ULE:
+  }
+  case CmpInst::ICMP_ULE: {
+    if (LHSTy.getSizeInBits() <= 8) {
+      auto CRHS = getConstVal8(RHS);
+      auto CLHS = getConstVal8(LHS);
+      if (CRHS && *CRHS < 255) {
+        // Var <= C <=> Var < C + 1
+        LLVMContext &Ctx = MBB.getParent()->getFunction().getContext();
+        Register NewRHS = MRI.createGenericVirtualRegister(LLT::scalar(8));
+        BuildMI(MBB, CmpMI, DL, TII.get(TargetOpcode::G_CONSTANT), NewRHS)
+            .addCImm(ConstantInt::get(Type::getInt8Ty(Ctx), (*CRHS + 1) & 0xFF));
+        RHS = NewRHS;
+        Pred = CmpInst::ICMP_ULT;
+        break;
+      }
+      if (CLHS) {
+        // C <= Var <=> Var >= C
+        std::swap(LHS, RHS);
+        Pred = CmpInst::ICMP_UGE;
+        break;
+      }
+    }
     Pred = CmpInst::ICMP_UGE;
     std::swap(LHS, RHS);
     break;
+  }
   case CmpInst::ICMP_SGT:
     Pred = CmpInst::ICMP_SLT;
     std::swap(LHS, RHS);

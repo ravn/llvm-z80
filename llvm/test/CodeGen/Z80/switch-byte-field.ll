@@ -28,17 +28,16 @@ declare void @case_default()
 ; CHECK:      	srl	a
 ; CHECK:      	srl	a
 ; CHECK:      	and	#3
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#1
-; CHECK:      	cp	b
-; CHECK:      	jr	c,.LBB0_2
+; CHECK:      	cp	#2
+; CHECK:      	jr	nc,.LBB0_2
 ; CHECK:      	call	_case_low
 ; CHECK:      	ret
-; CHECK:      	ld	a,b
+; CHECK:      .LBB0_2:
 ; CHECK:      	cp	#2
 ; CHECK:      	jr	nz,.LBB0_4
 ; CHECK:      	call	_case_two
 ; CHECK:      	ret
+; CHECK:      .LBB0_4:
 ; CHECK:      	call	_case_default
 ; CHECK:      	ret
 define void @switch_byte_field() {
