@@ -93,6 +93,8 @@ STATISTIC(NumDecIncEquality,
 STATISTIC(NumBranchesShortened, "Number of JP branches shortened to JR");
 STATISTIC(NumRedundantLdAR,
           "Number of redundant LD A,r instructions eliminated");
+STATISTIC(NumCrossClassBssSpills,
+          "Number of cross-class BSS spill/reload pairs converted to PUSH/POP");
 
 using namespace llvm;
 
@@ -1721,6 +1723,217 @@ static bool optimizeBssSpills(MachineFunction &MF,
       MBB.erase(StoreIt);
 
       ++NumBssSpillsToPushPop;
+      Changed = BlockChanged = true;
+      MII = PushMI->getIterator();
+      ++MII;
+    }
+    if (BlockChanged)
+      recomputeLivenessFlags(MBB);
+  }
+
+  return Changed;
+}
+
+// --- Cross-class BSS spill -> PUSH/POP ---
+//
+// WHAT: In +static-frame code, when a 16-bit register pair is spilled to a BSS
+// frame slot and subsequently reloaded into a DIFFERENT 16-bit register pair
+// within the same basic block (e.g. transfer via memory over a CALL), replace
+// the spill and reload with stack operations:
+//   LD (slot), rr_src     (3-4 B)
+//   ... [intervening code / CALLs] ...
+//   LD rr_dst, (slot)     (3-4 B)   ; rr_dst != rr_src
+// converted to:
+//   PUSH rr_src           (1 B)
+//   ...
+//   POP rr_dst            (1 B)
+// Total cost: 2 B (vs 6-8 B), saving 4-6 bytes per pair.
+//
+// WORKED EXAMPLE (from bss-spill-cross-class-transfer.mir @test_cross_class_de_bc):
+//   LD_nnind_DE <mcsymbol __sframe_foo>, implicit $de
+//   CALL_nn @dummy, ...
+//   LD_BC_nnind <mcsymbol __sframe_foo>, implicit-def $bc
+// Transformed to:
+//   PUSH_DE implicit $de
+//   CALL_nn @dummy, ...
+//   POP_BC implicit-def $bc
+//
+// GOTCHA:
+//   - Only applicable to 16-bit register pairs (HL, DE, BC). 8-bit A uses FLAGS
+//     for PUSH/POP and is handled by the same-class spill peephole.
+//   - Must have exactly ONE reload from the slot (multiple cross-class reloads
+//     would leave the stack unbalanced or empty after the first pop).
+//   - Stack depth across intervening instructions must be net-zero.
+//   - The slot must not be read or overwritten elsewhere.
+static bool optimizeCrossClassBssSpills(MachineFunction &MF,
+                                       const TargetInstrInfo *TII,
+                                       const TargetRegisterInfo *TRI,
+                                       const Z80Subtarget &STI) {
+  if (!STI.hasStaticFrame())
+    return false; // only applicable for static-frame targets
+
+  struct StoreClass {
+    unsigned StoreOpc;
+    unsigned PushOpc;
+    unsigned Bytes;
+  };
+  struct LoadClass {
+    unsigned LoadOpc;
+    unsigned PopOpc;
+    unsigned Bytes;
+  };
+  static const StoreClass Stores[] = {
+      {Z80::LD_nnind_HL, Z80::PUSH_HL, 3},
+      {Z80::LD_nnind_DE, Z80::PUSH_DE, 4},
+      {Z80::LD_nnind_BC, Z80::PUSH_BC, 4},
+  };
+  static const LoadClass Loads[] = {
+      {Z80::LD_HL_nnind, Z80::POP_HL, 3},
+      {Z80::LD_DE_nnind, Z80::POP_DE, 4},
+      {Z80::LD_BC_nnind, Z80::POP_BC, 4},
+  };
+
+  auto getStoreInfo = [&](unsigned Opc) -> const StoreClass * {
+    for (const auto &S : Stores)
+      if (S.StoreOpc == Opc)
+        return &S;
+    return nullptr;
+  };
+  auto getLoadInfo = [&](unsigned Opc) -> const LoadClass * {
+    for (const auto &L : Loads)
+      if (L.LoadOpc == Opc)
+        return &L;
+    return nullptr;
+  };
+
+  SmallSet<std::pair<const void *, int64_t>, 8> AddrTakenSlots;
+  SmallPtrSet<const void *, 4> BaseAddrTakenSyms;
+  collectAddrTakenFrameSyms(MF, AddrTakenSlots, BaseAddrTakenSyms);
+
+  bool Changed = false;
+
+  for (MachineBasicBlock &MBB : MF) {
+    bool BlockChanged = false;
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      const StoreClass *SC = getStoreInfo(MII->getOpcode());
+      if (!SC) {
+        ++MII;
+        continue; // not a recognized 16-bit BSS spill store
+      }
+      auto hasVolatileMemoryRef = [](const MachineInstr &MI) {
+        for (const MachineMemOperand *MMO : MI.memoperands())
+          if (MMO->isVolatile())
+            return true;
+        return false;
+      };
+      if (hasVolatileMemoryRef(*MII)) {
+        ++MII;
+        continue; // do not eliminate volatile memory accesses
+      }
+      if (!isStaticFrameSlot(MII->getOperand(0))) {
+        ++MII;
+        continue; // not a static frame slot (e.g. general global variable)
+      }
+      if (isSlotAddrTaken(*MII, AddrTakenSlots, BaseAddrTakenSyms)) {
+        ++MII;
+        continue; // slot address materialized into a register (issue #195)
+      }
+      if (isSlotReadBeforeStoreInBlock(MBB, MII)) {
+        ++MII;
+        continue; // loop-carried value read at top of loop (issue #195)
+      }
+
+      int StackDepth = 0;
+      bool Conflict = false;
+      MachineBasicBlock::iterator MatchedLoad = MIE;
+      const LoadClass *LC = nullptr;
+
+      for (auto Scan = std::next(MII); Scan != MIE; ++Scan) {
+        unsigned SOpc = Scan->getOpcode();
+
+        // Another store to the same slot indicates value reuse/overwrite.
+        if (isAnyBssStore(SOpc) && sameBssAddress(*MII, *Scan)) {
+          Conflict = true;
+          break;
+        }
+
+        // Track stack depth across all PUSH/POP instructions.
+        if (isAnyPush(SOpc))
+          ++StackDepth;
+        if (isAnyPop(SOpc)) {
+          --StackDepth;
+          if (StackDepth < 0) {
+            Conflict = true;
+            break;
+          }
+        }
+
+        // Intervening explicit SP writes make PUSH/POP displacement invalid.
+        if (isExplicitSPWrite(*Scan, TRI)) {
+          Conflict = true;
+          break;
+        }
+
+        // Check for load from our slot.
+        if (isAnyBssLoad(SOpc) && sameBssAddress(*MII, *Scan)) {
+          if (MatchedLoad != MIE) {
+            // Already saw one load; cross-class transfer requires exactly one load.
+            Conflict = true;
+            break;
+          }
+          const LoadClass *LCi = getLoadInfo(SOpc);
+          if (!LCi) {
+            // Not a 16-bit register load (e.g. 8-bit A load).
+            Conflict = true;
+            break;
+          }
+          if (StackDepth != 0) {
+            // Stack is not balanced at the load point.
+            Conflict = true;
+            break;
+          }
+          // Same-class loads are handled by optimizeBssSpills.
+          bool SameClass =
+              (SC->PushOpc == Z80::PUSH_HL && LCi->PopOpc == Z80::POP_HL) ||
+              (SC->PushOpc == Z80::PUSH_DE && LCi->PopOpc == Z80::POP_DE) ||
+              (SC->PushOpc == Z80::PUSH_BC && LCi->PopOpc == Z80::POP_BC);
+          if (SameClass) {
+            Conflict = true;
+            break;
+          }
+          MatchedLoad = Scan;
+          LC = LCi;
+        }
+
+        if (Scan->isTerminator())
+          break;
+      }
+
+      if (Conflict || MatchedLoad == MIE || LC == nullptr ||
+          hasVolatileMemoryRef(*MatchedLoad)) {
+        ++MII;
+        continue;
+      }
+
+      // Ensure the slot is not read in any other block before being rewritten.
+      if (isSlotReadBeforeWrittenInOtherBlock(MF, MBB, *MII)) {
+        ++MII;
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  BSS cross-class spill→PUSH/POP: " << *MII
+                        << "  -> " << LC->LoadOpc << "\n");
+
+      DebugLoc DLs = MII->getDebugLoc();
+      MachineInstr *PushMI = BuildMI(MBB, *MII, DLs, TII->get(SC->PushOpc));
+
+      DebugLoc DLl = MatchedLoad->getDebugLoc();
+      BuildMI(MBB, *MatchedLoad, DLl, TII->get(LC->PopOpc));
+
+      MBB.erase(MatchedLoad);
+      MBB.erase(MII);
+
+      ++NumCrossClassBssSpills;
       Changed = BlockChanged = true;
       MII = PushMI->getIterator();
       ++MII;
@@ -4817,6 +5030,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   }
 
   Changed |= optimizeBssSpills(MF, TII, TRI, STI);
+  Changed |= optimizeCrossClassBssSpills(MF, TII, TRI, STI);
   Changed |= optimizeCrossMbbBssSpills(MF, TII, TRI, STI);
 
   // Run last: earlier peepholes pattern-match LDHL-based slot accesses

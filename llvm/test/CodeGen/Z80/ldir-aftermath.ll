@@ -16,11 +16,11 @@
 ; (cpnos READ-SEQ pattern.)  Triple+store collapses to LD (target),DE.
 ; CHECK-LABEL: read_seq_iter:
 ; CHECK:      	ld	de,(_dma)
-; CHECK:      	ld	(L_read_seq_iter.frame),de
+; CHECK:      	push	de
 ; CHECK:      	ld	bc,128
 ; CHECK:      	ldir
 ; CHECK:      	ld	bc,128
-; CHECK:      	ld	hl,(L_read_seq_iter.frame)
+; CHECK:      	pop	hl
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	(_dma),hl
 ; CHECK:      	ret
@@ -37,11 +37,11 @@ define void @read_seq_iter(ptr %src) {
 ; INC DE before the store gives dst+129.
 ; CHECK-LABEL: plus_one:
 ; CHECK:      	ld	de,(_dma)
-; CHECK:      	ld	(L_plus_one.frame),de
+; CHECK:      	push	de
 ; CHECK:      	ld	bc,128
 ; CHECK:      	ldir
 ; CHECK:      	ld	bc,129
-; CHECK:      	ld	hl,(L_plus_one.frame)
+; CHECK:      	pop	hl
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	(_dma),hl
 ; CHECK:      	ret
@@ -58,11 +58,11 @@ define void @plus_one(ptr %src) {
 ; DEC DE before the store gives dst+127.
 ; CHECK-LABEL: minus_one:
 ; CHECK:      	ld	de,(_dma)
-; CHECK:      	ld	(L_minus_one.frame),de
+; CHECK:      	push	de
 ; CHECK:      	ld	bc,128
 ; CHECK:      	ldir
 ; CHECK:      	ld	bc,127
-; CHECK:      	ld	hl,(L_minus_one.frame)
+; CHECK:      	pop	hl
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	(_dma),hl
 ; CHECK:      	ret

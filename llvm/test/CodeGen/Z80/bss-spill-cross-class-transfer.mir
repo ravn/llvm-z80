@@ -40,7 +40,7 @@ body:             |
     ; CHECK-LABEL: name: test_cross_class_de_bc
     ; CHECK:      PUSH_DE
     ; CHECK-NEXT: CALL_nn @dummy
-    ; CHECK-NEXT: $bc = POP_BC
+    ; CHECK-NEXT: POP_BC implicit-def $bc
     ; CHECK-NEXT: RET
     ; CHECK-NOT:  LD_nnind_DE
     ; CHECK-NOT:  LD_BC_nnind

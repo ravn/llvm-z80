@@ -31,12 +31,6 @@ define void @copy4(ptr %dst, ptr %src) {
 }
 
 ; i16 is native (register pair) — must NOT become a block move.
-define void @keep_i16(ptr %dst, ptr %src) {
-  %v = load i16, ptr %src, align 1
-  store i16 %v, ptr %dst, align 1
-  ret void
-}
-
 ; CHECK-LABEL: keep_i16:
 ; CHECK:      	ld	c,l
 ; CHECK:      	ld	b,h
@@ -50,18 +44,15 @@ define void @keep_i16(ptr %dst, ptr %src) {
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
 ; CHECK:      	ret
-; Volatile accesses keep their exact memory operations.
-define void @keep_volatile(ptr %dst, ptr %src) {
-  %v = load volatile i64, ptr %src, align 1
-  store volatile i64 %v, ptr %dst, align 1
+define void @keep_i16(ptr %dst, ptr %src) {
+  %v = load i16, ptr %src, align 1
+  store i16 %v, ptr %dst, align 1
   ret void
 }
 
-; Multi-use loaded value: the value is genuinely needed in registers.
-define i8 @keep_multiuse(ptr %dst, ptr %src) {
-  %v = load i64, ptr %src, align 1
+; Volatile accesses keep their exact memory operations.
 ; CHECK-LABEL: keep_volatile:
-; CHECK:      	ld	(L_keep_volatile.frame),hl
+; CHECK:      	push	hl
 ; CHECK:      	ld	c,e
 ; CHECK:      	ld	b,d
 ; CHECK:      	ld	l,e
@@ -95,7 +86,7 @@ define i8 @keep_multiuse(ptr %dst, ptr %src) {
 ; CHECK:      	ld	d,(hl)
 ; CHECK:      	ld	(L_keep_volatile.frame+8),de
 ; CHECK:      	pop	de
-; CHECK:      	ld	bc,(L_keep_volatile.frame)
+; CHECK:      	pop	bc
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	ld	(hl),e
@@ -126,15 +117,13 @@ define i8 @keep_multiuse(ptr %dst, ptr %src) {
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
 ; CHECK:      	ret
-  store i64 %v, ptr %dst, align 1
-  %t = trunc i64 %v to i8
-  ret i8 %t
+define void @keep_volatile(ptr %dst, ptr %src) {
+  %v = load volatile i64, ptr %src, align 1
+  store volatile i64 %v, ptr %dst, align 1
+  ret void
 }
 
-; An intervening may-write between load and store blocks the rewrite
-; (the combine moves the read down to the store point).
-define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
-  %v = load i64, ptr %src, align 1
+; Multi-use loaded value: the value is genuinely needed in registers.
 ; CHECK-LABEL: keep_multiuse:
 ; CHECK:      	ld	(L_keep_multiuse.frame+2),hl
 ; CHECK:      	ld	c,e
@@ -203,10 +192,15 @@ define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
 ; CHECK:      	ld	bc,(L_keep_multiuse.frame)
 ; CHECK:      	ld	a,c
 ; CHECK:      	ret
-  store i8 7, ptr %other, align 1
+define i8 @keep_multiuse(ptr %dst, ptr %src) {
+  %v = load i64, ptr %src, align 1
   store i64 %v, ptr %dst, align 1
-  ret void
+  %t = trunc i64 %v to i8
+  ret i8 %t
 }
+
+; An intervening may-write between load and store blocks the rewrite
+; (the combine moves the read down to the store point).
 ; CHECK-LABEL: keep_intervening_store:
 ; CHECK:      	ld	(L_keep_intervening_store.frame),hl
 ; CHECK:      	ld	c,e
@@ -284,3 +278,9 @@ define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
 ; CHECK:      	inc	sp
 ; CHECK:      	push	bc
 ; CHECK:      	ret
+define void @keep_intervening_store(ptr %dst, ptr %src, ptr %other) {
+  %v = load i64, ptr %src, align 1
+  store i8 7, ptr %other, align 1
+  store i64 %v, ptr %dst, align 1
+  ret void
+}
