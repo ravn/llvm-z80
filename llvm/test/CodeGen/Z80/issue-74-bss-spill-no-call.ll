@@ -68,11 +68,13 @@ declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 ; CHECK:      	ld	a,b
 ; CHECK:      	or	c
 ; CHECK:      	jr	z,.LBB0_3
-; CHECK:      	ldir
 ; CHECK:      	ld	hl,65408
-; CHECK:      	ld	de,32
-; CHECK:      	ld	bc,80
-; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ld	a,32
+; CHECK:      	ld	(hl),a
+; CHECK:      	ld	de,65408
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,79
+; CHECK:      	ldir
 ; CHECK:      	ret
 define void @delete_line() {
 entry:

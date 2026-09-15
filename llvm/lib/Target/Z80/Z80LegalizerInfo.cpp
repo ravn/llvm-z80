@@ -1740,11 +1740,68 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_MEMSET: {
+    Register DstPtr = MI.getOperand(0).getReg();
+    Register ValReg = MI.getOperand(1).getReg();
+    Register Size = MI.getOperand(2).getReg();
+
+    const auto &STI = MIRBuilder.getMF().getSubtarget<Z80Subtarget>();
+    if (STI.hasZ80()) {
+      auto SizeC = getIConstantVRegSExtVal(Size, MRI);
+      if (SizeC && *SizeC == 0) {
+        MI.eraseFromParent();
+        return true;
+      }
+
+      if (SizeC && *SizeC > 0) {
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+
+        // Seed store: store val at the first byte (HL = DstPtr, LD (HL), A).
+        MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+        MIRBuilder.buildCopy(Register(Z80::A), ValReg);
+        MIRBuilder.buildInstr(Z80::LD_HLind_r)
+            .addReg(Register(Z80::A))
+            .cloneMemRefs(MI);
+
+        if (*SizeC == 1) {
+          MI.eraseFromParent();
+          return true;
+        }
+
+        // DE = DstPtr + 1 (LDIR destination)
+        LLT S16 = LLT::scalar(16);
+        auto One = MIRBuilder.buildConstant(S16, 1);
+        auto DstPlusOne =
+            MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, One);
+        MIRBuilder.buildCopy(Register(Z80::DE), DstPlusOne);
+
+        // BC = Size - 1 (LDIR byte count)
+        auto SizeMinusOne = MIRBuilder.buildConstant(S16, *SizeC - 1);
+        MIRBuilder.buildCopy(Register(Z80::BC), SizeMinusOne);
+
+        // HL = DstPtr (LDIR source)
+        MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+
+        MIRBuilder.buildInstr(Z80::LDIR).cloneMemRefs(MI);
+        MI.eraseFromParent();
+        return true;
+      }
+
+      // Variable size on Z80: emit MEMSET_LDIR_GUARDED (issue #105, #326).
+      // Inputs: HL=dst, E=val, BC=size.
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::E), ValReg);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::MEMSET_LDIR_GUARDED).cloneMemRefs(MI);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Fall back to library call (SM83):
     // C memset takes (void*, int, size_t). On Z80, int = i16.
     // G_MEMSET has i8 val operand which must be promoted to i16
     // so the calling convention assigns it to DE (2nd i16 reg param)
     // instead of treating it as an i8 arg.
-    Register ValReg = MI.getOperand(1).getReg();
     LLT ValTy = MRI.getType(ValReg);
 
     if (ValTy.getSizeInBits() < 16) {

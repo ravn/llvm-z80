@@ -54,10 +54,13 @@ define void @test_memset_size_zero(ptr %dst, i8 %val) {
   ret void
 }
 
-; (e) Positive control: variable size should still generate libcall on both targets
+; (e) Variable size: guarded LDIR without call on Z80; libcall on SM83
 define void @test_memset_variable(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset_variable:
-; CHECK:       call ___z80_memset_builtin
+; CHECK-NOT:   call
+; CHECK:       ldir
+; CHECK-NOT:   call
+; CHECK:       ret
 ; SM83-LABEL:  _test_memset_variable:
 ; SM83:        call ___z80_memset_builtin
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)

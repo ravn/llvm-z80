@@ -46,8 +46,20 @@ declare void @llvm.memset.p0.i16(ptr writeonly captures(none), i8, i16, i1 immar
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	c,b
 ; CHECK:      	ld	b,d
-; CHECK:      	ld	de,#0
-; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ld	e,b
+; CHECK:      	ld	a,b
+; CHECK:      	or	c
+; CHECK:      	jr	z,[[EXIT:\.LBB[0-9_]+]]
+; CHECK:      	ld	(hl),e
+; CHECK:      	dec	bc
+; CHECK:      	ld	a,b
+; CHECK:      	or	c
+; CHECK:      	jr	z,[[EXIT]]
+; CHECK:      	ld	d,h
+; CHECK:      	ld	e,l
+; CHECK:      	inc	de
+; CHECK:      	ldir
+; CHECK:      [[EXIT]]:
 ; CHECK:      	ret
 define dso_local void @fill_zero_slice(i8 noundef zeroext %byteoff, i8 noundef zeroext %whole) local_unnamed_addr {
   %skip = icmp eq i8 %whole, 0
@@ -68,9 +80,12 @@ done:
 ; Expected: direct LDIR without guard (size == 64, statically nonzero).
 ; CHECK-LABEL: fill_ones:
 ; CHECK:      	ld	hl,#_bgbuf
-; CHECK:      	ld	de,#255
-; CHECK:      	ld	bc,#64
-; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ld	a,#255
+; CHECK:      	ld	(hl),a
+; CHECK:      	ld	de,#_bgbuf
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,#63
+; CHECK:      	ldir
 ; CHECK:      	ret
 define dso_local void @fill_ones() local_unnamed_addr {
   call void @llvm.memset.p0.i16(ptr nonnull align 1 @bgbuf, i8 -1, i16 64, i1 false)
