@@ -24,19 +24,14 @@ no:
   ret void
 }
 
-; Bit 7 branch via sign test: RLCA; JR C/NC (3 bytes, not 10!)
+; Bit 7 branch via sign test: BIT 7, a; JR NZ/Z
 ; CHECK-LABEL: branch_bit7_sign:
-; CHECK:      	ld	b,a
-; CHECK:      	xor	a
-; CHECK:      	xor	#128
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,b
-; CHECK:      	xor	#128
-; CHECK:      	cp	c
-; CHECK:      	jr	c,.LBB1_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[YES:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_no
 ; CHECK:      	ret
-; CHECK:      	call	_ext_yes
+; CHECK:      [[YES]]:
+; CHECK-NEXT: 	call	_ext_yes
 ; CHECK:      	ret
 define void @branch_bit7_sign(i8 zeroext %val) {
   %c = icmp slt i8 %val, 0
@@ -49,17 +44,14 @@ no:
   ret void
 }
 
-; Bit 7 branch via mask (LLVM rewrites to sgt X, -1): should also use RLCA
+; Bit 7 branch via mask (LLVM rewrites to sgt X, -1): uses BIT 7, a
 ; CHECK-LABEL: branch_bit7_mask:
-; CHECK:      	xor	#128
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#255
-; CHECK:      	xor	#128
-; CHECK:      	cp	b
-; CHECK:      	jr	nc,.LBB2_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[YES:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_no
 ; CHECK:      	ret
-; CHECK:      	call	_ext_yes
+; CHECK:      [[YES]]:
+; CHECK-NEXT: 	call	_ext_yes
 ; CHECK:      	ret
 define void @branch_bit7_mask(i8 zeroext %val) {
   %t = and i8 %val, 128
@@ -172,19 +164,14 @@ define i8 @extract_bit7(i8 %val) {
 ; Signed comparisons that should use bit 7 test (RLCA)
 ; ==========================================================================
 
-; slt X, 0 → RLCA; JR C/NC
+; slt X, 0 → BIT 7, a; JR NZ
 ; CHECK-LABEL: slt_zero:
-; CHECK:      	ld	b,a
-; CHECK:      	xor	a
-; CHECK:      	xor	#128
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,b
-; CHECK:      	xor	#128
-; CHECK:      	cp	c
-; CHECK:      	jr	c,.LBB10_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[NEG:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_no
 ; CHECK:      	ret
-; CHECK:      	call	_ext_yes
+; CHECK:      [[NEG]]:
+; CHECK-NEXT: 	call	_ext_yes
 ; CHECK:      	ret
 define void @slt_zero(i8 %val) {
   %c = icmp slt i8 %val, 0
@@ -197,17 +184,14 @@ pos:
   ret void
 }
 
-; sge X, 0 → RLCA; JR NC/C
+; sge X, 0 → BIT 7, a; JR NZ to neg
 ; CHECK-LABEL: sge_zero:
-; CHECK:      	xor	#128
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#255
-; CHECK:      	xor	#128
-; CHECK:      	cp	b
-; CHECK:      	jr	nc,.LBB11_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[NEG:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_yes
 ; CHECK:      	ret
-; CHECK:      	call	_ext_no
+; CHECK:      [[NEG]]:
+; CHECK-NEXT: 	call	_ext_no
 ; CHECK:      	ret
 define void @sge_zero(i8 %val) {
   %c = icmp sge i8 %val, 0
@@ -220,17 +204,14 @@ neg:
   ret void
 }
 
-; sgt X, -1 (same as X >= 0) → RLCA; JR C/NC (was 10 bytes, now 3)
+; sgt X, -1 (same as X >= 0) → BIT 7, a; JR NZ to neg
 ; CHECK-LABEL: sgt_minus1:
-; CHECK:      	xor	#128
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#255
-; CHECK:      	xor	#128
-; CHECK:      	cp	b
-; CHECK:      	jr	nc,.LBB12_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[NEG:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_yes
 ; CHECK:      	ret
-; CHECK:      	call	_ext_no
+; CHECK:      [[NEG]]:
+; CHECK-NEXT: 	call	_ext_no
 ; CHECK:      	ret
 define void @sgt_minus1(i8 %val) {
   %c = icmp sgt i8 %val, -1
@@ -272,17 +253,12 @@ no:
 ; ==========================================================================
 
 ; CHECK-LABEL: no_xor80_for_bit7:
-; CHECK:      	ld	b,a
-; CHECK:      	xor	a
-; CHECK:      	xor	#128
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,b
-; CHECK:      	xor	#128
-; CHECK:      	cp	c
-; CHECK:      	jr	c,.LBB14_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[YES:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_no
 ; CHECK:      	ret
-; CHECK:      	call	_ext_yes
+; CHECK:      [[YES]]:
+; CHECK-NEXT: 	call	_ext_yes
 ; CHECK:      	ret
 define void @no_xor80_for_bit7(i8 zeroext %val) {
   %c = icmp slt i8 %val, 0
@@ -296,15 +272,12 @@ no:
 }
 
 ; CHECK-LABEL: no_xor80_for_sgt_m1:
-; CHECK:      	xor	#128
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#255
-; CHECK:      	xor	#128
-; CHECK:      	cp	b
-; CHECK:      	jr	nc,.LBB15_2
+; CHECK:      	bit	7,a
+; CHECK-NEXT: 	jr	nz,[[NO:\.LBB[0-9_]+]]
 ; CHECK:      	call	_ext_yes
 ; CHECK:      	ret
-; CHECK:      	call	_ext_no
+; CHECK:      [[NO]]:
+; CHECK-NEXT: 	call	_ext_no
 ; CHECK:      	ret
 define void @no_xor80_for_sgt_m1(i8 zeroext %val) {
   %c = icmp sgt i8 %val, -1
@@ -323,16 +296,9 @@ no:
 ; ==========================================================================
 
 ; CHECK-LABEL: bit7_i1_return:
-; CHECK:      	xor	#128
-; CHECK:      	ld	b,a
-; CHECK:      	xor	a
-; CHECK:      	xor	#128
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,b
-; CHECK:      	cp	c
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
-; CHECK:      	ret
+; CHECK:      	rlca
+; CHECK-NEXT: 	and	#1
+; CHECK-NEXT: 	ret
 define i1 @bit7_i1_return(i8 %val) {
   %t = and i8 %val, 128
   %c = icmp ne i8 %t, 0
@@ -341,18 +307,10 @@ define i1 @bit7_i1_return(i8 %val) {
 
 ; i1 non-negative test: (val & 0x80) == 0 as i1
 ; CHECK-LABEL: bit7_i1_nonneg:
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,#255
-; CHECK:      	xor	#128
-; CHECK:      	ld	c,a
-; CHECK:      	ld	a,b
-; CHECK:      	xor	#128
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,c
-; CHECK:      	cp	b
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
-; CHECK:      	ret
+; CHECK:      	rlca
+; CHECK-NEXT: 	and	#1
+; CHECK-NEXT: 	xor	#1
+; CHECK-NEXT: 	ret
 define i1 @bit7_i1_nonneg(i8 %val) {
   %t = and i8 %val, 128
   %c = icmp eq i8 %t, 0

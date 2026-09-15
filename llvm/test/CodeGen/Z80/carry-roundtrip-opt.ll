@@ -8,9 +8,8 @@ define dso_local void @test_u16_loop_overflow(i8 noundef zeroext %val) {
 ; CHECK-LABEL: test_u16_loop_overflow:
 ; NOLSR:       .LBB0_1:
 ; NOLSR:       	ld	hl,1
-; NOLSR-NEXT:  	add	hl,bc
-; NOLSR-NEXT:  	ld	c,l
-; NOLSR-NEXT:  	ld	b,h
+; NOLSR-NEXT:  	add	hl,de
+; NOLSR-NEXT:  	ex	de,hl
 ; NOLSR-NEXT:  	jr	nc,.LBB0_1
 ; NOLSR-NOT:   	sbc	a,a
 ; NOLSR-NOT:   	rrca

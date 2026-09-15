@@ -839,14 +839,135 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
         BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(RHS);
       }
     } else {
-      // Signed: XOR 0x80 converts signed to unsigned domain, then CP.
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
-      BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
-      Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), ModRHS).addReg(Z80::A);
-      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
-      BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
-      BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(ModRHS);
+      // 8-bit signed comparison.
+      //
+      // On Z80, signed comparisons between two values X and Y are mathematically
+      // mapped to unsigned comparisons via sign-bit inversion:
+      //   X < Y (signed) <=> (X ^ 0x80) < (Y ^ 0x80) (unsigned).
+      //
+      // When one operand is a compile-time constant C:
+      // 1. Sign tests against 0 or -1 reduce directly to inspecting bit 7:
+      //    - Var < 0 or Var <= -1: bit 7 is 1 -> BIT 7, Var; JP NZ
+      //    - Var >= 0 or Var > -1: bit 7 is 0 -> BIT 7, Var; JP Z
+      //    This avoids XOR 0x80 entirely and preserves the accumulator.
+      //    Worked example (calc_size_of_current_track, issue #327):
+      //      `disk_type & 0x80 != 0` -> LLVM IR `icmp sgt i8 %val, -1`.
+      //      Normalized to `icmp slt -1, %val`. Here ConstLHS = -1, Var = %val.
+      //      `%val > -1` <=> `%val >= 0` -> emits `BIT 7, %val; JP Z`.
+      //
+      // 2. Comparisons against a general constant C:
+      //    Fold (C ^ 0x80) into an immediate operand for CP #BiasC:
+      //    - Var < C: A = Var; XOR 0x80; CP ((C ^ 0x80) & 0xFF); JP C
+      //    - Var >= C: A = Var; XOR 0x80; CP ((C ^ 0x80) & 0xFF); JP NC
+      //    Worked example (fdc_sense_interrupt, issue #327):
+      //      `(st0 & 0xc0) != 0x80` -> LLVM IR `icmp slt i8 %val, -64`.
+      //      ConstRHS = -64 (0xC0). BiasC = (-64 ^ 0x80) & 0xFF = 64 (0x40).
+      //      Emits `A = %val; XOR 0x80; CP 64; JP C`.
+      auto getSConst = [&](Register Reg) -> std::optional<int64_t> {
+        MachineInstr *Def = MRI.getVRegDef(Reg);
+        if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+          return Def->getOperand(1).getCImm()->getSExtValue();
+        return std::nullopt;
+      };
+
+      auto ConstRHS = getSConst(RHS);
+      auto ConstLHS = getSConst(LHS);
+
+      if (ConstRHS.has_value()) {
+        int64_t C = *ConstRHS;
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI))
+          return false;
+
+        if (Pred == CmpInst::ICMP_SLT) {
+          // Var < C
+          if (C == 0) {
+            // Var < 0: bit 7 is 1. BIT sets Z=0 (NZ) when bit is 1.
+            BuildMI(MBB, MI, DL, TII.get(Z80::BIT_b_r)).addImm(7).addReg(LHS);
+            JumpOpc = Z80::JP_NZ_nn;
+          } else if (C == -128) {
+            // Var < -128 is impossible for 8-bit signed integer. Never jumps.
+            MI.eraseFromParent();
+            return true;
+          } else {
+            int64_t BiasC = (C ^ 0x80) & 0xFF;
+            BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+            BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+            BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(BiasC);
+            JumpOpc = Z80::JP_C_nn;
+          }
+        } else {
+          // Var >= C (Pred == ICMP_SGE)
+          if (C == 0) {
+            // Var >= 0: bit 7 is 0. BIT sets Z=1 (Z) when bit is 0.
+            BuildMI(MBB, MI, DL, TII.get(Z80::BIT_b_r)).addImm(7).addReg(LHS);
+            JumpOpc = Z80::JP_Z_nn;
+          } else if (C == -128) {
+            // Var >= -128 is always true. Unconditional jump.
+            BuildMI(MBB, MI, DL, TII.get(Z80::JP_nn)).addMBB(TargetMBB);
+            MI.eraseFromParent();
+            return true;
+          } else {
+            int64_t BiasC = (C ^ 0x80) & 0xFF;
+            BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+            BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+            BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(BiasC);
+            JumpOpc = Z80::JP_NC_nn;
+          }
+        }
+      } else if (ConstLHS.has_value()) {
+        int64_t C = *ConstLHS;
+        if (!RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+          return false;
+
+        if (Pred == CmpInst::ICMP_SLT) {
+          // C < Var <=> Var > C <=> Var >= C + 1
+          if (C == 127) {
+            // Var > 127 is impossible. Never jumps.
+            MI.eraseFromParent();
+            return true;
+          } else if (C == -1) {
+            // Var >= 0: bit 7 is 0. BIT sets Z=1 (Z) when bit is 0.
+            BuildMI(MBB, MI, DL, TII.get(Z80::BIT_b_r)).addImm(7).addReg(RHS);
+            JumpOpc = Z80::JP_Z_nn;
+          } else {
+            int64_t BiasC = ((C + 1) ^ 0x80) & 0xFF;
+            BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
+            BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+            BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(BiasC);
+            JumpOpc = Z80::JP_NC_nn;
+          }
+        } else {
+          // C >= Var <=> Var <= C <=> Var < C + 1 (Pred == ICMP_SGE)
+          if (C == 127) {
+            // Var <= 127 is always true. Unconditional jump.
+            BuildMI(MBB, MI, DL, TII.get(Z80::JP_nn)).addMBB(TargetMBB);
+            MI.eraseFromParent();
+            return true;
+          } else if (C == -1) {
+            // Var < 0: bit 7 is 1. BIT sets Z=0 (NZ) when bit is 1.
+            BuildMI(MBB, MI, DL, TII.get(Z80::BIT_b_r)).addImm(7).addReg(RHS);
+            JumpOpc = Z80::JP_NZ_nn;
+          } else {
+            int64_t BiasC = ((C + 1) ^ 0x80) & 0xFF;
+            BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
+            BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+            BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(BiasC);
+            JumpOpc = Z80::JP_C_nn;
+          }
+        }
+      } else {
+        // Both operands are registers: XOR 0x80 converts signed to unsigned domain, then CP.
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(RHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+        Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), ModRHS).addReg(Z80::A);
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+        BuildMI(MBB, MI, DL, TII.get(Z80::XOR_n)).addImm(0x80);
+        BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(ModRHS);
+      }
     }
   } else if (LHSTy.getSizeInBits() <= 16) {
     const auto &STI = MBB.getParent()->getSubtarget<Z80Subtarget>();
@@ -3382,28 +3503,88 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         bool InvertC = (Pred == CmpInst::ICMP_SGE || Pred == CmpInst::ICMP_SLE);
         Register CmpLHS = SwapOps ? RHS : LHS;
         Register CmpRHS = SwapOps ? LHS : RHS;
-        // ModLHS = CmpLHS ^ 0x80
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
-            .addReg(CmpLHS);
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(0x80);
-        Register ModLHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), ModLHS)
-            .addReg(Z80::A);
-        // ModRHS = CmpRHS ^ 0x80
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
-            .addReg(CmpRHS);
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(0x80);
-        Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), ModRHS)
-            .addReg(Z80::A);
-        // CP: ModLHS - ModRHS
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
-            .addReg(ModLHS);
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_r)).addReg(ModRHS);
-        if (InvertC)
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CCF));
-        Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
-        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+
+        auto getSConst = [&](Register Reg) -> std::optional<int64_t> {
+          MachineInstr *Def = MRI.getVRegDef(Reg);
+          if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+            return Def->getOperand(1).getCImm()->getSExtValue();
+          return std::nullopt;
+        };
+
+        auto CRHS = getSConst(CmpRHS);
+        auto CLHS = getSConst(CmpLHS);
+        if (CRHS && *CRHS == 0 && !InvertC) {
+          // Var < 0 (SLT Var, 0): bit 7 is 1 if true, 0 if false.
+          // RLCA moves bit 7 to bit 0; AND 1 isolates it into boolean 0/1 in A.
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpLHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::RLCA));
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        } else if (CRHS && *CRHS == -1 && InvertC) {
+          // Var < 0 (SLE Var, -1): same as Var < 0.
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpLHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::RLCA));
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        } else if (CLHS && *CLHS == -1 && !InvertC) {
+          // -1 < Var (SGT Var, -1) <=> Var >= 0.
+          // Bit 7 is 0 if true, 1 if false.
+          // RLCA moves bit 7 to bit 0; AND 1 isolates it; XOR 1 inverts to 1/0.
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpRHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::RLCA));
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(1);
+        } else if (CLHS && *CLHS == 0 && InvertC) {
+          // 0 >= Var (SGE 0, Var) <=> Var <= 0.
+          // Fall through to general compare.
+          int64_t BiasC = (*CLHS ^ 0x80) & 0xFF;
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpRHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(0x80);
+          Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), ModRHS)
+              .addReg(Z80::A);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::LD_r_n), Z80::A)
+              .addImm(BiasC);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_r)).addReg(ModRHS);
+          if (InvertC)
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CCF));
+          Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        } else if (CRHS) {
+          // Constant C on RHS: fold (C ^ 0x80) into immediate CP operand.
+          int64_t BiasC = (*CRHS ^ 0x80) & 0xFF;
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpLHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(0x80);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_n)).addImm(BiasC);
+          if (InvertC)
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CCF));
+          Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        } else {
+          // Both are registers:
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpLHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(0x80);
+          Register ModLHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), ModLHS)
+              .addReg(Z80::A);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(CmpRHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::XOR_n)).addImm(0x80);
+          Register ModRHS = MRI.createVirtualRegister(&Z80::GR8RegClass);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), ModRHS)
+              .addReg(Z80::A);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(ModLHS);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_r)).addReg(ModRHS);
+          if (InvertC)
+            BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CCF));
+          Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
+        }
         break;
       }
 
