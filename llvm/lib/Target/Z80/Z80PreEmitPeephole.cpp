@@ -1241,7 +1241,144 @@ static bool optimizeInMemoryBitSetRes(MachineBasicBlock &MBB,
 //   - Only valid on Z80 (SM83 lacks DJNZ).
 //   - FLAGS must be dead after JR NZ (DJNZ preserves flags; DEC sets them).
 //   - In the DEC A; LD B,A variant: A must be dead after branch, and B must not
-//     be modified in the body before DEC A (issue #185).
+// --- Peephole: DEC/INC r; [LD A, r;] OR A; JR NZ/Z -> DEC/INC r; JR NZ/Z ---
+//
+// WHAT: Eliminates redundant `LD A, r; OR A` (or `OR A` when r is A) that re-tests
+// an 8-bit register immediately after `DEC r` or `INC r`.
+//
+// WHY: Z80 `DEC r` and `INC r` already update the Zero flag according to the
+// result. When ISel lowers `(icmp ne (add/sub r, 1), 0)` without peephole folding,
+// it copies the result to accumulator A and emits `OR A` to set ZF. If only ZF/NZ
+// is observed by the branch, the reload into A and `OR A` are completely redundant.
+// Eliminating them saves 2 bytes (1 B `LD A, r` + 1 B `OR A`) and frees A.
+// Crucially, for r == B and JR NZ, this exposes `DEC B; JR NZ` directly to
+// optimizeDJNZ, which then emits a 2-byte DJNZ instruction.
+//
+// Worked example (from delay loop in rom.c / issue #330):
+//   Input:
+//     $c = DEC_r killed $c, implicit-def $flags
+//     $a = LD_r_r killed $c
+//     OR_r $a, implicit-def dead $a, implicit-def $flags, implicit $a
+//     JR_NZ_e %bb.3, implicit $flags
+//   Output:
+//     $c = DEC_r killed $c, implicit-def $flags
+//     JR_NZ_e %bb.3, implicit $flags
+//
+// Worked example with B (folded to DJNZ downstream):
+//   Input:
+//     $b = DEC_r killed $b, implicit-def $flags
+//     $a = LD_r_r killed $b
+//     OR_r $a, implicit-def dead $a, implicit-def $flags, implicit $a
+//     JR_NZ_e %bb.4, implicit $flags
+//   Intermediate:
+//     $b = DEC_r killed $b, implicit-def $flags
+//     JR_NZ_e %bb.4, implicit $flags
+//   Downstream optimizeDJNZ Output:
+//     DJNZ_e %bb.4
+//
+// Soundness guards:
+//   - Operates on encodable GR8 registers (A, B, C, D, E, H, L).
+//   - Branch opcode must test Z or NZ condition (JR_NZ_e, JR_Z_e, JP_NZ_nn, JP_Z_nn).
+//   - A must be dead after branch (since `LD A, r` is deleted).
+//   - FLAGS must be dead after branch (DEC/INC updates S,Z,P/V,H while OR A clears C,N,H).
+static bool optimizeRedundantTestAfterIncDec(MachineBasicBlock &MBB,
+                                             const TargetInstrInfo *TII,
+                                             const TargetRegisterInfo *TRI) {
+  bool Changed = false;
+  const auto MIE = MBB.end();
+
+  for (auto MII = MBB.begin(); MII != MIE;) {
+    unsigned Opc = MII->getOpcode();
+    // Only applies to 8-bit INC/DEC instructions
+    if (Opc != Z80::DEC_r && Opc != Z80::INC_r) {
+      ++MII;
+      continue;
+    }
+
+    Register R = MII->getOperand(0).getReg();
+    // Skip if register cannot be encoded in standard 8-bit field
+    if (!R.isValid() || !Z80::isEncodableGR8(R)) {
+      ++MII;
+      continue;
+    }
+
+    auto I1 = MII;
+    auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
+    if (I2 == MIE) {
+      ++MII;
+      continue;
+    }
+
+    if (R != Z80::A) {
+      // Case 1: DEC/INC r; LD A, r; OR A; JR NZ/Z
+      if (!isLD8(*I2, Z80::A, R)) {
+        ++MII;
+        continue;
+      }
+      auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+      if (I3 == MIE || !isAlu8(*I3, Z80::OR_r, Z80::A)) {
+        ++MII;
+        continue;
+      }
+      auto IBranch = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
+      if (IBranch == MIE) {
+        ++MII;
+        continue;
+      }
+      unsigned BranchOpc = IBranch->getOpcode();
+      // Ensure branch only tests Z or NZ condition
+      if (BranchOpc != Z80::JR_NZ_e && BranchOpc != Z80::JR_Z_e &&
+          BranchOpc != Z80::JP_NZ_nn && BranchOpc != Z80::JP_Z_nn) {
+        ++MII;
+        continue;
+      }
+      // Soundness: A and FLAGS must not be read after branch
+      if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::A) ||
+          !isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::FLAGS)) {
+        ++MII;
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  Elide redundant LD A," << printReg(R, TRI)
+                        << "; OR A after INC/DEC\n");
+      I3->eraseFromParent();
+      I2->eraseFromParent();
+      Changed = true;
+      MII = std::next(I1);
+    } else {
+      // Case 2: DEC/INC A; OR A; JR NZ/Z
+      if (!isAlu8(*I2, Z80::OR_r, Z80::A)) {
+        ++MII;
+        continue;
+      }
+      auto IBranch = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+      if (IBranch == MIE) {
+        ++MII;
+        continue;
+      }
+      unsigned BranchOpc = IBranch->getOpcode();
+      // Ensure branch only tests Z or NZ condition
+      if (BranchOpc != Z80::JR_NZ_e && BranchOpc != Z80::JR_Z_e &&
+          BranchOpc != Z80::JP_NZ_nn && BranchOpc != Z80::JP_Z_nn) {
+        ++MII;
+        continue;
+      }
+      // Soundness: FLAGS must not be read after branch
+      if (!isRegDeadAfter(std::next(IBranch), MBB, TRI, Z80::FLAGS)) {
+        ++MII;
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  Elide redundant OR A after INC/DEC A\n");
+      I2->eraseFromParent();
+      Changed = true;
+      MII = std::next(I1);
+    }
+  }
+
+  return Changed;
+}
+
 static bool optimizeDJNZ(MachineBasicBlock &MBB,
                          const TargetInstrInfo *TII,
                          const TargetRegisterInfo *TRI,
@@ -1284,7 +1421,7 @@ static bool optimizeDJNZ(MachineBasicBlock &MBB,
   }
 
   // Pattern 2: DEC A; LD B, A; [OR A;] JR NZ → DJNZ
-  for (auto MII = MBB.begin(); MIE != MIE;) {
+  for (auto MII = MBB.begin(); MII != MIE;) {
     if (!isIncDec8(*MII, Z80::DEC_r, Z80::A)) {
       ++MII;
       continue;
@@ -3991,10 +4128,12 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
         ++MII;
     }
 
-    // --- Peephole: LD A,r; DEC A; LD r,A; OR A; JR NZ → DEC r; JR NZ ---
-    // Replaces a 5-instruction decrement-and-branch sequence (28T, 6B) with
-    // DEC r; JR NZ (14T, 3B). DEC r sets Z flag correctly for JR NZ, and
-    // stays within the analyzable branch framework. Works on Z80 and SM83.
+    // --- Peephole: LD A,r; DEC/INC A; LD r,A; [OR A;] [JR cc] -> DEC/INC r; [JR cc] ---
+    // Replaces the 3-to-5 instruction register inc/dec round-trip through accumulator A:
+    //   LD A, r; DEC A; LD r, A; OR A; JR NZ -> DEC r; JR NZ (or DJNZ)
+    //   LD A, r; DEC A; LD r, A; JR Z/NZ -> DEC r; JR Z/NZ
+    //   LD A, r; DEC A; LD r, A -> DEC r (when A is dead)
+    //   LD A, r; INC A; LD r, A -> INC r (when A is dead)
     for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
          MII != MIE;) {
       // Match: LD A,r (identify counter register r)
@@ -4005,57 +4144,74 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
         continue;
       }
       auto I1 = MII;
-      auto I2 = std::next(I1);
+      auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
       if (I2 == MIE) {
         ++MII;
         continue;
       }
-      auto I3 = std::next(I2);
-      if (I3 == MIE) {
+      bool IsDec = isIncDec8(*I2, Z80::DEC_r, Z80::A);
+      bool IsInc = isIncDec8(*I2, Z80::INC_r, Z80::A);
+      if (!IsDec && !IsInc) {
         ++MII;
         continue;
       }
-      auto I4 = std::next(I3);
-      if (I4 == MIE) {
-        ++MII;
-        continue;
-      }
-      auto I5 = std::next(I4);
-      if (I5 == MIE) {
+      auto I3 = MBB.SkipPHIsLabelsAndDebug(std::next(I2));
+      if (I3 == MIE || !isLD8(*I3, CounterReg, Z80::A)) {
         ++MII;
         continue;
       }
 
-      // Match: DEC A; LD r,A; OR A; JR NZ,target
-      if (!isIncDec8(*I2, Z80::DEC_r, Z80::A) ||
-          !isLD8(*I3, CounterReg, Z80::A) || !isAlu8(*I4, Z80::OR_r, Z80::A) ||
-          I5->getOpcode() != Z80::JR_NZ_e) {
-        ++MII;
-        continue;
-      }
-
-      // The original sequence leaves A = r-1. The replacement doesn't
-      // touch A, so we must verify A is dead after the sequence.
-      if (!isRegDeadAfter(std::next(I5), MBB, TRI, Z80::A)) {
-        ++MII;
-        continue;
-      }
-
-      MachineBasicBlock *TargetMBB = I5->getOperand(0).getMBB();
+      unsigned IncDecOpc = IsDec ? Z80::DEC_r : Z80::INC_r;
       DebugLoc DL = I1->getDebugLoc();
 
-      LLVM_DEBUG(dbgs() << "  Loop counter peephole: LD A,"
-                        << printReg(CounterReg, TRI) << " sequence → DEC "
-                        << printReg(CounterReg, TRI) << "; JR NZ\n");
-      I5->eraseFromParent();
-      I4->eraseFromParent();
-      I3->eraseFromParent();
-      I2->eraseFromParent();
-      MII = MBB.erase(I1);
-      Z80::buildIncDec8(MBB, MII, DL, *TII, Z80::DEC_r, CounterReg);
-      BuildMI(MBB, MII, DL, TII->get(Z80::JR_NZ_e)).addMBB(TargetMBB);
-      ++NumDecInPlace;
-      Changed = BlockChanged = true;
+      // Look ahead for possible redundant [OR A] and branch
+      auto I4 = MBB.SkipPHIsLabelsAndDebug(std::next(I3));
+      if (I4 != MIE && isAlu8(*I4, Z80::OR_r, Z80::A)) {
+        auto I5 = MBB.SkipPHIsLabelsAndDebug(std::next(I4));
+        if (I5 != MIE &&
+            (I5->getOpcode() == Z80::JR_NZ_e || I5->getOpcode() == Z80::JR_Z_e ||
+             I5->getOpcode() == Z80::JP_NZ_nn || I5->getOpcode() == Z80::JP_Z_nn) &&
+            isRegDeadAfter(std::next(I5), MBB, TRI, Z80::A) &&
+            isRegDeadAfter(std::next(I5), MBB, TRI, Z80::FLAGS)) {
+          // Case 1: LD A,r; DEC/INC A; LD r,A; OR A; JR/JP cc
+          // Eliminate OR A because DEC/INC r sets Z flag identically
+          I4->eraseFromParent();
+          I3->eraseFromParent();
+          I2->eraseFromParent();
+          MII = MBB.erase(I1);
+          Z80::buildIncDec8(MBB, MII, DL, *TII, IncDecOpc, CounterReg);
+          ++NumDecInPlace;
+          Changed = BlockChanged = true;
+          continue;
+        }
+      }
+
+      // Case 2: LD A,r; DEC/INC A; LD r,A; JR/JP cc (without OR A)
+      if (I4 != MIE &&
+          (I4->getOpcode() == Z80::JR_NZ_e || I4->getOpcode() == Z80::JR_Z_e ||
+           I4->getOpcode() == Z80::JP_NZ_nn || I4->getOpcode() == Z80::JP_Z_nn) &&
+          isRegDeadAfter(std::next(I4), MBB, TRI, Z80::A)) {
+        I3->eraseFromParent();
+        I2->eraseFromParent();
+        MII = MBB.erase(I1);
+        Z80::buildIncDec8(MBB, MII, DL, *TII, IncDecOpc, CounterReg);
+        ++NumDecInPlace;
+        Changed = BlockChanged = true;
+        continue;
+      }
+
+      // Case 3: Standalone LD A,r; DEC/INC A; LD r,A (no immediate branch)
+      if (isRegDeadAfter(std::next(I3), MBB, TRI, Z80::A)) {
+        I3->eraseFromParent();
+        I2->eraseFromParent();
+        MII = MBB.erase(I1);
+        Z80::buildIncDec8(MBB, MII, DL, *TII, IncDecOpc, CounterReg);
+        ++NumDecInPlace;
+        Changed = BlockChanged = true;
+        continue;
+      }
+
+      ++MII;
     }
 
     // --- Peephole: XOR #0xFF → CPL ---
@@ -5311,6 +5467,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     Changed |= optimizeInMemoryIncDec(MBB, TII, TRI, STI);
     Changed |= optimizeInMemoryBitSetRes(MBB, TII, TRI, STI);
     Changed |= optimizeConsecutiveStores(MBB, TII, TRI, STI);
+    Changed |= optimizeRedundantTestAfterIncDec(MBB, TII, TRI);
     Changed |= optimizeDJNZ(MBB, TII, TRI, STI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);

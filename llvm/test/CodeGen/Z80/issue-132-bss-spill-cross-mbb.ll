@@ -26,9 +26,7 @@ declare i16 @target()
 ; CHECK:       jr	nz,.LBB0_4
 ; CHECK-LABEL: ; %bb.2:
 ; CHECK:       pop	af
-; CHECK-NEXT:  dec	a
-; CHECK-NEXT:  ld	b,a
-; CHECK-NEXT:  jr	nz,.LBB0_1
+; CHECK-NEXT:  djnz	.LBB0_1
 ; CHECK:       ld	de,0
 ; CHECK-NEXT:  ret
 ; CHECK-LABEL: .LBB0_4:

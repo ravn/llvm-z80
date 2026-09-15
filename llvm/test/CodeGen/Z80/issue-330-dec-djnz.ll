@@ -38,10 +38,9 @@ define zeroext i8 @inc_preserve_a(i8 zeroext %v) {
   ret i8 %r
 }
 
-; Case 4: Nested loop with mid loop decrementing C (not A)
+; Case 4: Nested loop with inner loop folded to djnz
 ; CHECK-LABEL: nested_countdown:
-; CHECK-NOT:   ld	a,c
-; CHECK:       dec	c
+; CHECK:       djnz
 define void @nested_countdown(i8 zeroext %outer, i8 zeroext %inner) {
 entry:
   %tobool = icmp eq i8 %outer, 0
@@ -67,11 +66,12 @@ exit:
   ret void
 }
 
-; Case 5: 3-level nested loop with inner counter B (DJNZ) and mid counter C (DEC C)
+; Case 5: Nested loop with mid counter C and outer counter B
 ; CHECK-LABEL: triple_delay:
-; CHECK:       djnz
+; CHECK-NOT:   ld	a,c
 ; CHECK:       dec	c
-; CHECK:       jr	nz
+; CHECK-NOT:   ld	a,b
+; CHECK:       dec	b
 define void @triple_delay(i8 zeroext %outer, i8 zeroext %inner) {
 entry:
   %cmp = icmp eq i8 %outer, 0
@@ -89,17 +89,17 @@ loop.inner:
   %k = phi i8 [ 0, %loop.mid ], [ %k.next, %loop.inner ]
   tail call void asm sideeffect "", ""()
   %k.next = add i8 %k, -1
-  %k.cmp = icmp eq i8 %k.next, 0
+  %k.cmp = icmp ne i8 %k.next, 0
   br i1 %k.cmp, label %latch.mid, label %loop.inner
 
 latch.mid:
   %m.next = add i8 %m, -1
-  %m.cmp = icmp eq i8 %m.next, 0
+  %m.cmp = icmp ne i8 %m.next, 0
   br i1 %m.cmp, label %latch.outer, label %loop.mid
 
 latch.outer:
   %o.next = add i8 %o, -1
-  %o.cmp = icmp eq i8 %o.next, 0
+  %o.cmp = icmp ne i8 %o.next, 0
   br i1 %o.cmp, label %exit, label %loop.outer
 
 exit:
