@@ -39,21 +39,18 @@ declare void @sink(i8)
 ;     ld   a,#1
 ;     ret
 ;
-; All three LD A,D instances must be removed by the post-fix peephole.
+; All three LD A,b instances must be removed by the post-fix peephole.
 ; CHECK-LABEL: cross_block_chain:
 ; CHECK:      	call	_compute
 ; CHECK:      	ld	b,a
 ; CHECK:      	cp	#2
+; CHECK-NOT:  	ld	a,b
 ; CHECK:      	jr	nz,.LBB0_2
-; CHECK:      	ld	a,b
-; CHECK:      	ret
-; CHECK:      	ld	a,b
+; CHECK-NEXT: 	ret
 ; CHECK:      	or	a
 ; CHECK:      	jr	z,.LBB0_4
-; CHECK:      	ld	a,b
+; CHECK-NOT:  	ld	a,b
 ; CHECK:      	ld	(_g8),a
-; CHECK:      	ret
-; CHECK:      	ld	a,#1
 ; CHECK:      	ret
 define i8 @cross_block_chain() {
 entry:
