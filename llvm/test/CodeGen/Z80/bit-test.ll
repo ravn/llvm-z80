@@ -6,8 +6,8 @@
 
 ; Bit 0 branch: RRCA; JR C/NC (AND $1 narrowed to rotate by peephole)
 ; CHECK-LABEL: branch_bit0:
-; CHECK:      	and	#1
-; CHECK:      	jr	nz,.LBB0_2
+; CHECK:      	rrca
+; CHECK:      	jr	c,.LBB0_2
 ; CHECK:      	call	_ext_no
 ; CHECK:      	ret
 ; CHECK:      	call	_ext_yes

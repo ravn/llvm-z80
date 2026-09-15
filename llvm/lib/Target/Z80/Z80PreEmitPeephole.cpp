@@ -84,6 +84,8 @@ STATISTIC(NumBssSpillsToPushPop,
           "Number of BSS spill/reload pairs converted to PUSH/POP");
 STATISTIC(NumTailCalls,
           "Number of tail calls optimized (CALL; RET -> JP)");
+STATISTIC(NumAndRotateFolds,
+          "Number of AND 1/0x80 folded to RRCA/RLCA");
 
 using namespace llvm;
 
@@ -2885,6 +2887,92 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
         }
       }
       ++MII;
+    }
+
+    // --- Peephole: AND $1 / $80 + branch/ret → RRCA / RLCA + carry branch/ret ---
+    // AND $1 (2B) tests bit 0 via Z flag. RRCA (1B) rotates bit 0 into carry.
+    // Replace AND $1; JR/JP NZ → RRCA; JR/JP C (saves 1B).
+    // Replace AND $1; RET NZ → RRCA; RET C (saves 1B).
+    // Similarly AND $80; ... NZ → RLCA; ... C (bit 7 to carry).
+    // Constraint: A must be dead after the branch/ret on fall-through & target.
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+         MII != MIE;) {
+      unsigned Opc = MII->getOpcode();
+      if (Opc != Z80::AND_n) {
+        ++MII;
+        continue;
+      }
+
+      int64_t Imm = MII->getOperand(0).getImm() & 0xFF;
+      unsigned RotOpc;
+      if (Imm == 1)
+        RotOpc = Z80::RRCA; // bit 0 → carry
+      else if (Imm == 0x80)
+        RotOpc = Z80::RLCA; // bit 7 → carry
+      else {
+        ++MII;
+        continue;
+      }
+
+      auto Next = std::next(MII);
+      if (Next == MIE) {
+        ++MII;
+        continue;
+      }
+
+      // Skip redundant OR A between AND and branch (re-tests Z flag).
+      auto BranchIt = Next;
+      if (isAlu8(*BranchIt, Z80::OR_r, Z80::A)) {
+        BranchIt = std::next(BranchIt);
+        if (BranchIt == MIE) {
+          ++MII;
+          continue;
+        }
+      }
+
+      // Map NZ → C, Z → NC (AND sets Z when bit is 0; rotate sets C when 1)
+      unsigned NextOpc = BranchIt->getOpcode();
+      unsigned NewNextOpc = 0;
+      switch (NextOpc) {
+      case Z80::JR_NZ_e:  NewNextOpc = Z80::JR_C_e; break;
+      case Z80::JR_Z_e:   NewNextOpc = Z80::JR_NC_e; break;
+      case Z80::JP_NZ_nn: NewNextOpc = Z80::JP_C_nn; break;
+      case Z80::JP_Z_nn:  NewNextOpc = Z80::JP_NC_nn; break;
+      case Z80::RET_NZ:   NewNextOpc = Z80::RET_C; break;
+      case Z80::RET_Z:    NewNextOpc = Z80::RET_NC; break;
+      default: break;
+      }
+      if (!NewNextOpc) {
+        ++MII;
+        continue;
+      }
+
+      // A function returning a non-void value may use A for the return value.
+      if ((NextOpc == Z80::RET_NZ || NextOpc == Z80::RET_Z) &&
+          !MF.getFunction().getReturnType()->isVoidTy()) {
+        ++MII;
+        continue;
+      }
+
+      // A must be dead after the branch/ret on the fall-through and target paths.
+      auto AfterBranch = std::next(BranchIt);
+      if (!isRegDeadAfter(AfterBranch, MBB, TRI, Z80::A)) {
+        ++MII;
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  AND→RRCA/RLCA peephole: " << *MII);
+      DebugLoc DL = MII->getDebugLoc();
+
+      if (BranchIt != Next)
+        Next->eraseFromParent();
+
+      BranchIt->setDesc(TII->get(NewNextOpc));
+
+      BuildMI(MBB, MII, DL, TII->get(RotOpc));
+      MII = MBB.erase(MII);
+      ++NumAndRotateFolds;
+      Changed = BlockChanged = true;
     }
 
     // --- Peephole: ALU #imm; ALU #imm → ALU #imm ---

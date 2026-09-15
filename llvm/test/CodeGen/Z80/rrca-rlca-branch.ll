@@ -20,10 +20,10 @@ no:
   ret void
 }
 
-; Pattern 2: AND 1 with eq 0 -> RRCA; JR NC
+; Pattern 2: AND 1 with eq 0 -> RRCA; JR C (when yes-block is fallthrough)
 ; CHECK-LABEL: test_and1_jr_z:
 ; CHECK:       rrca
-; CHECK-NEXT:  jr	nc,
+; CHECK-NEXT:  jr	c,
 define void @test_and1_jr_z(i8 zeroext %val) {
   %t = and i8 %val, 1
   %c = icmp eq i8 %t, 0
