@@ -26,6 +26,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -1521,6 +1522,28 @@ static bool isSlotReadBeforeWrittenInOtherBlock(
   return false;
 }
 
+// Check whether a frame slot is referenced in other basic blocks.
+// Accesses in blocks that strictly dominate StoreMBB belong to a different,
+// earlier lifetime (slot-coalesced by regalloc) and execute before StoreMBB's
+// store, so they leave the slot undisturbed by a PUSH/POP rewrite (issue #155).
+static bool isSlotUsedElsewhere(
+    MachineFunction &MF, const MachineInstr &StoreMI,
+    ArrayRef<const MachineBasicBlock *> SkipBlocks,
+    const MachineDominatorTree *MDT,
+    const MachineBasicBlock *StoreMBB) {
+  for (MachineBasicBlock &Other : MF) {
+    if (llvm::is_contained(SkipBlocks, &Other))
+      continue;
+    bool DomSafe = MDT && StoreMBB && MDT->dominates(&Other, StoreMBB);
+    for (MachineInstr &OI : Other) {
+      if (isAnyBssAccess(OI.getOpcode()) && sameBssAddress(StoreMI, OI) &&
+          !DomSafe)
+        return true;
+    }
+  }
+  return false;
+}
+
 struct SpillInfo {
   unsigned StoreOpc;
   unsigned LoadOpc;
@@ -1700,6 +1723,287 @@ static bool optimizeBssSpills(MachineFunction &MF,
     }
     if (BlockChanged)
       recomputeLivenessFlags(MBB);
+  }
+
+  return Changed;
+}
+
+// --- Cross-MBB BSS spill -> PUSH/POP (issues #132, #138, #143, #155, #156) ---
+//
+// Extends the in-MBB BSS-spill peephole to the case where the store lives in
+// MBB_A and the matching load lives in a successor block MBB_B.
+//
+// Worked example (from issue-132-bss-spill-cross-mbb.ll @retry):
+//   MBB_A (.LBB0_1):
+//     LD (L_retry.frame), A       ; 3 B  -> PUSH AF (1 B)
+//     CALL _target
+//     JR NZ, .LBB0_4              ; escape edge to .LBB0_4
+//     ; fallthrough to MBB_B
+//   MBB_B (.LBB0_2):
+//     LD A, (L_retry.frame)       ; 3 B  -> POP AF (1 B)
+//     DEC A
+//     JR NZ, .LBB0_1
+//   MBB_C (.LBB0_4):
+//     POP AF                      ; 1 B  (compensation: AF dead at .LBB0_4)
+//     LD DE, 1
+//     RET
+//
+// Compensation strategies for non-LOAD escape successors of MBB_A:
+//   - Prepend in-place at MBB_C's head when MBB_A is MBB_C's sole predecessor.
+//   - Otherwise edge-split: insert a new MBB before MBB_C in layout, fall
+//     through to MBB_C, and rewrite MBB_A's branch operand to the new MBB.
+// Compensation uses `POP rr` (1 B) when a register pair is dead at the escape
+// (issue #138), or `INC SP; INC SP` (2 B) otherwise.
+static bool optimizeCrossMbbBssSpills(MachineFunction &MF,
+                                      const TargetInstrInfo *TII,
+                                      const TargetRegisterInfo *TRI,
+                                      const Z80Subtarget &STI) {
+  if (!STI.hasStaticFrame())
+    return false; // only applicable for static-frame targets
+
+  SmallSet<std::pair<const void *, int64_t>, 8> AddrTakenSlots;
+  SmallPtrSet<const void *, 4> BaseAddrTakenSyms;
+  collectAddrTakenFrameSyms(MF, AddrTakenSlots, BaseAddrTakenSyms);
+
+  bool Changed = false;
+  SmallPtrSet<MachineBasicBlock *, 4> OurNewMBBs;
+  std::unique_ptr<MachineDominatorTree> MDT;
+  auto refreshMDT = [&]() {
+    MDT = std::make_unique<MachineDominatorTree>(MF);
+  };
+
+  for (MachineBasicBlock &MBB_A : MF) {
+    bool RestartOuter = true;
+    while (RestartOuter) {
+      RestartOuter = false;
+      refreshMDT();
+      for (auto MII = MBB_A.begin(), MIE = MBB_A.end(); MII != MIE; ++MII) {
+        const SpillInfo *SI = getSpillInfo(MII->getOpcode());
+        if (!SI)
+          continue; // not a recognized spill store opcode
+        if (!isStaticFrameSlot(MII->getOperand(0)))
+          continue; // not a static frame slot
+        if (isSlotReadBeforeStoreInBlock(MBB_A, MII))
+          continue; // loop-carried value read before store (issues #195, #202)
+        if (isSlotAddrTaken(*MII, AddrTakenSlots, BaseAddrTakenSyms))
+          continue; // slot address escaped into pointer register (issue #195)
+
+        // Scan forward in MBB_A to ensure no conflicting accesses or stack imbalances.
+        int StackDepth = 0;
+        bool BailLocal = false;
+        for (auto S = std::next(MII); S != MIE; ++S) {
+          unsigned O = S->getOpcode();
+          if (isAnyPush(O))
+            ++StackDepth;
+          if (isAnyPop(O)) {
+            --StackDepth;
+            if (StackDepth < 0) {
+              BailLocal = true; // net-underflow inside block
+              break;
+            }
+          }
+          if (isExplicitSPWrite(*S, TRI)) {
+            BailLocal = true; // explicit SP rewrite invalidates stack tracking
+            break;
+          }
+          if (isAnyBssAccess(O) && sameBssAddress(*MII, *S)) {
+            BailLocal = true; // in-MBB reuse handled by single-block peephole
+            break;
+          }
+          if (S->isTerminator())
+            break;
+        }
+        if (BailLocal || StackDepth != 0)
+          continue; // unbalanced stack or local conflict
+
+        // Inspect successors: exactly one MBB_B must reload the slot.
+        enum EscapeKind { ESC_PrependInPlace, ESC_InsertBefore };
+        struct EscapeRec {
+          MachineBasicBlock *MBB_C;
+          EscapeKind Kind;
+        };
+        MachineBasicBlock *MBB_B = nullptr;
+        MachineBasicBlock::iterator LoadIt;
+        SmallVector<EscapeRec, 2> Escapes;
+        bool BailSucc = false;
+
+        for (MachineBasicBlock *Succ : MBB_A.successors()) {
+          int SuccDepth = 0;
+          bool SuccTouches = false;
+          MachineBasicBlock::iterator FirstTouch = Succ->end();
+          for (auto T = Succ->begin(); T != Succ->end(); ++T) {
+            unsigned O = T->getOpcode();
+            if (isAnyPush(O))
+              ++SuccDepth;
+            if (isAnyPop(O)) {
+              --SuccDepth;
+              if (SuccDepth < 0) {
+                BailSucc = true; // underflow before slot touch
+                break;
+              }
+            }
+            if (isExplicitSPWrite(*T, TRI)) {
+              BailSucc = true; // SP modification before touch
+              break;
+            }
+            if (isAnyBssAccess(O) && sameBssAddress(*MII, *T)) {
+              SuccTouches = true;
+              FirstTouch = T;
+              break;
+            }
+          }
+          if (BailSucc)
+            break;
+
+          if (!SuccTouches) {
+            // Escape successor candidate.
+            if (Succ->pred_size() == 1 && *Succ->pred_begin() == &MBB_A) {
+              // Prepend in-place: MBB_A is sole predecessor of this escape.
+              Escapes.push_back({Succ, ESC_PrependInPlace});
+              continue;
+            }
+            // Edge-split candidate: MBB_A must have explicit branch to Succ.
+            bool HasExplicitEdge = false;
+            for (auto Ti = MBB_A.getFirstTerminator(); Ti != MBB_A.end(); ++Ti) {
+              for (const MachineOperand &MO : Ti->operands()) {
+                if (MO.isMBB() && MO.getMBB() == Succ) {
+                  HasExplicitEdge = true;
+                  break;
+                }
+              }
+              if (HasExplicitEdge)
+                break;
+            }
+            if (!HasExplicitEdge) {
+              BailSucc = true; // cannot split fall-through edge safely
+              break;
+            }
+            MachineBasicBlock *Prev = Succ->getPrevNode();
+            if (Prev && Prev->canFallThrough() &&
+                Prev->isLayoutSuccessor(Succ) &&
+                !OurNewMBBs.contains(Prev)) {
+              BailSucc = true; // unrelated block falls through into Succ (#143)
+              break;
+            }
+            Escapes.push_back({Succ, ESC_InsertBefore});
+            continue;
+          }
+
+          // Slot touched in Succ: must match store opcode class.
+          if (!isMatchingLoad(SI->StoreOpc, FirstTouch->getOpcode())) {
+            BailSucc = true; // mismatch between store and load opcode classes
+            break;
+          }
+          if (SuccDepth != 0) {
+            BailSucc = true; // stack depth not zero at load site
+            break;
+          }
+          if (MBB_B != nullptr) {
+            BailSucc = true; // more than one load-bearing successor block
+            break;
+          }
+          MBB_B = Succ;
+          LoadIt = FirstTouch;
+        }
+
+        if (BailSucc || !MBB_B)
+          continue; // invalid successor structure
+
+        // MBB_B must be reached only from MBB_A (issue #156).
+        if (MBB_B->pred_size() != 1 || *MBB_B->pred_begin() != &MBB_A)
+          continue; // back-edge or alternate entry would leak SP (#156)
+
+        // Ensure no other block accesses the slot unless strictly dominating (issue #155).
+        if (isSlotUsedElsewhere(MF, *MII, {&MBB_A, MBB_B}, MDT.get(), &MBB_A))
+          continue; // slot used in non-dominating blocks (#155, #203)
+
+        // For POP AF: FLAGS must be dead after the reload position.
+        if (SI->PopOpc == Z80::POP_AF) {
+          auto After = std::next(LoadIt);
+          if (!isRegDeadAfter(After, *MBB_B, TRI, Z80::FLAGS))
+            continue; // FLAGS live across reload point
+        }
+
+        // Cost gate with liveness-driven compensation probing (issue #138).
+        SmallVector<unsigned, 4> EscPopOpc(Escapes.size(), 0u);
+        unsigned CompCost = 0;
+        for (size_t i = 0; i < Escapes.size(); ++i) {
+          MachineBasicBlock *MBB_C = Escapes[i].MBB_C;
+          struct { unsigned Op; MCPhysReg Hi, Lo; } Pairs[] = {
+            {Z80::POP_AF, Z80::A, Z80::FLAGS},
+            {Z80::POP_HL, Z80::H, Z80::L},
+            {Z80::POP_DE, Z80::D, Z80::E},
+            {Z80::POP_BC, Z80::B, Z80::C},
+          };
+          for (const auto &P : Pairs) {
+            if (!MBB_C->isLiveIn(P.Hi) && !MBB_C->isLiveIn(P.Lo)) {
+              EscPopOpc[i] = P.Op; // dead register pair allows 1-byte POP
+              break;
+            }
+          }
+          CompCost += EscPopOpc[i] ? 1 : 2;
+        }
+        unsigned PushPopSave = (SI->StoreBytes - 1) + (SI->LoadBytes - 1);
+        if (PushPopSave <= CompCost)
+          continue; // rewrite does not reduce code size
+
+        LLVM_DEBUG({
+          dbgs() << "  Cross-MBB BSS spill→PUSH/POP: " << *MII
+                 << "  load in BB#" << MBB_B->getNumber() << ", "
+                 << Escapes.size() << " escape MBB(s), saves "
+                 << (PushPopSave - CompCost) << "B\n";
+        });
+
+        // Rewrite MBB_A: STORE -> PUSH.
+        DebugLoc DLs = MII->getDebugLoc();
+        BuildMI(MBB_A, *MII, DLs, TII->get(SI->PushOpc));
+        MBB_A.erase(MII);
+
+        // Rewrite MBB_B: LOAD -> POP.
+        DebugLoc DLl = LoadIt->getDebugLoc();
+        BuildMI(*MBB_B, *LoadIt, DLl, TII->get(SI->PopOpc));
+        MBB_B->erase(LoadIt);
+
+        // Emit compensation on each escape edge.
+        for (size_t i = 0; i < Escapes.size(); ++i) {
+          auto &E = Escapes[i];
+          MachineBasicBlock *MBB_C = E.MBB_C;
+          DebugLoc DLc;
+          unsigned PopOpc = EscPopOpc[i];
+          auto emitComp = [&](MachineBasicBlock *MBB,
+                              MachineBasicBlock::iterator It) {
+            if (PopOpc) {
+              BuildMI(*MBB, It, DLc, TII->get(PopOpc));
+            } else {
+              BuildMI(*MBB, It, DLc, TII->get(Z80::INC_SP));
+              BuildMI(*MBB, It, DLc, TII->get(Z80::INC_SP));
+            }
+          };
+          if (E.Kind == ESC_PrependInPlace) {
+            emitComp(MBB_C, MBB_C->begin());
+          } else {
+            MachineBasicBlock *NewMBB = MF.CreateMachineBasicBlock();
+            MF.insert(MBB_C->getIterator(), NewMBB);
+            for (const auto &LI : MBB_C->liveins())
+              NewMBB->addLiveIn(LI);
+            emitComp(NewMBB, NewMBB->end());
+            NewMBB->addSuccessor(MBB_C);
+            MBB_A.ReplaceUsesOfBlockWith(MBB_C, NewMBB);
+            OurNewMBBs.insert(NewMBB); // track created block (#143)
+          }
+        }
+
+        recomputeLivenessFlags(MBB_A);
+        recomputeLivenessFlags(*MBB_B);
+        for (auto &E : Escapes)
+          recomputeLivenessFlags(*E.MBB_C);
+
+        ++NumBssSpillsToPushPop;
+        Changed = true;
+        RestartOuter = true;
+        break;
+      }
+    }
   }
 
   return Changed;
@@ -4246,6 +4550,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   }
 
   Changed |= optimizeBssSpills(MF, TII, TRI, STI);
+  Changed |= optimizeCrossMbbBssSpills(MF, TII, TRI, STI);
 
   // Run last: earlier peepholes pattern-match LDHL-based slot accesses
   // (redundant store elimination keys slot identity on them), so the
