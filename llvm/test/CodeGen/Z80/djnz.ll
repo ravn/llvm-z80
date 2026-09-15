@@ -39,7 +39,6 @@ entry:
 ; CHECK:      	ld	d,a
 ; CHECK:      	inc	hl
 ; CHECK:      	djnz	.LBB1_1
-; CHECK:      	ld	a,d
 ; CHECK:      	pop	bc
 ; CHECK:      	inc	sp
 ; CHECK:      	push	bc

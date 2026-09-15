@@ -22,6 +22,7 @@
 #include "Z80Subtarget.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
@@ -90,6 +91,8 @@ STATISTIC(NumAndRotateFolds,
 STATISTIC(NumDecIncEquality,
           "Number of CP/XOR 1/0xFF folded to DEC_A/INC_A");
 STATISTIC(NumBranchesShortened, "Number of JP branches shortened to JR");
+STATISTIC(NumRedundantLdAR,
+          "Number of redundant LD A,r instructions eliminated");
 
 using namespace llvm;
 
@@ -3194,6 +3197,221 @@ static bool optimizeDecIncEquality(MachineFunction &MF,
   return Changed;
 }
 
+// --- Pass: Redundant LD A,r removal across basic blocks (issue #60) ---
+//
+// When a value is saved into an 8-bit register via `LD r, A` and A is not
+// subsequently modified, reloading A via `LD A, r` is redundant.
+// Forward dataflow tracks whether A currently holds the value of register r.
+//
+// WHY it's there:
+// Regalloc frequently emits `LD r, A` before a comparison or branch, and then
+// redundantly reloads `LD A, r` in successor blocks (e.g. fdc_get_result_bytes).
+// Because CP, OR A, branches, and other non-A-modifying instructions preserve
+// A, the reload is a pure no-op.
+//
+// Soundness & Ordering:
+// - Runs AFTER per-MBB peepholes and DJNZ optimization. In-block loop counters
+//   (LD A,B; DEC A; LD B,A) must NOT have their initial load removed prematurely.
+// - Erasing `LD A, r` makes A live across the block boundary. We explicitly add
+//   A to MBB's live-in set if the erased load was the reaching def in that block,
+//   and recompute kill/liveness flags for the block and its predecessors.
+//
+// Worked example (from redundant-ld-a-reg.ll @cross_block_chain):
+//   entry:
+//     CALL _compute
+//     LD B, A             ; A and B hold same value
+//     CP #2               ; CP sets flags, leaves A unchanged
+//     JR NZ, .LBB0_2
+//     LD A, B             ; <-- REDUNDANT, removed (saves 1 B)
+//     RET
+//   .LBB0_2:
+//     LD A, B             ; <-- REDUNDANT, removed (saves 1 B)
+//     OR A                ; OR A sets flags, leaves A unchanged
+//     JR Z, .LBB0_4
+//     LD A, B             ; <-- REDUNDANT, removed (saves 1 B)
+//     LD (_g8), A
+//     RET
+static bool eliminateRedundantLdAR(MachineFunction &MF,
+                                   const TargetRegisterInfo *TRI) {
+  if (MF.empty())
+    return false;
+
+  enum AKKind : uint8_t { AK_Top = 0, AK_Bottom = 1, AK_Reg = 2 };
+  struct AK {
+    uint8_t Kind = AK_Top;
+    MCPhysReg Reg = 0;
+    bool operator==(const AK &O) const {
+      return Kind == O.Kind && (Kind != AK_Reg || Reg == O.Reg);
+    }
+  };
+  auto akTop = []() { AK a; a.Kind = AK_Top; return a; };
+  auto akBot = []() { AK a; a.Kind = AK_Bottom; return a; };
+  auto akReg = [](MCPhysReg R) { AK a; a.Kind = AK_Reg; a.Reg = R; return a; };
+  auto akMeet = [&](AK X, AK Y) -> AK {
+    if (X.Kind == AK_Top) return Y;
+    if (Y.Kind == AK_Top) return X;
+    if (X.Kind == AK_Bottom || Y.Kind == AK_Bottom) return akBot();
+    return X.Reg == Y.Reg ? X : akBot();
+  };
+
+  auto isReg8 = [](Register R) {
+    return R == Z80::B || R == Z80::C || R == Z80::D || R == Z80::E ||
+           R == Z80::H || R == Z80::L;
+  };
+
+  auto step60 = [&](MachineInstr &MI, AK Known, bool *Redundant) -> AK {
+    if (Redundant) *Redundant = false;
+    if (MI.isDebugInstr())
+      return Known;
+    unsigned Opc = MI.getOpcode();
+    if (Opc == TargetOpcode::KILL || Opc == TargetOpcode::IMPLICIT_DEF)
+      return Known;
+
+    // LD A, r - sets Known to r. Redundant if A already equals r.
+    if (isLD8(MI)) {
+      Register Dst = MI.getOperand(0).getReg();
+      Register Src = MI.getOperand(1).getReg();
+      if (Dst == Z80::A && isReg8(Src)) {
+        if (Known.Kind == AK_Reg && Known.Reg == Src && Redundant)
+          *Redundant = true;
+        return akReg(Src.asMCReg());
+      }
+      // LD r, A - A's value is now also in r.
+      if (Src == Z80::A && isReg8(Dst))
+        return akReg(Dst.asMCReg());
+      if (Dst == Z80::A && Src == Z80::A)
+        return Known;
+    }
+
+    // OR A and AND A are idempotent on A's value; they only update FLAGS.
+    if (isAlu8(MI, Z80::OR_r, Z80::A) || isAlu8(MI, Z80::AND_r, Z80::A))
+      return Known;
+
+    // CP r / CP n only sets flags, leaves A unchanged.
+    if (Opc == Z80::CP_r || Opc == Z80::CP_n || Opc == Z80::CP_HLind)
+      return Known;
+
+    // Check for clobbers of A or the tracked register.
+    bool ClobberA = false, ClobberKnown = false;
+    for (const MachineOperand &MO : MI.operands()) {
+      if (MO.isRegMask()) {
+        ClobberA = true; ClobberKnown = true; break;
+      }
+      if (!MO.isReg() || !MO.isDef() || !MO.getReg().isPhysical())
+        continue;
+      Register R = MO.getReg();
+      if (TRI->regsOverlap(R, Z80::A))
+        ClobberA = true;
+      if (Known.Kind == AK_Reg && TRI->regsOverlap(R, Known.Reg))
+        ClobberKnown = true;
+    }
+    for (MCPhysReg D : MI.getDesc().implicit_defs()) {
+      if (TRI->regsOverlap(D, Z80::A))
+        ClobberA = true;
+      if (Known.Kind == AK_Reg && TRI->regsOverlap(D, Known.Reg))
+        ClobberKnown = true;
+    }
+    if (ClobberA || ClobberKnown)
+      return akBot();
+    return Known;
+  };
+
+  // Dataflow fixpoint iteration.
+  DenseMap<MachineBasicBlock *, AK> EntryAK, ExitAK;
+  for (auto &MBB : MF) {
+    EntryAK[&MBB] = akTop();
+    ExitAK[&MBB] = akTop();
+  }
+  EntryAK[&MF.front()] = akBot();
+
+  SmallVector<MachineBasicBlock *, 32> RPO;
+  for (auto *BB : ReversePostOrderTraversal<MachineFunction *>(&MF))
+    RPO.push_back(BB);
+
+  bool DfChanged = true;
+  int Iter = 0;
+  while (DfChanged && Iter++ < 16) {
+    DfChanged = false;
+    for (auto *BB : RPO) {
+      if (BB != &MF.front()) {
+        AK E = akTop();
+        for (auto *Pred : BB->predecessors())
+          E = akMeet(E, ExitAK[Pred]);
+        if (!(EntryAK[BB] == E)) {
+          EntryAK[BB] = E;
+          DfChanged = true;
+        }
+      }
+      AK K = EntryAK[BB];
+      for (auto &MI : *BB)
+        K = step60(MI, K, nullptr);
+      if (!(ExitAK[BB] == K)) {
+        ExitAK[BB] = K;
+        DfChanged = true;
+      }
+    }
+  }
+
+  // Collection pass: identify redundant LD A, r instructions.
+  SmallVector<MachineInstr *, 16> ToErase;
+  for (auto &MBB : MF) {
+    AK K = EntryAK[&MBB];
+    for (auto &MI : MBB) {
+      bool Red = false;
+      AK Next = step60(MI, K, &Red);
+      if (Red)
+        ToErase.push_back(&MI);
+      K = Next;
+    }
+  }
+
+  if (ToErase.empty())
+    return false;
+
+  auto defsPhysA = [&](const MachineInstr &MI) {
+    for (const MachineOperand &MO : MI.operands())
+      if (MO.isReg() && MO.isDef() && MO.getReg().isPhysical() &&
+          TRI->regsOverlap(MO.getReg(), Z80::A))
+        return true;
+    for (MCPhysReg D : MI.getDesc().implicit_defs())
+      if (TRI->regsOverlap(D, Z80::A))
+        return true;
+    return false;
+  };
+
+  SmallPtrSet<MachineBasicBlock *, 8> AffectedMBBs;
+  for (auto &MBB : MF) {
+    bool NeedALiveIn = false;
+    for (auto &MI : MBB) {
+      if (llvm::is_contained(ToErase, &MI)) {
+        NeedALiveIn = true;
+        break;
+      }
+      if (defsPhysA(MI))
+        break;
+    }
+    if (NeedALiveIn) {
+      if (!MBB.isLiveIn(Z80::A))
+        MBB.addLiveIn(Z80::A);
+      AffectedMBBs.insert(&MBB);
+      for (auto *Pred : MBB.predecessors())
+        AffectedMBBs.insert(Pred);
+    }
+  }
+
+  for (auto *MI : ToErase) {
+    LLVM_DEBUG(dbgs() << "  Redundant LD A,r removed: " << *MI);
+    AffectedMBBs.insert(MI->getParent());
+    MI->eraseFromParent();
+    ++NumRedundantLdAR;
+  }
+
+  for (auto *MBB : AffectedMBBs)
+    recomputeLivenessFlags(*MBB);
+
+  return true;
+}
+
 // --- Pass: JP -> JR branch shortening (issue #58) ---
 // Convert all unconditional JP and conditional JP (Z, NZ, C, NC) instructions
 // with MachineBasicBlock targets to their 2-byte JR equivalents.
@@ -4632,6 +4850,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   }
 
   Changed |= optimizeTailCalls(MF, TII, TRI, STI);
+  Changed |= eliminateRedundantLdAR(MF, TRI);
   Changed |= shortenBranches(MF, TII);
 
   return Changed;

@@ -70,7 +70,6 @@ exit:
 ; CHECK:      	ld	d,a
 ; CHECK:      	inc	hl
 ; CHECK:      	djnz	.LBB1_1
-; CHECK:      	ld	a,d
 ; CHECK:      	pop	bc
 ; CHECK:      	inc	sp
 ; CHECK:      	push	bc
@@ -128,7 +127,6 @@ exit:
 ; CHECK:      	ld	hl,#0
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	(hl),b
-; CHECK:      	ld	a,b
 ; CHECK:      	call	_sink
 ; CHECK:      	ld	hl,#0
 ; CHECK:      	add	hl,sp

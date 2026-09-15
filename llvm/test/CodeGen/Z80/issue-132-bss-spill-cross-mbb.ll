@@ -21,8 +21,7 @@ declare i16 @target()
 ; CHECK-LABEL: retry:
 ; CHECK:       ld	b,a
 ; CHECK-LABEL: .LBB0_1:
-; CHECK:       ld	a,b
-; CHECK-NEXT:  push	af
+; CHECK:       push	af
 ; CHECK-NEXT:  call	_target
 ; CHECK:       jr	nz,.LBB0_4
 ; CHECK-LABEL: ; %bb.2:

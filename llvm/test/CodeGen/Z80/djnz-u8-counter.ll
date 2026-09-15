@@ -47,7 +47,6 @@ exit:
 ; CHECK:      	ld	hl,#0
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	(hl),b
-; CHECK:      	ld	a,b
 ; CHECK:      	call	_write_byte
 ; CHECK:      	ld	hl,#0
 ; CHECK:      	add	hl,sp
