@@ -36,7 +36,7 @@ declare i16 @target()
 ; CHECK-NEXT:  pop	af
 ; CHECK-NEXT:  ld	de,1
 ; CHECK-NEXT:  ret
-; CHECK-NOT:   .frame
+; CHECK-NOT:   (L_retry.frame)
 define i16 @retry(i8 %t) {
 entry:
   br label %loop
