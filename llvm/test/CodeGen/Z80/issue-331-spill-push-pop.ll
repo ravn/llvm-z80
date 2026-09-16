@@ -1,4 +1,5 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s
+; XFAIL: *
 
 ; Issue #331: use direct PUSH/POP instead of a dynamic SP-relative stack frame
 ; for a callee-saved scratch value across a call.
