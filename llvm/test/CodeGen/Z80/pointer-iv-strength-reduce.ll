@@ -3,7 +3,6 @@
 ; RUN: llc -O2 -mtriple=z80 -z80-enable-pin-loop-pointer=false \
 ; RUN:     -z80-enable-hbf-branch=false -z80-enable-sink-cold-loop-iv=false < %s \
 ; RUN:   | FileCheck %s
-; XFAIL: *
 ; OFF control: force the whole stack off (it is otherwise auto-on at -O2).
 ; RUN: llc -O2 -mtriple=z80 -z80-enable-loop-instr-form-prep=false < %s \
 ; RUN:   | FileCheck %s --check-prefix=OFF
@@ -21,7 +20,9 @@
 ; CHECK: ld hl,_flags
 ; CHECK-LABEL: .LBB0_1:
 ; CHECK-NOT: ld hl,_flags
-; CHECK: add hl,de
+; Register allocator may pick BC or DE for the stride; the shape (single
+; register-based increment, no reload of _flags) is what matters.
+; CHECK: add hl,{{bc|de}}
 ; CHECK: jr
 
 ; With the pass forced OFF the base is reloaded every iteration -- the #250
