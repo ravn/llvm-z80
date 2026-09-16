@@ -1,4 +1,4 @@
-# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=prologepilog \
+# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=prolog-epilog \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 # XFAIL: *
 #

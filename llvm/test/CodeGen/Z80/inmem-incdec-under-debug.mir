@@ -1,0 +1,59 @@
+# RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole -verify-machineinstrs %s -o - \
+# RUN:     | FileCheck %s
+# RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole -verify-machineinstrs \
+# RUN:     -debugify-and-strip-all-safe %s -o - | FileCheck %s
+#
+# In-memory INC/DEC peephole must skip DBG_VALUE between matched instructions
+# so it still fires under -g. optimizeInMemoryIncDec uses
+# MBB.SkipPHIsLabelsAndDebug(std::next(...)) at every step so a debug pseudo
+# between the LD/INC/LD triple does not silently bail. The two RUN lines
+# assert the fold fires both without and with debug pseudos injected
+# (-debugify-and-strip-all-safe).
+
+--- |
+  target triple = "z80"
+  @g = external global i8
+  define void @inc_mem_ret() { ret void }
+  define void @dec_mem_ret() { ret void }
+...
+
+# INC shape: LD A,(g); INC A; LD (g),A; RET → LD HL,g; INC (HL); RET.
+# A is dead after the store (function returns next).
+---
+name:            inc_mem_ret
+tracksRegLiveness: true
+body: |
+  bb.0:
+    LD_A_nnind @g, implicit-def $a
+    $a = INC_r $a, implicit-def $flags
+    LD_nnind_A @g, implicit $a
+    RET
+...
+
+# CHECK-LABEL: name: inc_mem_ret
+# CHECK:      $hl = LD_rr_nn @g
+# CHECK-NEXT: INC_HLind
+# CHECK-NEXT: RET
+# CHECK-NOT:  LD_A_nnind
+# CHECK-NOT:  INC_r
+# CHECK-NOT:  LD_nnind_A
+
+# DEC shape: LD A,(g); DEC A; LD (g),A; RET → LD HL,g; DEC (HL); RET.
+---
+name:            dec_mem_ret
+tracksRegLiveness: true
+body: |
+  bb.0:
+    LD_A_nnind @g, implicit-def $a
+    $a = DEC_r $a, implicit-def $flags
+    LD_nnind_A @g, implicit $a
+    RET
+...
+
+# CHECK-LABEL: name: dec_mem_ret
+# CHECK:      $hl = LD_rr_nn @g
+# CHECK-NEXT: DEC_HLind
+# CHECK-NEXT: RET
+# CHECK-NOT:  LD_A_nnind
+# CHECK-NOT:  DEC_r
+# CHECK-NOT:  LD_nnind_A

@@ -1,6 +1,5 @@
-# RUN: llc -mtriple=z80 -run-pass=prologepilog -verify-machineinstrs %s -o - \
+# RUN: llc -mtriple=z80 -run-pass=prolog-epilog -verify-machineinstrs %s -o - \
 # RUN:   | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80 #197: the SP-relative spill expander borrows HL as address
 # scratch only when isRegLiveAt(HL) says HL is live past the spill.  isRegLiveAt

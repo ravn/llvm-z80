@@ -1,6 +1,5 @@
 # RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-pre-emit-peephole \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#140: regression coverage for the cross-MBB BSS-spill
 # peephole (see #132 commit 15e4eef6e62d).
@@ -79,12 +78,12 @@ body:             |
 
     ; LOAD from BSS slot, then return.
     LD_A_nnind <mcsymbol __sframe_foo>, implicit-def $a
-    LD_E_A implicit-def $e, implicit $a
-    LD_D_n 0, implicit-def $d
+    $e = LD_r_r $a
+    $d = LD_r_n 0
     RET implicit $de
 
   bb.2.escape:
-    LD_DE_nn 0, implicit-def $de
+    $de = LD_rr_nn 0
     RET implicit $de
 
 ...
