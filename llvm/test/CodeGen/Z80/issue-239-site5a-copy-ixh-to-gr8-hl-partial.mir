@@ -1,7 +1,6 @@
 # RUN: llc -mtriple=z80 \
 # RUN:     -run-pass=postrapseudos -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#239 site 5a: copyPhysReg IXH/IXL/IYH/IYL -> GR8 (dest not
 # H/L), without +undocumented.  The path saves HL unconditionally before
@@ -36,5 +35,5 @@ body:             |
 # CHECK-NEXT: PUSH_HL
 # CHECK:      PUSH_IX
 # CHECK:      POP_HL
-# CHECK:      LD_E_H
+# CHECK:      $e = LD_r_r $h
 # CHECK:      POP_HL

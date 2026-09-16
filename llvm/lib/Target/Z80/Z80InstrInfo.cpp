@@ -303,6 +303,16 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
           BuildMI(MBB, I, DL, get(Z80::POP_DE));
         }
       } else {
+        // IMPLICIT_DEF any dead half of HL so the PUSH_HL save reads a
+        // defined (don't-care) register when only one half is live at the
+        // COPY point (#239 site 5a).
+        const TargetRegisterInfo *TRI = STI->getRegisterInfo();
+        if (MBB.computeRegisterLiveness(TRI, Z80::L, I) ==
+            MachineBasicBlock::LQR_Dead)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+        if (MBB.computeRegisterLiveness(TRI, Z80::H, I) ==
+            MachineBasicBlock::LQR_Dead)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
         Z80::emitHLSavePush(MBB, I, DL, *this);
         BuildMI(MBB, I, DL, get(PushOp));
         BuildMI(MBB, I, DL, get(Z80::POP_HL));
@@ -340,6 +350,18 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
         return;
       }
 
+      // IMPLICIT_DEF any dead half of HL so the PUSH_HL save reads a
+      // defined (don't-care) register when only one half is live at the
+      // COPY point (#239 site 5c).
+      {
+        const TargetRegisterInfo *TRI = STI->getRegisterInfo();
+        if (MBB.computeRegisterLiveness(TRI, Z80::L, I) ==
+            MachineBasicBlock::LQR_Dead)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+        if (MBB.computeRegisterLiveness(TRI, Z80::H, I) ==
+            MachineBasicBlock::LQR_Dead)
+          BuildMI(MBB, I, DL, get(TargetOpcode::IMPLICIT_DEF), Z80::H);
+      }
       Z80::emitHLSavePush(MBB, I, DL, *this);
       BuildMI(MBB, I, DL, get(PushIR));
       BuildMI(MBB, I, DL, get(Z80::POP_HL));
