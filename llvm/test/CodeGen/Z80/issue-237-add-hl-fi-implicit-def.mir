@@ -1,7 +1,6 @@
 # RUN: llc -mtriple=z80 -z80-enable-auto-static-frame=false \
 # RUN:     -run-pass=prolog-epilog -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#237: ADD_HL_FI / SUB_HL_FI large-offset fallback emitted an
 # unconditional PUSH_HL to save the running sum before emitLargeOffsetAddr
@@ -47,4 +46,4 @@ body: |
 # CHECK:      $h = IMPLICIT_DEF
 # CHECK-NEXT: PUSH_HL
 # Final ADD uses the restored HL (running sum) plus the loaded frame value.
-# CHECK:      ADD_HL_{{BC|DE}}
+# CHECK:      ADD_HL_rr ${{bc|de}}

@@ -1449,6 +1449,14 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
 
       if (NeedSaveTemp)
         Z80::emitPairSavePush(MBB, MI, DL, TII, TempReg);
+      // IMPLICIT_DEF any half of HL that is dead at NextIt so the running-sum
+      // PUSH_HL reads a defined register even when fastregalloc leaves one
+      // half implicit-undef (only the low or high byte of the running sum is
+      // ever used downstream). Verifier requires defined pair reads (#237).
+      if (!isRegLiveAt(Z80::L, MBB, NextIt, this))
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Z80::L);
+      if (!isRegLiveAt(Z80::H, MBB, NextIt, this))
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::IMPLICIT_DEF), Z80::H);
       emitHLSavePush(MBB, MI, DL, TII);
 
       int SPAdj = 2 + (NeedSaveTemp ? 2 : 0);
