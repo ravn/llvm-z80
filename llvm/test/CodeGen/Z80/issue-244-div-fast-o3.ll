@@ -5,25 +5,24 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O3 < %s | FileCheck %s --check-prefix=FAST
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s --check-prefix=SMALL
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s --check-prefix=SMALL
-; XFAIL: *
 
 define i16 @sdiv16(i16 %a, i16 %b) {
 ; FAST-LABEL: _sdiv16:
-; FAST:        jp ___divhi3_fast
+; FAST:        {{call|jp}} ___divhi3_fast
 ; CHECK-LABEL: sdiv16:
 ; CHECK:      	call	___divhi3
 ; CHECK:      	ret
 ; SMALL-LABEL: _sdiv16:
-; SMALL:       jp ___divhi3{{$}}
+; SMALL:       {{call|jp}} ___divhi3{{$}}
   %r = sdiv i16 %a, %b
   ret i16 %r
 }
 
 define i16 @udiv16(i16 %a, i16 %b) {
 ; FAST-LABEL: _udiv16:
-; FAST:        jp ___udivhi3_fast
+; FAST:        {{call|jp}} ___udivhi3_fast
 ; SMALL-LABEL: _udiv16:
-; SMALL:       jp ___udivhi3{{$}}
+; SMALL:       {{call|jp}} ___udivhi3{{$}}
   %r = udiv i16 %a, %b
 ; CHECK-LABEL: udiv16:
 ; CHECK:      	call	___udivhi3
@@ -33,9 +32,9 @@ define i16 @udiv16(i16 %a, i16 %b) {
 
 define i16 @srem16(i16 %a, i16 %b) {
 ; FAST-LABEL: _srem16:
-; FAST:        jp ___modhi3_fast
+; FAST:        {{call|jp}} ___modhi3_fast
 ; SMALL-LABEL: _srem16:
-; SMALL:       jp ___modhi3{{$}}
+; SMALL:       {{call|jp}} ___modhi3{{$}}
   %r = srem i16 %a, %b
   ret i16 %r
 }
@@ -45,9 +44,9 @@ define i16 @srem16(i16 %a, i16 %b) {
 ; CHECK:      	ret
 define i16 @urem16(i16 %a, i16 %b) {
 ; FAST-LABEL: _urem16:
-; FAST:        jp ___umodhi3_fast
+; FAST:        {{call|jp}} ___umodhi3_fast
 ; SMALL-LABEL: _urem16:
-; SMALL:       jp ___umodhi3{{$}}
+; SMALL:       {{call|jp}} ___umodhi3{{$}}
   %r = urem i16 %a, %b
   ret i16 %r
 }
@@ -72,7 +71,7 @@ define i16 @sdivrem16(i16 %a, i16 %b) {
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O3 < %s | FileCheck %s --check-prefix=OPTSIZE
 define i16 @sdiv16_optsize(i16 %a, i16 %b) optsize {
 ; OPTSIZE-LABEL: _sdiv16_optsize:
-; OPTSIZE:       jp ___divhi3{{$}}
+; OPTSIZE:       {{call|jp}} ___divhi3{{$}}
   %r = sdiv i16 %a, %b
   ret i16 %r
 }
