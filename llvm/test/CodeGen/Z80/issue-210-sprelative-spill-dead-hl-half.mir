@@ -1,6 +1,5 @@
 # RUN: llc -mtriple=z80 -run-pass=prolog-epilog -verify-machineinstrs %s -o - \
 # RUN:   | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80 #210: in the default config (no +static-frame, no frame
 # pointer) eliminateFrameIndex reaches a stack slot SP-relative by borrowing

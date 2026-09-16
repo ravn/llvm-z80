@@ -72,11 +72,12 @@ define cc 129 i16 @mixed_i8_i16(i8 %a, i16 %b) {
   ret i16 %b
 }
 ; CHECK-LABEL: one_i8:
-; CHECK:      	push	hl
-; CHECK:      	ld	hl,#4
+; No push hl needed: HL is dead across the reload, and the following
+; ld l,a writes L (the pre-value of L is not needed). #210 sibling-half
+; liveness fix.
+; CHECK:      	ld	hl,#2
 ; CHECK:      	add	hl,sp
 ; CHECK:      	ld	a,(hl)
-; CHECK:      	pop	hl
 ; CHECK:      	ld	l,a
 ; CHECK:      	ret
 

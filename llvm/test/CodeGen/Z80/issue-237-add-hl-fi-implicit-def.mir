@@ -38,7 +38,7 @@ body: |
     ; ADD_HL_FI folds a frame-indexed load into the HL running sum.
     ; Slot 1 is at large offset (>127) → large-offset expansion path.
     ; H is dead after (only $l returned) → IMPLICIT_DEF $h before PUSH_HL.
-    ADD_HL_FI %stack.1, implicit-def $hl, implicit-def $a, implicit-def $flags, implicit $hl
+    ADD_HL_FI %stack.1, 0, implicit-def $hl, implicit-def $a, implicit-def $flags, implicit $hl
     RET implicit $l
 ...
 

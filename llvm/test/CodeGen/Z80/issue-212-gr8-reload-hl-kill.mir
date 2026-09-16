@@ -1,6 +1,5 @@
 # RUN: llc -mtriple=z80 --z80-static-frames -run-pass=prolog-epilog \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80 #212 -- at -O0 with +static-frame, fastregalloc kills $hl
 # at an XOR_CMP_EQ16 (consumed both halves into the flag result).  The
@@ -72,4 +71,9 @@ body:             |
 # bracket) that disappears with the fix.  Check that no PUSH_HL is emitted.
 #
 # CHECK-LABEL: name: reload_h_after_hl_kill
-# CHECK-NOT: PUSH_HL
+# Anchor to the XOR_CMP_EQ16 that kills HL; the following RELOAD_GR8 large-
+# offset expansion legitimately borrows via PUSH_IX; POP_HL, but must NOT
+# emit a PUSH_HL (which would read killed $hl).
+# CHECK:      XOR_CMP_EQ16
+# CHECK-NOT:  PUSH_HL
+# CHECK:      RET

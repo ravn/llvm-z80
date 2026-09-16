@@ -1,7 +1,6 @@
 # RUN: llc -mtriple=z80 -z80-enable-auto-static-frame=false \
 # RUN:     -run-pass=prolog-epilog -verify-machineinstrs %s -o - \
 # RUN:     | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#236: expandSpillGR16LargeOffset / expandSpillGR16SPRelative
 # HL-source branches used !MI->getOperand(0).isKill() to decide whether to
@@ -50,6 +49,6 @@ body: |
 # Large-offset expansion saves HL data via temp, does address calc, stores,
 # then restores HL from temp because HL is live after the spill.
 # The restore is two LD r,r' copies: LD L,? ; LD H,?
-# CHECK:      LD_L_{{[CDE]}}
-# CHECK:      LD_H_{{[BDE]}}
+# CHECK:      $l = LD_r_r ${{[cde]}}
+# CHECK:      $h = LD_r_r ${{[bde]}}
 # CHECK:      RET implicit $hl

@@ -372,10 +372,16 @@ static void expandReloadGR8LargeOffset(MachineBasicBlock &MBB,
   bool PreserveFlags = isFlagsLiveAfter(MI, TRI);
   auto NextIt = std::next(MachineBasicBlock::iterator(MI));
 
-  // When reloading into H or L, always save/restore HL: consecutive
-  // RELOAD_GR8 for H and L need the restored HL so the second reload's
-  // "LD DstReg, A" writes into a correctly-preserved register pair.
-  bool NeedSaveHL = DstIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  // When reloading into H or L, save HL only if the SIBLING half is live —
+  // the half being loaded is about to be overwritten by the closing
+  // LD DstReg,A, so its pre-reload value doesn't need preserving (#212).
+  bool NeedSaveHL;
+  if (DstIsHL) {
+    Register Sibling = (DstReg == Z80::H) ? Z80::L : Z80::H;
+    NeedSaveHL = isRegLiveAt(Sibling, MBB, NextIt, TRI);
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  }
   bool NeedSaveTemp = isRegLiveAt(TempReg, MBB, NextIt, TRI);
   bool NeedSaveAF = DstIsHL && isRegLiveAt(Z80::A, MBB, NextIt, TRI);
 
@@ -445,8 +451,10 @@ static void expandSpillGR16LargeOffset(MachineBasicBlock &MBB,
     Z80::buildIncDec16(MBB, MI, DL, TII, Z80::INC_rr, Z80::HL);
     Z80::buildStoreHL(MBB, MI, DL, TII, TempHi);
 
-    // Restore HL from TempReg if the spill didn't kill HL.
-    if (!MI->getOperand(0).isKill()) {
+    // Restore HL from TempReg if HL is live after the spill.
+    // (isKill() on the operand is a hint that can go stale under regalloc
+    // reordering; authoritative liveness at NextIt is the correct gate — #236.)
+    if (isRegLiveAt(Z80::HL, MBB, NextIt, TRI)) {
       Z80::buildLD8(MBB, MI, DL, TII, Z80::L, TempLo);
       Z80::buildLD8(MBB, MI, DL, TII, Z80::H, TempHi);
     }
@@ -626,7 +634,15 @@ static void expandSpillGR8SPRelative(bool IsStatic, MachineBasicBlock &MBB,
   if (SrcIsHL)
     Z80::buildLD8(MBB, MI, DL, TII, Z80::A, SrcReg);
 
-  bool NeedSaveHL = SrcIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  // When spilling H or L, save HL only if the SIBLING half is live — the
+  // half being spilled has already been copied to A above (#210).
+  bool NeedSaveHL;
+  if (SrcIsHL) {
+    Register Sibling = (SrcReg == Z80::H) ? Z80::L : Z80::H;
+    NeedSaveHL = isRegLiveAt(Sibling, MBB, NextIt, TRI);
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  }
   if (NeedSaveHL) {
     emitHLSavePush(MBB, MI, DL, TII);
     SPDelta += 2;
@@ -663,7 +679,16 @@ static void expandReloadGR8SPRelative(bool IsStatic, MachineBasicBlock &MBB,
     SPDelta += 2;
   }
 
-  bool NeedSaveHL = DstIsHL || isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  // When reloading into H or L, save HL only if the SIBLING half is live —
+  // the loaded half is about to be overwritten by the closing LD DstReg,A
+  // (#210).
+  bool NeedSaveHL;
+  if (DstIsHL) {
+    Register Sibling = (DstReg == Z80::H) ? Z80::L : Z80::H;
+    NeedSaveHL = isRegLiveAt(Sibling, MBB, NextIt, TRI);
+  } else {
+    NeedSaveHL = isRegLiveAt(Z80::HL, MBB, NextIt, TRI);
+  }
   if (NeedSaveHL) {
     emitHLSavePush(MBB, MI, DL, TII);
     SPDelta += 2;
@@ -762,8 +787,8 @@ static void expandSpillGR16SPRelative(bool IsStatic, MachineBasicBlock &MBB,
     Z80::buildIncDec16(MBB, MI, DL, TII, Z80::INC_rr, Z80::HL);
     Z80::buildStoreHL(MBB, MI, DL, TII, TempHi);
 
-    if (!MI->getOperand(0).isKill()) {
-      // Restore HL from TempReg
+    // Restore HL from TempReg if HL is live after the spill (#236).
+    if (isRegLiveAt(Z80::HL, MBB, NextIt, TRI)) {
       Z80::buildLD8(MBB, MI, DL, TII, Z80::L, TempLo);
       Z80::buildLD8(MBB, MI, DL, TII, Z80::H, TempHi);
     }
