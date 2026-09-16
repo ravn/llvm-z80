@@ -58,19 +58,15 @@ entry:
   %t = icmp eq i8 %outer, 0
   br i1 %t, label %exit, label %outer_hdr
 
-; CHECK-LABEL: triple_nest:
+; CHECK-LABEL: _triple_nest:
 ; CHECK:      	ld	d,a
 ; CHECK:      	or	a
 ; CHECK:      	ret	z
 ; CHECK:      	ld	c,l
-; CHECK:      	ld	b,0
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB0_4
+; CHECK:      	djnz	.LBB0_4
 ; CHECK:      	dec	c
-; CHECK:      	jr	nz,.LBB0_3
-; CHECK:      	ld	a,d
-; CHECK:      	dec	a
-; CHECK:      	jr	.LBB0_1
+; CHECK:      	ld	b,0
+; CHECK:      	jr	.LBB0_4
 outer_hdr:
   %o = phi i8 [ %outer, %entry ], [ %o.next, %outer_latch ]
   br label %mid_hdr
@@ -109,10 +105,9 @@ loop:
   %i = phi i8 [ %n, %entry ], [ %i.next, %loop ]
   call void asm sideeffect "", "{b}"(i8 %i)
   %i.next = add i8 %i, -1
-; CHECK-LABEL: simple_dec_b:
+; CHECK-LABEL: _simple_dec_b:
 ; CHECK:      	ld	b,a
-; CHECK:      	dec	b
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK:      	djnz	.LBB1_1
 ; CHECK:      	ret
   %cond = icmp ne i8 %i.next, 0
   br i1 %cond, label %loop, label %exit

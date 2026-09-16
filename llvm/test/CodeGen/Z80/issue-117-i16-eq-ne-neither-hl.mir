@@ -2,7 +2,6 @@
 # RUN:     | FileCheck %s
 # RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole -verify-machineinstrs \
 # RUN:     -debugify-and-strip-all-safe %s -o - | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#117: extend peephole #116 to the neither-in-HL case.
 # When the i16 EQ/NE byte-XOR sequence has neither operand pair in HL,
@@ -14,6 +13,8 @@
 --- |
   target triple = "z80"
   define void @eq_bc_de() { ret void }
+  define void @eq_hl_de() { ret void }
+  define void @eq_hl_live_after() { ret void }
 ...
 ---
 name:            eq_bc_de
@@ -23,12 +24,12 @@ body: |
     successors: %bb.1, %bb.2
     liveins: $bc, $de
     ; i16 EQ XOR sequence: QPair=BC vs PPair=DE, T=H.  HL dead at entry.
-    LD_A_B implicit-def $a, implicit $b
-    XOR_D implicit-def $a, implicit-def $flags, implicit $a, implicit $d
-    LD_H_A implicit-def $h, implicit $a
-    LD_A_C implicit-def $a, implicit $c
-    XOR_E implicit-def $a, implicit-def $flags, implicit $a, implicit $e
-    OR_H implicit-def $a, implicit-def $flags, implicit $a, implicit $h
+    $a = LD_r_r $b
+    XOR_r $d, implicit-def $a, implicit-def $flags, implicit $a
+    $h = LD_r_r $a
+    $a = LD_r_r $c
+    XOR_r $e, implicit-def $a, implicit-def $flags, implicit $a
+    OR_r $h, implicit-def $a, implicit-def $flags, implicit $a
     JR_Z_e %bb.1, implicit $flags
     JR_e %bb.2
 
@@ -42,8 +43,76 @@ body: |
 # CHECK-LABEL: name: eq_bc_de
 # CHECK:      PUSH_BC
 # CHECK-NEXT: POP_HL
-# CHECK-NEXT: AND_A
-# CHECK-NEXT: SBC_HL_DE
+# CHECK-NEXT: AND_r
+# CHECK-NEXT: SBC_HL_rr $de
 # CHECK-NEXT: JR_Z_e
-# CHECK-NOT:  XOR
-# CHECK-NOT:  OR_H
+# CHECK-NOT:  XOR_r
+# CHECK-NOT:  OR_r
+
+---
+name:            eq_hl_de
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $hl, $de
+    ; i16 EQ XOR sequence: QPair=HL vs PPair=DE, T=B.
+    $a = LD_r_r $h
+    XOR_r $d, implicit-def $a, implicit-def $flags, implicit $a
+    $b = LD_r_r $a
+    $a = LD_r_r $l
+    XOR_r $e, implicit-def $a, implicit-def $flags, implicit $a
+    OR_r $b, implicit-def $a, implicit-def $flags, implicit $a
+    JR_Z_e %bb.1, implicit $flags
+    JR_e %bb.2
+
+  bb.1:
+    RET
+
+  bb.2:
+    RET
+...
+
+# CHECK-LABEL: name: eq_hl_de
+# CHECK-NOT:  PUSH
+# CHECK-NOT:  POP
+# CHECK:      AND_r
+# CHECK-NEXT: SBC_HL_rr $de
+# CHECK-NEXT: JR_Z_e
+# CHECK-NOT:  XOR_r
+# CHECK-NOT:  OR_r
+
+---
+name:            eq_hl_live_after
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $hl, $de
+    ; HL is live across/after the compare -> peephole must NOT fire.
+    $a = LD_r_r $h
+    XOR_r $d, implicit-def $a, implicit-def $flags, implicit $a
+    $b = LD_r_r $a
+    $a = LD_r_r $l
+    XOR_r $e, implicit-def $a, implicit-def $flags, implicit $a
+    OR_r $b, implicit-def $a, implicit-def $flags, implicit $a
+    JR_Z_e %bb.1, implicit $flags
+    JR_e %bb.2
+
+  bb.1:
+    liveins: $hl
+    RET implicit $hl
+
+  bb.2:
+    liveins: $hl
+    RET implicit $hl
+...
+
+# CHECK-LABEL: name: eq_hl_live_after
+# CHECK:      $a = LD_r_r $h
+# CHECK-NEXT: XOR_r $d
+# CHECK-NEXT: $b = LD_r_r $a
+# CHECK-NEXT: $a = LD_r_r $l
+# CHECK-NEXT: XOR_r $e
+# CHECK-NEXT: OR_r $b
+# CHECK-NOT:  SBC_HL_rr

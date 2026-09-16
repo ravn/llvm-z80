@@ -56,6 +56,21 @@ STATISTIC(NumNonReentrant, "Number of functions marked nonreentrant");
 
 using namespace llvm;
 
+static cl::opt<bool> ClosedWorld(
+    "z80-closed-world",
+    cl::desc("Treat the module as a closed world or freestanding environment "
+             "(external code cannot call back into the module)"),
+    cl::init(false), cl::Hidden);
+
+static bool isFreestandingModule(const Module &M) {
+  if (ClosedWorld)
+    return true;
+  if (const auto *Flag = mdconst::extract_or_null<ConstantInt>(
+          M.getModuleFlag("Freestanding")))
+    return Flag->getZExtValue() != 0;
+  return false;
+}
+
 namespace {
 
 class Z80NonReentrantImpl {
@@ -116,6 +131,23 @@ static bool isInlineAsmEdge(const CallGraphNode::CallRecord &CR) {
   return CB && CB->isInlineAsm();
 }
 
+// WHAT: Identify call-graph records that represent synthetic edges out of
+// external declarations to CallsExternalNode.
+//
+// WHY: Stock LLVM's CallGraph adds a synthetic edge (nullptr -> CallsExternalNode)
+// for any external function declaration (e.g. port I/O, BIOS routines,
+// compiler-rt math helpers). In context reachability analysis, this synthetic
+// edge must not be traversed: a direct call from an ISR to a declared helper
+// does not spontaneously call back into the module's mainline functions.
+// In contrast, genuine indirect calls (through function pointers) have
+// CR.first pointing to the call instruction and continue to be conservatively
+// routed to CallsExternalNode -> ExternalCallingNode.
+static bool isExternalDeclarationEdge(const CallGraphNode &Caller,
+                                      const CallGraphNode::CallRecord &CR) {
+  const Function *F = Caller.getFunction();
+  return F && F->isDeclaration() && !CR.first;
+}
+
 // A function entered from a context the module analysis cannot see keeps
 // its stack frame, and so must everything it can reach: any of it may run
 // concurrently with any other context. The walk happens with the
@@ -130,8 +162,8 @@ void Z80NonReentrantImpl::markReentrantReachable(const CallGraphNode &CGN) {
       dbgs() << "Reachable from a foreign context: " << F->getName() << "\n";
   });
   for (const CallGraphNode::CallRecord &CR : CGN) {
-    if (isInlineAsmEdge(CR))
-      continue; // inline asm has no callee; do not route to CallsExternalNode
+    if (isInlineAsmEdge(CR) || isExternalDeclarationEdge(CGN, CR))
+      continue; // inline asm and external declarations do not call into module
     markReentrantReachable(*CR.second);
   }
 }
@@ -152,8 +184,8 @@ void Z80NonReentrantImpl::visitContext(const CallGraphNode &CGN) {
   // the module, so it must not carry this context out to every
   // externally-callable function via CallsExternalNode.
   for (const CallGraphNode::CallRecord &CR : CGN) {
-    if (isInlineAsmEdge(CR))
-      continue; // inline asm cannot call back into the module; skip
+    if (isInlineAsmEdge(CR) || isExternalDeclarationEdge(CGN, CR))
+      continue; // inline asm and external declarations do not call into module
     const Function *Callee = CR.second->getFunction();
     if (Callee && isContextRoot(*Callee))
       continue; // do not cross into an independent interrupt context
@@ -172,12 +204,23 @@ bool Z80NonReentrantImpl::run(Module &M) {
       Changed = true;
     }
 
-  // Any external call may end up calling any externally-callable function,
-  // which lets the SCC walk see recursion that passes through code outside
-  // the module or through a function pointer.
   assert(CG.getCallsExternalNode()->empty());
-  CG.getCallsExternalNode()->addCalledFunction(nullptr,
-                                               CG.getExternalCallingNode());
+  if (isFreestandingModule(M)) {
+    // In a freestanding / closed-world module (e.g. firmware ROM or OS kernel),
+    // foreign code outside the module does not exist, so external calls cannot
+    // re-enter arbitrary module functions. Indirect calls through function
+    // pointers still conservatively reach any locally address-taken function.
+    for (Function &F : M.functions()) {
+      if (!F.isDeclaration() && F.hasAddressTaken())
+        CG.getCallsExternalNode()->addCalledFunction(nullptr, CG[&F]);
+    }
+  } else {
+    // In an open-world library under separate compilation, any external call
+    // may end up calling any externally-callable function, which lets the SCC
+    // walk see recursion that passes through code outside the module.
+    CG.getCallsExternalNode()->addCalledFunction(nullptr,
+                                                 CG.getExternalCallingNode());
+  }
 
   // Operations like block copies and wide arithmetic only become calls
   // during instruction selection, so their callees have no edge in the IR
@@ -236,7 +279,8 @@ bool Z80NonReentrantImpl::run(Module &M) {
   //
   // The walks run with the artificial external edge still in place, so an
   // indirect call inside one context conservatively reaches every
-  // address-taken function.
+  // address-taken or externally-callable function. Synthetic edges from
+  // external function declarations are skipped (see isExternalDeclarationEdge).
   auto FinishContext = [&]() {
     for (CallGraphNode *N : ImplicitCallees)
       visitContext(*N);

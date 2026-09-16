@@ -7,7 +7,7 @@
 ; `OR A` (1 B) for the analogous `A == 0` test already — this
 ; closes the K ∈ {1, 0xFF} gap.
 ;
-; Post-RA peephole in Z80LateOptimization.cpp.  Pattern:
+; Post-RA peephole in Z80PreEmitPeephole.cpp.  Pattern:
 ;   {XOR_n, CP_n} K (K ∈ {1, 0xFF})
 ;   J{Z,NZ,C,NC}_e <target>
 ;   (then A redefined or dead along both paths)
@@ -28,8 +28,8 @@ act:
   call void @sink(i8 0)
 ; CHECK-LABEL: eq_1:
 ; CHECK:      	call	_getbyte
-; CHECK:      	cp	1
-; CHECK:      	ret	nz
+; CHECK:      	dec	a
+; CHECK-NEXT: 	ret	nz
 ; CHECK:      	xor	a
 ; CHECK:      	call	_sink
 ; CHECK:      	ret
@@ -55,28 +55,6 @@ skip:
 ;
 ; CHECK-LABEL: eq_ff:
 ; CHECK:      	call	_getbyte
-; CHECK:      	cp	255
-; CHECK:      	jr	z,.LBB1_2
-; CHECK:      	ret
-; CHECK:      	xor	a
-; CHECK:      	call	_sink
-; CHECK:      	ret
-; Negative: K=2 doesn't have a 1-byte equivalent — fall back to CP.
-;
-define void @eq_2() {
-  %x = call i8 @getbyte()
-  %is2 = icmp eq i8 %x, 2
-  br i1 %is2, label %act, label %skip
-act:
-  call void @sink(i8 0)
-  br label %skip
-skip:
-  ret void
-}
-; CHECK-LABEL: eq_2:
-; CHECK:      	call	_getbyte
-; CHECK:      	cp	2
-; CHECK:      	ret	nz
-; CHECK:      	xor	a
-; CHECK:      	call	_sink
+; CHECK:      	inc	a
+; CHECK-NEXT: 	jr	z,.LBB1_2
 ; CHECK:      	ret

@@ -15,12 +15,8 @@ declare void @llvm.memcpy.p0.p0.i16(ptr noalias nocapture writeonly, ptr noalias
 declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 
 ; The peephole should remove at least one of the BSS spill/reload pairs.
-define void @delete_line() {
-entry:
-  %0 = load i8, ptr @cury, align 1
 ; CHECK-LABEL: delete_line:
-; CHECK:      	ld	bc,_cury
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_cury)
 ; CHECK:      	cp	24
 ; CHECK:      	jr	nc,.LBB0_2
 ; CHECK:      	ld	e,a
@@ -37,7 +33,7 @@ entry:
 ; CHECK:      	ld	(L_delete_line.frame+4),a
 ; CHECK:      	ld	bc,63488
 ; CHECK:      	add	hl,bc
-; CHECK:      	ld	(L_delete_line.frame),hl
+; CHECK:      	push	hl
 ; CHECK:      	ld	l,e
 ; CHECK:      	ld	h,d
 ; CHECK:      	add	hl,hl
@@ -49,7 +45,7 @@ entry:
 ; CHECK:      	add	hl,hl
 ; CHECK:      	ld	de,63568
 ; CHECK:      	add	hl,de
-; CHECK:      	ld	(L_delete_line.frame+2),hl
+; CHECK:      	push	hl
 ; CHECK:      	ld	a,24
 ; CHECK:      	ld	hl,L_delete_line.frame+4
 ; CHECK:      	ld	b,(hl)
@@ -67,17 +63,22 @@ entry:
 ; CHECK:      	add	hl,hl
 ; CHECK:      	ld	c,l
 ; CHECK:      	ld	b,h
-; CHECK:      	ld	hl,(L_delete_line.frame+2)
-; CHECK:      	ld	de,(L_delete_line.frame)
+; CHECK:      	pop	hl
+; CHECK:      	pop	de
 ; CHECK:      	ld	a,b
 ; CHECK:      	or	c
 ; CHECK:      	jr	z,.LBB0_3
-; CHECK:      	ldir
 ; CHECK:      	ld	hl,65408
-; CHECK:      	ld	de,32
-; CHECK:      	ld	bc,80
-; CHECK:      	call	___z80_memset_builtin
+; CHECK:      	ld	a,32
+; CHECK:      	ld	(hl),a
+; CHECK:      	ld	de,65408
+; CHECK:      	inc	de
+; CHECK:      	ld	bc,79
+; CHECK:      	ldir
 ; CHECK:      	ret
+define void @delete_line() {
+entry:
+  %0 = load i8, ptr @cury, align 1
   %1 = zext i8 %0 to i16
   %2 = add i16 %1, 1
   %3 = icmp ult i16 %2, 25

@@ -12,13 +12,10 @@
 @dst = global i16 0
 
 ; CHECK-LABEL: zero_three:
-; CHECK:      	ld	bc,#_a
 ; CHECK:      	xor	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	bc,#_b
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	bc,#_c
-; CHECK:      	ld	(bc),a
+; CHECK:      	ld	(_a),a
+; CHECK:      	ld	(_b),a
+; CHECK:      	ld	(_c),a
 ; CHECK:      	ret
 define void @zero_three() {
   store volatile i8 0, ptr @a
@@ -33,12 +30,10 @@ define void @zero_three() {
 ; CHECK-LABEL: zero_then_inc_hl:
 ; CHECK:      	ld	bc,#_dst
 ; CHECK:      	inc	bc
-; CHECK:      	ld	de,#_a
 ; CHECK:      	xor	a
-; CHECK:      	ld	(de),a
+; CHECK:      	ld	(_a),a
 ; CHECK:      	ld	(_dst),bc
-; CHECK:      	ld	bc,#_b
-; CHECK:      	ld	(bc),a
+; CHECK:      	ld	(_b),a
 ; CHECK:      	ret
 define void @zero_then_inc_hl() {
   store volatile i8 0, ptr @a

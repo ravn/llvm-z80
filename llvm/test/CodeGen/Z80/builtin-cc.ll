@@ -73,8 +73,21 @@ define void @g_memset(i16 %n) {
 ; Z80:         ld c,l
 ; Z80-NEXT:    ld b,h
 ; Z80-NEXT:    ld hl,_dst
-; Z80-NEXT:    ld de,7
-; Z80-NEXT:    call ___z80_memset_builtin
+; Z80-NEXT:    ld e,7
+; Z80-NEXT:    ld a,b
+; Z80-NEXT:    or c
+; Z80-NEXT:    jr z,[[EXIT:\.LBB[0-9_]+]]
+; Z80:         ld (hl),e
+; Z80-NEXT:    dec bc
+; Z80-NEXT:    ld a,b
+; Z80-NEXT:    or c
+; Z80-NEXT:    jr z,[[EXIT]]
+; Z80:         ld d,h
+; Z80-NEXT:    ld e,l
+; Z80-NEXT:    inc de
+; Z80-NEXT:    ldir
+; Z80:       [[EXIT]]:
+; Z80-NEXT:    ret
 ;
 ; SM83-LABEL: g_memset:
 ; SM83:        ld l,e

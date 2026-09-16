@@ -128,13 +128,9 @@ target triple = "z80"
 ; CHECK:      	ld	d,(hl)
 ; CHECK:      	pop	hl
 ; CHECK:      	inc	de
-; CHECK:      	ld	a,h
-; CHECK:      	xor	d
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,l
-; CHECK:      	xor	e
-; CHECK:      	or	b
-; CHECK:      	jr	z,.LBB0_4
+; CHECK-NEXT: 	and	a
+; CHECK-NEXT: 	sbc	hl,de
+; CHECK-NEXT: 	jr	z,.LBB0_4
 ; CHECK:      	jp	.LBB0_2
 ; CHECK:      	ld	hl,2
 ; CHECK:      	add	hl,sp

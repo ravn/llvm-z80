@@ -53,31 +53,14 @@ define i8 @icmp_ult16(i16 %a, i16 %b) {
 
 ; Test conditional branch for SGT X, 0 (fused: non-negative AND non-zero)
 ; CHECK-LABEL: branch_sgt_zero:
-; CHECK:      	ex	de,hl
-; CHECK:      	ld	bc,#0
-; CHECK:      	ld	a,b
-; CHECK:      	xor	d
-; CHECK:      	rlca
-; CHECK:      	sbc	a,a
+; CHECK:      	ld	a,h
+; CHECK:      	xor	#128
 ; CHECK:      	ld	b,a
-; CHECK:      	ld	hl,#0
-; CHECK:      	and	a
-; CHECK:      	sbc	hl,de
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
-; CHECK:      	ld	c,a
+; CHECK:      	ld	a,l
+; CHECK:      	sub	#1
 ; CHECK:      	ld	a,b
-; CHECK:      	cpl
-; CHECK:      	and	c
-; CHECK:      	ld	c,a
-; CHECK:      	ld	de,#0
-; CHECK:      	ld	a,d
-; CHECK:      	rlca
-; CHECK:      	and	#1
-; CHECK:      	and	b
-; CHECK:      	or	c
-; CHECK:      	or	a
-; CHECK:      	jp	nz,.LBB3_1
+; CHECK:      	sbc	a,#128
+; CHECK:      	jp	nc,.LBB3_1
 ; CHECK:      	jp	.LBB3_2
 ; CHECK:      	ld	de,#42
 ; CHECK:      	ret
@@ -94,32 +77,14 @@ else:
 
 ; Test conditional branch for SLE X, 0 (fused: inverted SGT zero)
 ; CHECK-LABEL: branch_sle_zero:
-; CHECK:      	ex	de,hl
-; CHECK:      	ld	bc,#0
-; CHECK:      	ld	a,b
-; CHECK:      	xor	d
-; CHECK:      	rlca
-; CHECK:      	sbc	a,a
+; CHECK:      	ld	a,h
+; CHECK:      	xor	#128
 ; CHECK:      	ld	b,a
-; CHECK:      	ld	hl,#0
-; CHECK:      	and	a
-; CHECK:      	sbc	hl,de
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
-; CHECK:      	ld	c,a
+; CHECK:      	ld	a,l
+; CHECK:      	sub	#1
 ; CHECK:      	ld	a,b
-; CHECK:      	cpl
-; CHECK:      	and	c
-; CHECK:      	ld	c,a
-; CHECK:      	ld	de,#0
-; CHECK:      	ld	a,d
-; CHECK:      	rlca
-; CHECK:      	and	#1
-; CHECK:      	and	b
-; CHECK:      	or	c
-; CHECK:      	xor	#1
-; CHECK:      	or	a
-; CHECK:      	jp	nz,.LBB4_1
+; CHECK:      	sbc	a,#128
+; CHECK:      	jp	c,.LBB4_1
 ; CHECK:      	jp	.LBB4_2
 ; CHECK:      	ld	de,#42
 ; CHECK:      	ret

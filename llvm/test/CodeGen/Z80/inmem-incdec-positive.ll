@@ -22,20 +22,24 @@
 @counter = dso_local global i8 0, align 1
 
 ; Plain increment of a global byte; A is dead after the store.
+; CHECK-LABEL: bump_counter:
+; CHECK:      	ld	hl,#_counter
+; CHECK-NEXT: 	inc	(hl)
+; CHECK-NOT:  	ld	a,(_counter)
+; CHECK:      	ret
 define void @bump_counter() nounwind {
   %v = load i8, ptr @counter, align 1
   %v.inc = add i8 %v, 1
   store i8 %v.inc, ptr @counter, align 1
   ret void
 }
-; CHECK-LABEL: bump_counter:
-; CHECK:      	ld	bc,#_counter
-; CHECK:      	ld	a,(bc)
-; CHECK:      	inc	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ret
 
 ; Decrement: same shape, DEC (HL) form.
+; CHECK-LABEL: drop_counter:
+; CHECK:      	ld	hl,#_counter
+; CHECK-NEXT: 	dec	(hl)
+; CHECK-NOT:  	ld	a,(_counter)
+; CHECK:      	ret
 define void @drop_counter() nounwind {
   %v = load i8, ptr @counter, align 1
   %v.dec = sub i8 %v, 1
@@ -48,14 +52,17 @@ define void @drop_counter() nounwind {
 ; defines A with its own LD A,(addr2)).
 @a = dso_local global i8 0, align 1
 @b = dso_local global i8 0, align 1
-; CHECK-LABEL: drop_counter:
-; CHECK:      	ld	bc,#_counter
-; CHECK:      	ld	a,(bc)
-; CHECK:      	dec	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ret
 @c = dso_local global i8 0, align 1
 
+; CHECK-LABEL: bump_three:
+; CHECK:      	ld	hl,#_a
+; CHECK-NEXT: 	inc	(hl)
+; CHECK:      	ld	hl,#_b
+; CHECK-NEXT: 	inc	(hl)
+; CHECK:      	ld	hl,#_c
+; CHECK-NEXT: 	inc	(hl)
+; CHECK-NOT:  	ld	a,(_a)
+; CHECK:      	ret
 define void @bump_three() nounwind {
   %va = load i8, ptr @a, align 1
   %va.inc = add i8 %va, 1
@@ -68,17 +75,3 @@ define void @bump_three() nounwind {
   store i8 %vc.inc, ptr @c, align 1
   ret void
 }
-; CHECK-LABEL: bump_three:
-; CHECK:      	ld	bc,#_a
-; CHECK:      	ld	a,(bc)
-; CHECK:      	inc	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	bc,#_b
-; CHECK:      	ld	a,(bc)
-; CHECK:      	inc	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	bc,#_c
-; CHECK:      	ld	a,(bc)
-; CHECK:      	inc	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ret

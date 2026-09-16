@@ -7,22 +7,26 @@
 
 @counter = external global i8
 
+; CHECK-LABEL: atomic_update:
+; CHECK:      	ld	hl,_counter
+; CHECK-NEXT: 	inc	(hl)
+; CHECK:      	ret
 define void @atomic_update() #0 {
   %v = load i8, ptr @counter
   %inc = add i8 %v, 1
   store i8 %inc, ptr @counter
-; CHECK-LABEL: atomic_update:
-; CHECK:      	ld	bc,_counter
-; CHECK:      	ld	a,(bc)
-; CHECK:      	inc	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ret
   ret void
 }
 
 ; A z80_critical function that is ALSO an interrupt handler must NOT get the
 ; entry DI (hardware already disabled interrupts on entry); the handler's own
 ; EI;RETI epilogue is unchanged.
+; CHECK-LABEL: crit_isr:
+; CHECK:      	push	af
+; CHECK:      	xor	a
+; CHECK:      	ld	(_counter),a
+; CHECK:      	pop	af
+; CHECK:      	reti
 define void @crit_isr() #1 {
   store i8 0, ptr @counter
   ret void
@@ -30,12 +34,3 @@ define void @crit_isr() #1 {
 
 attributes #0 = { "z80_critical" }
 attributes #1 = { "z80_critical" "interrupt" }
-; CHECK-LABEL: crit_isr:
-; CHECK:      	push	af
-; CHECK:      	push	bc
-; CHECK:      	ld	bc,_counter
-; CHECK:      	xor	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	pop	bc
-; CHECK:      	pop	af
-; CHECK:      	reti

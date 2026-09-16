@@ -18,7 +18,7 @@ entry:
 ; CHECK:      	or	a
 ; CHECK:      	ret	z
 ; CHECK:      	xor	a
-; CHECK:      	ld	l,0
+; CHECK:      	ld	l,a
 ; CHECK:      	call	_take2
 ; CHECK:      	ret
 call:
@@ -41,7 +41,7 @@ done:
 ; CHECK:      	or	a
 ; CHECK:      	ret	z
 ; CHECK:      	ld	a,5
-; CHECK:      	ld	l,5
+; CHECK:      	ld	l,a
 ; CHECK:      	call	_take2
 ; CHECK:      	ret
   ret void

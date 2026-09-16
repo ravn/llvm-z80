@@ -47,14 +47,12 @@ define zeroext i1 @ne_i16(i16 %a, i16 %b) {
   ret i1 %r
 }
 
-; Branch form — exercises XOR_CMP_Z16 (fused compare-and-branch).
+; Branch form — exercises XOR_CMP_Z16 rewritten to AND A; SBC HL,rr by peephole #116.
 ; CHECK-LABEL: _br_eq_i16:
-; CHECK:     xor	{{[bcdehl]}}
-; CHECK:     xor	{{[bcdehl]}}
-; CHECK-NOT: xor	ix
-; CHECK-NOT: xor	iy
-; CHECK-NOT: xor	{{[ixy]}}{{[hl]}}
-; CHECK:     jr	nz,
+; CHECK:     	and	a
+; CHECK-NEXT:	sbc	hl,de
+; CHECK-NOT: 	xor
+; CHECK:     	jr	nz,
 define void @br_eq_i16(i16 %a, i16 %b, ptr %p) {
 entry:
   %c = icmp eq i16 %a, %b

@@ -27,20 +27,15 @@
 ; LD A,(_g); INC A; LD (_g),A form so the held value isn't clobbered.
 ;
 
-define i16 @hold_h_across_incmem() {
-entry:
-  %v1 = load volatile i8, ptr @g, align 1
-  %v1.inc = add i8 %v1, 1
 ; CHECK-LABEL: hold_h_across_incmem:
-; CHECK:      	ld	de,#_g
-; CHECK:      	ld	a,(de)
+; CHECK:      	ld	a,(_g)
 ; CHECK:      	ld	b,a
 ; CHECK:      	inc	a
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,(de)
+; CHECK:      	ld	(_g),a
+; CHECK:      	ld	a,(_g)
 ; CHECK:      	ld	c,a
 ; CHECK:      	inc	a
-; CHECK:      	ld	(de),a
+; CHECK:      	ld	(_g),a
 ; CHECK:      	ld	a,b
 ; CHECK:      	ld	h,a
 ; CHECK:      	ld	l,#0
@@ -49,6 +44,10 @@ entry:
 ; CHECK:      	or	c
 ; CHECK:      	ld	e,a
 ; CHECK:      	ret
+define i16 @hold_h_across_incmem() {
+entry:
+  %v1 = load volatile i8, ptr @g, align 1
+  %v1.inc = add i8 %v1, 1
   store volatile i8 %v1.inc, ptr @g, align 1
 
   ; Reload @g; the value should differ from %v1 because @g is volatile.

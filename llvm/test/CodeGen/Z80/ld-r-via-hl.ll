@@ -14,6 +14,14 @@
 ; --- Motivating case: cpnos-rom port-init shape ----------------------
 ; Byte from *port_table → C; B=0; A=v; OUT (C),A.  Pre-#76 the byte
 ; went via A: `ld a,(hl); ld c,a` (2 B).  Post-#76: `ld c,(hl)` (1 B).
+; CHECK-LABEL: port_out_byte:
+; CHECK:      	ld	bc,(_port_table)
+; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	c,a
+; CHECK:      	ld	b,0
+; CHECK:      	ld	a,(_v)
+; CHECK:      	out	(c),a
+; CHECK:      	ret
 define void @port_out_byte() {
   %t = load ptr, ptr @port_table, align 1
   %port_lo = load i8, ptr %t, align 1
@@ -22,12 +30,3 @@ define void @port_out_byte() {
   call void asm sideeffect "out (c), a", "{bc},{a},~{memory}"(i16 %port16, i8 %v)
   ret void
 }
-; CHECK-LABEL: port_out_byte:
-; CHECK:      	ld	bc,(_port_table)
-; CHECK:      	ld	a,(bc)
-; CHECK:      	ld	c,a
-; CHECK:      	ld	b,0
-; CHECK:      	ld	de,_v
-; CHECK:      	ld	a,(de)
-; CHECK:      	out	(c),a
-; CHECK:      	ret

@@ -13,10 +13,8 @@ declare i8 @llvm.ucmp.i8.i16(i16, i16)
 ; CHECK:      	ld	b,h
 ; CHECK:      	ex	de,hl
 ; CHECK:      	add	hl,bc
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
 ; CHECK:      	ld	de,#65535
-; CHECK:      	ret	nz
+; CHECK:      	ret	c
 ; CHECK:      	ex	de,hl
 ; CHECK:      	ret
 define i16 @test_uaddsat(i16 %a, i16 %b) {
@@ -25,31 +23,19 @@ define i16 @test_uaddsat(i16 %a, i16 %b) {
 }
 
 ; Test: unsigned sub saturating
+; CHECK-LABEL: test_usubsat:
+; CHECK:      	and	a
+; CHECK:      	sbc	hl,de
+; CHECK:      	ld	de,#0
+; CHECK:      	ret	c
+; CHECK:      	ex	de,hl
+; CHECK:      	ret
 define i16 @test_usubsat(i16 %a, i16 %b) {
   %r = call i16 @llvm.usub.sat.i16(i16 %a, i16 %b)
   ret i16 %r
 }
 
-; CHECK-LABEL: test_usubsat:
-; CHECK:      	and	a
-; CHECK:      	sbc	hl,de
-; CHECK:      	sbc	a,a
-; CHECK:      	and	#1
-; CHECK:      	ld	de,#0
-; CHECK:      	ret	nz
-; CHECK:      	ex	de,hl
-; CHECK:      	ret
 ; Test: signed add saturating (uses P/V flag capture via CAPTURE_PV pseudo)
-define i16 @test_saddsat(i16 %a, i16 %b) {
-  %r = call i16 @llvm.sadd.sat.i16(i16 %a, i16 %b)
-  ret i16 %r
-}
-
-; Test: signed sub saturating (uses P/V flag capture via CAPTURE_PV pseudo)
-define i16 @test_ssubsat(i16 %a, i16 %b) {
-  %r = call i16 @llvm.ssub.sat.i16(i16 %a, i16 %b)
-  ret i16 %r
-}
 ; CHECK-LABEL: test_saddsat:
 ; CHECK:      	and	a
 ; CHECK:      	adc	hl,de
@@ -61,7 +47,7 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; CHECK:      	rrca
 ; CHECK:      	rrca
 ; CHECK:      	and	#1
-; CHECK:      	ld	(L_test_saddsat.frame),a
+; CHECK:      	push	af
 ; CHECK:      	ld	a,b
 ; CHECK:      	add	a,a
 ; CHECK:      	sbc	a,a
@@ -70,24 +56,18 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; CHECK:      	ld	de,#32768
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	a,(L_test_saddsat.frame)
+; CHECK:      	pop	af
 ; CHECK:      	or	a
 ; CHECK:      	ret	nz
 ; CHECK:      	ld	e,c
 ; CHECK:      	ld	d,b
 ; CHECK:      	ret
-
-; Test: three-way signed comparison
-define i8 @test_scmp(i16 %a, i16 %b) {
-  %r = call i8 @llvm.scmp.i8.i16(i16 %a, i16 %b)
-  ret i8 %r
+define i16 @test_saddsat(i16 %a, i16 %b) {
+  %r = call i16 @llvm.sadd.sat.i16(i16 %a, i16 %b)
+  ret i16 %r
 }
 
-; Test: three-way unsigned comparison
-define i8 @test_ucmp(i16 %a, i16 %b) {
-  %r = call i8 @llvm.ucmp.i8.i16(i16 %a, i16 %b)
-  ret i8 %r
-}
+; Test: signed sub saturating (uses P/V flag capture via CAPTURE_PV pseudo)
 ; CHECK-LABEL: test_ssubsat:
 ; CHECK:      	and	a
 ; CHECK:      	sbc	hl,de
@@ -99,7 +79,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	rrca
 ; CHECK:      	rrca
 ; CHECK:      	and	#1
-; CHECK:      	ld	(L_test_ssubsat.frame),a
+; CHECK:      	push	af
 ; CHECK:      	ld	a,b
 ; CHECK:      	add	a,a
 ; CHECK:      	sbc	a,a
@@ -108,12 +88,18 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	ld	de,#32768
 ; CHECK:      	add	hl,de
 ; CHECK:      	ex	de,hl
-; CHECK:      	ld	a,(L_test_ssubsat.frame)
+; CHECK:      	pop	af
 ; CHECK:      	or	a
 ; CHECK:      	ret	nz
 ; CHECK:      	ld	e,c
 ; CHECK:      	ld	d,b
 ; CHECK:      	ret
+define i16 @test_ssubsat(i16 %a, i16 %b) {
+  %r = call i16 @llvm.ssub.sat.i16(i16 %a, i16 %b)
+  ret i16 %r
+}
+
+; Test: three-way signed comparison
 ; CHECK-LABEL: test_scmp:
 ; CHECK:      	ld	c,l
 ; CHECK:      	ld	b,h
@@ -144,7 +130,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	xor	d
 ; CHECK:      	rlca
 ; CHECK:      	sbc	a,a
-; CHECK:      	ld	(L_test_scmp.frame+1),a
+; CHECK:      	push	af
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
 ; CHECK:      	and	a
@@ -152,7 +138,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
 ; CHECK:      	ld	d,a
-; CHECK:      	ld	a,(L_test_scmp.frame+1)
+; CHECK:      	pop	af
 ; CHECK:      	ld	c,a
 ; CHECK:      	cpl
 ; CHECK:      	and	d
@@ -166,6 +152,12 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	ld	a,(L_test_scmp.frame)
 ; CHECK:      	sub	c
 ; CHECK:      	ret
+define i8 @test_scmp(i16 %a, i16 %b) {
+  %r = call i8 @llvm.scmp.i8.i16(i16 %a, i16 %b)
+  ret i8 %r
+}
+
+; Test: three-way unsigned comparison
 ; CHECK-LABEL: test_ucmp:
 ; CHECK:      	ld	a,e
 ; CHECK:      	sub	l
@@ -184,3 +176,7 @@ define i8 @test_ucmp(i16 %a, i16 %b) {
 ; CHECK:      	ld	a,b
 ; CHECK:      	sub	c
 ; CHECK:      	ret
+define i8 @test_ucmp(i16 %a, i16 %b) {
+  %r = call i8 @llvm.ucmp.i8.i16(i16 %a, i16 %b)
+  ret i8 %r
+}

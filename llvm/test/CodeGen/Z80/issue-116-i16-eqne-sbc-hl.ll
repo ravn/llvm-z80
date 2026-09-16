@@ -50,13 +50,13 @@ ret:
 ; CHECK:      	ld	de,#0
 ; CHECK:      	inc	de
 ; CHECK:      	ld	bc,(_end_idx)
-; CHECK:      	ld	a,d
-; CHECK:      	xor	b
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,e
-; CHECK:      	xor	c
-; CHECK:      	or	b
-; CHECK:      	jr	nz,.LBB1_1
+; CHECK-NEXT: 	push	de
+; CHECK-NEXT: 	pop	hl
+; CHECK-NEXT: 	and	a
+; CHECK-NEXT: 	sbc	hl,bc
+; CHECK-NEXT: 	jr	nz,.LBB1_1
+; CHECK-NOT:  	xor
+; CHECK-NOT:  	or
 ; CHECK:      	ret
 define void @loop_dead_hl(i16 %v) {
 entry:

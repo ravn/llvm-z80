@@ -1,0 +1,110 @@
+# RUN: llc -mtriple=z80 -mattr=+static-frame -run-pass=z80-pre-emit-peephole \
+# RUN:     -verify-machineinstrs %s -o - | FileCheck %s
+
+# BSS spill cross-class transfer to PUSH/POP:
+# When a 16-bit register is spilled to a BSS slot and reloaded into a different
+# 16-bit register pair with balanced stack depth, convert:
+#   LD (slot), rr_src
+#   ...
+#   LD rr_dst, (slot)
+# into:
+#   PUSH rr_src
+#   ...
+#   POP rr_dst
+
+--- |
+  target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
+  target triple = "z80"
+
+  @__sframe_foo = global i8 0
+  @__sframe_bar = global i8 0
+  @__sframe_unbalanced = global i8 0
+  @__sframe_multiload = global i8 0
+
+  declare void @dummy()
+
+  define void @test_cross_class_de_bc() { entry: ret void }
+  define void @test_cross_class_hl_de() { entry: ret void }
+  define void @test_cross_class_unbalanced() { entry: ret void }
+  define void @test_cross_class_multiload() { entry: ret void }
+...
+---
+name:            test_cross_class_de_bc
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$de' }
+body:             |
+  bb.0.entry:
+    liveins: $de
+    ; CHECK-LABEL: name: test_cross_class_de_bc
+    ; CHECK:      PUSH_DE
+    ; CHECK-NEXT: CALL_nn @dummy
+    ; CHECK-NEXT: POP_BC implicit-def $bc
+    ; CHECK-NEXT: RET
+    ; CHECK-NOT:  LD_nnind_DE
+    ; CHECK-NOT:  LD_BC_nnind
+    LD_nnind_DE <mcsymbol __sframe_foo>, implicit $de
+    CALL_nn @dummy, implicit-def dead $hl, implicit-def dead $de, implicit-def dead $bc, implicit-def dead $a, implicit-def dead $flags
+    LD_BC_nnind <mcsymbol __sframe_foo>, implicit-def $bc
+    RET implicit $bc
+...
+---
+name:            test_cross_class_hl_de
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$hl' }
+body:             |
+  bb.0.entry:
+    liveins: $hl
+    ; CHECK-LABEL: name: test_cross_class_hl_de
+    ; CHECK:      PUSH_HL
+    ; CHECK-NEXT: CALL_nn @dummy
+    ; CHECK-NEXT: POP_DE
+    ; CHECK-NEXT: RET
+    ; CHECK-NOT:  LD_nnind_HL
+    ; CHECK-NOT:  LD_DE_nnind
+    LD_nnind_HL <mcsymbol __sframe_bar>, implicit $hl
+    CALL_nn @dummy, implicit-def dead $hl, implicit-def dead $de, implicit-def dead $bc, implicit-def dead $a, implicit-def dead $flags
+    LD_DE_nnind <mcsymbol __sframe_bar>, implicit-def $de
+    RET implicit $de
+...
+---
+name:            test_cross_class_unbalanced
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$de' }
+  - { reg: '$hl' }
+body:             |
+  bb.0.entry:
+    liveins: $de, $hl
+    ; CHECK-LABEL: name: test_cross_class_unbalanced
+    ; CHECK:      LD_nnind_DE
+    ; CHECK-NOT:  PUSH_DE
+    ; CHECK:      LD_BC_nnind
+    LD_nnind_DE <mcsymbol __sframe_unbalanced>, implicit $de
+    PUSH_HL implicit $hl
+    LD_BC_nnind <mcsymbol __sframe_unbalanced>, implicit-def $bc
+    POP_HL implicit-def $hl
+    RET implicit $bc
+...
+---
+name:            test_cross_class_multiload
+alignment:       1
+tracksRegLiveness: true
+liveins:
+  - { reg: '$de' }
+body:             |
+  bb.0.entry:
+    liveins: $de
+    ; CHECK-LABEL: name: test_cross_class_multiload
+    ; CHECK:      LD_nnind_DE
+    ; CHECK-NOT:  PUSH_DE
+    ; CHECK:      LD_BC_nnind
+    LD_nnind_DE <mcsymbol __sframe_multiload>, implicit $de
+    LD_BC_nnind <mcsymbol __sframe_multiload>, implicit-def $bc
+    LD_HL_nnind <mcsymbol __sframe_multiload>, implicit-def $hl
+    RET implicit $bc, implicit $hl
+...

@@ -65,17 +65,17 @@
 ; CHECK:      	and	1
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,0
-; CHECK:      	ld	e,0
+; CHECK:      	ld	e,b
 ; CHECK:      	ld	l,e
-; CHECK:      	ld	h,0
-; CHECK:      	ld	(L_crc_one.frame+6),hl
+; CHECK:      	ld	h,b
+; CHECK:      	push	hl
 ; CHECK:      	ld	hl,0
 ; CHECK:      	ld	a,c
 ; CHECK:      	or	b
 ; CHECK:      	ld	(L_crc_one.frame+9),a
 ; CHECK:      	ld	bc,0
 ; CHECK:      	ld	(L_crc_one.frame+2),bc
-; CHECK:      	ld	bc,(L_crc_one.frame+6)
+; CHECK:      	pop	bc
 ; CHECK:      	ld	a,c
 ; CHECK:      	or	b
 ; CHECK:      	push	hl
@@ -87,7 +87,7 @@
 ; CHECK:      	ld	bc,60856
 ; CHECK:      	ld	(L_crc_one.frame+2),bc
 ; CHECK:      	ld	hl,33568
-; CHECK:      	jp	.LBB0_1
+; CHECK:      	jr	.LBB0_1
 define dso_local i32 @crc_one(i32 noundef %0) {
   br label %3
 

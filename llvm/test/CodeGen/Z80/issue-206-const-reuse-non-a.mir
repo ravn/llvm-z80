@@ -1,7 +1,6 @@
 # RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole %s -o - | FileCheck %s
 # RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole -debugify-and-strip-all-safe \
 # RUN:     %s -o - | FileCheck %s
-# XFAIL: *
 #
 # ravn/llvm-z80#206: extend peephole #18 to track all GR8 registers.
 # When any register already holds a constant n, a later `LD r,n` becomes
@@ -20,15 +19,15 @@ name:            single_reuse
 tracksRegLiveness: true
 body: |
   bb.0:
-    LD_B_n 7, implicit-def $b
-    LD_C_n 7, implicit-def $c
+    $b = LD_r_n 7
+    $c = LD_r_n 7
     RET implicit $b, implicit $c
 ...
 
 # CHECK-LABEL: name: single_reuse
-# CHECK:      LD_B_n 7
-# CHECK-NEXT: LD_C_B
-# CHECK-NOT:  LD_C_n
+# CHECK:      $b = LD_r_n 7
+# CHECK-NEXT: $c = LD_r_r $b
+# CHECK-NOT:  $c = LD_r_n 7
 
 # Chain: first non-A register seeds; subsequent loads fold to copies from it.
 ---
@@ -36,16 +35,16 @@ name:            chain_reuse
 tracksRegLiveness: true
 body: |
   bb.0:
-    LD_D_n 0, implicit-def $d
-    LD_E_n 0, implicit-def $e
-    LD_H_n 0, implicit-def $h
+    $d = LD_r_n 0
+    $e = LD_r_n 0
+    $h = LD_r_n 0
     RET implicit $d, implicit $e, implicit $h
 ...
 
 # CHECK-LABEL: name: chain_reuse
-# CHECK:      LD_D_n 0
-# CHECK-NEXT: LD_E_D
-# CHECK-NEXT: LD_H_D
+# CHECK:      $d = LD_r_n 0
+# CHECK-NEXT: $e = LD_r_r $d
+# CHECK-NEXT: $h = LD_r_r $d
 
 # A seeds from XOR_A; B load folds to LD B,A (original #18 behavior preserved).
 ---
@@ -53,11 +52,12 @@ name:            a_seeds_b
 tracksRegLiveness: true
 body: |
   bb.0:
-    XOR_A implicit-def $a, implicit-def $flags, implicit undef $a
-    LD_B_n 0, implicit-def $b
+    XOR_r undef $a, implicit-def $a, implicit-def $flags, implicit undef $a
+    $b = LD_r_n 0
     RET implicit $a, implicit $b
 ...
 
 # CHECK-LABEL: name: a_seeds_b
-# CHECK:      XOR_A
-# CHECK-NEXT: LD_B_A
+# CHECK:      XOR_r
+# CHECK-NEXT: $b = LD_r_r $a
+

@@ -14,9 +14,8 @@
 @flag = internal global i1 false, align 1
 
 ; CHECK-LABEL: set_flag_true:
-; CHECK:      	ld	bc,#_flag
 ; CHECK:      	ld	a,#1
-; CHECK:      	ld	(bc),a
+; CHECK:      	ld	(_flag),a
 ; CHECK:      	ret
 define void @set_flag_true() {
   store i1 true, ptr @flag, align 1
@@ -24,32 +23,30 @@ define void @set_flag_true() {
 }
 
 
+; CHECK-LABEL: set_flag_false:
+; CHECK:      	xor	a
+; CHECK:      	ld	(_flag),a
+; CHECK:      	ret
 define void @set_flag_false() {
   store i1 false, ptr @flag, align 1
   ret void
 }
 
-; CHECK-LABEL: set_flag_false:
-; CHECK:      	ld	bc,#_flag
-; CHECK:      	xor	a
-; CHECK:      	ld	(bc),a
-; CHECK:      	ret
 
 ; Companion: _Bool from runtime value -- here AND IS legitimate
 ; (the source might have any bits set after `sbc a,a` materializes
 ; 0xFF/0x00 from icmp ne), so the AND must remain to narrow to {0,1}.
-
-define void @set_flag_runtime(i8 zeroext %v) {
-  %b = icmp ne i8 %v, 0
-  store i1 %b, ptr @flag, align 1
-  ret void
-}
 
 ; CHECK-LABEL: set_flag_runtime:
 ; CHECK:      	sub	#0
 ; CHECK:      	add	a,#255
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	#1
-; CHECK:      	ld	bc,#_flag
-; CHECK:      	ld	(bc),a
+; CHECK:      	ld	(_flag),a
 ; CHECK:      	ret
+define void @set_flag_runtime(i8 zeroext %v) {
+  %b = icmp ne i8 %v, 0
+  store i1 %b, ptr @flag, align 1
+  ret void
+}
+

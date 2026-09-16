@@ -7,14 +7,12 @@
 
 ; EQ branch: ADD A,C; JR C,fallthrough; CP r; JR Z,target
 ; CHECK-LABEL: narrow_add_cmp_eq:
-; CHECK:      	ld	bc,#_var1
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_var1)
 ; CHECK:      	ld	l,a
 ; CHECK:      	ld	h,#0
 ; CHECK:      	ld	bc,#32
 ; CHECK:      	add	hl,bc
-; CHECK:      	ld	bc,#_var2
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_var2)
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,#0
 ; CHECK:      	ld	a,h
@@ -46,14 +44,12 @@ else:
 
 ; NE branch: ADD A,C; JR C,target; CP r; JR NZ,target
 ; CHECK-LABEL: narrow_add_cmp_ne:
-; CHECK:      	ld	bc,#_var1
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_var1)
 ; CHECK:      	ld	l,a
 ; CHECK:      	ld	h,#0
 ; CHECK:      	ld	bc,#32
 ; CHECK:      	add	hl,bc
-; CHECK:      	ld	bc,#_var2
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_var2)
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,#0
 ; CHECK:      	ld	a,h
@@ -85,12 +81,10 @@ else:
 
 ; Commuted: add on RHS instead of LHS
 ; CHECK-LABEL: narrow_add_cmp_commuted:
-; CHECK:      	ld	bc,#_var1
-; CHECK:      	ld	a,(bc)
+; CHECK:      	ld	a,(_var1)
 ; CHECK:      	ld	c,a
 ; CHECK:      	ld	b,#0
-; CHECK:      	ld	de,#_var2
-; CHECK:      	ld	a,(de)
+; CHECK:      	ld	a,(_var2)
 ; CHECK:      	ld	l,a
 ; CHECK:      	ld	h,#0
 ; CHECK:      	ld	de,#32

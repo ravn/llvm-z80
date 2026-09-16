@@ -20,11 +20,9 @@ declare void @f1e()
 
 ; CHECK-LABEL: specc:
 ; CHECK:      	dec	a
-; CHECK:      	ld	b,a
-; CHECK:      	ld	a,29
-; CHECK:      	cp	b
-; CHECK:      	ret	c
-; CHECK:      	ld	l,b
+; CHECK:      	cp	30
+; CHECK:      	ret	nc
+; CHECK:      	ld	l,a
 ; CHECK:      	ld	h,0
 ; CHECK:      	add	hl,hl
 ; CHECK:      	ld	c,l

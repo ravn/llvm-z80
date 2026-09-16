@@ -39,9 +39,7 @@ retry:
 ; CHECK:      	call	_recv_byte_t
 ; CHECK:      	ld	a,e
 ; CHECK:      	and	127
-; CHECK:      	ld	b,0
-; CHECK:      	sub	1
-; CHECK:      	or	b
+; CHECK:      	dec	a
 ; CHECK:      	jr	nz,.LBB0_2
 ; CHECK:      	xor	a
 ; CHECK:      	ret
@@ -72,9 +70,7 @@ retry:
 ; CHECK:      	call	_recv_byte_t
 ; CHECK:      	ld	a,e
 ; CHECK:      	and	127
-; CHECK:      	ld	b,0
-; CHECK:      	sub	1
-; CHECK:      	or	b
+; CHECK:      	dec	a
 ; CHECK:      	jr	nz,.LBB1_2
 ; CHECK:      	xor	a
 ; CHECK:      	ret
@@ -105,9 +101,8 @@ define i8 @check_high_mask() {
 entry:
 ; CHECK-LABEL: check_zero_mask:
 ; CHECK:      	call	_recv_byte_t
-; CHECK:      	ld	b,0
 ; CHECK:      	ld	a,e
-; CHECK:      	or	b
+; CHECK:      	or	a
 ; CHECK:      	jr	z,.LBB2_2
 ; CHECK:      	ld	a,1
 ; CHECK:      	ret

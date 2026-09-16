@@ -25,6 +25,15 @@ target triple = "z80"
 ; rather than the LD HL,#_buf rewrite.
 ;
 
+; CHECK-LABEL: hold_hl_across_chain:
+; CHECK:      	ld	a,#17
+; CHECK:      	ld	(_buf),a
+; CHECK:      	ld	a,#34
+; CHECK:      	ld	(_buf+1),a
+; CHECK:      	ld	a,#51
+; CHECK:      	ld	(_buf+2),a
+; CHECK:      	ld	a,(hl)
+; CHECK:      	ret
 define i8 @hold_hl_across_chain(ptr %ptr) {
 entry:
   %p0 = getelementptr inbounds %struct.three, ptr @buf, i32 0, i32 0
@@ -32,22 +41,6 @@ entry:
   %p2 = getelementptr inbounds %struct.three, ptr @buf, i32 0, i32 2
   store volatile i8 17, ptr %p0, align 1
   store volatile i8 34, ptr %p1, align 1
-; CHECK-LABEL: hold_hl_across_chain:
-; CHECK:      	ld	hl,#_buf
-; CHECK:      	inc	hl
-; CHECK:      	ld	de,#_buf
-; CHECK:      	inc	de
-; CHECK:      	inc	de
-; CHECK:      	ld	a,#17
-; CHECK:      	ld	bc,#_buf
-; CHECK:      	ld	(bc),a
-; CHECK:      	ld	a,#34
-; CHECK:      	ld	(hl),a
-; CHECK:      	ld	a,#51
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	bc,(L_hold_hl_across_chain.frame)
-; CHECK:      	ld	a,(bc)
-; CHECK:      	ret
   store volatile i8 51, ptr %p2, align 1
   %v = load volatile i8, ptr %ptr, align 1
   ret i8 %v

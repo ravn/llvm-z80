@@ -27,26 +27,30 @@ declare void @sink(i8)
 ; st = cfgtbl; sink(st)` shape from the issue, but inlined so the
 ; save and the mutation are in the same MBB).
 ;
+; CHECK-LABEL: clear_one_with_reader:
+; CHECK:      	ld	hl,_cfgtbl
+; CHECK-NEXT: 	ld	a,(hl)
+; CHECK:      	res	0,(hl)
+; CHECK-NOT:  	and
+; CHECK-NOT:  	ld	a,(_cfgtbl)
+; CHECK-NOT:  	ld	(_cfgtbl),a
 define i8 @clear_one_with_reader() {
-entry:
   %st = load volatile i8, ptr @cfgtbl
   %new = and i8 %st, -2          ; clear bit 0
   store volatile i8 %new, ptr @cfgtbl
   ret i8 %st                     ; %st is the intervening A-reader
 }
-; CHECK-LABEL: clear_one_with_reader:
-; CHECK:      	ld	de,_cfgtbl
-; CHECK:      	ld	a,(de)
-; CHECK:      	ld	b,a
-; CHECK:      	and	254
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,b
-; CHECK:      	ret
 
 ; Single-bit set with an A-reader.
 ;
+; CHECK-LABEL: set_one_with_reader:
+; CHECK:      	ld	hl,_cfgtbl
+; CHECK-NEXT: 	ld	a,(hl)
+; CHECK:      	set	7,(hl)
+; CHECK-NOT:  	or
+; CHECK-NOT:  	ld	a,(_cfgtbl)
+; CHECK-NOT:  	ld	(_cfgtbl),a
 define i8 @set_one_with_reader() {
-entry:
   %st = load volatile i8, ptr @cfgtbl
   %new = or i8 %st, -128         ; set bit 7
   store volatile i8 %new, ptr @cfgtbl
@@ -56,26 +60,17 @@ entry:
 ; Negative: two-bit clear with reader — break-even on bytes but
 ; +14T per fire, skip.
 ;
+; CHECK-LABEL: clear_two_with_reader:
+; CHECK:      	ld	a,(_cfgtbl)
+; CHECK:      	ld	b,a
+; CHECK:      	and	252
+; CHECK:      	ld	(_cfgtbl),a
+; CHECK:      	ld	a,b
+; CHECK:      	ret
 define i8 @clear_two_with_reader() {
 entry:
   %st = load volatile i8, ptr @cfgtbl
-; CHECK-LABEL: set_one_with_reader:
-; CHECK:      	ld	de,_cfgtbl
-; CHECK:      	ld	a,(de)
-; CHECK:      	ld	b,a
-; CHECK:      	or	128
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,b
-; CHECK:      	ret
   %new = and i8 %st, -4          ; clear bits 0 and 1 (Pop == 2)
   store volatile i8 %new, ptr @cfgtbl
   ret i8 %st
 }
-; CHECK-LABEL: clear_two_with_reader:
-; CHECK:      	ld	de,_cfgtbl
-; CHECK:      	ld	a,(de)
-; CHECK:      	ld	b,a
-; CHECK:      	and	252
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,b
-; CHECK:      	ret

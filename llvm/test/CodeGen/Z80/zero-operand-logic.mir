@@ -42,6 +42,6 @@ body:             |
 # CHECK-LABEL: name: flags_live
 # CHECK:      $l = LD_r_n 0
 # CHECK-NEXT: OR_r $l
-# CHECK-NEXT: JP_Z_nn
+# CHECK-NEXT: JR_Z_e
 
 ...

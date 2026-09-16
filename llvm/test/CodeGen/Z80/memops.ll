@@ -158,27 +158,26 @@ define void @test_memmove(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; Test: memset lowers to the register-argument runtime call, with the i8 value
-; promoted to i16 so it lands in DE.
+; Test: memset lowers to inlined guarded LDIR
 define void @test_memset(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset:
 ; SM83-LABEL: _test_memset:
 ; SM83:       ld c,a
 ; SM83-NEXT:  ld b,#0
 ; SM83-NEXT:  call ___z80_memset_builtin
-; CHECK:       call ___z80_memset_builtin
+; CHECK:       ldir
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }
 
-; Test: memset val is zero-extended (not sign-extended) to i16
+; Test: memset val is loaded directly for seed byte
 define void @test_memset_zext(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset_zext:
 ; SM83-LABEL: _test_memset_zext:
 ; SM83:       ld c,a
 ; SM83-NEXT:  ld b,#0
 ; SM83-NEXT:  call ___z80_memset_builtin
-; CHECK:       ld {{[a-z]}},#0
+; CHECK:       ldir
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }

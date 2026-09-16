@@ -20,26 +20,15 @@
 @buf = external global [8 x i8], align 1
 
 ; CHECK-LABEL: seed_buf:
-; CHECK:      	ld	bc,#_buf
-; CHECK:      	inc	bc
-; CHECK:      	ld	(L_seed_buf.frame),bc
-; CHECK:      	ld	de,#_buf
-; CHECK:      	inc	de
-; CHECK:      	inc	de
-; CHECK:      	ld	bc,#_buf
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	ld	a,#16
 ; CHECK:      	ld	hl,#_buf
-; CHECK:      	ld	(hl),a
-; CHECK:      	ld	a,#32
-; CHECK:      	ld	hl,(L_seed_buf.frame)
-; CHECK:      	ld	(hl),a
-; CHECK:      	ld	a,#48
-; CHECK:      	ld	(de),a
-; CHECK:      	ld	a,#64
-; CHECK:      	ld	(bc),a
+; CHECK-NEXT: 	ld	(hl),#16
+; CHECK-NEXT: 	inc	hl
+; CHECK-NEXT: 	ld	(hl),#32
+; CHECK-NEXT: 	inc	hl
+; CHECK-NEXT: 	ld	(hl),#48
+; CHECK-NEXT: 	inc	hl
+; CHECK-NEXT: 	ld	(hl),#64
+; CHECK-NOT:  	inc	hl
 ; CHECK:      	ret
 define void @seed_buf() {
   store i8 16, ptr @buf, align 1
@@ -54,17 +43,15 @@ define void @seed_buf() {
 ; the old `LD A,n; LD (addr),a` form (no HL setup overhead win).
 @buf2 = external global [8 x i8], align 1
 
+; CHECK-LABEL: seed_two:
+; CHECK:      	ld	a,#1
+; CHECK:      	ld	(_buf2),a
+; CHECK:      	ld	a,#2
+; CHECK:      	ld	(_buf2+1),a
+; CHECK:      	ret
 define void @seed_two() {
   store i8 1, ptr @buf2, align 1
   store i8 2, ptr getelementptr inbounds ([8 x i8], ptr @buf2, i16 0, i16 1), align 1
   ret void
 }
 
-; CHECK-LABEL: seed_two:
-; CHECK:      	ld	bc,#_buf2
-; CHECK:      	ld	a,#1
-; CHECK:      	ld	(bc),a
-; CHECK:      	inc	bc
-; CHECK:      	ld	a,#2
-; CHECK:      	ld	(bc),a
-; CHECK:      	ret

@@ -34,7 +34,6 @@ define i16 @select_test() {
 ; CHECK:      	sbc	a,a
 ; CHECK:      	and	1
 ; CHECK:      	ld	l,a
-; CHECK:      	ld	a,l
 ; CHECK:      	rrca
 ; CHECK:      	and	128
 ; CHECK:      	add	a,a
