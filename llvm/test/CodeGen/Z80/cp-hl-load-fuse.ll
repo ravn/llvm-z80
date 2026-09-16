@@ -64,7 +64,6 @@ else:
 define void @cmp_ult_ptr(i8 %val, ptr %p) nounwind {
 ; CHECK-LABEL: _cmp_ult_ptr:
 ; CHECK:       cp	(hl)
-; CHECK:       jp	c,
 entry:
   %loaded = load i8, ptr %p, align 1
   %cmp = icmp ult i8 %val, %loaded

@@ -151,6 +151,69 @@ static bool getGlobalAddr(Register AddrReg, MachineRegisterInfo &MRI,
   return false;
 }
 
+/// WHAT: Check if \p LoadReg is produced by a single-use 8-bit G_LOAD from
+/// regular memory (address space 0) that can be folded into an indirect (HL)
+/// memory operand at \p InsertMI.
+///
+/// WHY: Folds patterns like `ld a,(_global); cp reg` or `ld a,(*ptr); cp reg`
+/// directly into `cp (hl)`. This saves loading the byte into a temporary
+/// scratch register, avoids register-shuttling sequences (e.g. `ld c,a;
+/// ld a,(_h); ld b,a; ld a,c; cp b`), preserves accumulator contents, and
+/// saves 3-4 bytes per comparison.
+///
+/// WORKED EXAMPLE (from autoload-in-c _check_fdc_result):
+///   C source: `if ((fdc_result.st0 & 0xc3) == drive_select)`
+///   Before:   `ld a,(_fdc_result); and 0xc3; ld b,a; ld a,(_drive_select); ld c,a; ld a,b; cp c` (8 B)
+///   After:    `ld a,(_fdc_result); and 0xc3; ld hl,#_drive_select; cp (hl)` (4 B)
+///
+/// SOUNDNESS & ORDERING GUARDS:
+/// - Must be in the same basic block (\p MBB).
+/// - Must have exactly one non-debug use (\p LoadReg).
+/// - No intervening store or call between \p LoadDef and \p InsertMI to prevent
+///   reading clobbered memory or reordering past observable side effects.
+/// - Pointer register must constrain to HLI so the allocator can place it in HL.
+static bool canFuseLoadToHL(Register LoadReg, Register &PtrRegOut,
+                            MachineInstr *&LoadMIOut,
+                            const TargetRegisterClass *&HLRCOut,
+                            MachineBasicBlock &MBB, MachineInstr &InsertMI,
+                            MachineRegisterInfo &MRI,
+                            const TargetRegisterInfo &TRI,
+                            const Z80RegisterBankInfo &RBI) {
+  MachineInstr *LoadDef = MRI.getVRegDef(LoadReg);
+  // Guard: must be a G_LOAD instruction
+  if (!LoadDef || LoadDef->getOpcode() != TargetOpcode::G_LOAD)
+    return false;
+  // Guard: single use only -- if loaded value has other readers, cannot fold
+  if (!MRI.hasOneNonDBGUse(LoadReg))
+    return false;
+  // Guard: must be in the same basic block
+  if (LoadDef->getParent() != &MBB)
+    return false;
+  // Guard: do not fold port I/O loads (address space 2 / AS_IO)
+  if (LoadDef->getNumMemOperands() != 0 &&
+      (*LoadDef->memoperands_begin())->getAddrSpace() != 0)
+    return false;
+  // Guard: ensure no intervening store or call modifies memory between load and cmp
+  for (auto It = std::next(LoadDef->getIterator());
+       It != MBB.end() && It != InsertMI.getIterator(); ++It) {
+    if (It->mayStore() || It->isCall())
+      return false;
+  }
+  Register PtrReg = LoadDef->getOperand(1).getReg();
+  if (!RBI.constrainGenericRegister(PtrReg, Z80::GR16RegClass, MRI))
+    return false;
+  const TargetRegisterClass *PtrRC = MRI.getRegClass(PtrReg);
+  const TargetRegisterClass *HLRC =
+      TRI.getCommonSubClass(PtrRC, &Z80::HLIRegClass);
+  // Guard: pointer class must include HL
+  if (!HLRC)
+    return false;
+  PtrRegOut = PtrReg;
+  LoadMIOut = LoadDef;
+  HLRCOut = HLRC;
+  return true;
+}
+
 Z80InstructionSelector::Z80InstructionSelector(const Z80TargetMachine &TM,
                                                Z80Subtarget &STI,
                                                Z80RegisterBankInfo &RBI)
@@ -985,12 +1048,88 @@ bool Z80InstructionSelector::emitFusedCompareAndBranch(
           BuildMI(MBB, MI, DL, TII.get(Z80::CP_n)).addImm(*ConstVal & 0xFF);
         }
       } else {
-        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
-            !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+        // Try CP (HL) fusion: if one operand is a single-use G_LOAD from
+        // memory, constrain that pointer to HL and use CP (HL) directly.
+        // This avoids loading the byte into a scratch register (saves 1 reg, 3-4 B).
+        auto tryFuseLoad = [&](Register LoadReg, Register OtherReg) -> bool {
+          Register PtrReg;
+          MachineInstr *LoadDef = nullptr;
+          const TargetRegisterClass *HLRC = nullptr;
+          if (!canFuseLoadToHL(LoadReg, PtrReg, LoadDef, HLRC, MBB, MI, MRI,
+                               TRI, RBI))
+            return false;
+          if (!RBI.constrainGenericRegister(OtherReg, Z80::GR8RegClass, MRI))
+            return false;
+          MRI.setRegClass(PtrReg, HLRC);
+
+          // Copy OtherReg to A FIRST, before copying PtrReg to HL,
+          // so HL cannot clobber OtherReg if OtherReg was allocated in H or L.
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A)
+              .addReg(OtherReg);
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(PtrReg);
+          BuildMI(MBB, MI, DL, TII.get(Z80::CP_HLind));
+          LoadDef->eraseFromParent();
+          return true;
+        };
+
+        // For EQ/NE: if both operands are loads, prefer fusing the one whose
+        // pointer is already in HL (e.g. first argument or pinned loop pointer),
+        // avoiding an unnecessary pointer swap (e.g. ex de,hl or ld c,l; ld b,h).
+        auto isHLPreferred = [&](Register LoadReg) -> bool {
+          MachineInstr *LoadDef = MRI.getVRegDef(LoadReg);
+          if (!LoadDef || LoadDef->getOpcode() != TargetOpcode::G_LOAD)
+            return false;
+          Register P = LoadDef->getOperand(1).getReg();
+          while (true) {
+            MachineInstr *Def = MRI.getVRegDef(P);
+            if (Def && Def->getOpcode() == TargetOpcode::G_PTR_ADD &&
+                Def->getOperand(1).isReg()) {
+              P = Def->getOperand(1).getReg();
+            } else {
+              break;
+            }
+          }
+          auto checkRegHL = [&](Register R) -> bool {
+            if (MRI.getRegClassOrNull(R) == &Z80::HLRegRegClass)
+              return true;
+            MachineInstr *Def = MRI.getVRegDef(R);
+            if (Def && Def->getOpcode() == TargetOpcode::COPY &&
+                Def->getOperand(1).isReg() &&
+                Def->getOperand(1).getReg() == Z80::HL)
+              return true;
+            return false;
+          };
+          if (checkRegHL(P))
+            return true;
+          MachineInstr *PDef = MRI.getVRegDef(P);
+          if (PDef && PDef->getOpcode() == TargetOpcode::G_PHI) {
+            for (unsigned i = 1; i < PDef->getNumOperands(); i += 2) {
+              if (checkRegHL(PDef->getOperand(i).getReg()))
+                return true;
+            }
+          }
           return false;
-        // Unsigned/eq/ne: CP compares A with operand, sets Z and C flags.
-        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
-        BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(RHS);
+        };
+
+        bool Fused = false;
+        if (IsEqNe && isHLPreferred(LHS) && !isHLPreferred(RHS)) {
+          Fused = tryFuseLoad(LHS, RHS);
+          if (!Fused)
+            Fused = tryFuseLoad(RHS, LHS);
+        } else {
+          Fused = tryFuseLoad(RHS, LHS);
+          if (!Fused && IsEqNe)
+            Fused = tryFuseLoad(LHS, RHS);
+        }
+        if (!Fused) {
+          if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
+              !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+            return false;
+          // Unsigned/eq/ne: CP compares A with operand, sets Z and C flags.
+          BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::A).addReg(LHS);
+          BuildMI(MBB, MI, DL, TII.get(Z80::CP_r)).addReg(RHS);
+        }
       }
     } else {
       // 8-bit signed comparison.
@@ -3591,35 +3730,75 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         return std::nullopt;
       };
 
-      // Helper: emit SUB_r or SUB_n depending on whether operand is constant
-      auto emitSUB = [&](Register Reg) {
+      // Helper: emit SUB_r, SUB_n, or SUB_HLind
+      auto emitSUB = [&](Register Reg) -> bool {
         auto C = getRHSConst(Reg);
-        if (C)
+        if (C) {
           BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_n))
               .addImm(*C & 0xFF);
-        else
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_r)).addReg(Reg);
+          return true;
+        }
+        Register PtrReg;
+        MachineInstr *LoadDef = nullptr;
+        const TargetRegisterClass *HLRC = nullptr;
+        if (canFuseLoadToHL(Reg, PtrReg, LoadDef, HLRC, MBB, MI, MRI, TRI,
+                             RBI)) {
+          MRI.setRegClass(PtrReg, HLRC);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(PtrReg);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_HLind));
+          LoadDef->eraseFromParent();
+          return true;
+        }
+        if (!RBI.constrainGenericRegister(Reg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_r)).addReg(Reg);
+        return true;
       };
-      // Helper: emit CP_r or CP_n depending on whether operand is constant
-      auto emitCP = [&](Register Reg) {
+      // Helper: emit CP_r, CP_n, or CP_HLind
+      auto emitCP = [&](Register Reg) -> bool {
         auto C = getRHSConst(Reg);
-        if (C)
+        if (C) {
           BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_n))
               .addImm(*C & 0xFF);
-        else
-          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_r)).addReg(Reg);
+          return true;
+        }
+        Register PtrReg;
+        MachineInstr *LoadDef = nullptr;
+        const TargetRegisterClass *HLRC = nullptr;
+        if (canFuseLoadToHL(Reg, PtrReg, LoadDef, HLRC, MBB, MI, MRI, TRI,
+                             RBI)) {
+          MRI.setRegClass(PtrReg, HLRC);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::HL)
+              .addReg(PtrReg);
+          BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_HLind));
+          LoadDef->eraseFromParent();
+          return true;
+        }
+        if (!RBI.constrainGenericRegister(Reg, Z80::GR8RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CP_r)).addReg(Reg);
+        return true;
       };
 
-      if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
-          !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
-        return false;
+      if (CmpInst::isSigned(Pred)) {
+        if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
+            !RBI.constrainGenericRegister(RHS, Z80::GR8RegClass, MRI))
+          return false;
+      } else {
+        Register AccReg =
+            (Pred == CmpInst::ICMP_UGT || Pred == CmpInst::ICMP_ULE) ? RHS : LHS;
+        if (!RBI.constrainGenericRegister(AccReg, Z80::GR8RegClass, MRI))
+          return false;
+      }
 
       switch (Pred) {
       case CmpInst::ICMP_EQ:
         // EQ: A = LHS - RHS; SUB 1 (sets C only if A was 0); SBC A,A; AND 1
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(LHS);
-        emitSUB(RHS);
+        if (!emitSUB(RHS))
+          return false;
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::SUB_n)).addImm(1);
         Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
@@ -3630,7 +3809,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         // 1
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(LHS);
-        emitSUB(RHS);
+        if (!emitSUB(RHS))
+          return false;
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::ADD_A_n)).addImm(0xFF);
         Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
@@ -3640,7 +3820,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         // ULT: CP sets C if A < operand
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(LHS);
-        emitCP(RHS);
+        if (!emitCP(RHS))
+          return false;
         Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
         break;
@@ -3649,7 +3830,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         // UGE: inverse of ULT
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(LHS);
-        emitCP(RHS);
+        if (!emitCP(RHS))
+          return false;
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CCF));
         Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
@@ -3659,7 +3841,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         // UGT = ULT with swapped operands: A=RHS, CP LHS
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(RHS);
-        emitCP(LHS);
+        if (!emitCP(LHS))
+          return false;
         Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
         break;
@@ -3668,7 +3851,8 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         // ULE = UGE with swapped operands: A=RHS, CP LHS, CCF
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
             .addReg(RHS);
-        emitCP(LHS);
+        if (!emitCP(LHS))
+          return false;
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CCF));
         Z80::buildSbcAA(MBB, MI, MI.getDebugLoc(), TII);
         BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::AND_n)).addImm(1);
