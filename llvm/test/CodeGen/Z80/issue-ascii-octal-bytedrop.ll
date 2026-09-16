@@ -14,12 +14,19 @@
 ; the integrated-assembler ELF object path writes raw bytes regardless.
 ;
 ; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s
-; XFAIL: *
+
+; No .ascii directive may appear -- every byte must be per-.byte.
+; CHECK-NOT: .ascii
 
 ; Bytes 0x11, 0x04, 0x30, 0x22, 0x33.  The 0x04 (needs an octal escape) directly
 ; followed by 0x30 (the literal digit '0') is exactly the ambiguous pattern.
 @t = constant [5 x i8] c"\11\04\30\22\33"
-
+; CHECK-LABEL: _t:
+; CHECK-NEXT: .byte 17
+; CHECK-NEXT: .byte 4
+; CHECK-NEXT: .byte 48
+; CHECK-NEXT: .byte 34
+; CHECK-NEXT: .byte 51
 
 ; Danish-charset case: on the RC700's ISO-646 DK national variant the bytes 0x5B
 ; and 0x5D render as the glyphs 'AE' and 'AA' (where a US-ASCII terminal shows
@@ -29,4 +36,9 @@
 ; 0x04 and 0x30.  Per-byte emission pins all four values, so a string carrying
 ; Danish text plus a low control byte survives the z88dk assembler intact.
 @dk = constant [4 x i8] c"\5B\04\30\5D"
+; CHECK-LABEL: _dk:
+; CHECK-NEXT: .byte 91
+; CHECK-NEXT: .byte 4
+; CHECK-NEXT: .byte 48
+; CHECK-NEXT: .byte 93
 

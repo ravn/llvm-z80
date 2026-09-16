@@ -14,7 +14,6 @@
 ; s32 / i32.
 ;
 ; RUN: llc -mtriple=z80 -stop-after=legalizer -o - %s | FileCheck %s
-; XFAIL: *
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
@@ -22,6 +21,12 @@ target triple = "z80"
 ; The comparison libcall result is copied out as a 16-bit value ...
 ; ... the compare constant is i16 (NOT i32) ...
 ; ... and the G_ICMP-with-#0 operates on s16 (NOT s32).
+; CHECK-LABEL: name: deq
+; CHECK:      CALL_nn &__eqdf2
+; CHECK:      {{.*}}(s16) = COPY $de
+; CHECK:      G_ICMP intpred(eq), %{{[0-9]+}}(s16)
+; CHECK-NOT:  (s32) = COPY $de
+; CHECK-NOT:  G_ICMP intpred{{.*}}(s32)
 define i16 @deq(double %a, double %b) {
   %c = fcmp oeq double %a, %b
   %z = zext i1 %c to i16

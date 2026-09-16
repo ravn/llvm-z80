@@ -241,19 +241,28 @@ void Z80InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
       return;
     }
     // SP → BC or DE: Z80 has no ADD BC,SP / ADD DE,SP, so route through HL.
-    // PUSH HL; LD HL,N; ADD HL,SP; LD r,H; LD r,L; POP HL
+    // [PUSH HL;] LD HL,N; ADD HL,SP; LD r,H; LD r,L [;POP HL]
     // N compensates for PUSH HL (and PUSH AF if FLAGS is live).
+    // Skip PUSH_HL/POP_HL when HL is dead — reading undef HL would fail
+    // -verify-machineinstrs (#239 site 6). Follows the same liveness-gate
+    // pattern as the SPILL/RELOAD_GR8 sibling-half fix in #210/#212.
     if (DestReg == Z80::BC || DestReg == Z80::DE) {
       Register DstHi = (DestReg == Z80::BC) ? Z80::B : Z80::D;
       Register DstLo = (DestReg == Z80::BC) ? Z80::C : Z80::E;
+      const TargetRegisterInfo *TRI = STI->getRegisterInfo();
+      auto HLLQ = MBB.computeRegisterLiveness(TRI, Z80::HL, I);
+      bool SaveHL = (HLLQ != MachineBasicBlock::LQR_Dead);
       if (FlagsLive)
         BuildMI(MBB, I, DL, get(Z80::PUSH_AF));
-      Z80::emitHLSavePush(MBB, I, DL, *this);
-      Z80::buildLD16n(MBB, I, DL, *this, Z80::HL).addImm(SPComp + 2);
+      if (SaveHL)
+        Z80::emitHLSavePush(MBB, I, DL, *this);
+      Z80::buildLD16n(MBB, I, DL, *this, Z80::HL)
+          .addImm(SPComp + (SaveHL ? 2 : 0));
       BuildMI(MBB, I, DL, get(Z80::ADD_HL_SP));
       Z80::buildLD8(MBB, I, DL, *this, DstHi, Z80::H);
       Z80::buildLD8(MBB, I, DL, *this, DstLo, Z80::L);
-      BuildMI(MBB, I, DL, get(Z80::POP_HL));
+      if (SaveHL)
+        BuildMI(MBB, I, DL, get(Z80::POP_HL));
       if (FlagsLive)
         BuildMI(MBB, I, DL, get(Z80::POP_AF));
       return;
