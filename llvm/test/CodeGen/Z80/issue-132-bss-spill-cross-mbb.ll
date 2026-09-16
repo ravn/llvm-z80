@@ -1,4 +1,7 @@
-; RUN: llc -mtriple=z80 -mattr=+static-frame -z80-closed-world < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -mattr=+static-frame < %s | FileCheck %s
+;
+; The "Freestanding" module flag (see end of file) drives Z80NonReentrant into
+; the closed-world proof — the same flag clang emits under -ffreestanding.
 ;
 ; ravn/llvm-z80#132: cross-MBB BSS-spill → PUSH/POP across CALLs,
 ; conservative single-predecessor-escape variant.
@@ -56,3 +59,6 @@ ret0:
   ret i16 0
 }
 
+
+!llvm.module.flags = !{!0}
+!0 = !{i32 2, !"Freestanding", i32 1}

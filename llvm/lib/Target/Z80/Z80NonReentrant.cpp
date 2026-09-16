@@ -56,15 +56,15 @@ STATISTIC(NumNonReentrant, "Number of functions marked nonreentrant");
 
 using namespace llvm;
 
-static cl::opt<bool> ClosedWorld(
-    "z80-closed-world",
-    cl::desc("Treat the module as a closed world or freestanding environment "
-             "(external code cannot call back into the module)"),
-    cl::init(false), cl::Hidden);
-
+// A freestanding module (per the C standard: __STDC_HOSTED__ == 0) has no
+// hosted C library and no code outside the module that can call back in.
+// clang emits the "Freestanding" module flag under -ffreestanding
+// (CodeGenModule.cpp: if (LangOpts.Freestanding) addModuleFlag(...)). Using
+// the standard flag rather than a fork-local switch keeps this consistent
+// with every other target and toolchain — bare-metal / firmware / kernel
+// builds already use -ffreestanding, so the closed-world proof lights up
+// automatically.
 static bool isFreestandingModule(const Module &M) {
-  if (ClosedWorld)
-    return true;
   if (const auto *Flag = mdconst::extract_or_null<ConstantInt>(
           M.getModuleFlag("Freestanding")))
     return Flag->getZExtValue() != 0;
