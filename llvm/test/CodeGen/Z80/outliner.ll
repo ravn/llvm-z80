@@ -1,13 +1,18 @@
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s --check-prefix=Z80
 ; RUN: llc -verify-machineinstrs -mtriple=sm83 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s --check-prefix=SM83
-; XFAIL: *
-; ravn/llvm-z80#322: Machine Outliner is explicitly disabled in Z80TargetMachine::createPassConfig
-; (EnableMachineOutliner = false) due to 4B call/ret overhead.
 ;
-; A run of instructions that repeats is worth three bytes of CALL and one of
-; RET. The call is smaller and slower than what it replaces, so only minsize
-; takes the trade; a run reached through IX survives the CALL because the two
-; bytes of return address it pushes move SP, not IX.
+; ravn/llvm-z80#322: Machine Outliner is explicitly disabled in
+; Z80TargetMachine::createPassConfig (EnableMachineOutliner = false) due to
+; 4B call/ret overhead — a run of repeating instructions is worth 3B of CALL
+; and 1B of RET, so on Z80 the call is smaller AND slower than what it
+; replaces (only minsize would take the trade, and even then reaching locals
+; through IX gets tricky because the CALL's 2-byte return-address push moves
+; SP but not IX; on SM83 all local access goes through SP so it's worse).
+;
+; This test pins the design decision: no _OUTLINED_FUNCTION_ symbol may be
+; emitted regardless of `minsize` / `optsize` / any function attribute. If
+; someone re-enables MachineOutliner without the Z80-specific cost analysis
+; that motivated the disable, this test will fire.
 
 declare zeroext i16 @g(i16 zeroext)
 
@@ -59,32 +64,8 @@ entry:
   ret i16 %sub
 }
 
-; Z80-LABEL: _f1:
-; Z80:       call _OUTLINED_FUNCTION_0
-; Z80-LABEL: _f2:
-; Z80:       call _OUTLINED_FUNCTION_0
-
-; The trade spends speed on size, so optsize alone does not take it.
-
-; Z80-LABEL: _f3:
-; Z80-NOT:   call _OUTLINED
-; Z80-LABEL: _f4:
-; Z80-NOT:   call _OUTLINED
-; Z80-LABEL: _OUTLINED_FUNCTION_0:
-; Z80:       ret
-
-; SM83 reaches its locals through SP, which the CALL moves. LDHL SP,e carries
-; its own displacement, so the body asks for two more and reaches the same
-; byte.
-
-; SM83-LABEL: _f1:
-; SM83:       call _OUTLINED_FUNCTION_0
-; SM83-LABEL: _f2:
-; SM83:       call _OUTLINED_FUNCTION_0
-; SM83-LABEL: _f3:
+; No outlined helper symbol may appear anywhere in the output.
+; Z80-NOT:    _OUTLINED_FUNCTION_
+; SM83-NOT:   _OUTLINED_FUNCTION_
+; Z80-NOT:    call _OUTLINED
 ; SM83-NOT:   call _OUTLINED
-; SM83-LABEL: _f4:
-; SM83-NOT:   call _OUTLINED
-; SM83-LABEL: _OUTLINED_FUNCTION_0:
-; SM83:       ldhl sp,#4
-; SM83:       ret
