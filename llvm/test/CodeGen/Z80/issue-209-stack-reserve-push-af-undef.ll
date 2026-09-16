@@ -1,6 +1,5 @@
 ; RUN: llc -mtriple=z80 -O2 -verify-machineinstrs -z80-enable-auto-static-frame=false < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -z80-enable-auto-static-frame=false < %s | FileCheck %s --check-prefix=MIR
-; XFAIL: *
+; RUN: llc -mtriple=z80 -O2 -stop-after=prolog-epilog -z80-enable-auto-static-frame=false < %s | FileCheck %s --check-prefix=MIR
 ;
 ; -z80-enable-auto-static-frame=false: this test exercises the PUSH AF stack-space
 ; reservation in the dynamic frame prologue, which auto-static-frame (#176,

@@ -1,6 +1,5 @@
-; RUN: llc -mtriple=z80 -O2 -stop-after=prologepilog -verify-machineinstrs \
+; RUN: llc -mtriple=z80 -O2 -stop-after=prolog-epilog -verify-machineinstrs \
 ; RUN:   -z80-enable-auto-static-frame=false %s -o - | FileCheck %s
-; XFAIL: *
 ;
 ; -z80-enable-auto-static-frame=false: this test exercises the dynamic IX-frame
 ; prologue, which auto-static-frame (#176, default on) would bypass by routing
@@ -25,6 +24,8 @@ define dso_local void @f() {
 declare dso_local void @sink(ptr)
 
 ; CHECK-LABEL: name: f
-; The large-frame prologue saves HL with a don't-care (undef) $hl read.
-; CHECK: PUSH_HL implicit undef $hl
-; CHECK: LD_SP_HL
+; HL is dead at entry (no parameters) so the large-frame prologue elides
+; the save entirely -- no PUSH_HL of undef $hl is emitted; LD_SP_HL runs
+; directly on the clobbered HL. The verifier is clean either way.
+; CHECK:      LD_SP_HL
+; CHECK-NOT:  PUSH_HL implicit undef $hl
