@@ -2,7 +2,6 @@
 ; RUN:     -z80-enable-loop-instr-form-prep -z80-loop-instr-form-prep-allow-nested \
 ; RUN:     -z80-enable-pin-loop-pointer -z80-enable-hbf-branch < %s \
 ; RUN:   | FileCheck %s --check-prefix=HBF
-; XFAIL: *
 ; PLAIN control forces hbf off (it is auto-on at -O2); the exit stays a full
 ; 16-bit subtract chain.
 ; RUN: llc -O2 -disable-lsr -mtriple=z80 --z80-static-frames \
@@ -22,22 +21,24 @@
 @arr = external dso_local global [16384 x i8]
 
 ; PLAIN: This Inner Loop Header
-; PLAIN: sub c
-; PLAIN: sbc a,b
-; PLAIN-NOT: cp b
+; PLAIN: sub {{c|e}}
+; PLAIN: sbc a,{{b|d}}
+; PLAIN-NOT: cp {{b|d}}
 
 ; HBF-LABEL: _nested:
 ; HBF: This Inner Loop Header
 ; The high byte is compared first: at -O2 (hybrid width) the HOT backedge is an
 ; absolute jp (10 T), the cold not-equal exit and the low-byte backedge are jr.
+; Register allocator may hold the loop limit in BC or DE; shape (high-byte-
+; first compare, absolute jp on hot path, low-byte fallthrough) is what matters.
 ; HBF:      ld a,h
-; HBF-NEXT: cp b
+; HBF-NEXT: cp {{b|d}}
 ; HBF-NEXT: jp c,
 ; HBF-NEXT: jr nz,
 ; HBF:      ld a,l
-; HBF-NEXT: cp c
+; HBF-NEXT: cp {{c|e}}
 ; HBF-NEXT: jr c,
-; HBF-NOT:  sbc a,b
+; HBF-NOT:  sbc a,{{b|d}}
 
 define dso_local void @nested(i16 %m, i16 %stride) {
 entry:
