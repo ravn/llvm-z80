@@ -1,31 +1,31 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s
-; XFAIL: *
 
 ; Issue #331: use direct PUSH/POP instead of a dynamic SP-relative stack frame
-; for a callee-saved scratch value across a call.
+; for a caller-saved scratch value across a call.
 ;
-; STATUS: the SP-relative-frame -> PUSH/POP peephole is PARKED as UNSOUND
-; (2026-09-16).  A naive implementation converts a spill and its *first* reload
-; to PUSH/POP but leaves any *later* SP-relative reload of the same frame slot
-; reading a slot that was never written (PUSH allocates its own 2 bytes rather
-; than writing the prologue-allocated slot), corrupting the value.  This hangs
-; recursive code where a value is reloaded both before and after a call
-; (ackermann).  Root-cause writeup:
-;   tasks/issue331-sprelative-pushpop-unsound-2026-09-16.md
-; Runtime detector (the oracle that would have caught it):
-;   z80-utils/test-runner/testcases/clang/test_22_recursion.c  (hangs if a naive
-;   #331 is reintroduced).
-;
-; This lit test pins the codegen that is already correct today: a 16-bit
-; callee-saved value preserved across a call in a loop is spilled with PUSH/POP
-; by the register allocator natively (no SP-relative frame slot needed), which
-; is the shape #331 was ultimately meant to guarantee for the loop-counter case.
+; STATUS 2026-09-17: FIXED by the SP-relative spill -> PUSH/POP peephole in
+; Z80PreEmitPeephole::optimizeSPRelativeSpillToPushPop.  The peephole matches
+; a 5-MI SP-relative spill sequence (`ld hl,K; add hl,sp; ld (hl),lo; inc hl;
+; ld (hl),hi`) followed by exactly one CALL followed by the mirror 5-MI
+; reload, guarded by:
+;   - single-reader:  exactly ONE spill store and ONE reload load reference
+;     the frame slot in the whole function (rejects the ackermann multi-reload
+;     shape that made the parked draft unsound);
+;   - CALL exactly once between spill and reload;
+;   - only balanced PUSH/POP allowed between spill-end and reload-start (this
+;     lets nested spills convert iteratively);
+;   - no explicit SP write in the interval.
+; Runtime guard against reintroducing an unsound variant:
+;   z80-utils/test-runner/testcases/clang/test_22_recursion.c  (hangs if a
+;   naive #331 is reintroduced -- see tasks/issue331-sprelative-pushpop-
+;   unsound-2026-09-16.md).
 
 declare zeroext i8 @callee()
 
 ; Loop counter preserved across a call in the loop body (mirrors
-; _fdc_read_result in autoload-in-c): the register allocator already keeps the
-; 16-bit counter callee-saved via PUSH/POP, with no `add hl,sp` frame access.
+; _fdc_read_result in autoload-in-c): PEI initially places the counter on a
+; dynamic SP-relative frame slot; the #331 peephole then rewrites the spill
+; and its unique matching reload to PUSH/POP around the CALL.
 ; CHECK-LABEL: spill_bc_across_call:
 ; CHECK-NOT:   add	hl,sp
 ; CHECK:       push	bc

@@ -97,6 +97,8 @@ STATISTIC(NumCrossClassBssSpills,
           "Number of cross-class BSS spill/reload pairs converted to PUSH/POP");
 STATISTIC(NumCarryRoundtrips,
           "Number of carry flag roundtrips folded to direct branch");
+STATISTIC(NumSPSpillsToPushPop,
+          "Number of SP-relative spill/reload pairs converted to PUSH/POP (#331)");
 
 using namespace llvm;
 
@@ -2436,6 +2438,389 @@ static bool optimizeCrossMbbBssSpills(MachineFunction &MF,
         RestartOuter = true;
         break;
       }
+    }
+  }
+
+  return Changed;
+}
+
+// --- Peephole #331: SP-relative spill/reload -> PUSH/POP around CALL ---
+//
+// WHAT: in non-static-frame code (or when the spill lands on a dynamic SP
+// frame anyway), a 16-bit spill immediately before a CALL followed by a
+// matching reload immediately after emits 14 B of SP-relative frame traffic
+// (`ld hl,K; add hl,sp; ld (hl),lo; inc hl; ld (hl),hi` + mirror on reload).
+// Replace with `push rr` / `pop rr` (2 B) around the CALL.
+//
+// PATTERN (spill, exactly 5 MIs):
+//   $hl = LD_rr_nn K
+//   ADD_HL_SP        (defs $hl, $flags)
+//   LD_HLind_r $lo   (store (s16) into %stack.N)
+//   $hl = INC_rr $hl
+//   LD_HLind_r $hi   (store (s16) into %stack.N)
+// followed by CALL_nn (immediately).
+//
+// PATTERN (reload, exactly 5 MIs, immediately after CALL):
+//   $hl = LD_rr_nn K            ; same K, same slot
+//   ADD_HL_SP
+//   $lo = LD_r_HLind
+//   $hl = INC_rr $hl
+//   $hi = LD_r_HLind
+//
+// SAFETY (strict; strictly stricter than the unsound draft in
+// tasks/issue331-sprelative-pushpop-unsound-2026-09-16.md):
+//   1. EXACTLY ONE spill-store and EXACTLY ONE reload-load reference the
+//      slot in the WHOLE function.  Ackermann's second reload of the same
+//      slot is the unsound case; requiring uniqueness eliminates it.
+//   2. Register pair must be BC / DE / HL (caller-saved; CALL clobbers).
+//   3. Spill's 5 MIs immediately precede the CALL; reload's 5 MIs
+//      immediately follow.  No intervening SP-touch, no other push/pop, no
+//      other memory access to the slot -- guaranteed by adjacency.
+//   4. HL is dead across the CALL (the reload will re-materialise HL from
+//      LD_rr_nn K; ADD_HL_SP; CALL clobbers $hl per RegMask).
+//   5. Stack slot is only referenced by this exactly-one spill/reload pair
+//      (function-wide scan of frame-index MMOs).
+//
+// The PUSH/POP change does NOT shrink the prologue (the `push af` slot
+// reservation stays) -- shrinking the frame is a follow-up.  Net win here
+// is 14 B (spill) + 14 B (reload) - 1 B (push) - 1 B (pop) = 26 B per pair.
+// Wait: the spill/reload were 7 B each = 14 B total, not 14 each.  Net:
+// 14 B - 2 B = 12 B per pair.
+
+// Recognize the LD_rr_nn form that starts a spill/reload sequence.
+static bool isLDrrNN_HL(const MachineInstr &MI, int64_t &OutImm) {
+  if (MI.getOpcode() != Z80::LD_rr_nn)
+    return false;
+  if (MI.getNumOperands() < 2)
+    return false;
+  const MachineOperand &Dst = MI.getOperand(0);
+  const MachineOperand &Imm = MI.getOperand(1);
+  if (!Dst.isReg() || Dst.getReg() != Z80::HL)
+    return false;
+  if (!Imm.isImm())
+    return false;
+  OutImm = Imm.getImm();
+  return true;
+}
+
+// True iff MI is `ADD_HL_SP` (in whatever encoding form).  On Z80 this is
+// a single-opcode instruction defining HL from HL + SP.
+static bool isAddHLSP(const MachineInstr &MI) {
+  return MI.getOpcode() == Z80::ADD_HL_SP;
+}
+
+// True iff MI is `LD (HL), r` for r in {B, C, D, E, H, L, A}.
+static bool isLDpHLr(const MachineInstr &MI, Register &OutSrc) {
+  if (MI.getOpcode() != Z80::LD_HLind_r)
+    return false;
+  if (MI.getNumOperands() < 1 || !MI.getOperand(0).isReg())
+    return false;
+  OutSrc = MI.getOperand(0).getReg();
+  return true;
+}
+
+// True iff MI is `LD r, (HL)`.
+static bool isLDrpHL(const MachineInstr &MI, Register &OutDst) {
+  if (MI.getOpcode() != Z80::LD_r_HLind)
+    return false;
+  if (MI.getNumOperands() < 1 || !MI.getOperand(0).isReg())
+    return false;
+  OutDst = MI.getOperand(0).getReg();
+  return true;
+}
+
+// True iff MI is `INC HL` (as a pair-op).
+static bool isIncHL(const MachineInstr &MI) {
+  if (MI.getOpcode() != Z80::INC_rr)
+    return false;
+  if (MI.getNumOperands() < 1 || !MI.getOperand(0).isReg())
+    return false;
+  return MI.getOperand(0).getReg() == Z80::HL;
+}
+
+// Read the frame-index from an MMO that landed on %stack.N.  Returns -1 if
+// this MI does not carry a fixed-stack MMO.  Frame slots reach the MMO via
+// either FixedStackPseudoSourceValue (fixed objects declared by PEI) or the
+// generic PseudoSourceValue::Stack kind (RA-created spill slots).
+static int getStackFI(const MachineInstr &MI) {
+  for (const MachineMemOperand *MMO : MI.memoperands()) {
+    if (const auto *PSV = MMO->getPseudoValue()) {
+      if (const auto *FIPV = dyn_cast<FixedStackPseudoSourceValue>(PSV))
+        return FIPV->getFrameIndex();
+    }
+  }
+  return -1;
+}
+
+// Recognize the 5-MI spill sequence starting at It.  On success fills
+// OutPair (HL/DE/BC), OutOffset (immediate from LD_rr_nn), OutFI (frame
+// index from either MMO), and advances OutLast to the last MI of the seq.
+static bool matchSpillSeq(MachineBasicBlock::iterator It,
+                          MachineBasicBlock::iterator End,
+                          Register &OutPair, int64_t &OutOffset,
+                          int &OutFI,
+                          MachineBasicBlock::iterator &OutLast,
+                          const TargetRegisterInfo *TRI) {
+  auto A = It;
+  if (A == End)
+    return false;
+  int64_t Imm;
+  if (!isLDrrNN_HL(*A, Imm))
+    return false;
+
+  auto B = std::next(A);
+  if (B == End || !isAddHLSP(*B))
+    return false;
+
+  auto C = std::next(B);
+  if (C == End)
+    return false;
+  Register LoSrc;
+  if (!isLDpHLr(*C, LoSrc))
+    return false;
+
+  auto D = std::next(C);
+  if (D == End || !isIncHL(*D))
+    return false;
+
+  auto E = std::next(D);
+  if (E == End)
+    return false;
+  Register HiSrc;
+  if (!isLDpHLr(*E, HiSrc))
+    return false;
+
+  // Pair identification: (LoSrc, HiSrc) must be sibling halves of a
+  // caller-saved 16-bit pair.
+  if (LoSrc == Z80::C && HiSrc == Z80::B) OutPair = Z80::BC;
+  else if (LoSrc == Z80::E && HiSrc == Z80::D) OutPair = Z80::DE;
+  else if (LoSrc == Z80::L && HiSrc == Z80::H) OutPair = Z80::HL;
+  else return false;
+
+  // Both MMOs must reference the same fixed stack slot.
+  int FI_C = getStackFI(*C);
+  int FI_E = getStackFI(*E);
+  if (FI_C < 0 || FI_C != FI_E)
+    return false;
+
+  OutOffset = Imm;
+  OutFI = FI_C;
+  OutLast = E;
+  return true;
+}
+
+// Recognize the 5-MI reload sequence starting at It.  On success fills the
+// same out-fields as matchSpillSeq.
+static bool matchReloadSeq(MachineBasicBlock::iterator It,
+                           MachineBasicBlock::iterator End,
+                           Register &OutPair, int64_t &OutOffset,
+                           int &OutFI,
+                           MachineBasicBlock::iterator &OutLast,
+                           const TargetRegisterInfo *TRI) {
+  auto A = It;
+  if (A == End)
+    return false;
+  int64_t Imm;
+  if (!isLDrrNN_HL(*A, Imm))
+    return false;
+
+  auto B = std::next(A);
+  if (B == End || !isAddHLSP(*B))
+    return false;
+
+  auto C = std::next(B);
+  if (C == End)
+    return false;
+  Register LoDst;
+  if (!isLDrpHL(*C, LoDst))
+    return false;
+
+  auto D = std::next(C);
+  if (D == End || !isIncHL(*D))
+    return false;
+
+  auto E = std::next(D);
+  if (E == End)
+    return false;
+  Register HiDst;
+  if (!isLDrpHL(*E, HiDst))
+    return false;
+
+  if (LoDst == Z80::C && HiDst == Z80::B) OutPair = Z80::BC;
+  else if (LoDst == Z80::E && HiDst == Z80::D) OutPair = Z80::DE;
+  else if (LoDst == Z80::L && HiDst == Z80::H) OutPair = Z80::HL;
+  else return false;
+
+  int FI_C = getStackFI(*C);
+  int FI_E = getStackFI(*E);
+  if (FI_C < 0 || FI_C != FI_E)
+    return false;
+
+  OutOffset = Imm;
+  OutFI = FI_C;
+  OutLast = E;
+  return true;
+}
+
+// Function-wide scan: return the number of distinct MIs whose MMOs reference
+// this frame index.  Used to prove single-reader/single-writer.
+static unsigned countSlotRefs(MachineFunction &MF, int FI) {
+  unsigned Refs = 0;
+  for (const MachineBasicBlock &MBB : MF)
+    for (const MachineInstr &MI : MBB) {
+      for (const MachineMemOperand *MMO : MI.memoperands()) {
+        if (const auto *PSV = MMO->getPseudoValue())
+          if (const auto *FIPV = dyn_cast<FixedStackPseudoSourceValue>(PSV))
+            if (FIPV->getFrameIndex() == FI) {
+              ++Refs;
+              break; // don't double-count within one MI
+            }
+      }
+    }
+  return Refs;
+}
+
+static unsigned getPushOpcForPair(Register Pair) {
+  switch (Pair) {
+  case Z80::BC: return Z80::PUSH_BC;
+  case Z80::DE: return Z80::PUSH_DE;
+  case Z80::HL: return Z80::PUSH_HL;
+  default: llvm_unreachable("unexpected pair");
+  }
+}
+
+static unsigned getPopOpcForPair(Register Pair) {
+  switch (Pair) {
+  case Z80::BC: return Z80::POP_BC;
+  case Z80::DE: return Z80::POP_DE;
+  case Z80::HL: return Z80::POP_HL;
+  default: llvm_unreachable("unexpected pair");
+  }
+}
+
+static bool optimizeSPRelativeSpillToPushPop(MachineFunction &MF,
+                                             const TargetInstrInfo *TII,
+                                             const TargetRegisterInfo *TRI,
+                                             const Z80Subtarget &STI) {
+  bool Changed = false;
+
+  // Iterate until fixed point: converting one pair may expose another.
+  bool AnyChangeInIteration = true;
+  while (AnyChangeInIteration) {
+    AnyChangeInIteration = false;
+
+    for (MachineBasicBlock &MBB : MF) {
+      for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ) {
+        // Look for a spill sequence.
+        Register SpillPair;
+        int64_t SpillOff;
+        int SpillFI;
+        MachineBasicBlock::iterator SpillLast;
+        if (!matchSpillSeq(MII, MIE, SpillPair, SpillOff, SpillFI,
+                           SpillLast, TRI)) {
+          ++MII;
+          continue;
+        }
+
+        // Walk forward from spill-end.  Allow only PUSH/POP (may come from
+        // a nested-spill conversion an earlier iteration performed) and
+        // EXACTLY one CALL.  Track cumulative stack depth; require it to
+        // be 0 (net-balanced) at the point we start looking for a matching
+        // reload sequence.  Any other instruction, or any explicit SP
+        // write, or a second CALL, bails.
+        auto Scan = std::next(SpillLast);
+        int Depth = 0;
+        MachineBasicBlock::iterator TheCall = MIE;
+        while (Scan != MIE) {
+          unsigned O = Scan->getOpcode();
+          if (isAnyPush(O)) { ++Depth; ++Scan; continue; }
+          if (isAnyPop(O))  { --Depth; if (Depth < 0) break; ++Scan; continue; }
+          if (Scan->isCall()) {
+            if (TheCall != MIE) break; // second CALL -> bail
+            TheCall = Scan;
+            ++Scan;
+            continue;
+          }
+          break; // any other MI (SP-touch, memop, control-flow) bails
+        }
+        if (TheCall == MIE || Depth != 0) {
+          ++MII;
+          continue;
+        }
+        auto AfterSpill = TheCall;
+        auto AfterCall = Scan;
+        Register RelPair;
+        int64_t RelOff;
+        int RelFI;
+        MachineBasicBlock::iterator RelLast;
+        if (!matchReloadSeq(AfterCall, MIE, RelPair, RelOff, RelFI,
+                            RelLast, TRI)) {
+          ++MII;
+          continue;
+        }
+
+        // Guards.
+        if (SpillPair != RelPair || SpillFI != RelFI ||
+            SpillOff != RelOff) {
+          ++MII;
+          continue;
+        }
+
+        // Function-wide: exactly four MIs must reference this slot -- the
+        // two stores in the matched spill (lo and hi halves) plus the two
+        // loads in the matched reload.  Any additional reference means the
+        // slot is used elsewhere (a second reload -> the unsound ackermann
+        // shape), so we bail.
+        if (countSlotRefs(MF, SpillFI) != 4) {
+          ++MII;
+          continue;
+        }
+
+        // Capture the ranges to erase before we insert anything.
+        // Spill range: [MII .. std::next(SpillLast))
+        // Reload range: [AfterCall .. std::next(RelLast))
+        auto SpillBegin = MII;
+        auto SpillEnd = std::next(SpillLast);
+        auto ReloadBegin = AfterCall;
+        auto ReloadEnd = std::next(RelLast);
+
+        // Order: erase FIRST, then insert.  Inserting POP before ReloadEnd
+        // and then erasing [ReloadBegin, ReloadEnd) would splat the POP
+        // (which sits at ReloadEnd - 1) inside the erase interval.
+        // Insertion at a saved past-end iterator survives the erase because
+        // the iterator anchors to the following MI (which we do not touch).
+        DebugLoc DL = MII->getDebugLoc();
+
+        // Erase reload first (higher addresses; safe w.r.t. spill iters).
+        while (ReloadBegin != ReloadEnd) {
+          auto N = std::next(ReloadBegin);
+          ReloadBegin->eraseFromParent();
+          ReloadBegin = N;
+        }
+        // Erase spill.
+        while (SpillBegin != SpillEnd) {
+          auto N = std::next(SpillBegin);
+          SpillBegin->eraseFromParent();
+          SpillBegin = N;
+        }
+
+        // Now insert PUSH at SpillEnd position (which is where the erased
+        // spill sequence ended = the CALL) and POP at ReloadEnd (which is
+        // the MI after the erased reload sequence).  These iterators remain
+        // valid because we didn't touch the CALL or the MI after the reload.
+        BuildMI(MBB, SpillEnd, DL, TII->get(getPushOpcForPair(SpillPair)));
+        BuildMI(MBB, ReloadEnd, DL, TII->get(getPopOpcForPair(RelPair)));
+
+        AnyChangeInIteration = true;
+        Changed = true;
+        ++NumSPSpillsToPushPop;
+
+        // Restart from block top; iterators past the transformation are
+        // invalidated.
+        MII = MBB.begin();
+        break;
+      }
+      if (AnyChangeInIteration) break; // restart outer loop
     }
   }
 
@@ -5535,6 +5920,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   Changed |= optimizeBssSpills(MF, TII, TRI, STI);
   Changed |= optimizeCrossClassBssSpills(MF, TII, TRI, STI);
   Changed |= optimizeCrossMbbBssSpills(MF, TII, TRI, STI);
+  Changed |= optimizeSPRelativeSpillToPushPop(MF, TII, TRI, STI);
 
   // Run last: earlier peepholes pattern-match LDHL-based slot accesses
   // (redundant store elimination keys slot identity on them), so the
