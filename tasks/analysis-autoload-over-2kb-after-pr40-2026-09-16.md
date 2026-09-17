@@ -85,3 +85,74 @@ reloads of the same slot; hangs recursion — see
 
 Recommended: option 1 (biggest, root-layer, recovers the whole class). Measure each
 against the pre-PR#40 per-function sizes above; boot-gate every change in MAME.
+
+## Update 2026-09-17: option 1 investigated + first attempt falsified
+
+Framing correction: this is not an upstream regression -- it is fork-local code
+that did not survive our PR#40 merge. The many "Restore ... after PR #40"
+commits (BSS-spill->PUSH/POP, cross-block/cross-MBB, JP->JR, tail-call,
+direct 8-bit BSS addressing, ...) reconstruct one piece at a time; Class 2's
+SP-frame-spill-around-call is one of the pieces **not yet restored**.
+
+### Fase 1 (root-cause investigation) — key findings
+
+- `Z80InstrInfo::storeRegToStackSlot` / `loadRegFromStackSlot` are UNCHANGED
+  pre-PR#40 vs HEAD (only added a `SPILL_ANY16` variant). Frame-slot lowering
+  is intact -- not the source.
+- `Z80RegisterInfo.cpp` lost `z80IsIYAllocatable` (was gated on
+  `optSize + staticStack` -> now returns unconditionally `false`) and the
+  `z80-preserves-regs` attribute machinery. Both are pre-PR#40 fork-local
+  code that did not come back after the merge.
+- `Z80LateOptimization.cpp` (6490 lines pre-PR#40) -> `Z80PreEmitPeephole.cpp`
+  (5587 lines current). ~900 lines' worth of peepholes not yet restored:
+  IX constant propagation + unused IX/IY setup removal, tail-call CALL->JP
+  (pre + cross-MBB), LDIR aftermath DE reuse, u8 switch range narrowing,
+  SBC A,A identity-mask roundtrip, ADD A,1->INC r, IX/IY transfer elimination
+  (Forms 1/2), bare BSS store + 4-instr A-preserving reload, ADD HL,rr
+  commutativity, dead HL copy in pre-compare narrowed loop, and others.
+  Some pieces ARE restored (BSS spill->PUSH/POP incl. cross-block/cross-MBB,
+  cross-class, JP->JR, several ISel folds).
+
+### Fase 2a (IY-unreserve attempt) — HYPOTHESIS FALSIFIED
+
+Reinstated pre-PR#40's `z80IsIYAllocatable` gate (optSize + hasStaticFrame,
+plus `-z80-unreserve-iy` bring-up flag) + conditional `Reserved.set(Z80::IY)`.
+
+Measurement on the Class-2 repro (`/tmp/331-pressure.c`, `-Oz +static-frame`):
+**identical asm** before/after. RA still emits SP-frame spills, still does not
+use IY.
+
+Root of non-effect: `CALL_nn` has `implicit-def $iy` (call clobbers IY). With
+only IX in the CSR list, RA sees IY as caller-saved -- any value in IY across
+a CALL still needs spill/reload, so RA correctly declines to use IY over
+BC/DE/HL. Un-reservation alone does not restore pre-PR#40 behaviour; there
+was some OTHER mechanism in the pre-PR#40 tree that emitted `push de; call;
+pop de` for this shape.
+
+Additional cost: un-reservation re-introduced the parked #189 byte-decompose
+verifier crash on 2 lit tests (`GR16NoIR.sub_hi cannot be used for GR8
+operands` on `issue-189-iy-bcde-widen-leak.ll` and `issue-332-oz-stackarg-
+offset.ll`) plus 2 codegen-shape regressions (`iy-late-opt-missing-uses-
+miscompile.ll`, `static-stack-addr-taken-spill-195.ll`). `Z80NarrowNoIndex`
+does not cover all paths in the current tree, unlike pre-PR#40.
+
+Change reverted. Working tree clean.
+
+### Revised recovery plan
+
+**Fase 2b (recommended next):** restore the missing "SP-frame-spill around
+CALL -> PUSH/POP" fork-local peephole. This is the same conversion #331
+tried before and parked as unsound; the sound version needs a strict
+single-reader guard so it fires only when the spill has exactly one reload
+and no other SP-touch/aliasing between them (Ackermann's multi-reload shape
+must remain safe). Bounded 1-session try with clear go/no-go on lit +
+`test_22_recursion.c`.
+
+**Fase 2c (if 2b insufficient):** investigate what LLVM 22->23.1.0 changed
+in generic RegAllocGreedy's split-around-call heuristic, and either restore
+the pre-PR#40 spill-weight tuning or add a Z80-specific hook. 2-3 sessions,
+possible upstream-fork patch.
+
+**Not on the path right now:** un-reserving IY. Blocked by the byte-decompose
+safety machinery (`Z80NarrowNoIndex` coverage + IX/IY sub-register handling)
+that itself is pre-PR#40 fork-local code we haven't fully restored.

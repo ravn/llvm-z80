@@ -95,3 +95,53 @@ detector; test_22 is the standing guard against a naive reintroduction.
   loop-counter PUSH/POP and document the parked/unsound status.
 - Optimization #331 stays OPEN upstream as a density enhancement; a sound
   implementation needs the single-reader guard above. Not pursued now (4 B).
+
+## Update 2026-09-17: framing correction + IY-unreserve falsified
+
+**Framing.** #331 is not an upstream regression -- it is fork-local code that
+did not survive our PR#40 merge (June 2026). The "Restore ... after PR #40"
+commit series restores one fork-local piece at a time; the SP-frame-spill
+handling for Class-2 shapes is one of the pieces **still missing**. Root cause
+sits in `Z80RegisterInfo.cpp`/`Z80PreEmitPeephole.cpp` where ~900 lines of
+fork-local peepholes went away in the merge and haven't all come back.
+
+**Fase 1 (root-cause investigation).** Ruled out `storeRegToStackSlot` /
+`loadRegFromStackSlot` (unchanged pre-PR#40 vs HEAD). Identified the parked
+IY-unreserve gate (`z80IsIYAllocatable` returned `false` unconditionally
+post-merge; pre-PR#40 gated on `optSize + staticStack`) as the most obvious
+missing piece and picked it as Fase 2a's target.
+
+**Fase 2a (IY-unreserve reinstate) — HYPOTHESIS FALSIFIED.**
+
+Reinstated the pre-PR#40 `z80IsIYAllocatable` gate + `-z80-unreserve-iy`
+bring-up flag + conditional `Reserved.set(Z80::IY)` in `getReservedRegs`.
+Measured Class-2 repro: **asm is identical** before/after. RA still emits
+SP-frame spills, still does not use IY.
+
+Why: `CALL_nn` has `implicit-def $iy`. With only IX in the CSR list, IY is
+caller-saved -- any IY value across a CALL still needs spill/reload, so RA
+correctly avoids IY. The pre-PR#40 shape (`push de; call; pop de`) came from
+something OTHER than IY-unreserve.
+
+Additional cost of the attempt: 4 lit tests regressed, 2 of them with
+verifier crashes `GR16NoIR.sub_hi cannot be used for GR8 operands` --
+exactly the #189 byte-decompose leak class the parked plan warned about.
+`Z80NarrowNoIndex` does not cover all paths in the current tree; the
+supporting safety machinery is itself pre-PR#40 fork-local code we haven't
+fully restored.
+
+Change reverted. Working tree clean.
+
+**Revised plan (see also `analysis-autoload-over-2kb-after-pr40-2026-09-16.md`):**
+
+- **Fase 2b:** restore the missing "SP-frame-spill around CALL -> PUSH/POP"
+  fork-local peephole with a strict single-reader guard so it fires only when
+  the spill has exactly one reload with no intervening SP-touch (Ackermann's
+  multi-reload shape must remain safe -- that is the parked-unsound original
+  failure). Bounded 1-session try, clear go/no-go on lit + `test_22_recursion`.
+- **Fase 2c (fallback):** dig into what LLVM 22->23.1.0 changed in generic
+  RegAllocGreedy's split-around-call heuristic. 2-3 sessions, potential
+  upstream-fork patch.
+- **Not on the path:** un-reserving IY. Blocked by the byte-decompose safety
+  machinery until Z80NarrowNoIndex coverage is restored, and even then it
+  does not solve Class 2 (CALL clobbers IY).
