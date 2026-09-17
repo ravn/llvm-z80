@@ -30,6 +30,7 @@ on:
   #     - 'llvm/lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp'
   #     - 'llvm/test/Transforms/AggressiveInstCombine/narrow-through-argument.ll'
   #     - 'clang/test/CodeGen/z80-knr-u8-rotate.c'
+  #     - 'clang/test/CodeGen/z80-issue-341-isr-inmem-incdec.c'
   #     - 'clang/lib/Driver/ToolChains/SDCC.cpp'
   #     - 'clang/lib/Driver/ToolChains/Z80.cpp'
   #     - 'clang/lib/Driver/ToolChains/Z80.h'
@@ -207,6 +208,18 @@ jobs:
           build/bin/clang -cc1 -triple z80 -Oz -S -Wno-deprecated-non-prototype \
             -o - clang/test/CodeGen/z80-knr-u8-rotate.c \
             | build/bin/FileCheck clang/test/CodeGen/z80-knr-u8-rotate.c
+
+      - name: Gate the #341 ISR in-memory INC/DEC/BitSetRes clobber-guard (C-source)
+        run: |
+          # Verifies at the full-clang level that __attribute__((interrupt))
+          # handlers do NOT get the HL-based in-memory INC/DEC/SET/RES peephole
+          # applied — that would clobber the interrupted code's HL without a
+          # prologue push. Complements the IR-based
+          # llvm/test/CodeGen/Z80/issue-341-isr-inmem-incdec-clobber.ll which
+          # the codegen lit suite already covers.
+          build/bin/clang -cc1 -triple z80 -O2 -S \
+            -o - clang/test/CodeGen/z80-issue-341-isr-inmem-incdec.c \
+            | build/bin/FileCheck clang/test/CodeGen/z80-issue-341-isr-inmem-incdec.c
 
       - name: Run test-runner clang suite (runtime/value oracle)
         run: |

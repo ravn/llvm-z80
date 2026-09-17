@@ -976,6 +976,27 @@ static bool optimizeInMemoryIncDec(MachineBasicBlock &MBB,
   if (!STI.hasZ80())
     return false;
 
+  // In an interrupt handler, HL is callee-saved per Z80_Interrupt_CSR
+  // (Z80CallingConv.td). Rewriting `ld a,(nn); inc a; ld (nn),a` to
+  // `ld hl,nn; inc (hl)` introduces a new HL clobber after PEI has
+  // already computed the callee-saved-spill set, so HL is never pushed
+  // and the interrupted code's HL value is silently corrupted on RETI.
+  // Bail unless HL is already in the prologue's saved-regs list
+  // (ravn/llvm-z80#341).
+  const MachineFunction *MF = MBB.getParent();
+  if (MF->getFunction().hasFnAttribute("interrupt")) {
+    bool HLAlreadySaved = false;
+    for (const CalleeSavedInfo &CSI :
+         MF->getFrameInfo().getCalleeSavedInfo()) {
+      if (CSI.getReg() == Z80::HL) {
+        HLAlreadySaved = true;
+        break;
+      }
+    }
+    if (!HLAlreadySaved)
+      return false;
+  }
+
   bool Changed = false;
   for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
     // I0: LD A, (addr)
@@ -1085,6 +1106,23 @@ static bool optimizeInMemoryBitSetRes(MachineBasicBlock &MBB,
                                       const Z80Subtarget &STI) {
   if (!STI.hasZ80())
     return false;
+
+  // See optimizeInMemoryIncDec above: in an interrupt handler HL is
+  // callee-saved per Z80_Interrupt_CSR; introducing a new HL def after
+  // PEI silently drops the required push (ravn/llvm-z80#341).
+  const MachineFunction *MF = MBB.getParent();
+  if (MF->getFunction().hasFnAttribute("interrupt")) {
+    bool HLAlreadySaved = false;
+    for (const CalleeSavedInfo &CSI :
+         MF->getFrameInfo().getCalleeSavedInfo()) {
+      if (CSI.getReg() == Z80::HL) {
+        HLAlreadySaved = true;
+        break;
+      }
+    }
+    if (!HLAlreadySaved)
+      return false;
+  }
 
   static const unsigned SetOps[8] = {
       Z80::SET_0_HLind, Z80::SET_1_HLind, Z80::SET_2_HLind, Z80::SET_3_HLind,
@@ -2450,6 +2488,23 @@ static bool optimizeConsecutiveStores(MachineBasicBlock &MBB,
                                       const Z80Subtarget &STI) {
   if (!STI.hasZ80())
     return false;
+
+  // See optimizeInMemoryIncDec above: in an interrupt handler HL is
+  // callee-saved per Z80_Interrupt_CSR; introducing a new HL def after
+  // PEI silently drops the required push (ravn/llvm-z80#341).
+  const MachineFunction *MF = MBB.getParent();
+  if (MF->getFunction().hasFnAttribute("interrupt")) {
+    bool HLAlreadySaved = false;
+    for (const CalleeSavedInfo &CSI :
+         MF->getFrameInfo().getCalleeSavedInfo()) {
+      if (CSI.getReg() == Z80::HL) {
+        HLAlreadySaved = true;
+        break;
+      }
+    }
+    if (!HLAlreadySaved)
+      return false;
+  }
 
   struct AddrKey {
     const GlobalValue *GV = nullptr;
