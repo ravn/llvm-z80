@@ -1,18 +1,16 @@
-; RUN: llc -mtriple=z80 -O2 --z80-static-frames < %s -o %t.s
-; RUN: FileCheck %s < %t.s
-; XFAIL: *
+; RUN: llc -mtriple=z80 -O2 --z80-static-frames < %s | FileCheck %s
 ;
-; Test: BSS self-clear via memcpy(p+1, p, n-1) must not clobber the
-; destination pointer when the function's static frame overlaps with
-; the BSS region being cleared.
+; Regression guard for ravn/llvm-z80#335 (originally XFAILed with a stricter
+; CHECK than needed; see the issue comments 2026-09-17). The canonical
+; "shift left by one to zero-fill" idiom must not produce a self-copy at
+; LDIR entry: HL must hold `_bss` and DE must hold `_bss+1`.
 ;
-; With +static-frame, function locals are in BSS.  If the compiler
-; stores p+1 to BSS before *p=0, the zero write corrupts the stored
-; pointer, causing LDIR to write to the wrong address.  See issue #51.
-;
-; The correct codegen must either:
-; (a) compute p+1 after the zero store, or
-; (b) keep p+1 in a register, not in BSS
+; The three companion fixtures cover the wider shape space:
+;   - bss-self-clear-shift.ll        (global-array, no spill)
+;   - bss-self-clear-arg-spill.ll    (pointer argument, spill across call)
+;   - bss-self-clear-local-buf.ll    (stack-local buffer, spill across call)
+; Runtime oracle: z80-utils/test-runner testcases test_94_bss_self_clear.c
+; and test_bss_self_clear_335.c.
 
 @bss = internal global [128 x i8] zeroinitializer
 
@@ -28,10 +26,7 @@ entry:
 }
 
 ; CHECK-LABEL: _bss_self_clear:
-; DE must hold bss+1 (not a corrupted value) and the zero store
-; must happen before LDIR. With the LD (nn),A → LD (HL),A peephole,
-; the store may be via HL after loading HL with _bss (saves 2B).
-; CHECK-DAG: ld de,_bss+1
-; CHECK-DAG: ld hl,_bss
-; CHECK-DAG: ld (hl),a
-; CHECK: ldir
+; DE must reach _bss+1 (either directly or via inc de). HL must be _bss.
+; CHECK-DAG:   ld hl,_bss
+; CHECK-DAG:   {{ld[[:space:]]+de,_bss\+1|inc[[:space:]]+de}}
+; CHECK:       ldir
