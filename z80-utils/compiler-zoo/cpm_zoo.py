@@ -211,7 +211,7 @@ def run_vcpm(com_path, args=""):
 #   clang  — plain -Os (general, reentrant; what a CP/M user would invoke)
 #   clangp — the RC700 production tuning, applied SAFELY per test:
 #            always: +shadow-regs (reentrancy-safe, inert for spill reduction)
-#            +static-stack ONLY when the test is non-recursive — it is
+#            +static-frame ONLY when the test is non-recursive — it is
 #            non-reentrant and SILENTLY miscompiles recursion (see memory rule
 #            feedback_static_stack_nonrecursive_only; nqueens was the witness).
 # NOTE: -disable-lsr is intentionally NOT here.  Production removed it (ravn/
@@ -226,8 +226,8 @@ CLANG_PROD_SAFE = [
     "-Xclang", "-target-feature", "-Xclang", "+shadow-regs",
 ]
 # The non-reentrant flag, gated on a recursion check.
-CLANG_STATIC_STACK = [
-    "-Xclang", "-target-feature", "-Xclang", "+static-stack",
+CLANG_STATIC_FRAME = [
+    "-Xclang", "-target-feature", "-Xclang", "+static-frame",
 ]
 # Back-compat alias for external callers.
 CLANG_CFLAGS = CLANG_BASE
@@ -237,8 +237,8 @@ _recursive_cache = {}
 def is_recursive(name):
     """True if the test's own call graph has a cycle (direct/mutual recursion),
     or it makes an indirect call while taking the address of a defined function
-    (conservatively unsafe).  Used to decide whether +static-stack is safe.
-    Correctness-first: when in doubt, report recursive (skip static-stack)."""
+    (conservatively unsafe).  Used to decide whether +static-frame is safe.
+    Correctness-first: when in doubt, report recursive (skip static-frame)."""
     if name in _recursive_cache:
         return _recursive_cache[name]
     src = src_path(name)
@@ -295,10 +295,10 @@ def is_recursive(name):
     return result
 
 def clangp_flags(name):
-    """Production flags, with +static-stack only when the test is non-recursive."""
+    """Production flags, with +static-frame only when the test is non-recursive."""
     flags = CLANG_BASE + CLANG_PROD_SAFE
     if not is_recursive(name):
-        flags = flags + CLANG_STATIC_STACK
+        flags = flags + CLANG_STATIC_FRAME
     return flags
 
 CLANG_FLAGS = {"clang": CLANG_BASE}  # clangp is per-test, see clangp_flags()
@@ -554,7 +554,7 @@ def main():
     ap.add_argument("--csv", action="store_true", help="CSV output")
     ap.add_argument("--compilers", default="dcc,clang,clangp,zsdcc",
                     help="comma list (default dcc,clang,clangp,zsdcc; "
-                         "clang=plain -Os, clangp=production +static-stack/-disable-lsr)")
+                         "clang=plain -Os, clangp=production +static-frame/-disable-lsr)")
     a = ap.parse_args()
 
     compilers = [c.strip() for c in a.compilers.split(",") if c.strip()]

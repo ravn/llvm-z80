@@ -1,6 +1,6 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 -mattr=+static-frame < %s | FileCheck %s
 ;
-; Static-stack codegen, post-#82 conservative state (#74 cross-pair
+; Static-frame codegen, post-#82 conservative state (#74 cross-pair
 ; extension reverted in commit b843d94, 2026-05-04 -- see ravn/llvm-z80#74).
 ;
 ; A uint16_t loop counter held in a register pair (BC here) gets *also*

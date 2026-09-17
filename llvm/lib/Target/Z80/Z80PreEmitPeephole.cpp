@@ -1460,12 +1460,27 @@ static bool optimizeDJNZ(MachineBasicBlock &MBB,
     Changed = true;
   }
 
-  // Pattern 2: DEC A; LD B, A; [OR A;] JR NZ → DJNZ
+  // Pattern 2: LD A, B; DEC A; LD B, A; [OR A;] JR NZ → DJNZ
+  // For DJNZ (which decrements B) to be equivalent to DEC A; LD B, A,
+  // B must hold the counter before DEC A. This requires that A was copied
+  // from B (LD A, B) immediately prior to DEC A.
   for (auto MII = MBB.begin(); MII != MIE;) {
     if (!isIncDec8(*MII, Z80::DEC_r, Z80::A)) {
       ++MII;
       continue;
     }
+    if (MII == MBB.begin()) {
+      ++MII;
+      continue;
+    }
+    auto I0 = std::prev(MII);
+    while (I0 != MBB.begin() && (I0->isDebugInstr() || I0->isLabel() || I0->isPHI()))
+      --I0;
+    if (!isLD8(*I0, Z80::A, Z80::B)) {
+      ++MII;
+      continue;
+    }
+
     auto I1 = MII;
     auto I2 = MBB.SkipPHIsLabelsAndDebug(std::next(I1));
     if (I2 == MIE || !isLD8(*I2, Z80::B, Z80::A)) {
@@ -1502,7 +1517,7 @@ static bool optimizeDJNZ(MachineBasicBlock &MBB,
     }
     // ravn/llvm-z80#185: skip if B is modified in body before I1 (LD B,A is essential reload)
     bool BClobberedInBody = false;
-    for (auto It = MBB.begin(); It != I1; ++It) {
+    for (auto It = MBB.begin(); It != I0; ++It) {
       if (It->modifiesRegister(Z80::B, TRI)) {
         BClobberedInBody = true;
         break;
@@ -1515,9 +1530,9 @@ static bool optimizeDJNZ(MachineBasicBlock &MBB,
 
     MachineBasicBlock *TargetMBB = IBranch->getOperand(0).getMBB();
     DebugLoc DL = I1->getDebugLoc();
-    LLVM_DEBUG(dbgs() << "  DEC A; LD B,A; [OR A;] JR NZ -> DJNZ\n");
+    LLVM_DEBUG(dbgs() << "  LD A,B; DEC A; LD B,A; [OR A;] JR NZ -> DJNZ\n");
     auto EraseEnd = std::next(IBranch);
-    MII = MBB.erase(I1, EraseEnd);
+    MII = MBB.erase(I0, EraseEnd);
     BuildMI(MBB, MII, DL, TII->get(Z80::DJNZ_e)).addMBB(TargetMBB);
     ++NumDjnz;
     Changed = true;
@@ -1528,7 +1543,7 @@ static bool optimizeDJNZ(MachineBasicBlock &MBB,
 
 // --- Peephole: BSS spill/reload → PUSH/POP across CALLs and register pressure ---
 //
-// WHAT: In +static-frame / +static-stack code, register-allocator spills use direct
+// WHAT: In +static-frame code, register-allocator spills use direct
 // memory addressing to function frame slots in BSS:
 //   LD (slot), rr       (3-4 bytes, 13-20 T)
 //   ... [intervening code / CALLs] ...
@@ -2747,8 +2762,8 @@ static bool optimizeSPRelativeSpillToPushPop(MachineFunction &MF,
           ++MII;
           continue;
         }
-        auto AfterSpill = TheCall;
         auto AfterCall = Scan;
+        (void)TheCall;
         Register RelPair;
         int64_t RelOff;
         int RelFI;

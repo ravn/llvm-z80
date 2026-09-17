@@ -1,5 +1,4 @@
 /* expect 0x0001 */
-/* EXTRA-FLAGS: -mllvm -z80-reverse-fill-seed */
 /*
  * ravn/llvm-z80#205 follow-up: the experimental -z80-reverse-fill-seed peephole
  * rewrites a constant-value K=2 LDIR fill seed into a reversed (HL) byte store

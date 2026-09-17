@@ -15,7 +15,7 @@
  * the compiler cannot constant-fold it into a global-offset GEP.
  *
  * Buffers are file-scope globals (not static locals) to avoid an unrelated
- * O0 +static-stack scratch-frame interaction.
+ * O0 +static-frame scratch-frame interaction.
  */
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;

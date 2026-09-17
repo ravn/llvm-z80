@@ -1,7 +1,7 @@
-/* EXTRA-FLAGS: -mllvm -z80-unreserve-iy */
+/* EXTRA-FLAGS: -Xclang -target-feature -Xclang -static-frame */
 /* Test 174: ravn/llvm-z80#189/#112 taxonomy Class-C correctness witness.
    Soft-float arithmetic + comparison under -z80-unreserve-iy in the DEFAULT
-   config (no +static-stack).  Float compare/arith (fcmp.ll shows ~16 push/pop iy)
+   config (no +static-frame).  Float compare/arith (fcmp.ll shows ~16 push/pop iy)
    exercises IY pressure through the compiler-rt soft-float path.  All values are
    integer-valued so the result is exact in IEEE single (no rounding ambiguity).
    Expected value (0x0007) computed with the host compiler, not by hand. */

@@ -9,21 +9,21 @@
 // are provably non-recursive.  Two safety levels:
 //
 //   Level 1 (always on):  Leaf functions (no CALL / INVOKE).  Trivially
-//   non-recursive; static-stack is structurally safe.
+//   non-recursive; static-frame is structurally safe.
 //
 //   Level 2 (always on):  Non-leaf functions in a CallGraph SCC of size 1
 //   AND not in their own SCC's self-edge.  No recursion cycle reachable
 //   from F to itself.
 //
 // Safety gate (applies to both levels): a function F is unsafe under
-// static-stack iff F is called CONCURRENTLY with itself (e.g. a helper
+// static-frame iff F is called CONCURRENTLY with itself (e.g. a helper
 // shared between main flow and a preemptive ISR re-enters and clobbers
 // its own fixed BSS slots).  runOnModule builds an "unsafe" taint set --
 // everything reachable from an "interrupt"-attributed function, plus every
 // address-taken function (an opaque indirect-call / runtime-vector target) --
 // and processFunction refuses +static-frame on it.
 //
-// Per-function opt-out: a user disables static-stack on one function with
+// Per-function opt-out: a user disables static-frame on one function with
 // __attribute__((target("no-static-frame"))), which clang lowers to
 // "target-features"="...,-static-frame"; the substring check below skips it,
 // and the feature parser clears the bit even if +static-frame were present.

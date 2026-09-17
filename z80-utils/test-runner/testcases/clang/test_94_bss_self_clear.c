@@ -1,6 +1,6 @@
 /* Test 94: BSS self-clear with memcpy must not clobber adjacent data.
  *
- * Reproduces issue #51: with +static-stack, relocate_bios() stores
+ * Reproduces issue #51: with +static-frame, relocate_bios() stores
  * a pointer to BSS, then zeros BSS (including the stored pointer),
  * causing memcpy to write to the wrong destination.
  *
@@ -9,10 +9,10 @@
  * memcpy(p+1, p, n-1) trick.  The sentinel before the region must
  * survive.
  *
- * NOTE: This test may only fail with +static-stack where function
+ * NOTE: This test may only fail with +static-frame where function
  * locals are allocated in BSS.  Without it, locals go on the stack
  * and don't overlap the zeroed region.  The test is kept for
- * regression detection when +static-stack is the default. */
+ * regression detection when +static-frame is the default. */
 
 /* NATIVE-SKIP: this test relies on `memcpy(p+1, p, n-1)` (overlapping memcpy,
  * which is UB) behaving as a forward byte-by-byte zero-fill -- true for Z80's
@@ -40,7 +40,7 @@ static uint8_t bss_region[128];
 
 /* Heavy function: multiple memcpy calls create register pressure,
  * then BSS clear uses the memcpy(p+1, p, n-1) trick.
- * noinline to ensure it gets its own frame (BSS statics with +static-stack). */
+ * noinline to ensure it gets its own frame (BSS statics with +static-frame). */
 void __attribute__((noinline)) do_work(void)
 {
     /* Several memcpy calls to create register pressure */

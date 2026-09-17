@@ -4,7 +4,7 @@ set -e
 CLANG=/src/build/bin/clang
 OBJCOPY=/src/build/bin/llvm-objcopy
 NM=/src/build/bin/llvm-nm
-FLAGS="--target=z80 -Os -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr"
+FLAGS="--target=z80 -Os -Xclang -target-feature -Xclang +static-frame -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr"
 
 for f in test_*.c; do
     name=$(basename $f .c)
@@ -22,7 +22,7 @@ for f in test_*.c; do
     echo "$name: $DE $HL"
 done
 
-# Also test WITHOUT static-stack and shadow-regs
+# Also test WITHOUT static-frame and shadow-regs
 echo ""
 echo "=== WITHOUT PROM flags ==="
 FLAGS2="--target=z80 -Os -mllvm -disable-lsr"

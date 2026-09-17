@@ -17,7 +17,7 @@
  * `_memset` / `_memchr` into the archive, exercising the real pop-iy code.
  * rcbios itself references _memcpy/_memset/___umodqi3/__call_iy from the same
  * archive, so this guards its production runtime.  Buffers are file-scope
- * globals to avoid the unrelated O0 static-stack frame issue.
+ * globals to avoid the unrelated O0 static-frame issue.
  */
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;

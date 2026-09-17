@@ -128,7 +128,7 @@ bool Z80NarrowNoIndex::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   // IX/IY are Z80-only, and there is nothing to keep out of them when IY is
   // reserved -- running then would only perturb production coalescing.
-  if (!STI.hasZ80() || !z80IsIYAllocatable(MF))  // #38: flag OR size-opt+static-stack
+  if (!STI.hasZ80() || !z80IsIYAllocatable(MF))  // #38: flag OR size-opt+static-frame
     return false;
 
   MachineRegisterInfo &MRI = MF.getRegInfo();

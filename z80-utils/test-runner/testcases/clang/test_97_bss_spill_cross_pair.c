@@ -1,9 +1,9 @@
 /* expect 0x0001 */
-/* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
+/* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-frame -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
 /*
  * BSS-spill peephole coverage #1: cross-register-pair reload.
  *
- * With +static-stack, locals are BSS-resident.  The BSS-spill peephole
+ * With +static-frame, locals are BSS-resident.  The BSS-spill peephole
  * (Z80LateOptimization, issues #74 + #82) converts a `LD (slot),pairA;
  * CALL ...; LD pairB,(slot)` sequence into `PUSH pairA; CALL ...; POP
  * pairB`.  When pairA != pairB the rewrite is the cross-pair extension

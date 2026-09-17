@@ -1,9 +1,10 @@
 ; SPDX-License-Identifier: Zlib OR Apache-2.0 WITH LLVM-exception OR MIT
 	.area _CODE
 	.globl ___mulsi3
+	.globl ___mulsi3_fast
 
 ;===------------------------------------------------------------------------===;
-; ___mulsi3 - 32-bit multiply (low 32 bits of result)
+; ___mulsi3 / ___mulsi3_fast - 32-bit multiply (low 32 bits of result)
 ;
 ; Input:  HLDE = a (H:L = a_hi, D:E = a_lo)
 ;         stack: b (4-5(ix) = b_lo, 6-7(ix) = b_hi)
@@ -14,6 +15,7 @@
 ;   Uses __mulhi3 (low 16 bits) and __umulhi3 (high 16 bits)
 ;===------------------------------------------------------------------------===;
 ___mulsi3:
+___mulsi3_fast:
 	push	ix
 	ld	ix, #0
 	add	ix, sp

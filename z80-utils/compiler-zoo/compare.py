@@ -36,7 +36,7 @@ COMPILERS = {
         "compile": [
             "/src/build/bin/clang", "--target=z80", "-Os",
             "-g",  # debug info for source-interleaved listing
-            "-Xclang", "-target-feature", "-Xclang", "+static-stack",
+            "-Xclang", "-target-feature", "-Xclang", "+static-frame",
             "-Xclang", "-target-feature", "-Xclang", "+shadow-regs",
             "-mllvm", "-disable-lsr",
             "{input}", "-o", "{output_elf}",

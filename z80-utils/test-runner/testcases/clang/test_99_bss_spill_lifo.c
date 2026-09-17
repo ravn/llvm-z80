@@ -1,5 +1,5 @@
 /* expect 0x0001 */
-/* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
+/* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-frame -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
 /* O0 guard dropped 2026-05-28: the Z80LateOptimization crash (ravn/llvm-z80#125)
  * was fixed by the #210/#197 frame-lowering hardening; O0..Oz all pass now. */
 /*
@@ -40,7 +40,7 @@ NOINLINE
 static uint16_t multi_call_block(uint16_t seed) {
     /* Six values must coexist across four CALLs in the same block.
      * Z80 has 3 GP pairs, so at least 3 of these MUST spill.  With
-     * +static-stack the spill targets are BSS, so the peephole's
+     * +static-frame the spill targets are BSS, so the peephole's
      * worklist will hold multiple (store, CALL, load) candidates at
      * once. */
     uint16_t v1 = (uint16_t)(seed + 10);

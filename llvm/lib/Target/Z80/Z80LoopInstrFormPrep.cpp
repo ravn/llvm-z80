@@ -101,7 +101,7 @@ static cl::opt<unsigned> Z80MaxLoopCarriedPtrs(
 // solely for the exit test) leaves 3 live 16-bit values through the loop
 // (new pointer, old IV, stride) on a target with exactly 3 GP pairs and no
 // spare -- initial testing on the #250 repro showed the allocator spilling
-// to the static-stack scratch area rather than keeping all 3 in registers,
+// to the static-frame scratch area rather than keeping all 3 in registers,
 // which can net WORSE than the un-rewritten form.  Keep opt-in
 // (-mllvm -z80-loop-instr-form-prep) until the register-pressure gate is
 // tightened or IndVarSimplify-style exit-test rewriting (converting the
@@ -237,7 +237,7 @@ static bool registerPressureOK(Loop &L, unsigned NewGroups) {
 // -- the new pointer, the loop-invariant stride, and the old IV chain used
 // only for the compare.  Z80 has exactly 3 GP register pairs (BC/DE/HL, no
 // spare with IX/IY reserved by default) and empirically this 3rd value
-// forced the allocator to spill to the static-stack scratch area, turning
+// forced the allocator to spill to the static-frame scratch area, turning
 // the #250 repro from 508 to 680 bytes -- a regression, not a win.  This
 // step drops back to 2 live values (pointer, stride) by deleting the old
 // IV once nothing but the compare depends on it.
@@ -606,7 +606,7 @@ static bool runOnFunctionImpl(Function &F, ScalarEvolution &SE, LoopInfo &LI,
    // old IV alive adds a 2nd/3rd loop-carried 16-bit value (new pointer +
    // surviving counter [+ stride]) on a target with exactly BC/DE/HL and no
    // spare -- measured to add setup bytes (cpnos init.c:603) or force the
-   // pointer to spill to the static-stack scratch (cpnos init.c:488), and to
+   // pointer to spill to the static-frame scratch (cpnos init.c:488), and to
    // slow sieve at -O2, while NEVER shrinking any real corpus/production loop.
    // Only the fully-eliminable shape (exit test rephrased as a pointer
    // compare, dropping back to {pointer[,stride]}) is profitable, so it is the

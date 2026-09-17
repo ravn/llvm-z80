@@ -1,6 +1,6 @@
-/* EXTRA-FLAGS: -mllvm -z80-unreserve-iy */
-/* Test 171: ravn/llvm-z80#189 default-config (no +static-stack) correctness
-   witness.  Same crc_one as test_168 but WITHOUT +static-stack, so spill slots
+/* EXTRA-FLAGS: -Xclang -target-feature -Xclang -static-frame */
+/* Test 171: ravn/llvm-z80#189 default-config (no +static-frame) correctness
+   witness.  Same crc_one as test_168 but WITHOUT +static-frame, so spill slots
    are SP-relative (ld hl,N; add hl,sp).  Before the Z80NarrowSubRegGR16 pass the
    loop-carried i32 high half landed in IY and was byte-shuttled (push iy; pop
    rr), perturbing SP under the SP-relative slot access -> crc_one(0xFF) returned

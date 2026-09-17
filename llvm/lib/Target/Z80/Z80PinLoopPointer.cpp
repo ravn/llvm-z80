@@ -17,7 +17,7 @@
 //     shuttles bc<->hl every iteration (ld l,c; ld h,b; ... ; ld c,l; ld b,h).
 //   * that extra working-HL makes 4 live 16-bit values (pointer, stride,
 //     end-pointer, working-HL) on a 3-pair register file, so the stride gets
-//     spilled to the static-stack BSS scratch and reloaded every iteration
+//     spilled to the static-frame BSS scratch and reloaded every iteration
 //     (`ld de,(__sfrend_main-2)`, ~20T) and the end-pointer constant is
 //     re-materialised every iteration (`ld de,_flags+8191`, 10T).
 //

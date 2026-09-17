@@ -1,11 +1,11 @@
 /* expect 0x0001 */
-/* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-stack -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
+/* EXTRA-FLAGS: -Xclang -target-feature -Xclang +static-frame -Xclang -target-feature -Xclang +shadow-regs -mllvm -disable-lsr */
 /*
  * BSS-spill peephole coverage #2: pointer-pressure cross-pair reload.
  *
  * Three buffer pointers + an index live across nested noinline CALLs.
  * Pointers are 16-bit so they compete directly for HL/DE/BC.  After
- * each CALL the pointers must be reloaded; with +static-stack the
+ * each CALL the pointers must be reloaded; with +static-frame the
  * spill/reload happens against BSS slots and is the BSS-spill peephole's
  * fire site.  Because three pointers can't simultaneously occupy three
  * registers AND be consumed by a CALL that needs HL for its return value,

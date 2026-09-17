@@ -1,6 +1,6 @@
-/* EXTRA-FLAGS: -mllvm -z80-unreserve-iy */
+/* EXTRA-FLAGS: -Xclang -target-feature -Xclang -static-frame */
 /* Test 172: ravn/llvm-z80#189/#112 taxonomy -- wide (i64) loop-carried reduction
-   under -z80-unreserve-iy in the DEFAULT (no +static-stack) config, the config
+   under -z80-unreserve-iy in the DEFAULT (no +static-frame) config, the config
    where an IY byte-shuttle perturbs SP-relative spill slots and miscompiles.
    i64 arithmetic byte-decomposes into many 16-bit chunks and drives heavy IY use
    (the i128/i64 lit files show dozens of push/pop iy shuttles), so this exercises

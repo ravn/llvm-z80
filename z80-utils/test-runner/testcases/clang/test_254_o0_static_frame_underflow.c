@@ -1,6 +1,6 @@
-/* ravn/llvm-z80 #254: -O0 static-stack frame allocated too small.
+/* ravn/llvm-z80 #254: -O0 static-frame allocated too small.
  *
- * At -O0 hasFP is true, so main uses the static-stack + frame-pointer path
+ * At -O0 hasFP is true, so main uses the static-frame + frame-pointer path
  * (IX == __sfrend_main; the caller's IX is saved on the REAL stack via PUSH,
  * so it is excluded from the BSS frame: BSSSize = StackSize - CalleeSavedFrame
  * Size).  The frame-index -> BSS-address lowering skipped only the saved-IX

@@ -77,7 +77,7 @@ using namespace llvm;
 // defined when every leaf sub-register is defined) prevents those defs being
 // added at all, so the mitigation's removal loop is subsumed.  CONFIRMED: with
 // this flag set, the full differential oracle stays clean in both configs
-// (default 799/0/50/207, +static-stack 793/0/50/213, zero divergences), so the
+// (default 799/0/50/207, +static-frame 793/0/50/213, zero divergences), so the
 // MCP miscompile the mitigation guards no longer occurs.  The pass is kept on
 // by default because its fullyRecomputeLiveIns tail still clears 2 verifier
 // errors (test_11, test_37); this hidden flag lets a future focused session
@@ -396,7 +396,7 @@ void Z80PassConfig::addIRPasses() {
   if (getZ80TargetMachine().useStaticFrames())
     addPass(createZ80NonReentrantPass(getZ80TargetMachine()));
 
-  // ravn/llvm-z80#176/#40: auto-inject +static-stack on provably-non-recursive
+  // ravn/llvm-z80#176/#40: auto-inject +static-frame on provably-non-recursive
   // functions (default on; global opt-out via -mllvm -z80-auto-static-frame=
   // false).  Gate the *registration* on the flag rather than early-returning
   // inside the pass when disabled: a registered no-op pass still shifts
