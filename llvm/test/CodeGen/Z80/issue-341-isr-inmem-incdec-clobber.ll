@@ -26,11 +26,11 @@ define void @isr_incmem() #0 {
 ; CHECK:       push af
 ; CHECK-NOT:   ld hl,_g
 ; CHECK-NOT:   inc (hl)
-; CHECK-NOT:   dec (hl)
+; Expected A-only fallback (safe because AF is pushed):
 ; CHECK:       ld a,(_g)
 ; CHECK-NEXT:  inc a
 ; CHECK-NEXT:  ld (_g),a
-; CHECK:       pop af
+; CHECK-NEXT:  pop af
 ; CHECK-NEXT:  reti
 
 ; --- decrement variant: same shape ---
@@ -47,7 +47,7 @@ define void @isr_decmem() #0 {
 ; CHECK:       ld a,(_g)
 ; CHECK-NEXT:  dec a
 ; CHECK-NEXT:  ld (_g),a
-; CHECK:       pop af
+; CHECK-NEXT:  pop af
 ; CHECK-NEXT:  reti
 
 ; --- bit-set variant: same-class peephole optimizeInMemoryBitSetRes ---
@@ -61,7 +61,10 @@ define void @isr_setbit() #0 {
 ; CHECK:       push af
 ; CHECK-NOT:   ld hl,_g
 ; CHECK-NOT:   set {{.}},(hl)
-; CHECK:       pop af
+; CHECK:       ld a,(_g)
+; CHECK-NEXT:  or 4
+; CHECK-NEXT:  ld (_g),a
+; CHECK-NEXT:  pop af
 ; CHECK-NEXT:  reti
 
 ; --- non-ISR control: peephole still fires (byte-shorter) ---

@@ -25,7 +25,11 @@ __attribute__((interrupt)) void isr_incmem(void) {
 // CHECK:       push af
 // CHECK-NOT:   ld hl,_g
 // CHECK-NOT:   inc (hl)
-// CHECK:       pop af
+// Expected A-only fallback (safe because AF is pushed):
+// CHECK:       ld a,(_g)
+// CHECK-NEXT:  inc a
+// CHECK-NEXT:  ld (_g),a
+// CHECK-NEXT:  pop af
 // CHECK-NEXT:  reti
 
 __attribute__((interrupt)) void isr_decmem(void) {
@@ -35,7 +39,10 @@ __attribute__((interrupt)) void isr_decmem(void) {
 // CHECK:       push af
 // CHECK-NOT:   ld hl,_g
 // CHECK-NOT:   dec (hl)
-// CHECK:       pop af
+// CHECK:       ld a,(_g)
+// CHECK-NEXT:  dec a
+// CHECK-NEXT:  ld (_g),a
+// CHECK-NEXT:  pop af
 // CHECK-NEXT:  reti
 
 __attribute__((interrupt)) void isr_setbit(void) {
@@ -45,7 +52,10 @@ __attribute__((interrupt)) void isr_setbit(void) {
 // CHECK:       push af
 // CHECK-NOT:   ld hl,_g
 // CHECK-NOT:   set {{.}},(hl)
-// CHECK:       pop af
+// CHECK:       ld a,(_g)
+// CHECK-NEXT:  or 4
+// CHECK-NEXT:  ld (_g),a
+// CHECK-NEXT:  pop af
 // CHECK-NEXT:  reti
 
 // Non-ISR control: the peephole must still fire, saving 3 B.
