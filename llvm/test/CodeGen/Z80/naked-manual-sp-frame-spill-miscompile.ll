@@ -1,67 +1,60 @@
-; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 -disable-lsr < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -disable-lsr < %s | FileCheck %s
+; XFAIL: *
 ;
-; Miscompile: a function that resets SP itself (inline asm `ld sp, imm`, as the
-; RC700 autoload `main_relocated` does via SET_SP(ROM_STACK)) must not keep any
-; compiler-managed frame object, because the register allocator computes the
-; frame slot address relative to the ENTRY SP (`add hl, sp`) and spills there in
-; the prologue, then the inline `ld sp` moves SP, and the later reload reads the
-; slot relative to the NEW SP -- a different, uninitialised address. Observed on
-; autoload: `fdc_cmd.sector = 1` reloaded a spilled &fdc_cmd pointer of 0x0000
-; (runtime write-tap), so the store went to null, sector stayed 0, and the boot
-; Read Data used sector 0 (disk is 1-based) -> No Data -> DISKETTE ERROR.
-; See ravn/rc700-gensmedet#128, ravn/llvm-z80#316 (static-frame regression forced
-; the frame spills that make this fire; `__naked` is a no-op for clang so the
-; frame is not suppressed).
+; ravn/llvm-z80#318 -- Miscompile: a function that resets SP itself (inline asm
+; `ld sp, imm`, as the RC700 autoload `main_relocated` does via SET_SP(ROM_STACK))
+; must not keep any compiler-managed frame slot alive across the SP write.
+; The register allocator computes spill-slot addresses in the prologue relative
+; to the ENTRY SP (`ld hl,K; add hl,sp; ld (hl),...`), then the inline `ld sp`
+; moves SP, and the later reload reads the slot relative to the NEW SP -- a
+; different, uninitialised address. Observed on autoload: `fdc_cmd.sector = 1`
+; reloaded a spilled `&fdc_cmd` pointer of 0x0000 (MAME write-tap), so the store
+; went to null and boot failed with DISKETTE ERROR (rc700-gensmedet#128 as
+; originally reported; that issue has since been re-diagnosed as a compiler-
+; independent FDC emulation problem after the display/ISR fix landed).
 ;
-; Correct behavior: no frame slot is accessed (`add hl, sp`) BEFORE the SP is
-; reset. When fixed (frame suppressed, or established after the SP write), this
-; XPASSes -- drop the XFAIL then.
+; History: an earlier reduced repro (single-function autoload shape) was
+; incidentally resolved by 37f696f38ee5 -- restoring 8-bit direct global
+; addressing eliminated the spill for that specific shape, so the fixture
+; started PASSing. This stronger repro forces 16-bit spilling (5 live i16
+; values across 5 CALLs before the inline `ld sp`) so the miscompile class
+; itself is pinned, not just the one shape that happened to disappear.
+;
+; Correct behavior: no frame slot may be read or written that spans the manual
+; SP reset -- either the frame must be established after the SP write, or the
+; peephole/RA must treat an inline-asm SP-clobber as a barrier and materialise
+; live values elsewhere (e.g. push/pop pairs on the callee's own frame chain).
+; When fixed, the test XPASSes: drop the XFAIL.
+;
+; Fix directions (documented on ravn/llvm-z80#318):
+;   * treat an inline-asm `sp` clobber as a barrier that forbids SP-relative
+;     frame access on both sides, OR
+;   * make `__naked` on clang actually suppress the frame (currently no-op), OR
+;   * require the caller to set SP before entry so the callee never resets it.
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
 
-@g = dso_local global [7 x i8] zeroinitializer
-@dbl = dso_local global i8 0
+declare void @sink(i16, i16, i16, i16, i16)
+declare i16 @src()
 
-declare void @a()
-declare void @b()
-declare void @c()
-declare void @d()
-declare void @e()
-declare i16 @detect()
-declare void @rd()
-
-define dso_local void @mainrel() {
+define dso_local void @mainrel(i16 %a, i16 %b, i16 %c, i16 %d, i16 %e) {
 ; CHECK-LABEL: mainrel:
-; No frame slot may be materialised before the manual SP reset.
+; No frame slot may be materialised (`add hl,sp`) before the manual SP reset,
+; because such a slot would be reloaded relative to the WRONG sp afterwards.
 ; CHECK-NOT: add hl,sp
 ; CHECK: ld sp,
-  tail call void asm sideeffect "ld sp, 0xbfff", ""()
-  tail call void @a()
-  tail call void @b()
-  tail call void @c()
-  tail call void @d()
-  tail call void @e()
-  store i8 1, ptr getelementptr inbounds nuw (i8, ptr @g, i16 1), align 1
-  store i8 1, ptr getelementptr inbounds nuw (i8, ptr @g, i16 2), align 1
-  %1 = tail call i16 @detect()
-  %2 = icmp eq i16 %1, 0
-  br i1 %2, label %3, label %4
-3:
-  store i8 1, ptr @dbl, align 1
-  br label %4
-4:
-  store i8 0, ptr getelementptr inbounds nuw (i8, ptr @g, i16 1), align 1
-  %5 = tail call i16 @detect()
-  %6 = icmp eq i16 %5, 0
-  br i1 %6, label %7, label %11
-7:
-  br label %8
-8:
-  tail call void @rd()
-  %9 = load i8, ptr @g, align 1
-  %10 = icmp eq i8 %9, 0
-  br i1 %10, label %11, label %8
-11:
+  %x1 = call i16 @src()
+  %x2 = call i16 @src()
+  %x3 = call i16 @src()
+  %x4 = call i16 @src()
+  %x5 = call i16 @src()
+  tail call void asm sideeffect "ld sp, 0xbfff", "~{sp}"()
+  %s1 = add i16 %a, %x1
+  %s2 = add i16 %b, %x2
+  %s3 = add i16 %c, %x3
+  %s4 = add i16 %d, %x4
+  %s5 = add i16 %e, %x5
+  call void @sink(i16 %s1, i16 %s2, i16 %s3, i16 %s4, i16 %s5)
   ret void
 }
