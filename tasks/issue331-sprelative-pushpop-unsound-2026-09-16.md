@@ -145,3 +145,43 @@ Change reverted. Working tree clean.
 - **Not on the path:** un-reserving IY. Blocked by the byte-decompose safety
   machinery until Z80NarrowNoIndex coverage is restored, and even then it
   does not solve Class 2 (CALL clobbers IY).
+
+## Update 2026-09-17 (later): Fase 2b landed, Fase 2c falsified, #331 closed
+
+**Fase 2b landed** in `7c363405d297`: sound SP-frame-spill -> PUSH/POP peephole
+(`optimizeSPRelativeSpillToPushPop`, strict single-reader guard, iterative
+fixed-point).  Verified: 292 lit PASS, 918 runtime PASS, test_22_recursion PASS
+on all opt levels, MAME floppy-boot-test PASS.  Autoload PROM 2120 -> 2111 B
+(9 B saved raw).
+
+**Fase 2c (RA-hook restore) — HYPOTHESIS FALSIFIED.**
+
+Reinstated pre-PR#40's `Z80RegisterInfo::getRegAllocationHints` in upstream
+style (concise comments; dropped fork-lore + session-history essays + the
+`Z80LogRegallocHints` cl::opt).  Included all three strategies: GR16_BCDE
+op-constraint hint, DEC_rr self-loop counter hint, and DJNZ B/anti-B hint
+with the innermost-loop bias.
+
+Measurement:
+  * Class-2 minimal repro: peephole cascade still converts both spills
+    to push/pop (no change from Fase 2b baseline).
+  * autoload PROM: **2111 B -> 2116 B (+5 B, WORSE)**.
+  * lit suite: **21 tests regressed** with CHECK-line shape drift (no
+    verifier errors, no miscompiles -- purely register-choice changes).
+
+Interpretation: the GR16_BCDE hint fires broadly (ADD/SUB HL,rr is very
+common) and shifts register pressure globally in ways that lose more bytes
+elsewhere than they save on the specific Class-2 shape.  Fase 2b's peephole
+carries the Class-2 win by itself; the hint on top is net-negative on
+production and gains nothing on the guarded shape.  Reverted.
+
+**Root cause for the original +23-39 B Class-2 loss: NOT a single missing
+component.**  Likely a compound of many small things (some fork-local
+peepholes still not fully restored + generic-LLVM 23.1.0 changes to spill
+placement).  Fase 2b recovers a defined subset; the remainder is spread
+across shapes no single peephole/hook cleanly targets.
+
+**#331 CLOSED 2026-09-17.**  Primary shape addressed by Fase 2b; further
+recovery of remaining Class-2 shapes is not worth further single-session
+investment before upstream work resumes.  Reopen if a production target
+becomes cap-tight and the residual matters.

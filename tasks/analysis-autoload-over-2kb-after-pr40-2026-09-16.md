@@ -156,3 +156,24 @@ possible upstream-fork patch.
 **Not on the path right now:** un-reserving IY. Blocked by the byte-decompose
 safety machinery (`Z80NarrowNoIndex` coverage + IX/IY sub-register handling)
 that itself is pre-PR#40 fork-local code we haven't fully restored.
+
+## Update 2026-09-17 (later): Fase 2b landed, Fase 2c falsified, #331 closed
+
+**Fase 2b (peephole)** landed in `7c363405d297` -- sound SP-frame-spill ->
+PUSH/POP with strict single-reader guard.  autoload PROM 2120 -> 2111 B
+(9 B saved raw), 918 runtime PASS, test_22_recursion PASS all opts, MAME
+floppy-boot-test PASS.
+
+**Fase 2c (restore `getRegAllocationHints`) -- FALSIFIED.**  Reinstating the
+pre-PR#40 hook in upstream style (all three strategies: GR16_BCDE op-hint,
+DEC_rr self-loop counter hint, DJNZ innermost-loop hint) *lost* 5 B on
+autoload (2111 -> 2116) and broke 21 lit tests with CHECK-line shape drift
+(no verifier / miscompile).  The GR16_BCDE hint fires broadly and shifts
+register pressure globally in ways that spill more than they save on the
+Class-2 shape.  Reverted; the peephole alone carries the win.
+
+**Root cause for the original +23-39 B Class-2 loss: NOT a single missing
+component.**  Fase 2b recovers a defined subset; the remainder is spread
+across shapes no single peephole/hook cleanly targets.  #331 CLOSED
+2026-09-17 -- reopen if a production target becomes cap-tight and the
+residual matters.
