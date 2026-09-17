@@ -1791,6 +1791,17 @@ static bool optimizeBssSpills(MachineFunction &MF,
           break;
         }
 
+        // Intervening SP reads (e.g. ADD_HL_SP, LD_HL_SP) compute
+        // fixed-stack-object addresses with hard-coded offsets baked in by
+        // PEI; inserting a PUSH at the store site shifts SP and invalidates
+        // those offsets. PUSH/POP are already tracked via StackDepth so
+        // exclude them here (ravn/llvm-z80#332).
+        if (!isAnyPush(SOpc) && !isAnyPop(SOpc) && !Scan->isCall() &&
+            Scan->readsRegister(Z80::SP, TRI)) {
+          Conflict = true;
+          break;
+        }
+
         // Matching load from the same address.
         if (isMatchingLoad(SI->StoreOpc, SOpc) && sameBssAddress(*MII, *Scan)) {
           // Stack depth must be balanced at each reload point.
@@ -2013,6 +2024,17 @@ static bool optimizeCrossClassBssSpills(MachineFunction &MF,
           break;
         }
 
+        // Intervening SP reads (e.g. ADD_HL_SP, LD_HL_SP) compute
+        // fixed-stack-object addresses with hard-coded offsets baked in by
+        // PEI; inserting a PUSH at the store site shifts SP and invalidates
+        // those offsets. PUSH/POP are already tracked via StackDepth so
+        // exclude them here (ravn/llvm-z80#332).
+        if (!isAnyPush(SOpc) && !isAnyPop(SOpc) && !Scan->isCall() &&
+            Scan->readsRegister(Z80::SP, TRI)) {
+          Conflict = true;
+          break;
+        }
+
         // Check for load from our slot.
         if (isAnyBssLoad(SOpc) && sameBssAddress(*MII, *Scan)) {
           if (MatchedLoad != MIE) {
@@ -2162,6 +2184,16 @@ static bool optimizeCrossMbbBssSpills(MachineFunction &MF,
             BailLocal = true; // explicit SP rewrite invalidates stack tracking
             break;
           }
+          // Intervening SP reads (e.g. ADD_HL_SP, LD_HL_SP) compute
+          // fixed-stack-object addresses with hard-coded offsets baked in by
+          // PEI; inserting a PUSH at the store site shifts SP and invalidates
+          // those offsets. PUSH/POP are already tracked via StackDepth so
+          // exclude them here (ravn/llvm-z80#332).
+          if (!isAnyPush(O) && !isAnyPop(O) && !S->isCall() &&
+              S->readsRegister(Z80::SP, TRI)) {
+            BailLocal = true;
+            break;
+          }
           if (isAnyBssAccess(O) && sameBssAddress(*MII, *S)) {
             BailLocal = true; // in-MBB reuse handled by single-block peephole
             break;
@@ -2200,6 +2232,13 @@ static bool optimizeCrossMbbBssSpills(MachineFunction &MF,
             }
             if (isExplicitSPWrite(*T, TRI)) {
               BailSucc = true; // SP modification before touch
+              break;
+            }
+            // SP read before slot touch would see shifted SP after prepended
+            // PUSH (ravn/llvm-z80#332).
+            if (!isAnyPush(O) && !isAnyPop(O) && !T->isCall() &&
+                T->readsRegister(Z80::SP, TRI)) {
+              BailSucc = true;
               break;
             }
             if (isAnyBssAccess(O) && sameBssAddress(*MII, *T)) {
