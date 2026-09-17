@@ -1,34 +1,34 @@
-// RUN: %clang_cc1 -triple z80  -emit-llvm -o - %s | FileCheck %s
-// RUN: %clang_cc1 -triple sm83 -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple z80  -emit-llvm -o - %s | FileCheck --check-prefix=CHECK-64 %s
+// RUN: %clang_cc1 -triple sm83 -emit-llvm -o - %s | FileCheck --check-prefix=CHECK-64 %s
+// RUN: %clang_cc1 -triple z80  -mdouble=64 -emit-llvm -o - %s | FileCheck --check-prefix=CHECK-64 %s
+// RUN: %clang_cc1 -triple z80  -mdouble=32 -emit-llvm -o - %s | FileCheck --check-prefix=CHECK-32 %s
+// RUN: %clang_cc1 -triple sm83 -mdouble=32 -emit-llvm -o - %s | FileCheck --check-prefix=CHECK-32 %s
 //
-// ravn/llvm-z80: on this 8-bit target, `double` and `long double` are 32-bit
-// IEEE-754 binary32 -- the same width and bit format as `float` -- rather
-// than the usual 64-bit binary64. This is deliberate, not a bug: it is the
-// only float format with a reusable host-side runtime (z88dk's `math32`,
-// itself IEEE-754 binary32), whereas a real 64-bit binary64 would need an
-// entirely new from-scratch soft-float library with nothing to bridge to.
-// Baseline (before this change, base TargetInfo default of double=64/
-// IEEEdouble): `double add(double,double)` emitted `call ___adddf3` and
-// `sizeof(double) == 8`.
-//
-// This test pins the frontend/IR-level consequence: arithmetic on `double`
-// lowers to the *same* 32-bit ("sf") compiler-rt libcalls as `float`, not the
-// 64-bit ("df") ones, and `sizeof(double) == sizeof(float) == 4`.
+// By default, `double` and `long double` are standard 64-bit IEEE-754 binary64
+// on Z80 and SM83. When -mdouble=32 is specified, they become 32-bit IEEE-754
+// binary32 (the same width and bit format as `float`) for compatibility with
+// 32-bit runtimes like z88dk math32.
 
-// CHECK: define{{.*}} float @add(float noundef %a, float noundef %b)
-// CHECK: fadd float
+// CHECK-64: define{{.*}} double @add(double noundef %a, double noundef %b)
+// CHECK-64: fadd double
+// CHECK-32: define{{.*}} float @add(float noundef %a, float noundef %b)
+// CHECK-32: fadd float
 double add(double a, double b) {
   return a + b;
 }
 
-// CHECK: define{{.*}} i16 @dsize()
-// CHECK: ret i16 4
+// CHECK-64: define{{.*}} i16 @dsize()
+// CHECK-64: ret i16 8
+// CHECK-32: define{{.*}} i16 @dsize()
+// CHECK-32: ret i16 4
 int dsize(void) {
   return (int)sizeof(double);
 }
 
-// CHECK: define{{.*}} i16 @ldsize()
-// CHECK: ret i16 4
+// CHECK-64: define{{.*}} i16 @ldsize()
+// CHECK-64: ret i16 8
+// CHECK-32: define{{.*}} i16 @ldsize()
+// CHECK-32: ret i16 4
 int ldsize(void) {
   return (int)sizeof(long double);
 }

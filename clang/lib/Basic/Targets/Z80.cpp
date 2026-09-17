@@ -70,16 +70,13 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
   LongLongWidth = 64;
   LongLongAlign = 8;
   Int128Align = 8;
-  // z88dk supplies IEEE-754 binary32 math32, not a binary64 runtime.  Model
-  // double and long double as float so C expressions use the available f32
-  // compiler-rt helpers; e.g. 0.75 * 10000.0 emits __mulsf3, not __muldf3.
-  DoubleWidth = 32;
   FloatAlign = 8;
+  DoubleWidth = 64;
   DoubleAlign = 8;
-  DoubleFormat = &llvm::APFloat::IEEEsingle();
-  LongDoubleWidth = 32;
+  DoubleFormat = &llvm::APFloat::IEEEdouble();
+  LongDoubleWidth = 64;
   LongDoubleAlign = 8;
-  LongDoubleFormat = &llvm::APFloat::IEEEsingle();
+  LongDoubleFormat = &llvm::APFloat::IEEEdouble();
   // The fixed-point types (_Accum/_Fract) and the storage-only float types
   // (__fp16, __bf16) have their own layout fields and default to their
   // natural alignment; everything is byte-aligned here.
