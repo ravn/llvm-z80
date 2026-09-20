@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 --z80-static-frames -z80-asm-format=sdasz80 \
+; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 \
 ; RUN:     -O2 -disable-lsr < %s | FileCheck %s
 ; XFAIL: *
 

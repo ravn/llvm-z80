@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O2 --z80-static-frames < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s
 ;
 ; Regression guard for ravn/llvm-z80#335 (originally XFAILed with a stricter
 ; CHECK than needed; see the issue comments 2026-09-17). The canonical

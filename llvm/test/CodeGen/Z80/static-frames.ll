@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=z80 -O1 -z80-static-frames -verify-machineinstrs < %s | FileCheck %s
-; RUN: llc -mtriple=sm83 -O1 -z80-static-frames -verify-machineinstrs < %s -o /dev/null
+; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=sm83 -O1 -verify-machineinstrs < %s -o /dev/null
 ; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s -o /dev/null
 
 ; The frames of provably non-reentrant functions move to static memory:

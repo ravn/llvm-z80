@@ -1,5 +1,5 @@
 ; RUN: llc -mtriple=z80 -O2 < %s -o - | FileCheck %s --check-prefix=DEFAULT
-; RUN: llc -mtriple=z80 -O2 --z80-static-frames < %s -o - | FileCheck %s --check-prefix=STATIC
+; RUN: llc -mtriple=z80 -O2 < %s -o - | FileCheck %s --check-prefix=STATIC
 ;
 ; #335 investigation fixture #2 — %p is a runtime pointer (function argument),
 ; %p+1 must live somewhere across the intervening call. This is the scenario

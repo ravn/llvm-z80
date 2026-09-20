@@ -1,4 +1,4 @@
-# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=z80-pre-emit-peephole \
+# RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 #
 # ravn/llvm-z80#140: regression coverage for the cross-MBB BSS-spill

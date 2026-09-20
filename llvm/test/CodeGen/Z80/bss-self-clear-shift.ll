@@ -1,5 +1,5 @@
 ; RUN: llc -mtriple=z80 -O2 < %s -o - | FileCheck %s
-; RUN: llc -mtriple=z80 -O2 --z80-static-frames < %s -o - | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 < %s -o - | FileCheck %s
 ;
 ; #335 investigation fixture #1 — canonical "shift left by one to zero-fill"
 ; against a global array. %p and %p+1 are constant addresses; ISel folds

@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=z80 --z80-static-frames -O2 < %s | FileCheck %s --check-prefix=OFF
-; RUN: llc -mtriple=z80 --z80-static-frames -O2 -z80-reverse-fill-seed -verify-machineinstrs < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s --check-prefix=OFF
+; RUN: llc -mtriple=z80 -O2 -z80-reverse-fill-seed -verify-machineinstrs < %s | FileCheck %s --check-prefix=ON
 ; XFAIL: *
 ;
 ; ravn/llvm-z80#205 follow-up (experimental, default OFF): the K=2 LDIR-fill

@@ -1,6 +1,6 @@
-; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr < %s \
+; RUN: llc -mtriple=z80 -O2 -disable-lsr < %s \
 ; RUN:   | FileCheck %s --check-prefix=OFF
-; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr \
+; RUN: llc -mtriple=z80 -O2 -disable-lsr \
 ; RUN:   -z80-enable-keep-loop-pointer-in-pair < %s | FileCheck %s --check-prefix=ON
 ; XFAIL: *
 ;

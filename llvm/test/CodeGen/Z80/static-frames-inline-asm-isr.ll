@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O1 -z80-static-frames -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
 
 ; Inline asm cannot transfer control to another function: it has no callee
 ; at all, unlike an indirect call through a function pointer. An interrupt

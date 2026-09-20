@@ -1,4 +1,4 @@
-# RUN: llc -mtriple=z80 --z80-static-frames -run-pass=prolog-epilog \
+# RUN: llc -mtriple=z80 -run-pass=prolog-epilog \
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 #
 # ravn/llvm-z80 #212 -- at -O0 with +static-frame, fastregalloc kills $hl

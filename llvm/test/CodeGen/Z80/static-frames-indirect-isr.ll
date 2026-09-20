@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O1 -z80-static-frames -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
 
 ; An indirect call inside an interrupt handler may reach any address-taken
 ; or externally-callable function, so every one of them counts as reachable

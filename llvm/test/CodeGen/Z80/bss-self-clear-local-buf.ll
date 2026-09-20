@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O2 --z80-static-frames -mattr=+static-frame < %s -o - | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -mattr=+static-frame < %s -o - | FileCheck %s
 ;
 ; #335 investigation fixture #3 — the strongest form of the described bug:
 ; the buffer being cleared lives in the function's own static frame, so if

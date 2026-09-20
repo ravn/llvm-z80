@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=z80 -O1 -z80-static-frames < %s | FileCheck %s --check-prefix=CLOSED
-; RUN: sed 's|"Freestanding", i32 1|"Freestanding", i32 0|' %s | llc -mtriple=z80 -O1 -z80-static-frames | FileCheck %s --check-prefix=OPEN
+; RUN: llc -mtriple=z80 -O1 < %s | FileCheck %s --check-prefix=CLOSED
+; RUN: sed 's|"Freestanding", i32 1|"Freestanding", i32 0|' %s | llc -mtriple=z80 -O1 | FileCheck %s --check-prefix=OPEN
 
 ; In an open world, an external call from a function with external linkage creates
 ; a synthetic cycle through CallsExternalNode -> ExternalCallingNode, preventing

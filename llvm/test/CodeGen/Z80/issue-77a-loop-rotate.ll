@@ -1,5 +1,5 @@
-; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr -enable-z80-loop-rotate < %s | FileCheck %s --check-prefix=ROT
-; RUN: llc -mtriple=z80 --z80-static-frames -O2 -disable-lsr < %s | FileCheck %s --check-prefix=NOROT
+; RUN: llc -mtriple=z80 -O2 -disable-lsr -enable-z80-loop-rotate < %s | FileCheck %s --check-prefix=ROT
+; RUN: llc -mtriple=z80 -O2 -disable-lsr < %s | FileCheck %s --check-prefix=NOROT
 ;
 ; Issue #77a: head-test do-while-decrement loops shouldn't pay the
 ; cross-BB `or a` test that re-derives the Z flag the body's `dec` already

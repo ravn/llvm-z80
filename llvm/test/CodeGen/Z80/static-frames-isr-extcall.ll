@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -O1 -z80-static-frames -verify-machineinstrs < %s | FileCheck %s
+; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
 
 ; A call to an external declaration inside an interrupt handler must not
 ; cause the handler's context to bleed into unrelated module functions
