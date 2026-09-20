@@ -99,6 +99,8 @@ STATISTIC(NumCarryRoundtrips,
           "Number of carry flag roundtrips folded to direct branch");
 STATISTIC(NumSPSpillsToPushPop,
           "Number of SP-relative spill/reload pairs converted to PUSH/POP (#331)");
+STATISTIC(NumDeadBssStores,
+          "Number of dead BSS store-back instructions eliminated");
 
 using namespace llvm;
 
@@ -1772,6 +1774,142 @@ static bool isMatchingLoad(unsigned StoreOpc, unsigned Opc) {
     if (SI.StoreOpc == StoreOpc && SI.LoadOpc == Opc)
       return true;
   return false;
+}
+
+// --- Dead BSS store-back elimination ---
+//
+// WHAT: A frame-slot store `LD (X),R` whose value R was loaded from the SAME
+// slot X — and R has not been modified nor has X been written between — is a
+// provable no-op on memory (the slot already holds R's value) and is removed.
+//
+// WHY: In tight loops with high register pressure (e.g. dcc/tests/e.c inner loop),
+// the register allocator may reload a pointer into BC, use it read-only (copying
+// to HL for dereference), and then respill BC back to the same slot before the
+// next iteration, even though BC was never modified. Eliminating this dead
+// store-back saves 4 bytes and 20 T-states per iteration.
+//
+// HOW: Scan backward from the store up to MaxBSSStoreBackScan real instructions.
+// Stops early on:
+//   - CALL (stored register is caller-saved)
+//   - block terminator (cannot scan past MBB boundary)
+//   - another store to X (value changed)
+//   - inline asm or instruction with unmodeled side effects
+//   - def/modification of R (register no longer holds slot's value)
+// If the matching load from slot X into R is encountered before any stopper,
+// the store-back is dead and erased.
+//
+// SOUNDNESS: Unlike spill->PUSH/POP peepholes, this DROPS NOTHING from memory
+// (the slot retains its value throughout), so it needs none of the loop-carried
+// or cross-block orphan guards. Any later reader of X (in any block, via any
+// alias) observes the identical value with or without the store. Restricting to
+// compiler-generated static frame symbols avoids volatile memory-mapped globals.
+//
+// Worked example -- dcc/tests/e.c inner loop, __sfrend_main-402 holds &a[n]:
+//   LD_BC_nnind  __sfrend_main-402  ; bc = &a[n]                 (matching load)
+//   LD L,C ; LD H,B ; LD (HL),E    ; read-only uses of bc (modifies HL, not BC)
+//   LD_nnind_BC  __sfrend_main-402  ; (&a[n] slot) = bc  <-- DEAD store, erased
+// bc is untouched between; slot already holds bc. ED-prefixed LD (nn),BC is
+// 4 B / 20 T saved every loop iteration.
+static Register storedReg(unsigned StoreOpc) {
+  switch (StoreOpc) {
+  case Z80::LD_nnind_A:  return Z80::A;
+  case Z80::LD_nnind_HL: return Z80::HL;
+  case Z80::LD_nnind_DE: return Z80::DE;
+  case Z80::LD_nnind_BC: return Z80::BC;
+  default:               return Register();
+  }
+}
+
+static bool optimizeDeadBssStoreBack(MachineFunction &MF,
+                                    const TargetInstrInfo *TII,
+                                    const TargetRegisterInfo *TRI,
+                                    const Z80Subtarget &STI) {
+  // Static frame slots only exist when static frames are enabled.
+  if (!STI.hasStaticFrame())
+    return false;
+
+  SmallSet<std::pair<const void *, int64_t>, 8> AddrTakenSlots;
+  SmallPtrSet<const void *, 4> BaseAddrTakenSyms;
+  collectAddrTakenFrameSyms(MF, AddrTakenSlots, BaseAddrTakenSyms);
+
+  static constexpr unsigned MaxBSSStoreBackScan = 32;
+  bool Changed = false;
+
+  for (MachineBasicBlock &MBB : MF) {
+    bool BlockChanged = false;
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      MachineInstr &Store = *MII++;
+      const SpillInfo *SI = getSpillInfo(Store.getOpcode());
+      // Skip non-store or unrecognized store opcodes.
+      if (!SI)
+        continue;
+      // Restrict to compiler-generated frame slots (never volatile memory).
+      if (!isStaticFrameSlot(Store.getOperand(0)))
+        continue;
+      // Guard against indirect writes if slot address is materialized into a register.
+      if (isSlotAddrTaken(Store, AddrTakenSlots, BaseAddrTakenSyms))
+        continue;
+
+      unsigned WantLoad = SI->LoadOpc;
+      Register Reg = storedReg(Store.getOpcode());
+      if (!Reg)
+        continue;
+
+      bool Found = false;
+      unsigned Scanned = 0;
+      for (MachineInstr *Prev = Store.getPrevNode(); Prev; Prev = Prev->getPrevNode()) {
+        // Skip debug annotations without consuming scan budget.
+        if (Prev->isDebugInstr())
+          continue;
+        // Bound backward scan to avoid quadratic behavior in huge blocks.
+        if (++Scanned > MaxBSSStoreBackScan)
+          break;
+        // Cannot scan past block boundary.
+        if (Prev->isTerminator())
+          break;
+        // CALL clobbers caller-saved registers and could observe memory.
+        if (Prev->isCall())
+          break;
+        // Conservative bail on inline asm or unmodeled side effects.
+        if (Prev->isInlineAsm() || Prev->hasUnmodeledSideEffects())
+          break;
+        // Another store to the same slot changes the memory value.
+        if (isAnyBssStore(Prev->getOpcode()) && sameBssAddress(*Prev, Store))
+          break;
+        // Found matching load of the same slot before any clobber: store is dead.
+        if (Prev->getOpcode() == WantLoad && sameBssAddress(*Prev, Store)) {
+          Found = true;
+          break;
+        }
+        // Register modified: value in Reg no longer matches slot value.
+        if (Prev->modifiesRegister(Reg, TRI))
+          break;
+        // Check implicit defs in opcode descriptor in case not marked on operand.
+        bool ImplicitDefClobbers = false;
+        for (MCPhysReg Def : TII->get(Prev->getOpcode()).implicit_defs()) {
+          if (TRI->regsOverlap(Def, Reg)) {
+            ImplicitDefClobbers = true;
+            break;
+          }
+        }
+        if (ImplicitDefClobbers)
+          break;
+      }
+
+      // No matching load found before a stopper: store must be preserved.
+      if (!Found)
+        continue;
+
+      LLVM_DEBUG(dbgs() << "Removing dead BSS store-back: " << Store);
+      Store.eraseFromParent();
+      ++NumDeadBssStores;
+      Changed = BlockChanged = true;
+    }
+    if (BlockChanged)
+      recomputeLivenessFlags(MBB);
+  }
+
+  return Changed;
 }
 
 static bool optimizeBssSpills(MachineFunction &MF,
@@ -5932,6 +6070,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
       recomputeLivenessFlags(MBB);
   }
 
+  Changed |= optimizeDeadBssStoreBack(MF, TII, TRI, STI);
   Changed |= optimizeBssSpills(MF, TII, TRI, STI);
   Changed |= optimizeCrossClassBssSpills(MF, TII, TRI, STI);
   Changed |= optimizeCrossMbbBssSpills(MF, TII, TRI, STI);

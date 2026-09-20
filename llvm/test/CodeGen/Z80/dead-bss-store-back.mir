@@ -2,7 +2,6 @@
 # RUN:     -verify-machineinstrs %s -o - | FileCheck %s
 # RUN: llc -mtriple=z80 -run-pass=z80-pre-emit-peephole \
 # RUN:     -verify-machineinstrs --debugify-and-strip-all-safe %s -o - | FileCheck %s
-# XFAIL: *
 #
 # Dead BSS store-back elimination (non-adjacent extension).
 #
