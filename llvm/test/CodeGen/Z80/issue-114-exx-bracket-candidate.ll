@@ -1,6 +1,5 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 \
 ; RUN:     -O2 -disable-lsr < %s | FileCheck %s
-; XFAIL: *
 
 ; ravn/llvm-z80#114 — EXX-bracket prototype candidate.
 ;
@@ -57,9 +56,9 @@
 ;   3. outer header: compute dp/sp; spill BC to sframe slot
 
 ; CHECK: djnz
-; CHECK: ld bc,([[SLOT:__sfrend_render[+-][0-9]+]])
-; CHECK: inc bc
-; CHECK: ld ([[SLOT]]),bc
+; CHECK: ld [[REG:bc|de]],([[SLOT:L_render\.frame[+-][0-9]+]])
+; CHECK: inc [[REG]]
+; CHECK: ld ([[SLOT]]),[[REG]]
 
 define void @render() {
 entry:

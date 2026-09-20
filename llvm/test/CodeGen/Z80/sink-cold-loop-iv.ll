@@ -1,71 +1,27 @@
-; RUN: llc -O2 -mtriple=z80 -z80-enable-sink-cold-loop-iv < %s | FileCheck %s
-; RUN: llc -O2 -mtriple=z80 < %s | FileCheck %s --check-prefix=OFF
-; XFAIL: *
-
+; RUN: llc -O2 -mtriple=z80 < %s | FileCheck %s --check-prefix=ON
+; RUN: llc -O2 -mtriple=z80 -z80-enable-sink-cold-loop-iv=false < %s | FileCheck %s --check-prefix=OFF
+;
 ; ravn/llvm-z80#250 (sieve scan loop): LSR strength-reduces the kill-loop
 ; seeds `2*i+3` (stride) and `3*i+3` (start) -- both used ONLY inside the
 ; cold `if (flags[i])` branch -- into two induction variables of the SCAN
-; loop, advanced every scan iteration.  On Z80's 3-pair file that parks two
+; loop, advanced every scan iteration. On Z80's 3-pair file that parks two
 ; extra live pairs across the whole hot scan loop and spills the scan counter.
 ; Z80SinkColdLoopIV rewrites those cold-only IVs back into an on-demand
 ; recompute in the cold branch, leaving the scan-loop latch with a single IV.
+; Default ON at -O2.
 
 @flags = dso_local global [8192 x i8] zeroinitializer
 
-; CHECK-LABEL: scan:
-; CHECK:      	ld	bc,0
-; CHECK:      	ld	de,3
-; CHECK:      	ld	(L_scan.frame+2),de
-; CHECK:      	jr	.LBB0_2
-; CHECK:      	ld	bc,(L_scan.frame+4)
-; CHECK:      	inc	bc
-; CHECK:      	ld	hl,(L_scan.frame+2)
-; CHECK:      	inc	hl
-; CHECK:      	inc	hl
-; CHECK:      	inc	hl
-; CHECK:      	ld	(L_scan.frame+2),hl
-; CHECK:      	ld	de,(L_scan.frame)
-; CHECK:      	inc	de
-; CHECK:      	inc	de
-; CHECK:      	ld	a,b
-; CHECK:      	xor	31
-; CHECK:      	ld	h,a
-; CHECK:      	ld	a,c
-; CHECK:      	cpl
-; CHECK:      	or	h
-; CHECK:      	jr	z,.LBB0_6
-; CHECK:      	ld	(L_scan.frame),de
-; CHECK:      	ld	hl,_flags
-; CHECK:      	ld	(L_scan.frame+4),bc
-; CHECK:      	add	hl,bc
-; CHECK:      	ld	a,(hl)
-; CHECK:      	or	a
-; CHECK:      	ld	de,8191
-; CHECK:      	jr	z,.LBB0_1
-; CHECK:      	ld	bc,(L_scan.frame+2)
-; CHECK:      	ld	a,c
-; CHECK:      	sub	e
-; CHECK:      	ld	a,b
-; CHECK:      	sbc	a,d
-; CHECK:      	jr	nc,.LBB0_1
-; CHECK:      	ld	bc,(L_scan.frame+2)
-; CHECK:      	ld	hl,_flags
-; CHECK:      	add	hl,bc
-; CHECK:      	xor	a
-; CHECK:      	ld	(hl),a
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	ld	bc,(L_scan.frame)
-; CHECK:      	add	hl,bc
-; CHECK:      	ld	c,l
-; CHECK:      	ld	b,h
-; CHECK:      	ld	a,l
-; CHECK:      	sub	e
-; CHECK:      	ld	a,h
-; CHECK:      	sbc	a,d
-; CHECK:      	jr	c,.LBB0_5
-; CHECK:      	jr	.LBB0_1
-; CHECK:      	ret
+; ON-LABEL: _scan:
+; In the hot scan-loop latch, ONLY the scan counter is incremented:
+; ON-LABEL: .LBB0_1:
+; ON:       inc de
+; ON-NOT:   inc hl
+; ON-NOT:   inc bc
+; ON:       ret z
+; In the cold branch, the seed IVs are recomputed on demand:
+; ON:       add hl,hl
+; ON:       add hl,de
 define void @scan() {
 entry:
   br label %scan
@@ -106,7 +62,7 @@ exit:
 ; scan loop, so the latch advances three IVs -- the scan counter plus the two
 ; strength-reduced seeds (one of them a 3-step `inc hl` triple).
 ;
-; OFF-LABEL: scan:
+; OFF-LABEL: _scan:
 ; OFF: %latch
 ; OFF: inc de
 ; OFF: inc hl

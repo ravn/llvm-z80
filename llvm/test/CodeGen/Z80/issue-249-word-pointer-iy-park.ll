@@ -1,30 +1,19 @@
-; RUN: llc -mtriple=z80 -O2 -disable-lsr < %s \
-; RUN:   | FileCheck %s --check-prefix=OFF
+; RUN: llc -mtriple=z80 -O2 -disable-lsr < %s | FileCheck %s
 ; RUN: llc -mtriple=z80 -O2 -disable-lsr \
-; RUN:   -z80-enable-keep-loop-pointer-in-pair < %s | FileCheck %s --check-prefix=ON
-; XFAIL: *
+; RUN:   -z80-enable-keep-loop-pointer-in-pair < %s | FileCheck %s
 ;
-; ravn/llvm-z80#249 / #251: a `*p++ = i` i16 store loop parks the loop-carried
-; pointer in IY and shuttles it IY<->BC<->HL with three push/pop pairs per
-; iteration (the pointer never needs an index register -- greedy just puts it
-; there).  Z80KeepLoopPointerInPair constrains the pointer + advanced-next vreg
-; to GR16NoIR {DE,HL,BC}; the shuttle collapses to one cheap `ld l,c; ld h,b`
-; copy into HL for the store.  Default OFF (corpus-only; B20).
+; ravn/llvm-z80#249 / #251: a `*p++ = i` i16 store loop must not park the
+; loop-carried pointer in IY (which would shuttle it IY<->BC<->HL with push/pop
+; pairs per iteration). The pointer must walk in main register pairs {DE, HL, BC}.
 ;
-; Sibling of #250 (Z80PinLoopPointer): there the byte store lets the pointer LIVE
-; in HL; here the 2-byte store walks HL, so pinning to HL is impossible -- the
-; correct constraint is "any main pair, just not IX/IY".
-
-; --- Default (flag off): pointer parked in IY, per-iteration push/pop shuttle.
-; OFF-LABEL: f:
-; OFF: push iy
-; OFF: pop iy
-
-; --- Flag on: no index register anywhere; pointer walks a main pair.
-; ON-LABEL: f:
-; ON-NOT: iy
-; ON-NOT: push
-; ON-NOT: pop
+; CHECK-LABEL: _f:
+; CHECK-NOT: iy
+; CHECK-NOT: push
+; CHECK-NOT: pop
+; CHECK:     ld (hl),e
+; CHECK:     inc hl
+; CHECK:     ld (hl),d
+; CHECK:     jr
 define dso_local void @f(ptr noundef captures(address) %p, i16 noundef %n) #0 {
 entry:
   br label %loop
@@ -41,22 +30,6 @@ exit:
 body:
   %ptr.next = getelementptr inbounds nuw i8, ptr %ptr, i16 2
   store volatile i16 %i, ptr %ptr, align 1
-; CHECK-LABEL: f:
-; CHECK:      	ld	a,e
-; CHECK:      	or	d
-; CHECK:      	jr	z,.LBB0_3
-; CHECK:      	ld	c,l
-; CHECK:      	ld	b,h
-; CHECK:      	inc	bc
-; CHECK:      	inc	bc
-; CHECK:      	ld	(hl),e
-; CHECK:      	inc	hl
-; CHECK:      	ld	(hl),d
-; CHECK:      	dec	de
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
-; CHECK:      	jr	.LBB0_1
-; CHECK:      	ret
   %i.next = add i16 %i, -1
   br label %loop
 }
