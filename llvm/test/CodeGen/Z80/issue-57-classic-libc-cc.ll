@@ -1,7 +1,5 @@
 ; RUN: opt -passes=instcombine -z80-classic-libc-cc -S < %s | FileCheck %s --check-prefix=SMALLC
 ; RUN: opt -passes=instcombine -S < %s | FileCheck %s --check-prefix=DEFAULT
-; XFAIL: *
-; Reason (pre-existing behavior regression, not caused by XFAIL cleanup 2026-09-16). Track separately.
 ;
 ; ravn/llvm-z80 #57 (z88dk classic clib ABI on middle-end-synthesized libcalls).
 ;

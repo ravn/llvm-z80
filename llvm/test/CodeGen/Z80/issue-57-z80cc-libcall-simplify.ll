@@ -1,7 +1,5 @@
 ; RUN: opt -passes=instcombine -z80-classic-libc-cc -mtriple=z80-unknown-unknown -S < %s | FileCheck %s --check-prefix=Z80
 ; RUN: opt -passes=instcombine -z80-classic-libc-cc -mtriple=x86_64-- -S < %s | FileCheck %s --check-prefix=OTHER
-; XFAIL: *
-; Reason (pre-existing behavior regression, not caused by XFAIL cleanup 2026-09-16). Track separately.
 ;
 ; ravn/llvm-z80 #57 (z88dk#57): libcall simplification must fire for z88dk
 ; classic-clib functions even though they carry an explicit Z80 calling

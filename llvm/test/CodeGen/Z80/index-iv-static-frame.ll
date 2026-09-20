@@ -1,6 +1,4 @@
 ; RUN: opt -mtriple=z80 -passes='loop(z80-indexiv)' -S < %s | FileCheck %s
-; XFAIL: *
-; Reason (pre-existing behavior regression, not caused by XFAIL cleanup 2026-09-16). Track separately.
 
 ; ravn/llvm-z80#324: Z80IndexIV should skip loops in functions with +static-frame
 ; because with static frames, locals are in BSS, not IX-relative, so pointer-increment
