@@ -1218,7 +1218,14 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
             Z80::buildLD8(MBB, MI, DL, TII, Z80::D, Z80::H);
             Z80::buildLD8(MBB, MI, DL, TII, Z80::E, Z80::L);
           } else {
-            BuildMI(MBB, MI, DL, TII.get(Z80::EX_DE_HL));
+            // EX DE,HL moves the frame address (in HL) into DE.
+            // The old DE value is intentionally discarded — HL is restored
+            // by the POP below if it was live.  Mark DE-in undef so the
+            // MIR verifier does not require DE to be live here.
+            // (Same pattern as copyPhysReg in Z80InstrInfo.cpp.)
+            const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+            auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::EX_DE_HL));
+            MIB->findRegisterUseOperand(Z80::DE, TRI)->setIsUndef();
           }
         } else if (DstReg == Z80::BC) {
           Z80::buildLD8(MBB, MI, DL, TII, Z80::B, Z80::H);
@@ -1271,7 +1278,14 @@ bool Z80RegisterInfo::eliminateFrameIndexImpl(MachineBasicBlock::iterator MI,
       if (NeedSaveHL)
         emitHLSavePush(MBB, MI, DL, TII);
       emitLargeOffsetAddr(MBB, MI, DL, TII, Offset, Z80::DE, PreserveFlags);
-      BuildMI(MBB, MI, DL, TII.get(Z80::EX_DE_HL));
+      // EX DE,HL moves the frame address (computed in HL) into DE.
+      // The old DE value is intentionally discarded.  Mark DE-in undef.
+      // (Same pattern as copyPhysReg in Z80InstrInfo.cpp.)
+      {
+        const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+        auto MIB = BuildMI(MBB, MI, DL, TII.get(Z80::EX_DE_HL));
+        MIB->findRegisterUseOperand(Z80::DE, TRI)->setIsUndef();
+      }
       if (NeedSaveHL)
         BuildMI(MBB, MI, DL, TII.get(Z80::POP_HL));
     } else if (DstReg == Z80::BC) {

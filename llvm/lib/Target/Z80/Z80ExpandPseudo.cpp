@@ -57,6 +57,7 @@ static bool isInlineRuntimeSizedPseudo(unsigned Opcode) {
   switch (Opcode) {
   case Z80::LDIR_GUARDED:
   case Z80::LDDR_GUARDED:
+  case Z80::MEMSET_LDIR_GUARDED:
     return true;
   default:
     return false;
@@ -93,6 +94,8 @@ private:
                       const Z80InstrInfo &TII, bool IsDiv);
   bool expandLdirGuarded(MachineBasicBlock &MBB, MachineInstr &MI,
                          const Z80InstrInfo &TII, unsigned BlockOpc);
+  bool expandMemsetLdirGuarded(MachineBasicBlock &MBB, MachineInstr &MI,
+                               const Z80InstrInfo &TII);
   bool expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
                        const Z80InstrInfo &TII);
   bool expandMul16(MachineBasicBlock &MBB, MachineInstr &MI,
@@ -193,6 +196,10 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
         break;
       case Z80::LDDR_GUARDED:
         Modified |= expandLdirGuarded(MBB, Inst, TII, Z80::LDDR);
+        MI = MBB.end();
+        break;
+      case Z80::MEMSET_LDIR_GUARDED:
+        Modified |= expandMemsetLdirGuarded(MBB, Inst, TII);
         MI = MBB.end();
         break;
       default:
@@ -694,6 +701,84 @@ bool Z80ExpandPseudo::expandLdirGuarded(MachineBasicBlock &MBB,
   // Body: the actual block-move.
   BuildMI(BodyMBB, DL, TII.get(BlockOpc));
   BodyMBB->addSuccessor(TailMBB);
+
+  MI.eraseFromParent();
+  ++NumBlockMoves;
+  return true;
+}
+
+bool Z80ExpandPseudo::expandMemsetLdirGuarded(MachineBasicBlock &MBB,
+                                              MachineInstr &MI,
+                                              const Z80InstrInfo &TII) {
+  // --- Expansion: MEMSET_LDIR_GUARDED (Variable-size block fill) ---
+  //
+  // WHAT:
+  // Expands a MEMSET_LDIR_GUARDED pseudo into a seed store followed by
+  // guarded LDIR for filling memory with a runtime-variable length (BC).
+  //
+  // WHY:
+  // LDIR decrements BC before testing it against zero. If BC == 0, LDIR will
+  // execute 65,536 iterations, overwriting memory. Furthermore, if BC == 1,
+  // the seed byte is written to (HL), and no LDIR is needed.
+  //
+  // WORKED EXAMPLE (runtime fill with length N):
+  //   Inputs: HL = dst, E = fill value (8-bit), BC = size (16-bit).
+  //   Control flow:
+  //   1. HeadMBB:
+  //        LD A, B
+  //        OR C
+  //        JR Z, TailMBB        ; If BC == 0, do nothing and skip to TailMBB
+  //   2. FirstMBB:              ; Reached only if BC >= 1
+  //        LD (HL), E           ; Seed store: write first byte to (HL)
+  //        DEC BC               ; BC = BC - 1
+  //        LD A, B
+  //        OR C
+  //        JR Z, TailMBB        ; If original BC was 1 (now 0), done!
+  //   3. FillMBB:               ; Reached only if BC >= 2 (remaining count >= 1)
+  //        LD D, H
+  //        LD E, L
+  //        INC DE               ; DE = HL + 1 (destination for LDIR)
+  //        LDIR                 ; Copies first byte forward across remaining BC bytes
+  //   4. TailMBB:
+  //        (Rest of parent function)
+  MachineFunction *MF = MBB.getParent();
+  DebugLoc DL = MI.getDebugLoc();
+
+  MachineBasicBlock *FirstMBB = MF->CreateMachineBasicBlock();
+  MachineBasicBlock *FillMBB = MF->CreateMachineBasicBlock();
+  MachineBasicBlock *TailMBB = MF->CreateMachineBasicBlock();
+
+  MachineFunction::iterator InsertPos = std::next(MBB.getIterator());
+  MF->insert(InsertPos, FirstMBB);
+  MF->insert(InsertPos, FillMBB);
+  MF->insert(InsertPos, TailMBB);
+
+  TailMBB->splice(TailMBB->begin(), &MBB,
+                  std::next(MachineBasicBlock::iterator(MI)), MBB.end());
+  TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
+
+  // Head: LD A,B; OR C; JR Z, TailMBB.
+  Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::B);
+  Z80::buildAlu8(&MBB, DL, TII, Z80::OR_r, Z80::C);
+  BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
+  MBB.addSuccessor(FirstMBB);
+  MBB.addSuccessor(TailMBB);
+
+  // First: LD (HL),E; DEC BC; LD A,B; OR C; JR Z, TailMBB.
+  BuildMI(FirstMBB, DL, TII.get(Z80::LD_HLind_r)).addReg(Z80::E);
+  BuildMI(FirstMBB, DL, TII.get(Z80::DEC_rr), Z80::BC).addReg(Z80::BC);
+  Z80::buildLD8(FirstMBB, DL, TII, Z80::A, Z80::B);
+  Z80::buildAlu8(FirstMBB, DL, TII, Z80::OR_r, Z80::C);
+  BuildMI(FirstMBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
+  FirstMBB->addSuccessor(FillMBB);
+  FirstMBB->addSuccessor(TailMBB);
+
+  // Fill: LD D,H; LD E,L; INC DE; LDIR.
+  Z80::buildLD8(FillMBB, DL, TII, Z80::D, Z80::H);
+  Z80::buildLD8(FillMBB, DL, TII, Z80::E, Z80::L);
+  BuildMI(FillMBB, DL, TII.get(Z80::INC_rr), Z80::DE).addReg(Z80::DE);
+  BuildMI(FillMBB, DL, TII.get(Z80::LDIR));
+  FillMBB->addSuccessor(TailMBB);
 
   MI.eraseFromParent();
   ++NumBlockMoves;

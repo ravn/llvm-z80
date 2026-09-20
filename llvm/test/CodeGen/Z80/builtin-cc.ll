@@ -46,15 +46,20 @@ define void @g_memcpy(i16 %n) {
   ret void
 }
 
-; A memmove whose direction is not known statically stays a call on both
-; targets.  On Z80 the arguments are HL, DE, BC; on SM83 they are DE, BC, HL.
+; On Z80, @dst and @src are distinct globals so the direction-detection
+; bypass (#315) proves they cannot overlap and emits LDIR_GUARDED directly.
+; On SM83 (no LDIR) the libcall is still used.
 define void @g_memmove(i16 %n) {
 ; Z80-LABEL: g_memmove:
 ; Z80:         ld c,l
 ; Z80-NEXT:    ld b,h
-; Z80-NEXT:    ld hl,_dst
-; Z80-NEXT:    ld de,_src
-; Z80-NEXT:    call ___z80_memmove_builtin
+; Z80-NEXT:    ld hl,_src
+; Z80-NEXT:    ld de,_dst
+; Z80-NEXT:    ld a,b
+; Z80-NEXT:    or c
+; Z80-NEXT:    jr z,{{\.LBB[0-9_]+}}
+; Z80:         ldir
+; Z80:         ret
 ;
 ; SM83-LABEL: g_memmove:
 ; SM83:        ld l,e
@@ -73,8 +78,21 @@ define void @g_memset(i16 %n) {
 ; Z80:         ld c,l
 ; Z80-NEXT:    ld b,h
 ; Z80-NEXT:    ld hl,_dst
-; Z80-NEXT:    ld de,7
-; Z80-NEXT:    call ___z80_memset_builtin
+; Z80-NEXT:    ld e,7
+; Z80-NEXT:    ld a,b
+; Z80-NEXT:    or c
+; Z80-NEXT:    jr z,[[EXIT:\.LBB[0-9_]+]]
+; Z80:         ld (hl),e
+; Z80-NEXT:    dec bc
+; Z80-NEXT:    ld a,b
+; Z80-NEXT:    or c
+; Z80-NEXT:    jr z,[[EXIT]]
+; Z80:         ld d,h
+; Z80-NEXT:    ld e,l
+; Z80-NEXT:    inc de
+; Z80-NEXT:    ldir
+; Z80:       [[EXIT]]:
+; Z80-NEXT:    ret
 ;
 ; SM83-LABEL: g_memset:
 ; SM83:        ld l,e

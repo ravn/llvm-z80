@@ -1633,6 +1633,7 @@ unsigned Z80InstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
     // LD A,B; OR C; JR Z,e; LDIR/LDDR = 6 bytes.
     case Z80::LDIR_GUARDED:
     case Z80::LDDR_GUARDED: return 6;
+    case Z80::MEMSET_LDIR_GUARDED: return 15;
     // Callee-cleanup return.  The sequences are in expandPostRAPseudoImpl;
     // SM83 needs one ADD SP,e per 127 bytes because the displacement is
     // signed 8-bit.

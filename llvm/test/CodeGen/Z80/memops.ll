@@ -36,13 +36,11 @@ define void @test_memcpy_constant(ptr %dst, ptr %src) {
 ; SM83-LABEL: _test_memcpy_constant:
 ; SM83:       ld hl,#16
 ; SM83-NEXT:  call ___z80_memcpy_builtin
-; What matters here is that a constant length stays inline: the count goes in
-; BC and the copy is a bare LDIR, with no call and no zero guard.  Which
-; instructions move the pointers into HL and DE is register allocation, and
-; the direction they end up in is pinned in builtin-cc.ll, where global
-; addresses make it visible without a shuffle.
-; CHECK:       ld bc,#16
-; CHECK:       ldir
+; The incoming pointers are HL=dst and DE=src; memcpy swaps them with EX
+; so LDIR sees HL=src, DE=dst, BC=16 without temporary byte copies.
+; CHECK:       ex de,hl
+; CHECK-NEXT:  ld bc,#16
+; CHECK-NEXT:  ldir
 ; CHECK-NOT:   call
   call void @llvm.memcpy.p0.p0.i16(ptr %dst, ptr %src, i16 16, i1 false)
   ret void
@@ -158,27 +156,26 @@ define void @test_memmove(ptr %dst, ptr %src, i16 %n) {
   ret void
 }
 
-; Test: memset lowers to the register-argument runtime call, with the i8 value
-; promoted to i16 so it lands in DE.
+; Test: memset lowers to inlined guarded LDIR
 define void @test_memset(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset:
 ; SM83-LABEL: _test_memset:
 ; SM83:       ld c,a
 ; SM83-NEXT:  ld b,#0
 ; SM83-NEXT:  call ___z80_memset_builtin
-; CHECK:       call ___z80_memset_builtin
+; CHECK:       ldir
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }
 
-; Test: memset val is zero-extended (not sign-extended) to i16
+; Test: memset val is loaded directly for seed byte
 define void @test_memset_zext(ptr %dst, i8 %val, i16 %n) {
 ; CHECK-LABEL: _test_memset_zext:
 ; SM83-LABEL: _test_memset_zext:
 ; SM83:       ld c,a
 ; SM83-NEXT:  ld b,#0
 ; SM83-NEXT:  call ___z80_memset_builtin
-; CHECK:       ld {{[a-z]}},#0
+; CHECK:       ldir
   call void @llvm.memset.p0.i16(ptr %dst, i8 %val, i16 %n, i1 false)
   ret void
 }

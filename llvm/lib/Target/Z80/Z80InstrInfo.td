@@ -968,6 +968,16 @@ def LDDR_GUARDED : Z80Pseudo<(outs), (ins)> {
   let hasSideEffects = 1;
 }
 
+// Block fill for a length that is not a known non-zero constant (issue #105, #326, #357).
+// LD A,B; OR C; JR Z,.done; LD (HL),E; DEC BC; LD A,B; OR C; JR Z,.done;
+// LD D,H; LD E,L; INC DE; LDIR; .done:
+def MEMSET_LDIR_GUARDED : Z80Pseudo<(outs), (ins)> {
+  let Uses = [HL, E, BC];
+  let Defs = [HL, DE, BC, A, FLAGS];
+  let mayStore = true;
+  let hasSideEffects = 1;
+}
+
 // 8-bit unsigned saturating add pseudo.
 // ADD A,src; JR NC,.done; LD A,#0xFF; .done:
 def UADDSAT8 : Z80Pseudo<(outs), (ins GR8:$src)> {

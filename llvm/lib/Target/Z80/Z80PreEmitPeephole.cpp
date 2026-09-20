@@ -70,6 +70,8 @@ STATISTIC(NumSlotForwarded,
 STATISTIC(NumStoreForwarded, "Number of stores forwarded to a following load");
 STATISTIC(NumDjnz,
           "Number of decrement-and-branch sequences folded to DJNZ");
+STATISTIC(NumMemcpySwapFolds,
+          "Number of memcpy swaps reduced to EX DE,HL");
 
 using namespace llvm;
 
@@ -1407,6 +1409,87 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
       }
       if (!Matched)
         ++MII;
+    }
+
+    // --- Peephole: memcpy argument swap via temporary BC -> EX DE,HL ---
+    //
+    // WHAT:
+    // Folds a 5-instruction swap sequence (`ld c,l; ld b,h; ex de,hl; ld e,c; ld d,b`)
+    // down to just `ex de,hl` when the temporary register pair BC is dead after.
+    //
+    // WHY:
+    // LDIR expects HL=src and DE=dst, whereas the Z80 C calling convention passes
+    // memcpy(dst, src, n) with HL=dst and DE=src. The register allocator resolves
+    // this parallel copy cycle by shuttling old HL through BC around an EX DE,HL.
+    // Because EX DE,HL already places the old HL into DE and the old DE into HL,
+    // the 4 byte moves to and from BC are completely redundant when BC is dead
+    // (e.g. before `ld bc, #16` for LDIR).
+    //
+    // WORKED EXAMPLE (from llvm/test/CodeGen/Z80/memops.ll: test_memcpy_constant):
+    //   Incoming state: HL = dst (e.g. 0x8000), DE = src (e.g. 0x9000)
+    //   Before peephole:
+    //     ld c, l     ; BC = 0x8000
+    //     ld b, h
+    //     ex de, hl   ; HL = 0x9000 (src), DE = 0x8000 (dst)
+    //     ld e, c     ; DE = 0x8000 (redundant! DE already holds 0x8000 from EX)
+    //     ld d, b
+    //     ld bc, 16   ; BC overwritten -> BC was dead after ld d,b
+    //     ldir
+    //   After peephole:
+    //     ex de, hl   ; HL = src, DE = dst (4 T-states, 1 byte)
+    //     ld bc, 16
+    //     ldir
+    for (MachineBasicBlock::iterator MII = MBB.begin(), MIE = MBB.end();
+         MII != MIE;) {
+      auto I1 = MII;
+      auto I2 = std::next(I1);
+      if (I2 == MIE) { // Need at least 5 instructions in the window
+        ++MII;
+        continue;
+      }
+      auto I3 = std::next(I2);
+      if (I3 == MIE) {
+        ++MII;
+        continue;
+      }
+      auto I4 = std::next(I3);
+      if (I4 == MIE) {
+        ++MII;
+        continue;
+      }
+      auto I5 = std::next(I4);
+      if (I5 == MIE) {
+        ++MII;
+        continue;
+      }
+
+      // Check for ld c,l; ld b,h (or hi/lo reversed); ex de,hl; ld e,c; ld d,b (or hi/lo reversed)
+      bool SaveToBC = (isLD8(*I1, Z80::C, Z80::L) && isLD8(*I2, Z80::B, Z80::H)) ||
+                      (isLD8(*I1, Z80::B, Z80::H) && isLD8(*I2, Z80::C, Z80::L));
+      bool RestoreFromBC = (isLD8(*I4, Z80::E, Z80::C) && isLD8(*I5, Z80::D, Z80::B)) ||
+                           (isLD8(*I4, Z80::D, Z80::B) && isLD8(*I5, Z80::E, Z80::C));
+
+      if (!SaveToBC || I3->getOpcode() != Z80::EX_DE_HL || !RestoreFromBC) {
+        ++MII; // Skip non-matching instruction sequences
+        continue;
+      }
+
+      auto After = std::next(I5);
+      // BC must not be read after this sequence (e.g., overwritten by ld bc, len)
+      if (!isRegDeadAfter(After, MBB, TRI, Z80::BC)) {
+        ++MII; // BC is live later in the block, cannot eliminate the save to BC
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  Reducing memcpy register swap to EX DE,HL: "
+                        << *I3);
+      I1->eraseFromParent();
+      I2->eraseFromParent();
+      I4->eraseFromParent();
+      I5->eraseFromParent();
+      ++NumMemcpySwapFolds;
+      MII = After;
+      Changed = BlockChanged = true;
     }
 
     // --- Peephole: LD A,r; DEC A; LD r,A; OR A; JR NZ → DEC r; JR NZ ---

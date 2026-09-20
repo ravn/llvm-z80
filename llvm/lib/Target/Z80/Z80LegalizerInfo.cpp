@@ -1383,6 +1383,53 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         // Both share a common base; direction is sign of DstOff-SrcOff.
         setFromDelta(*DstOff - *SrcOff);
       }
+
+      // Detect provably non-overlapping distinct objects (#315).
+      //
+      // Walk each pointer through any G_PTR_ADD chain to the base object.
+      // Two distinct G_GLOBAL_VALUE symbols are in separate address-space
+      // regions; two different G_FRAME_INDEX slots are assigned non-overlapping
+      // stack space by the frame allocator; a global and a frame index are
+      // trivially disjoint.  In all cases forward copy (LDIR) is safe.
+      //
+      // Key: {opcode, identity} where identity is either the GlobalValue*
+      // (cast to uintptr_t) or the frame index integer.  Two keys that
+      // compare unequal guarantee distinct, non-aliasing base objects.
+      //
+      // Example: memmove(&buf2[0], &buf1[0], N)
+      //   DstPtr -> G_GLOBAL_VALUE @buf2 -> key {G_GLOBAL_VALUE, addr(@buf2)}
+      //   SrcPtr -> G_GLOBAL_VALUE @buf1 -> key {G_GLOBAL_VALUE, addr(@buf1)}
+      //   Keys differ -> Dir = LDIR
+      if (Dir == Direction::Unknown) {
+        auto getBaseObjKey =
+            [&](Register Ptr)
+            -> std::optional<std::pair<unsigned, uintptr_t>> {
+          while (true) {
+            MachineInstr *Def = MRI.getVRegDef(Ptr);
+            if (!Def)
+              return std::nullopt;
+            unsigned Opc = Def->getOpcode();
+            if (Opc == TargetOpcode::G_GLOBAL_VALUE)
+              return std::make_pair(Opc,
+                                    (uintptr_t)Def->getOperand(1).getGlobal());
+            if (Opc == TargetOpcode::G_FRAME_INDEX)
+              return std::make_pair(
+                  Opc, (uintptr_t)(intptr_t)Def->getOperand(1).getIndex());
+            if (Opc == TargetOpcode::G_PTR_ADD) {
+              Ptr = Def->getOperand(1).getReg();
+              continue;
+            }
+            return std::nullopt;
+          }
+        };
+        auto DstKey = getBaseObjKey(DstPtr);
+        auto SrcKey = getBaseObjKey(SrcPtr);
+        // If both resolve to base objects and they are distinct (either
+        // different opcodes, or same opcode but different identity), the
+        // memory regions cannot overlap.
+        if (DstKey && SrcKey && *DstKey != *SrcKey)
+          Dir = Direction::LDIR;
+      }
     }
 
     if (Dir == Direction::NoOp) {
@@ -1464,11 +1511,68 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_MEMSET: {
+    Register DstPtr = MI.getOperand(0).getReg();
+    Register ValReg = MI.getOperand(1).getReg();
+    Register Size = MI.getOperand(2).getReg();
+
+    const auto &STI = MIRBuilder.getMF().getSubtarget<Z80Subtarget>();
+    if (STI.hasZ80()) {
+      auto SizeC = getIConstantVRegSExtVal(Size, MRI);
+      if (SizeC && *SizeC == 0) {
+        MI.eraseFromParent();
+        return true;
+      }
+
+      if (SizeC && *SizeC > 0) {
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+
+        // Seed store: store val at the first byte (HL = DstPtr, LD (HL), A).
+        MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+        MIRBuilder.buildCopy(Register(Z80::A), ValReg);
+        MIRBuilder.buildInstr(Z80::LD_HLind_r)
+            .addReg(Register(Z80::A))
+            .cloneMemRefs(MI);
+
+        if (*SizeC == 1) {
+          MI.eraseFromParent();
+          return true;
+        }
+
+        // DE = DstPtr + 1 (LDIR destination)
+        LLT S16 = LLT::scalar(16);
+        auto One = MIRBuilder.buildConstant(S16, 1);
+        auto DstPlusOne =
+            MIRBuilder.buildPtrAdd(MRI.getType(DstPtr), DstPtr, One);
+        MIRBuilder.buildCopy(Register(Z80::DE), DstPlusOne);
+
+        // BC = Size - 1 (LDIR byte count)
+        auto SizeMinusOne = MIRBuilder.buildConstant(S16, *SizeC - 1);
+        MIRBuilder.buildCopy(Register(Z80::BC), SizeMinusOne);
+
+        // HL = DstPtr (LDIR source)
+        MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+
+        MIRBuilder.buildInstr(Z80::LDIR).cloneMemRefs(MI);
+        MI.eraseFromParent();
+        return true;
+      }
+
+      // Variable size on Z80: emit MEMSET_LDIR_GUARDED (issue #105, #326, #357).
+      // Inputs: HL=dst, E=val, BC=size.
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::E), ValReg);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::MEMSET_LDIR_GUARDED).cloneMemRefs(MI);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Fall back to library call (SM83):
     // C memset takes (void*, int, size_t). On Z80, int = i16.
     // G_MEMSET has i8 val operand which must be promoted to i16
     // so the calling convention assigns it to DE (2nd i16 reg param)
     // instead of treating it as an i8 arg.
-    Register ValReg = MI.getOperand(1).getReg();
     LLT ValTy = MRI.getType(ValReg);
 
     if (ValTy.getSizeInBits() < 16) {
