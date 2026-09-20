@@ -2739,6 +2739,20 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
     }
 
     if (SrcTy.getSizeInBits() <= 16) {
+      MachineInstr *SrcDef = MRI.getVRegDef(SrcReg);
+      if (SrcDef && SrcDef->getOpcode() == TargetOpcode::G_CONSTANT) {
+        int64_t Val = SrcDef->getOperand(1).getCImm()->getZExtValue();
+        if (!RBI.constrainGenericRegister(AddrReg, Z80::GR16RegClass, MRI))
+          return false;
+        BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+            .addReg(AddrReg);
+        BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n)).addImm(Val & 0xFF);
+        Z80::buildIncDec16(MBB, MI, DL, TII, Z80::INC_rr, Z80::HL);
+        BuildMI(MBB, MI, DL, TII.get(Z80::LD_HLind_n)).addImm((Val >> 8) & 0xFF);
+        MI.eraseFromParent();
+        return true;
+      }
+
       // 16-bit store: store low byte, then high byte
       // Copy value to DE, addr to HL, store E to (HL), inc HL, store D to (HL)
       if (!RBI.constrainGenericRegister(SrcReg, Z80::GR16RegClass, MRI) ||
@@ -2749,7 +2763,6 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       // For undef sources, skip the COPY and mark the implicit sub-register
       // uses as undef directly — processImplicitDefs only propagates undef
       // to the first user instruction, missing subsequent sub-register uses.
-      MachineInstr *SrcDef = MRI.getVRegDef(SrcReg);
       bool IsUndef =
           SrcDef && SrcDef->getOpcode() == TargetOpcode::G_IMPLICIT_DEF;
 

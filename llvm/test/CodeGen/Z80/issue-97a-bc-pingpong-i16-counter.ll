@@ -1,7 +1,5 @@
 ; RUN: llc -mtriple=z80 -mattr=+static-frame -O2 -disable-lsr -z80-asm-format=sdasz80 < %s | FileCheck %s
 ;
-; XFAIL: *
-;
 ; Issue ravn/llvm-z80#99 (filed end of session 35): the i16-counter
 ; sub-case of #97 (closed via post-RA peephole in Z80LateOptimization.cpp).
 ; The peephole drops the BC ping-pong and keeps the pointer in HL, but
