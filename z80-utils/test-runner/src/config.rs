@@ -203,6 +203,13 @@ impl Paths {
         self.project_dir.join("harness").join(target.triple()).join("crt0_sdcc.asm")
     }
 
+    /// Stub providing ___z80_memcpy_builtin separately from _memcpy.
+    /// Only exists for Z80 (SM83 doesn't have this builtin).
+    pub fn harness_memcpy_builtin_sdcc(&self, target: Target) -> Option<PathBuf> {
+        let p = self.project_dir.join("harness").join(target.triple()).join("z80_memcpy_builtin.asm");
+        p.is_file().then_some(p)
+    }
+
     /// Assets for the torture suite (shim, headers, manifest).
     pub fn torture_dir(&self) -> PathBuf {
         self.project_dir.join("torture")

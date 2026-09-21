@@ -12,8 +12,18 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use crate::config::{Paths, Target};
+
+fn sdcc_crt0_lock(target: Target) -> &'static Mutex<()> {
+    static Z80: OnceLock<Mutex<()>> = OnceLock::new();
+    static SM83: OnceLock<Mutex<()>> = OnceLock::new();
+    match target {
+        Target::Z80 => Z80.get_or_init(|| Mutex::new(())),
+        Target::SM83 => SM83.get_or_init(|| Mutex::new(())),
+    }
+}
 
 pub struct ElfRuntime {
     pub crt0_obj: PathBuf,
@@ -76,6 +86,29 @@ pub fn ensure_elf(paths: &Paths, target: Target, clang: &Path) -> Result<ElfRunt
     })
 }
 
+/// Assemble the harness's z80_memcpy_builtin stub if present for this target.
+/// Returns the path to the assembled `.rel`, or None if no stub exists.
+pub fn ensure_memcpy_builtin_stub(paths: &Paths, target: Target) -> Option<PathBuf> {
+    let src = paths.harness_memcpy_builtin_sdcc(target)?;
+    let stage = paths.elf_runtime_stage(target);
+    std::fs::create_dir_all(&stage).ok()?;
+    let obj = stage.join("z80_memcpy_builtin.rel");
+    let _lock = sdcc_crt0_lock(target).lock().unwrap();
+    if needs_rebuild(&src, &obj) {
+        let ok = Command::new(target.assembler())
+            .arg("-g")
+            .arg("-o")
+            .arg(&obj)
+            .arg(&src)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return None;
+        }
+    }
+    Some(obj)
+}
+
 /// Assemble the harness's SDCC-toolchain crt0 into the build tree. The suites
 /// that link through sdldz80 need their own `.rel`, since the shipped crt0 does
 /// not record main's return value.
@@ -87,6 +120,7 @@ pub fn ensure_sdcc_crt0(paths: &Paths, target: Target) -> Result<PathBuf, String
     let stage = paths.elf_runtime_stage(target);
     std::fs::create_dir_all(&stage).map_err(|e| format!("create {}: {e}", stage.display()))?;
     let obj = stage.join("harness_crt0.rel");
+    let _lock = sdcc_crt0_lock(target).lock().unwrap();
     if needs_rebuild(&src, &obj) {
         let status = Command::new(target.assembler())
             .arg("-g")

@@ -197,19 +197,32 @@ fn run_single(
         cmd.args(["-m", "-i"]);
         cmd.arg(&out_base);
         cmd.arg(&crt0);
+        // Include the ___z80_memcpy_builtin stub before sdcc_lib so the symbol
+        // is always available even when sdcc's z80.lib satisfies _memcpy first
+        // (which would otherwise block loading z80_rt.lib's combined memcpy.o).
+        if let Some(stub) = crate::runtime::ensure_memcpy_builtin_stub(paths, target) {
+            cmd.arg(stub);
+        }
         cmd.arg(main_rel);
         cmd.arg(lib_rel);
-        cmd.arg(&rt);
         if let Some(lib) = sdcc_lib {
             cmd.args(["-l"]);
             cmd.arg(lib);
         }
+        cmd.arg(&rt);
         cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        let link_status = cmd.status();
-        if !link_status.is_ok_and(|s| s.success()) || !ihx.exists() {
+        let link_out = cmd.output();
+        let link_ok = link_out.as_ref().is_ok_and(|o| o.status.success());
+        if !link_ok || !ihx.exists() {
+            let reason = if !link_ok {
+                let stderr = link_out.as_ref().map(|o| String::from_utf8_lossy(&o.stderr).into_owned()).unwrap_or_default();
+                let first = stderr.lines().find(|l| l.contains("Error") || l.contains("Undef")).unwrap_or("link non-zero").trim().to_string();
+                format!("link failed: {first}")
+            } else {
+                "link ok but no ihx".to_string()
+            };
             remove_tmp_dir(&tmp_dir);
-            return TestResult::fatal(tag, "link failed");
+            return TestResult::fatal(tag, reason);
         }
     }
 
