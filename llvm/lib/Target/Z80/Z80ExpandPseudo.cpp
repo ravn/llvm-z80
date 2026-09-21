@@ -58,6 +58,27 @@ static bool isInlineRuntimeSizedPseudo(unsigned Opcode) {
   case Z80::LDIR_GUARDED:
   case Z80::LDDR_GUARDED:
   case Z80::MEMSET_LDIR_GUARDED:
+  // 8-bit multiply / divide / modulo expansions.
+  case Z80::MUL8:
+  case Z80::UDIV8:
+  case Z80::UMOD8:
+  case Z80::SDIV8:
+  case Z80::SMOD8:
+  // 8-bit variable shift/rotate expansions (DJNZ-based loops).
+  case Z80::SHL8_VAR:
+  case Z80::LSHR8_VAR:
+  case Z80::ASHR8_VAR:
+  case Z80::ROTL8_VAR:
+  case Z80::ROTR8_VAR:
+  // 16-bit variable shift expansions.
+  case Z80::SHL16_VAR:
+  case Z80::LSHR16_VAR:
+  case Z80::ASHR16_VAR:
+  // 8-bit saturating arithmetic expansions.
+  case Z80::UADDSAT8:
+  case Z80::USUBSAT8:
+  case Z80::SADDSAT8:
+  case Z80::SSUBSAT8:
     return true;
   default:
     return false;
