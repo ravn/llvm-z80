@@ -416,11 +416,11 @@ fn link_rels_with_custom_lib(
         Some(lib) => lib.to_path_buf(),
         None => paths.rt_lib(target),
     };
+    // z80_rt.a is an ar archive; sdldz80 can only lazily resolve symbols from
+    // SDCC text-format .lib files, not ar archives. Pass it as a direct file
+    // argument so all symbols are eagerly loaded (same fix as llc.rs #359).
     if rt_lib.exists() {
-        let lib_dir = rt_lib.parent().unwrap();
-        let lib_name = rt_lib.file_stem().unwrap();
-        cmd.arg("-k").arg(lib_dir);
-        cmd.arg("-l").arg(lib_name);
+        cmd.arg(&rt_lib);
     }
     if let Some(ref lib) = sdcc_lib {
         let lib_dir = lib.parent().unwrap();
