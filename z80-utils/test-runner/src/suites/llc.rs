@@ -165,10 +165,7 @@ fn run_single(
         cmd.arg(&out_base);
         cmd.arg(&crt0);
         cmd.arg(&rel_out);
-        cmd.arg("-k");
-        cmd.arg(rt_dir);
-        cmd.arg("-l");
-        cmd.arg(rt_name);
+        cmd.arg(&rt_lib);
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
         let link_status = cmd.status();
