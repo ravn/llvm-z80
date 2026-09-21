@@ -148,9 +148,6 @@ fn run_single(
 
     // Link: .rel → .ihx
     {
-        let rt_dir = rt_lib.parent().unwrap();
-        let rt_name = rt_lib.file_stem().unwrap();
-
         // The fixtures define only main; startup comes from the harness crt0,
         // which also records main's return value for the runner to read back.
         let crt0 = match crate::runtime::ensure_sdcc_crt0(paths, target) {

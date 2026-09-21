@@ -11,7 +11,7 @@ typedef unsigned short uint16_t;
 
 extern void *memcpy(void *dest, const void *src, uint16_t n);
 extern void *memmove(void *dest, const void *src, uint16_t n);
-extern void *memset(void *p, int v, uint16_t n);
+extern void *memset(void *p, int v, unsigned int n);
 
 static uint8_t src_buf[32];
 static uint8_t dst_buf[32];
