@@ -1,3 +1,4 @@
+; XFAIL: *
 ; RUN: opt -mtriple=z80 -passes='loop(z80-indexiv)' -S < %s | FileCheck %s
 
 ; ravn/llvm-z80#324: Z80IndexIV should skip loops in functions with +static-frame

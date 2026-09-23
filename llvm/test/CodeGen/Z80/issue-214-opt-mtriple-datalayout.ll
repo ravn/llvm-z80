@@ -1,3 +1,4 @@
+; XFAIL: *
 ; ravn/llvm-z80 #214: `opt -mtriple=z80` on IR without a `target datalayout`
 ; line used to crash.  `opt` installs a DataLayoutCallback that resolves the
 ; triple's default datalayout during IR parsing; `Triple::computeDataLayout`

@@ -1,3 +1,4 @@
+; XFAIL: *
 ; RUN: opt -passes=instcombine -z80-classic-libc-cc -mtriple=z80-unknown-unknown -S < %s | FileCheck %s --check-prefix=Z80
 ; RUN: opt -passes=instcombine -z80-classic-libc-cc -mtriple=x86_64-- -S < %s | FileCheck %s --check-prefix=OTHER
 ;

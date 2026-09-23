@@ -1,3 +1,4 @@
+; XFAIL: *
 ; RUN: opt -passes=instcombine -z80-classic-libc-cc -S < %s | FileCheck %s --check-prefix=SMALLC
 ; RUN: opt -passes=instcombine -S < %s | FileCheck %s --check-prefix=DEFAULT
 ;

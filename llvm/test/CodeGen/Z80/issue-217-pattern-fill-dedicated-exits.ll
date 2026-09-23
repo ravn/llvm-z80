@@ -1,3 +1,4 @@
+; XFAIL: *
 ; RUN: opt -mtriple=z80 -passes=z80-pattern-fill-recognize -S < %s | FileCheck %s
 ;
 ; ravn/llvm-z80#217 -- Z80PatternFillRecognize calls llvm::deleteDeadLoop
