@@ -541,25 +541,20 @@ postpone — empty entries are fine if you don't have impact numbers yet.
   Phase 3 chapter 3 (CSE wiring is mentioned as "open design
   question"); session writeup for Phase 4 ch 1.
 
-### B15. Branch Folder unsound hoist exposed by MachineCSE — ROOT-CAUSED + FIXED 2026-07-01
+### B15. Branch Folder unsound hoist exposed by MachineCSE — REVERTED 2026-09-23
 
-- **Status:** ROOT-CAUSED + FIXED 2026-07-01 (same mechanism as
-  ravn/llvm-z80#247, the clang -O2 fannkuch miscompile).  The fix is a
-  generic two-operand change in `llvm/lib/CodeGen/MachineOperand.cpp`:
-  `MO_MCSymbol` `isIdenticalTo`/`getHashValue` now also compare/hash
-  `getOffset()` (previously ignored, unlike MO_GlobalAddress etc.).  The
-  Z80 static-frame lowering attaches a nonzero offset to an MO_MCSymbol
-  via `setOffset()` (`Z80InstrInfo.cpp:1147,...`); branch-folder's
-  `isIdenticalTo` treated `__sfrend-2` and `__sfrend-4` stores as equal
-  and tail-merged them, dropping one -> wrong result.  Upstream filing to
-  `llvm/llvm-project` prepared, held for the user's per-filing go-ahead
-  per HARD rule `feedback_explain_before_filing`.  **Attribution VERIFIED
-  by A/B (2026-07-01):** reproducing the pi trigger via `llc -O2
-  -z80-enable-cse pi_o2.ll`, the fix-reverted baseline llc FAILS
-  (exit=1) and the fixed llc PASSES (exit=0) — so this change, not #248's
-  orthogonal shape-mitigation, is what root-fixes B15.  See
-  `rc700-gensmedet/tasks/clang-fannkuch-O1-backend-miscompile-2026-06-28.md`
-  and lit test `llvm/test/CodeGen/Z80/branch-folder-mcsymbol-offset-247.ll`.
+- **Status:** FIX REVERTED 2026-09-23.  The MO_MCSymbol fix (commit
+  6385494bcfd7) was correct for the old static-frame implementation in
+  Z80InstrInfo.cpp (pre-2026-09-06) which used `__sfrend_` MCSymbols with
+  `setOffset()` directly.  After the fork owner rewrote static-frame
+  allocation (commit 59d8fad47f3c, 2026-09-06) to use MO_TargetIndex →
+  MO_GlobalAddress, the code path that triggered the bug no longer exists.
+  Verified 2026-09-23: the lit test passes both with and without the
+  MO_MCSymbol fix; BranchFolding now sees MO_TargetIndex operands (which
+  always compared offset correctly).  Fix and lit test removed.  Root cause
+  of the original #247 / B15 bug remains documented for history below.
+  Upstream filing to `llvm/llvm-project` is NOT warranted — the triggering
+  code path exists only in the old fork implementation, not in generic LLVM.
 - **Original status (kept for history):** KNOWN BUG, PARKED 2026-06-09
   (user-directed).  Root cause in generic LLVM (Branch Folder), not the
   Z80 backend; production builds are NOT affected because the trigger MIR
@@ -1296,6 +1291,118 @@ cost model, never a global LSR off-switch.
   `selectDivModRuntimeName` in `llvm/lib/Target/Z80/Z80InstructionSelector.cpp`;
   precedent `tryNarrowSDivMod16` (same file:655).
 
+### B27. G_UADDO on i8 widened to i16 by legalizer, cascading to 8-instruction wrap test (2026-09-23)
+
+- **Status:** identified with a precise one-line legalizer root cause.  Root
+  cause of ~5.3 M T-state (~28 %) gap between clang and SDCC on the AES-256
+  corpus.  Not a class problem — a single missing legality entry.
+- **Impact:** on the AES `gf_log` searched-log routine, clang emits ~153 T
+  per inner iteration vs SDCC's ~93 T (1.65× slower).  Called ~700×
+  during a full encrypt+decrypt with average ~127 iterations, this alone
+  accounts for ~5.3 M T-states of the 7.2 M gap between clang (19.28 M)
+  and zsdcc (12.08 M).  Fires on any `do { … } while (++i);`-shaped byte
+  loop, i.e. anything IRTranslator fuses into `G_UADDO i8`.
+- **Pattern:** `uint8_t i = 0; do { …; } while (++i > 0);` — 256-iteration
+  byte loop.  IR is `add i8 %5, 1` + `icmp eq i8 %next, 0`.  IRTranslator
+  correctly fuses to `G_UADDO i8, i1` (add with overflow, overflow bit is
+  the wrap flag).  Legalizer (`Z80LegalizerInfo.cpp:130-133`) then widens
+  it to `G_UADDO i16, i1` because `.legalFor({{S16, S1}}) .clampScalar(0, S16, S16)`
+  only lists i16 as legal.  Downstream: `G_ZEXT s8→s16 + G_ADD s16 + G_UNMERGE
+  s16→(s8,s8) + G_AND + G_MERGE + G_ICMP i16 + G_XOR + G_TRUNC` — 8 MIR
+  instructions expanding to 44 T of Z80 code per iteration for what should
+  be `inc r; jr nz` = 16 T.
+- **Root cause (single site):** `Z80LegalizerInfo.cpp:130`
+  ```cpp
+  getActionDefinitionsBuilder({G_UADDO, G_SADDO})
+      .legalFor({{S16, S1}})                // ← S8 missing
+      .clampScalar(0, S16, S16);            // ← forces widen to S16
+  ```
+  The comment on line 129 says "These are used when narrowing 32-bit+
+  operations" — the author was thinking only of i32/i64 multi-precision
+  chains and overlooked that Z80 has hardware `INC r` (4 T) with Z flag on
+  wrap-to-0, which is exactly what G_UADDO i8 should lower to.
+- **Correction (2026-09-23, after direct measurement):** the T-state gap
+  originally attributed to G_UADDO widening turned out to be **dominated by
+  PR#48 (`upstream-cost-model`) itself, not the counter widening**.
+  Isolated measurement against main tip (commit `28e7b050`):
+  * main (no PR#48):                       K&R **19.24 M T** / ANSI **19.25 M T**
+  * PR#48 as-filed (`|Imm|≤3`):            K&R **29.19 M T** / ANSI **31.25 M T**  (+52 % / +62 %)
+  * PR#48 + Opus `|Imm|≤24` size-fix:      K&R **29.19 M T** / ANSI **31.25 M T**  (unchanged)
+  So PR#48's `isLegalAddImmediate` change (regardless of threshold) costs
+  ~50 % T-states on AES while buying ~15–30 B in size.  The
+  `isLSRCostLess` NumRegs-first reordering (also PR#48) forces LSR to
+  materialise offsets into a scarce register pair, which cascades to more
+  BSS spills across the whole encrypt/decrypt/expand pipeline — every
+  spill site pays 20 T reload per hot iteration.  The G_UADDO S8 widening
+  described above is a small contributor, not the dominant one.
+  Consequence: **PR#48 is not a pure win — it is a size/speed tradeoff.**
+  For AES, main branch is 50 % faster and ~15 B larger.  For bench_sort,
+  PR#48 wins −33 B with no T-state measurement change.  Consider gating
+  the `isLSRCostLess` change behind a subtarget feature / `-mllvm` flag
+  before merging.  (Update the PR#48 status comment accordingly before
+  filing.)
+- **Attempted fix (2026-09-23) — REVERTED, regressed 65 % T-states:**
+  1. Legalizer: `.legalFor({{S8, S1}, {S16, S1}}); .clampScalar(0, S8, S16)`.
+     Verified working — MIR after legalizer kept `%19:_(s8), %20:_(s1) =
+     G_UADDO %4, %7`.
+  2. ISel: added S8 case emitting `LD A, src; ADD A, n/r; LD dst, A`
+     plus overflow materialisation via `SBC A, A; AND 1` when the s1 output
+     is used.
+  Result on AES `-Oz` (`z88dk-ticks`):
+  * K&R clang: 17.02 M → **28.23 M T-states (+65.9 %)**
+  * ANSI clang: 19.25 M → **30.28 M T-states (+57.3 %)**
+  * Corpus size: 2946 B → 2942 B (−4 B, negligible)
+  Root of the regression: the s1 overflow bit's only downstream consumer is
+  `G_BRCOND`, but `G_BRCOND` takes a register value, not a Z80 flag.  So
+  ISel *must* materialise the C flag as A ∈ {0, 1} via `SBC A, A; AND 1`
+  (4 T-states worth of A-shuttling plus the `xor 1; and 1` inversion the IR
+  wants), and the counter has to sit in A across the add — which forces a
+  BSS spill of the counter *inside* the loop body (Z80's A is heavily used
+  for XOR/AND/CP in AES bodies).  Net: swapped a 20-T i16-widening tax for
+  a ~50-T A-shuttle + spill + materialisation tax.
+- **What the fix actually needs (bigger than a legalizer line):** the s1
+  overflow bit must be able to *stay a flag* when its only use is a branch.
+  Two options in principle:
+  1. **A post-legalizer combiner** that pattern-matches
+     `G_UADDO(%v, K) + G_BRCOND(%overflow, bb)` (all in the same block, no
+     other users of %overflow) and lowers to a target-specific pseudo
+     `Z80::INC_JR_NZ` or similar that expands to `INC r; JR NZ, bb`.  Model
+     the flag transparently to regalloc via imp-def/imp-use of `$flags`.
+  2. **ISel look-ahead** inside `select G_UADDO`: if `use_nodbg_empty` on
+     %overflow returns false but the sole non-debug user is
+     `G_BRCOND(<overflow>, bb)`, emit `INC r` (or `ADD A, n`) followed by a
+     conditional branch on Z/NC, then delete the G_BRCOND.
+  Either way, the win is only realised when the flag is branch-consumed —
+  which is exactly the loop-terminator case that motivated B27.  For
+  overflow-value cases (result stored to memory, XOR'd into other values)
+  the materialisation cost is intrinsic and the current S16-widened form
+  is comparable.
+- **Comparison with other 8-bit backends:** AVR has `G_UADDO` legal for i8
+  natively (AVR's hardware carry chain is native 8-bit), and the AVR
+  register file has both a native flag consumer and enough registers that
+  the A-shuttle cost doesn't dominate.  No LLVM backend has a "narrow IV"
+  pass — `WidenIV` in `SimplifyIndVar.cpp` is the opposite direction, and
+  `IndVarSimplify.cpp:645`'s `visitIVCast` consults
+  `getArithmeticInstrCost` to decline widening, but that decision path is
+  bypassed here because Z80's target legalizer widens *after* IndVarSimplify.
+- **Also present but independent — `x` spilled to BSS in the same loop.**
+  With BC/HL/DE all live in `gf_log`'s body (counter, `atb`, intermediate),
+  no pair is left for the loop-invariant compare operand `x`.  clang
+  spills it to `L_gf_log.frame` and reloads with `ld de,(L_gf_log.frame)`
+  = **20 T/iter**.  SDCC keeps `x` on stack and folds the address
+  computation `ld hl,#2; add hl,sp; cp a,(hl)` outside the hot loop.
+  Fixing B27's legalizer bug frees BC (currently squandered on the i16
+  counter widening) and would remove this second cost as a side-effect.
+- **Revisit when:** filing this — the fix is small and localized.  After
+  the legalizer/ISel patch, re-measure AES to confirm the gap closes to
+  the expected ~2 M T-states residual.
+- **Pointers:** measurement `scratch/tmp/pr48-lsr-demo/` (SDCC asm
+  `/tmp/aes_sdcc.asm`, clang asm `/tmp/aes_k.s`, MIR after IRTranslator
+  `/tmp/gf_log_irt.txt` and after legalizer `/tmp/gf_log_legal.txt`);
+  AES source `rc700-gensmedet/tasks/aes256-corpus/aes256.c:127-138`;
+  legalizer site `llvm/lib/Target/Z80/Z80LegalizerInfo.cpp:130`; existing
+  G_ADD S8 precedent `llvm/lib/Target/Z80/Z80InstructionSelector.cpp:2842`.
+
 ---
 
 ## Frontend — patterns blocked on clang AST/CodeGen work
@@ -1340,7 +1447,24 @@ Then bump this file's last-updated note below and commit.
 
 ---
 
-**Last updated:** 2026-07-14 (B26 added — `-O3` `_fast` division's speculative
+**Last updated:** 2026-09-23 (B27 corrected TWICE — first: legalizer-line
+fix prototyped, REVERTED after 65 % T-state regression.  Second: direct
+measurement against main tip shows PR#48 itself regresses AES ~50 % T-states
+regardless of the G_UADDO widening; the LSR NumRegs-first reordering
+cascades to BSS-spill-per-iteration in tight loops.  **PR#48 is a
+size/speed tradeoff, not a pure win** — flag before merging.  Real fix requires a
+combiner/ISel pattern that consumes the s1 overflow bit as a flag when its
+sole use is `G_BRCOND`; a plain "legalize S8 as legal" leaks a materialised
+`SBC A, A; AND 1` per iteration that costs more than the i16 wrap test it
+was replacing).  Prior: 2026-09-23 (B27 updated — root cause traced to
+`Z80LegalizerInfo.cpp:130` `.legalFor({{S16, S1}})` widening `G_UADDO i8`
+to i16.  Single-line legalizer fix, not a class of problem.  Confirmed AVR
+handles G_UADDO i8 natively; no LLVM narrow-IV pass exists in-tree).  Prior:
+2026-09-23 (B27 added — `uint8_t` loop counter widened to
+i16 + loop-invariant argument spilled to BSS.  Root cause of the ~5.3 M
+T-state clang-vs-SDCC gap on AES-256; measured via built-fresh PR#48
+`build-pr48` clang against direct SDCC on `gf_log`).  Prior: 2026-07-14
+(B26 added — `-O3` `_fast` division's speculative
 repeated-subtraction regresses vs `-Os` on large quotients; static div-select
 mitigation designed in `tasks/plan-2026-07-14-issue244-static-divselect.md`).
 Prior: 2026-07-09 (M2/M3 + M5 updated — Z80SinkColdLoopIV opt-in
