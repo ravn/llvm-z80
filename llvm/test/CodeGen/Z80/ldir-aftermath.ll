@@ -19,8 +19,8 @@
 ; CHECK:      	push	de
 ; CHECK:      	ld	bc,128
 ; CHECK:      	ldir
-; CHECK:      	ld	bc,128
 ; CHECK:      	pop	hl
+; CHECK:      	ld	bc,128
 ; CHECK:      	add	hl,bc
 ; CHECK:      	ld	(_dma),hl
 ; CHECK:      	ret

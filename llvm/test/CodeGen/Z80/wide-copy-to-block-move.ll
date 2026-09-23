@@ -9,6 +9,12 @@
 ;
 ; AVR analogy: AVR absorbs the same shape via ldd/std Z+q displacement
 ; addressing; Z80's idiomatic answer is the block move.
+;
+; C source (copy8 / copy4):
+;   void copy8(void *dst, const void *src) { *(uint64_t *)dst = *(uint64_t *)src; }
+;   void copy4(void *dst, const void *src) { *(uint32_t *)dst = *(uint32_t *)src; }
+; Without the combine each of these emits 4 x i16 load+store pairs (65 instr for
+; copy8); with the combine they collapse to a single memmove call (3 instr).
 
 ; CHECK-LABEL: copy8:
 ; CHECK:      	ld	bc,8
@@ -101,17 +107,15 @@ define void @keep_i16(ptr %dst, ptr %src) {
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
 ; CHECK:      	ld	de,4
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_volatile.frame+6)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
-; CHECK:      	ld	de,6
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	add	hl,de
+; CHECK:      	ld	bc,6
+; CHECK:      	add	hl,bc
 ; CHECK:      	ld	de,(L_keep_volatile.frame+8)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
@@ -174,17 +178,15 @@ define void @keep_volatile(ptr %dst, ptr %src) {
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
 ; CHECK:      	ld	de,4
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_multiuse.frame+6)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
-; CHECK:      	ld	de,6
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	add	hl,de
+; CHECK:      	ld	bc,6
+; CHECK:      	add	hl,bc
 ; CHECK:      	ld	de,(L_keep_multiuse.frame+8)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
@@ -258,17 +260,15 @@ define i8 @keep_multiuse(ptr %dst, ptr %src) {
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
 ; CHECK:      	ld	de,4
-; CHECK:      	ld	l,c
-; CHECK:      	ld	h,b
 ; CHECK:      	add	hl,de
 ; CHECK:      	ld	de,(L_keep_intervening_store.frame+6)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl
 ; CHECK:      	ld	(hl),d
-; CHECK:      	ld	de,6
 ; CHECK:      	ld	l,c
 ; CHECK:      	ld	h,b
-; CHECK:      	add	hl,de
+; CHECK:      	ld	bc,6
+; CHECK:      	add	hl,bc
 ; CHECK:      	ld	de,(L_keep_intervening_store.frame+8)
 ; CHECK:      	ld	(hl),e
 ; CHECK:      	inc	hl

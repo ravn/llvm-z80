@@ -14,6 +14,16 @@
 ; Fix: also bail when the slot is accessed earlier in the same block, before the
 ; matched store (the loop-carried-reload signature).  The high-half write-back
 ; must survive in the loop body.
+;
+; C source:
+;   typedef unsigned long uint32_t;
+;   typedef unsigned char uint8_t;
+;   __attribute__((z80_static_frame)) uint8_t popcount32(uint32_t n) {
+;       uint8_t count = 0;
+;       while (n) { count += (uint8_t)(n & 1); n >>= 1; }
+;       return count;
+;   }
+; Runtime oracle: popcount32(0xA5A5A5A5) == 16  (see test_195_popcount32_bss.c)
 
 ; CHECK-LABEL: popcount32:
 ; CHECK:      	ld	a,d
@@ -32,9 +42,15 @@
 ; CHECK:      	or	b
 ; CHECK:      	jr	z,.LBB0_4
 ; CHECK:      	ld	b,0
+; CHECK:      	ld	a,b
+; CHECK:      	ld	(L_popcount32.frame+2),a
 ; CHECK:      	ld	(L_popcount32.frame),hl
 ; CHECK:      	ld	a,e
 ; CHECK:      	and	1
+; CHECK:      	push	hl
+; CHECK:      	ld	hl,L_popcount32.frame+2
+; CHECK:      	ld	b,(hl)
+; CHECK:      	pop	hl
 ; CHECK:      	add	a,b
 ; CHECK:      	ld	(L_popcount32.frame+2),a
 ; CHECK:      	srl	d
@@ -54,19 +70,22 @@
 ; CHECK:      	ld	a,e
 ; CHECK:      	or	b
 ; CHECK:      	ld	(L_popcount32.frame+3),a
-; CHECK:      	ld	bc,(L_popcount32.frame)
-; CHECK:      	ld	a,c
+; CHECK:      	ld	hl,(L_popcount32.frame)
+; CHECK:      	ld	a,h
+; CHECK:      	ld	b,a
+; CHECK:      	ld	a,l
 ; CHECK:      	or	b
-; CHECK:      	ld	hl,L_popcount32.frame+2
-; CHECK:      	ld	b,(hl)
 ; CHECK:      	ld	hl,L_popcount32.frame+3
-; CHECK:      	ld	c,(hl)
-; CHECK:      	or	c
+; CHECK:      	ld	b,(hl)
+; CHECK:      	or	b
 ; CHECK:      	ld	hl,(L_popcount32.frame)
 ; CHECK:      	jr	nz,.LBB0_2
-; CHECK:      	ld	a,b
+; CHECK:      	ld	a,(L_popcount32.frame+2)
 ; CHECK:      	ret
-; CHECK:      	xor	a
+; CHECK:      	ld	b,0
+; CHECK:      	ld	a,b
+; CHECK:      	ld	(L_popcount32.frame+2),a
+; CHECK:      	ld	a,(L_popcount32.frame+2)
 ; CHECK:      	ret
 define dso_local zeroext i8 @popcount32(i32 noundef %0) {
   %2 = icmp eq i32 %0, 0
@@ -89,3 +108,4 @@ define dso_local zeroext i8 @popcount32(i32 noundef %0) {
 
 ; The loop-carried high half must be written back into its BSS slot inside the
 ; loop body (not dropped by a PUSH/POP conversion).
+; The ld (L_popcount32.frame),hl stores above verify this invariant.

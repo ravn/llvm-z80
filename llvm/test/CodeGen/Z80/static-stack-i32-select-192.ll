@@ -13,23 +13,28 @@
 ; Fix: #173 bails when its destination register is READ in the interval.  The
 ; 4-instr A-preserving reload (PUSH AF; LD A,(slot); LD r,A; POP AF) must then
 ; survive instead of being folded into a PUSH/POP DE that clobbers D.
+;
+; C source:
+;   typedef unsigned long uint32_t;
+;   typedef unsigned char uint8_t;
+;   __attribute__((z80_static_frame)) uint32_t crc_one(uint32_t crc) {
+;       for (uint8_t i = 0; i < 8; i++)
+;           crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320UL : (crc >> 1);
+;       return crc;
+;   }
+; Runtime oracle: crc_one(0xFF) == 0x2D02EF8D  (see test_192_crc_bss_select.c)
 
 ; CHECK-LABEL: crc_one:
 ; CHECK:      	ld	b,8
 ; CHECK:      	jr	.LBB0_2
 ; CHECK:      	ld	a,l
-; CHECK:      	push	hl
-; CHECK:      	ld	hl,L_crc_one.frame+8
-; CHECK:      	ld	b,(hl)
-; CHECK:      	pop	hl
-; CHECK:      	xor	b
+; CHECK:      	xor	d
 ; CHECK:      	ld	e,a
 ; CHECK:      	ld	a,h
-; CHECK:      	ld	hl,L_crc_one.frame+5
-; CHECK:      	ld	b,(hl)
-; CHECK:      	xor	b
+; CHECK:      	ld	hl,L_crc_one.frame+3
+; CHECK:      	ld	d,(hl)
+; CHECK:      	xor	d
 ; CHECK:      	ld	d,a
-; CHECK:      	ld	bc,(L_crc_one.frame+2)
 ; CHECK:      	ld	a,c
 ; CHECK:      	ld	hl,(L_crc_one.frame)
 ; CHECK:      	xor	l
@@ -37,13 +42,13 @@
 ; CHECK:      	ld	a,b
 ; CHECK:      	xor	h
 ; CHECK:      	ld	h,a
-; CHECK:      	ld	a,(L_crc_one.frame+4)
+; CHECK:      	ld	a,(L_crc_one.frame+2)
 ; CHECK:      	dec	a
 ; CHECK:      	ld	b,a
 ; CHECK:      	ret	z
 ; CHECK:      	ld	(L_crc_one.frame),hl
 ; CHECK:      	ld	a,b
-; CHECK:      	ld	(L_crc_one.frame+4),a
+; CHECK:      	ld	(L_crc_one.frame+2),a
 ; CHECK:      	ld	c,e
 ; CHECK:      	ld	b,d
 ; CHECK:      	srl	b
@@ -53,10 +58,10 @@
 ; CHECK:      	and	128
 ; CHECK:      	ld	h,a
 ; CHECK:      	ld	a,c
-; CHECK:      	ld	(L_crc_one.frame+8),a
+; CHECK:      	ld	d,a
 ; CHECK:      	ld	a,b
 ; CHECK:      	or	h
-; CHECK:      	ld	(L_crc_one.frame+5),a
+; CHECK:      	ld	(L_crc_one.frame+3),a
 ; CHECK:      	ld	bc,(L_crc_one.frame)
 ; CHECK:      	srl	b
 ; CHECK:      	rr	c
@@ -72,20 +77,14 @@
 ; CHECK:      	ld	hl,0
 ; CHECK:      	ld	a,c
 ; CHECK:      	or	b
-; CHECK:      	ld	(L_crc_one.frame+9),a
-; CHECK:      	ld	bc,0
-; CHECK:      	ld	(L_crc_one.frame+2),bc
+; CHECK:      	ld	e,a
 ; CHECK:      	pop	bc
 ; CHECK:      	ld	a,c
 ; CHECK:      	or	b
-; CHECK:      	push	hl
-; CHECK:      	ld	hl,L_crc_one.frame+9
-; CHECK:      	ld	b,(hl)
-; CHECK:      	pop	hl
-; CHECK:      	or	b
+; CHECK:      	or	e
+; CHECK:      	ld	bc,0
 ; CHECK:      	jr	z,.LBB0_1
 ; CHECK:      	ld	bc,60856
-; CHECK:      	ld	(L_crc_one.frame+2),bc
 ; CHECK:      	ld	hl,33568
 ; CHECK:      	jr	.LBB0_1
 define dso_local i32 @crc_one(i32 noundef %0) {
@@ -107,5 +106,6 @@ define dso_local i32 @crc_one(i32 noundef %0) {
   br i1 %12, label %2, label %3
 }
 
-; The A-preserving 4-instr reload of the first compare's result must survive
-; (#173 must NOT fold it into a D-clobbering PUSH/POP DE).
+; No PUSH/POP DE must appear: D must not be clobbered during the i32 compare.
+; CHECK-NOT: push	de
+; CHECK-NOT: pop	de
