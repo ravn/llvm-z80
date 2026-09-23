@@ -8,6 +8,21 @@
 ; The test is the #74 issue repro (delete_line shape): a memcpy chain that
 ; spills two 16-bit address temporaries to the same BSS frame across the
 ; LDIR setup, with no CALL between the spills and reloads.
+;
+; C source (RC700 terminal delete_line shape):
+;   typedef unsigned char uint8_t;
+;   extern uint8_t cury;
+;   __attribute__((z80_static_frame))
+;   void delete_line(void) {
+;       if (cury >= 24) return;
+;       uint8_t *vram = (uint8_t *)0xF800;
+;       uint8_t *src = vram + (uint8_t)(cury * 80);
+;       uint8_t *dst = vram + (uint8_t)((cury - 1) * 80);
+;       __builtin_memcpy(dst, src, (uint8_t)(24 - cury) * 80);
+;       __builtin_memset(dst + (uint8_t)(24 - cury) * 80, ' ', 80);
+;   }
+; Two address temporaries (dst, src) are spilled to BSS across the LDIR setup
+; with no CALL between them. The peephole must convert these to PUSH/POP.
 
 @cury = external global i8
 

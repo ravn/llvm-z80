@@ -15,6 +15,22 @@
 ;   inc sp x N  (or LD HL,N; ADD HL,SP; LD SP,HL for large N)
 ;   push bc                     ; (SP) = ret addr
 ;   ret
+;
+; C source (six-arg sdcccall(1) functions — 4th+ args spill to stack):
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   /* i8 return: HL dead → EX (SP),HL trick */
+;   uint8_t ret_i8(uint8_t a, uint8_t b, uint8_t c,
+;                  uint8_t d, uint8_t e, uint8_t f) {
+;       return a + b + c + d + e + f;
+;   }
+;   /* i16 return: HL holds return value → POP BC fallback */
+;   uint16_t ret_i16(uint8_t a, uint8_t b, uint8_t c,
+;                    uint8_t d, uint8_t e, uint8_t f) {
+;       return (uint16_t)a + b + c + d + e + f;
+;   }
+; sdcccall(1): A,L,E,C take first 4 i8 args; 5th and 6th spill to stack.
+; i8 return leaves HL free for the EX (SP),HL trick (-2 B vs POP BC/PUSH BC).
 
 ; --- i8 return: HL dead, EX trick fires ----------------------------------------
 ; Four i8 args spill to stack (sdcccall(1) exhausts regs after A,L,E,C).

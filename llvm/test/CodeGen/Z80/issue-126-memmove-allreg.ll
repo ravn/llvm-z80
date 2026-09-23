@@ -6,6 +6,12 @@
 ; (IX frame + 4(ix) stack-arg read + triplicated callee-cleanup).  With all
 ; three args already in HL/DE/BC the call site is just `ld bc,N; jp/call
 ; ___memmove_rt`.  memcpy keeps its inline LDIR lowering.
+;
+; C source:
+;   void mm(void *d, const void *s) { __builtin_memmove(d, s, 16); }
+;   void mc(void *d, const void *s) { __builtin_memcpy(d, s, 16); }
+; memmove: direction unknown at compile time → Z80_AllReg call (ld bc,16; call ___z80_memmove_builtin).
+; memcpy:  direction known (src < dst never overlaps) → inline LDIR (ld bc,16; ldir).
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"

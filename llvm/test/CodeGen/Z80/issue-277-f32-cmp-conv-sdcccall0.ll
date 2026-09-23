@@ -24,6 +24,14 @@
 ; in HL:DE under the default ABI, so the call is a plain `jp`/`call` with no
 ; `push` at all for a 16-bit source int, or an implicit sign-extend then
 ; direct call for the float source).
+;
+; C source (compiled with -mllvm -z80-float-sdcccall0 for z88dk bridge):
+;   int cmp_lt(float a, float b) { return a < b; }
+;   int ftoi(float f) { return (int)f; }
+;   float itof(int i) { return (float)i; }
+; With -z80-float-sdcccall0: compare libcalls push both floats (4x PUSH HL);
+; conversion libcalls push one operand (2x PUSH HL for f32, or sign-extended
+; int).  Matches z88dk's __cmpsf2.asm wrapper and __floatsisf.asm bridge.
 
 define i16 @cmp_lt(float %a, float %b) {
 ; CHECK-LABEL: _cmp_lt:

@@ -32,6 +32,16 @@
 ; pushed to the stack (4 `push hl` total, one per 16-bit half of each 32-bit
 ; float) before `call ___addsf3`, and the 32-bit result comes back through an
 ; `ex de,hl` (i.e. DE:HL with D=MSB, not the caller's native HL:DE).
+;
+; C source (compiled with -mllvm -z80-float-sdcccall0 for z88dk bridge):
+;   float add(float a, float b) { return a + b; }
+;   float sub(float a, float b) { return a - b; }
+;   float mul(float a, float b) { return a * b; }
+;   float div(float a, float b) { return a / b; }
+; Without -z80-float-sdcccall0: first arg stays in HL:DE (register), only
+; second arg is pushed -- the z88dk math32 bridge needed a word-swap shim.
+; With the flag: both args are pushed (4x PUSH HL), result in DE:HL (ex de,hl),
+; exactly matching z88dk's cm32_sdcc_fsadd/fssub/fsmul/fsdiv ABI.
 
 define float @add(float %a, float %b) {
 ; CHECK-LABEL: _add:

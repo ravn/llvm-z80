@@ -9,6 +9,20 @@
 ; sum was off by one (44 vs 45).  Fix: refuse the conversion for slots whose
 ; frame symbol is address-taken.  The first element's value must be STORED to
 ; its BSS slot (not pushed and discarded).
+;
+; C source (from t175.c — volatile matrix summed via pointer walk):
+;   typedef unsigned short uint16_t;
+;   typedef unsigned char uint8_t;
+;   int main(void) {
+;       volatile uint16_t m[3][3] = {{1,2,3},{4,5,6},{7,8,9}};
+;       uint16_t sum = 0;
+;       volatile uint16_t *p = &m[0][0];
+;       for (uint8_t i = 0; i < 9; i++) sum += p[i];
+;       return (int)(sum != 45);
+;   }
+; The frame base is address-taken (pointer p = &m[0][0]); the indirect read
+; bypasses the peephole's direct-address orphan scan. m[0][0]'s value must
+; be stored to BSS so the pointer walk finds it.
 
 ; ModuleID = 't175.c'
 source_filename = "t175.c"

@@ -15,6 +15,16 @@
 ;
 ; @f has a large address-taken stack array (forcing an IX frame larger than the
 ; 4-PUSH threshold) and no parameters, so HL is dead at entry.
+;
+; C source:
+;   void sink(void *);
+;   void f(void) {
+;       unsigned char arr[48];  /* large → LD HL,-48; ADD HL,SP; LD SP,HL prologue */
+;       sink(arr);
+;   }
+; No parameters → HL is dead at entry. The large-frame prologue's PUSH HL
+; (saves HL across the SP adjustment) read undef $hl. Before fix:
+; -verify-machineinstrs aborted "Using an undefined physical register $hl".
 
 define dso_local void @f() {
   %p = alloca [48 x i8], align 1

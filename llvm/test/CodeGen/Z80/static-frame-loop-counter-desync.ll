@@ -26,6 +26,20 @@
 ; PUSH/POP conversion.  When #74 is re-implemented correctly (see
 ; ravn/llvm-z80#74 for instructions), update the CHECKs back to
 ; asserting the cross-pair PUSH/POP shape and remove this preamble.
+;
+; C source:
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   void take(uint8_t x);
+;   __attribute__((z80_static_frame))
+;   void f(void) {
+;       for (uint16_t i = 0; i != 4; i++)
+;           take((uint8_t)i);
+;   }
+; The uint16_t counter i is held in BC but also assigned a BSS slot; the
+; call-arg reload reads the slot via HL (cross-pair). Post-#82: BSS slot
+; store/load survives rather than being rewritten to a mismatched PUSH BC /
+; POP HL which would corrupt SP-relative data.
 
 declare void @take(i8 zeroext)
 

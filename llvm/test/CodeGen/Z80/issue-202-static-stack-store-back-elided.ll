@@ -22,6 +22,18 @@
 ;
 ; The store-back below MUST reach v's frame slot before the back-edge reloads
 ; it (the conversion to PUSH/POP must be refused for this loop-carried slot).
+;
+; C source:
+;   typedef unsigned short uint16_t;
+;   __attribute__((z80_static_frame))
+;   uint16_t f(uint16_t v) {
+;       do { v >>= 1; } while (v > 0);
+;       return v;
+;   }
+; At -O0 the shift and loop-condition are in separate blocks; the cross-block
+; BSS-spill peephole dropped the shift result's store → next iteration reloaded
+; the original v → loop never progressed (f(256) returned 0x0080 not 9).
+; Runtime oracle: z80-utils/test-runner/testcases/clang/test_54_unsigned_compare.c
 
 ; CHECK-LABEL: f:
 ; CHECK:      	push	af

@@ -16,6 +16,20 @@
 ; @g has an address-taken local array (forces an IX frame + a 4-byte stack
 ; reservation) and its arg in HL, so A is dead at entry.  The first RUN line
 ; asserts the function passes -verify-machineinstrs; MIR asserts the undef.
+;
+; C source:
+;   typedef unsigned short uint16_t;
+;   void sink(void *);
+;   uint16_t g(uint16_t x) {
+;       uint16_t arr[2];   /* address-taken → IX frame + PUSH AF reservation */
+;       arr[0] = x;
+;       arr[1] = x + 1;
+;       sink(arr);
+;       return 0;
+;   }
+; arg x arrives in HL → A is dead at prologue entry. PUSH AF for stack
+; reservation read undef $a. Before fix: -verify-machineinstrs aborted
+; "Using an undefined physical register".
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"

@@ -13,6 +13,20 @@
 ; i.e. for a 6-byte frame (.zero 6) the deepest displacement is __sfrend_f-6
 ; (== __sframe_f) and NEVER __sfrend_f-7 or __sfrend_f-8 (the pre-fix bug).
 ;
+; C source:
+;   typedef unsigned char uint8_t;
+;   uint8_t k = 2, n = 6;
+;   uint8_t g[10];
+;   __attribute__((z80_static_frame))
+;   void f(void) {
+;       uint8_t a, b, c;   /* three BSS slots = 6 bytes */
+;       a = k; b = n; c = a + b;
+;       __builtin_memmove(g, &c, 1);
+;   }
+; At -O0 with a frame-pointer (hasFP=true), IX saves land on the real stack and
+; CalleeSavedFrameSize was not added to the BSS displacement → deepest slot at
+; __sfrend_f-8 instead of __sfrend_f-6 → 2-byte underflow into adjacent global.
+;
 ; RUN: llc -mtriple=z80 -O0 < %s | FileCheck %s
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
