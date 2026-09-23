@@ -15,6 +15,22 @@
 ; Runtime oracle: z80-utils/test-runner/testcases/clang/test_33_string_ops.c
 ; (test_33_string_ops_Oz was the sole FAIL in the clang runtime suite
 ; before this fix; all six opt levels PASS after).
+;
+; C source:
+;   typedef unsigned char uint8_t;
+;   void my_strrev(char *s, uint8_t len) {
+;       char *end = s + len;
+;       char *fwd = s;
+;       for (uint16_t i = len / 2; i != 0; i--) {
+;           char t = *--end;
+;           *end = *fwd;
+;           *fwd++ = t;
+;       }
+;   }
+; At -Oz the BSS-spill peephole inserted an extra PUSH HL in the prologue
+; but PEI had already baked the SP offset for `len` as `ld hl,4; add hl,sp`.
+; The extra PUSH shifted SP by 2: `len` was read from the return-address slot
+; instead of the argument slot → reverse loop used wrong length → corruption.
 
 define void @my_strrev(ptr nocapture %s, i8 zeroext %len) #0 {
 entry:

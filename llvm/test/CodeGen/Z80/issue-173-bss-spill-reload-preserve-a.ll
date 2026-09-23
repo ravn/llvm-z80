@@ -23,6 +23,17 @@
 ;
 ; Production impact (AES corpus 09_Oz_prod_like, May 2026): -12 B,
 ; cpnos PROM1: -1 B.
+;
+; C source (AES aes_subBytes shape):
+;   typedef unsigned char uint8_t;
+;   uint8_t lookup(uint8_t x);
+;   __attribute__((z80_static_frame))
+;   void aes_subBytes_like(uint8_t *buf) {
+;       for (uint8_t i = 16; i-- != 0; )
+;           buf[i] = lookup(buf[i]);
+;   }
+; The counter i is spilled to BSS across the lookup() call.  The bare-store
+; + 4-instruction reload-via-A (9 B) is folded to LD r,A + PUSH/POP (3 B).
 
 declare i8 @lookup(i8 %x)
 

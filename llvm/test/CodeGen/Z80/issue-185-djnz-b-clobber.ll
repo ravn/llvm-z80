@@ -14,6 +14,21 @@
 ; The body's `ld c, l; ld b, h` (saving HL into BC for parallel
 ; pointer arithmetic) clobbers B; the LD B, A at end of body
 ; restored it; the peephole dropped that restore.
+;
+; C source (AES aes_done shape):
+;   typedef unsigned char uint8_t;
+;   __attribute__((z80_static_frame))
+;   void aes_done_like(uint8_t *ctx) {
+;       uint8_t *p = ctx + 32;
+;       for (uint8_t i = 32; i != 0; i--) {
+;           p[i-1] = 0;
+;           p[i]   = 0;
+;       }
+;   }
+; The body uses two adjacent pointer offsets forcing HL+BC use, clobbering B
+; mid-body.  The DJNZ peephole must NOT fire: B holds a pointer half, not the
+; loop counter; replacing `DEC A; LD B,A; JR NZ` with DJNZ drops the LD B,A
+; restore and the loop runs with a corrupt B → infinite loop / wild stores.
 
 ; A loop where the body clobbers B (for cross-class pointer use).
 define void @aes_done_like(ptr %ctx) {

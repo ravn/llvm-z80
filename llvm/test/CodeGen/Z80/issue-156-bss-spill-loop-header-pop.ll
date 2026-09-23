@@ -19,6 +19,26 @@
 ; the loop has a back-edge.  Pre-fix codegen emits `push hl` in entry
 ; and `pop hl` in the loop header.  Post-fix the peephole bails and
 ; the BSS store/load pair stays.
+;
+; C source (GF(256) logarithm shape from aes256.c):
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   __attribute__((z80_static_frame))
+;   uint8_t gf_log_repro(uint16_t x) {
+;       uint8_t count = 0;
+;       uint16_t val = 1;
+;       while ((val & 0xFF) != (x & 0xFF)) {
+;           uint8_t v = (uint8_t)val;
+;           uint8_t t = (v << 1) ^ ((val & 0x80) ? 0x1Bu : 0u);
+;           val ^= (uint16_t)(v ^ t);
+;           if (++count == 0) break;
+;       }
+;       return count;
+;   }
+; The entry-block `x` is spilled to BSS and reloaded in the loop header.
+; With the bug the peephole converted entry STORE→PUSH and loop-header
+; LOAD→POP: each back-edge iteration POPped without a matching PUSH,
+; leaking 2 bytes from SP → eventual PC-corruption and crash.
 
 ; CHECK-LABEL: gf_log_repro:
 ; The peephole must NOT have rewritten the store/load pair into a

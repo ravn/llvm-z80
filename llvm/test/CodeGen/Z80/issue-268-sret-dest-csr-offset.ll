@@ -22,6 +22,28 @@
 ; regress the CSR==0 path.
 ;
 ; RUN: llc -mtriple=z80 -O2 < %s | FileCheck %s
+;
+; C source:
+;   /* On Z80 `double` is 8 bytes (IEEE-754 binary64 shape at the ABI level);
+;      the frontend lowers `double`-returning functions to sret. */
+;   extern double g(double a, double b);
+;
+;   double bug(double a, double b) {
+;       /* @bug returns g()'s result -> sret-returning call whose result
+;          is copied into @bug's own sret buffer.  @bug saves IX (CSR=2),
+;          so the pre-fix eliminateFrameIndex added CSR to the sret pointer's
+;          fixed-object offset and the memmove destination was read from
+;          [ix+6] (arg a low word) instead of [ix+4] (sret ptr).  With a=3.0
+;          low word is 0x0000 -> memmove wrote g()'s 8 bytes over CP/M's
+;          warm-boot vector at 0x0000 and the machine hung. */
+;       return g(a, b);
+;   }
+;
+;   double ok(double a, double b) {
+;       /* Control: CSR=0, no IX save; sret pointer at [ix+4] read directly.
+;          Pins that the fix does not regress the CSR==0 path. */
+;       return b;
+;   }
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"

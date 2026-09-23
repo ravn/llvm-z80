@@ -8,6 +8,26 @@
 ; resumption to the inserted PUSH instead of decrementing the post-erase
 ; iterator.  This must compile without crashing.  Reduced from test_40 (the
 ; crash manifested in xorshift16 under +static-frame at all opt levels).
+;
+; C source (from t40.c — CRC16 shape where BSS store immediately precedes reload):
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   __attribute__((z80_static_frame))
+;   uint16_t crc16(const uint8_t *data, uint16_t len) {
+;       uint16_t crc = 0xFFFF, i = 0;
+;       while (i < len) {
+;           crc ^= (uint16_t)data[i] << 8;
+;           for (uint8_t j = 0; j < 8; j++)
+;               crc = (crc & 0x8000) ? (uint16_t)(crc << 1) ^ 0x1021
+;                                    : (uint16_t)(crc << 1);
+;           i++;
+;       }
+;       return crc;
+;   }
+; Under +static-frame the 16-bit BSS store (LD (slot),DE) is immediately
+; followed by its own reload (LD DE,(slot)).  The peephole erased the store,
+; leaving the iterator pointing at the reload; erasing the reload left it
+; dangling; --MII then dereferenced freed memory → SEGV.
 
 ; ModuleID = 't40.c'
 source_filename = "t40.c"

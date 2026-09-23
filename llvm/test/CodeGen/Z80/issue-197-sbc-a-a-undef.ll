@@ -13,6 +13,12 @@
 ; fuse-carry-chain.ll).  This test still pins the undef-marking on the
 ; register-carry expansion path, which Z80FuseCarryChain leaves untouched
 ; whenever the terminal borrow is observed.
+;
+; C source:
+;   typedef unsigned long uint32_t;
+;   uint32_t s32(uint32_t a, uint32_t b) { return a - b; }
+; 32-bit subtract emits SBC A,A to materialise borrow; A is dead at that point.
+; Before the fix: -verify-machineinstrs aborted "Using undefined $a".
 
 define dso_local i32 @s32(i32 %a, i32 %b) {
   %r = sub i32 %a, %b

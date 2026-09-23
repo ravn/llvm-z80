@@ -13,6 +13,12 @@
 ; `float t = a + b; return t * c;` calls __addsf3 (result in DE:HL, consumed by
 ; __mulsf3) then __mulsf3, with AdjAmount==0 cleanups.  This verifies clean;
 ; before the fix llc aborted with "Using an undefined physical register".
+;
+; C source:
+;   float top(float a, float b, float c) { return (a + b) * c; }
+; Two chained soft-float calls: __addsf3 result (DE:HL) was falsely killed by
+; the AdjAmount==0 ADJCALLSTACKUP between the two calls, so __mulsf3 read undef.
+; Before the fix: -verify-machineinstrs aborted "Using undefined $hl".
 
 define dso_local float @top(float %a, float %b, float %c) {
   %t = fadd float %a, %b

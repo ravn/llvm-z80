@@ -11,6 +11,25 @@
 ; abort) without the fix.  Distilled from test_98 walk_three_buffers @ -O2
 ; +static-frame.
 ;
+; C source (test_98 walk_three_buffers shape):
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   static const uint8_t buf_a[8] = {1,2,3,4,5,6,7,8};
+;   static const uint8_t buf_b[8] = {10,20,30,40,50,60,70,80};
+;   static const uint8_t buf_c[8] = {100,99,98,97,96,95,94,93};
+;   __attribute__((z80_static_frame))
+;   uint16_t walk_three_buffers(uint16_t n) {
+;       uint16_t sum = 0, i = 0;
+;       while (i != n) {
+;           sum += buf_a[i] + buf_b[i] + buf_c[i];
+;           i++;
+;       }
+;       return sum;
+;   }
+; The loop-exit `i != n` (i16 != i16) lowers to AND A; SBC HL,rr.
+; A is dead across the back-edge (clobbered by the implicit call in the
+; loop body); without the undef mark -verify-machineinstrs aborted.
+;
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"

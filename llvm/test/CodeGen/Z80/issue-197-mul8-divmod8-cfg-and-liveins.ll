@@ -15,6 +15,15 @@
 ;
 ; The test passes iff -verify-machineinstrs is clean (llc would abort otherwise)
 ; and each function emits its restoring/shift-add loop.
+;
+; C source:
+;   typedef unsigned char uint8_t;
+;   uint8_t mul8(uint8_t a, uint8_t b) { return a * b; }
+;   uint8_t udiv8(uint8_t a, uint8_t b) { return a / b; }
+;   uint8_t umod8(uint8_t a, uint8_t b) { return a % b; }
+; The 8-bit pseudo expansions (MUL8/UDIV8/UMOD8) split the MBB mid-block;
+; the new loop blocks had no live-ins, so every instruction read an undefined
+; physreg. Before the fix: -verify-machineinstrs aborted on all three.
 
 define dso_local zeroext i8 @mul8(i8 zeroext %a, i8 zeroext %b) {
   %r = mul i8 %a, %b

@@ -10,6 +10,18 @@
 ; sub-register liveness metadata was wrong.  Z80FixupImplicitDefs now revives
 ; a KILL-pair sibling sub-register that is read downstream in the block.
 ;
+; C source:
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   uint8_t popcount16(uint16_t n) {
+;       uint8_t count = 0;
+;       while (n) { count += n & 1; n >>= 1; }
+;       return count;
+;   }
+; The 16-bit right-shift loop: KILL $hl/implicit-def $l precedes SRL H,
+; which needs $h. Before the fix: -verify-machineinstrs aborted
+; "Using undefined $h".
+;
 ; CHECK-LABEL: popcount16:
 ; CHECK: srl h
 ; CHECK: rr l

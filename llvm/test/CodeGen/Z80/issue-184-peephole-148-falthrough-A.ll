@@ -13,6 +13,19 @@
 ;
 ; This test reproduces the AES `aes_sb_inv` shape: a post-decrement
 ; loop that spills the counter A around a call.
+;
+; C source (AES aes_sb_inv countdown shape):
+;   typedef unsigned char uint8_t;
+;   uint8_t lookup(uint8_t x);
+;   __attribute__((z80_static_frame))
+;   void aes_sb_inv_like(uint8_t *buf) {
+;       for (uint8_t i = 16; i != 0; i--)
+;           buf[i-1] = lookup(buf[i-1]);
+;   }
+; Counter i ends in A; fall-through MBB saves A via PUSH AF across lookup().
+; Peephole #148 mistakenly rewrote `CP 0xFF; JR Z` → `INC A; JR Z` without
+; seeing the PUSH AF: A became i+1 instead of i → counter never reached 0
+; → infinite loop.
 
 declare i8 @lookup(i8 %x)
 
