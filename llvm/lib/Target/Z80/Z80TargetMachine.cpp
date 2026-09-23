@@ -118,10 +118,10 @@ static cl::opt<bool> EnableMachineLICM(
     cl::desc("Z80: enable MachineLICM + EarlyMachineLICM (default TRUE; "
              "set false to restore the pre-2026-06-08 disablePass workaround)"));
 static cl::opt<bool> EnableMachineCSE(
-    "z80-enable-cse", cl::Hidden, cl::init(false),
-    cl::desc("Z80: enable MachineCSE (default FALSE -- MachineCSE miscompiles "
-             "bench_pi.c at -Oz, #198 class still active despite AES no longer "
-             "tripping it; opt-in for measurement/probes only)"));
+    "z80-enable-cse", cl::Hidden, cl::init(true),
+    cl::desc("Z80: enable MachineCSE (default TRUE -- B15 pi-cse miscompile "
+             "was root-fixed by fork owner 59d8fad47f3c (2026-09-06); "
+             "set false to disable for diagnosis)"));
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   // Register both Z80 and SM83 targets.
@@ -330,10 +330,11 @@ public:
     //   - cpnos PROM1: -11 B (improves).
     //   - rcbios BIOS: +7 B (negligible).
     //
-    // Decision (2026-06-08, user-directed): default LICM+CSE ON.  The
-    // `EnableMachineLICM` / `EnableMachineCSE` cl::opt flags above
-    // default TRUE; set them FALSE to restore the historical workaround
-    // for diagnosis without rebuilding clang.
+    // Decision (2026-06-08, user-directed): default LICM ON.
+    // CSE was OFF 2026-06-08..2026-09-23 (B15 pi-cse miscompile);
+    // re-enabled 2026-09-23 after fork owner's static-frame rewrite
+    // (59d8fad47f3c) eliminated the triggering code path.
+    // Set flags FALSE to disable for diagnosis without rebuilding clang.
     //
     // Follow-up: `Z80InstrInfo::shouldHoist` (gated by
     // `-z80-licm-block-on-call`) is an opt-in coarse heuristic that
