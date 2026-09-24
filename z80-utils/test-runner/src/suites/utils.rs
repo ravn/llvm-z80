@@ -416,11 +416,11 @@ fn link_rels_with_custom_lib(
         Some(lib) => lib.to_path_buf(),
         None => paths.rt_lib(target),
     };
+    // z80_rt.a is an ar archive; sdldz80 can only lazily resolve symbols from
+    // SDCC text-format .lib files, not ar archives.  Pass it as a direct file
+    // argument so all symbols are eagerly loaded (same fix as llc.rs #359).
     if rt_lib.exists() {
-        let lib_dir = rt_lib.parent().unwrap();
-        let lib_name = rt_lib.file_stem().unwrap();
-        cmd.arg("-k").arg(lib_dir);
-        cmd.arg("-l").arg(lib_name);
+        cmd.arg(&rt_lib);
     }
     if let Some(ref lib) = sdcc_lib {
         let lib_dir = lib.parent().unwrap();
@@ -441,6 +441,19 @@ fn run_ihx_binary(ihx: &Path, source: &str, target: Target, tag: &str) -> TestRe
         return TestResult::fatal(tag, e);
     }
     let map_file = ihx.with_extension("map");
+    // sdldz80 silently resolves undefined symbols to 0x0000 (= crt0 / warm-boot
+    // vector) instead of reporting a linker error.  Catch this before running the
+    // emulator: if a key runtime symbol lands at 0x0000 it was not linked in
+    // (typically because z80_rt.a was passed via -k/-l lazy search rather than
+    // as a direct file argument -- see #359).
+    const RT_SENTINELS: &[&str] = &["___mulhi3", "___divhi3", "___modhi3",
+                                     "___udivhi3", "___umodhi3", "___mulsi3"];
+    for sym in RT_SENTINELS {
+        if emulator::symbol_addr_from_map(&map_file, sym) == Some(0) {
+            return TestResult::fatal(tag,
+                &format!("{sym} resolved to 0x0000 — runtime library not linked (ar archive passed via -k/-l?)"));
+        }
+    }
     let halt_addr = match emulator::halt_addr_from_map(&map_file) {
         Some(addr) => addr,
         None => return TestResult::fatal(tag, "_halt symbol not found in map file"),
