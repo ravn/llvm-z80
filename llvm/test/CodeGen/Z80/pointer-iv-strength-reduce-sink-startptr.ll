@@ -24,6 +24,22 @@
 ; `gep @arr, i16 %ks` must land in the inner preheader %ipre, NOT in the outer
 ; scan header (whose only @arr GEP is the scan load `gep @arr, i16 %j`).
 
+; C source:
+;   // ravn/llvm-z80#250 start-pointer sink: when the kill-loop start pointer
+;   // is a scan-loop AddRec, SCEVExpander places it in the OUTER header
+;   // (unconditional, spilled to BSS every scan iter).
+;   // sinkStartPtrToPreheader moves it to the kill preheader (conditional,
+;   // register-adjacent to the kill loop) -- sieve benchmark -6% cycles.
+;   //
+;   extern uint8_t arr[256];
+;   void sieve_like(uint16_t n) {
+;       for (uint16_t j = 2; j < n; j++) {
+;           if (arr[j]) {                          /* scan guard */
+;               for (uint16_t k = j+j; k < n; k += j)
+;                   arr[k] = 0;                    /* kill loop */
+;           }
+;       }
+;   }
 @arr = external dso_local global [16384 x i8]
 
 ; The scan header keeps ONLY its own load address (indexed by the scan IV %j);

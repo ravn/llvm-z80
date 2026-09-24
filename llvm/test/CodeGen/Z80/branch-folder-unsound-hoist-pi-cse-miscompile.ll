@@ -48,6 +48,25 @@
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
 
+; C source:
+;   // Branch Folder unsound cross-block hoist exposed by MachineCSE (pi-spigot
+;   // miscompile).  MITIGATED by ravn/llvm-z80#248 (i32 divrem fusion) --
+;   // #248 lowers udiv/urem pairs to __udivmodsi4, removing the "two consecutive
+;   // DE stores sourced from constant loads" shape BranchFolder hoisted.
+;   // Underlying BranchFolder unsoundness (B15) is NOT root-fixed.
+;   //
+;   // Minimal shape: outer loop with i32 divrem + BSS checksum accumulation.
+;   extern uint32_t udiv32(uint32_t a, uint32_t b);
+;   extern uint32_t umod32(uint32_t a, uint32_t b);
+;   uint32_t pi_spigot_bench(uint32_t n) {
+;       uint32_t c = 0, m = 0;
+;       for (uint32_t i = 0; i < n; i++) {
+;           c += udiv32(i, 3);
+;           m  = umod32(i + c, 7);
+;           c += m;
+;       }
+;       return c;
+;   }
 @r = global [281 x i16] zeroinitializer
 
 declare fastcc void @pi_init()

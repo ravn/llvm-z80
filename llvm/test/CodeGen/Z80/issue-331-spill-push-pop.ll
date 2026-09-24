@@ -20,6 +20,21 @@
 ;   naive #331 is reintroduced -- see tasks/issue331-sprelative-pushpop-
 ;   unsound-2026-09-16.md).
 
+; C source:
+;   // ravn/llvm-z80#331: PEI places a loop counter on a dynamic SP-relative
+;   // frame slot (LD HL,K; ADD HL,SP; LD (HL),lo/hi ... reload mirror).
+;   // The #331 peephole in Z80PreEmitPeephole rewrites the spill+reload pair
+;   // to PUSH/POP when: single-reader, exactly one CALL between them, balanced
+;   // PUSH/POP between spill-end and reload-start, no explicit SP write.
+;   //
+;   // Mirrors _fdc_read_result in autoload-in-c: loop counter preserved across
+;   // a call inside the loop body.
+;   extern uint8_t callee(void);
+;   uint16_t spill_bc_across_call(uint16_t n) {
+;       uint16_t sum = 0;
+;       for (uint16_t i = n; i != 0; i--) sum += callee();
+;       return sum;
+;   }
 declare zeroext i8 @callee()
 
 ; Loop counter preserved across a call in the loop body (mirrors

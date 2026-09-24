@@ -22,6 +22,20 @@
 ; regresses -O2 code and is not exercised here.
 ; See tasks/session-2026-07-12-issue250-phase1a-spike.md.
 
+; C source:
+;   // ravn/llvm-z80#250 nesting gate: inner (Depth>=2) loops are declined
+;   // even when otherwise fully eliminable, because rewriting adds a 3rd live
+;   // 16-bit value (BC/DE/HL already full) and regresses code density.
+;   // Flat (Depth=1) loops are rewritten (positive control).
+;   //
+;   extern uint8_t arr[256];
+;   uint16_t nested(uint16_t n, uint16_t k) {
+;       uint16_t s = 0;
+;       for (uint16_t i = 0; i < n; i++)          /* flat -- rewritten */
+;           for (uint16_t j = 0; j < k; j++)       /* nested -- declined */
+;               s += arr[i * k + j];
+;       return s;
+;   }
 @arr = external dso_local global [256 x i8]
 
 ; ---------------------------------------------------------------------------

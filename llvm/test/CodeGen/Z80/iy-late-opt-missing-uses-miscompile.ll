@@ -45,6 +45,19 @@
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
 
+; C source:
+;   // ravn/llvm-z80#243: LD_IXd_r/LD_IYd_r/LD_r_IXd/LD_r_IYd were missing
+;   // IX/IY in their Uses list.  computeRegisterLiveness(IY, after_end_copy)
+;   // returned LQR_Dead even when a downstream LD_IYd_A used IY as address,
+;   // causing the IX-transfer peephole to drop the `IY = buf+idx` assignment
+;   // -> LD (IY+0),A wrote to the caller's IY instead of buf+idx.  Miscompile
+;   // at -Os only (peephole fires at -Os).
+;   //
+;   static unsigned char buf[16];
+;   void test(unsigned char idx, unsigned char tail) {
+;       unsigned char mask = (unsigned char)(0xFF << (8 - tail));
+;       buf[idx] &= (unsigned char)~mask;
+;   }
 @buf = internal unnamed_addr global [16 x i8] zeroinitializer, align 1
 
 ; Function Attrs: optsize

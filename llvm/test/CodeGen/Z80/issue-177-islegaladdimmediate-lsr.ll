@@ -30,6 +30,19 @@ target triple = "z80"
 
 ; The dual induction phi (i8 address index + i16 trip counter) mirrors the IR
 ; clang emits for the C source `for (uint8_t i=0;i<32;i++) a[i]=b[i]=c[i]=0;`.
+; C source:
+;   // ravn/llvm-z80#177: Z80TTIImpl::isLegalAddImmediate was not overridden,
+;   // so LSR kept a single base pointer and folded +32/+64 offsets; Z80 has
+;   // no ADD rr,nn, so the backend spilled a pair inside the loop.
+;   // Fix: only |imm| <= 3 (INC/DEC range) is legal for Z80.
+;   //
+;   void aes_done_zero(uint8_t ctx[96]) {
+;       for (uint8_t i = 0; i < 32; i++) {
+;           ctx[i]    = 0;
+;           ctx[i+32] = 0;
+;           ctx[i+64] = 0;
+;       }
+;   }
 define void @zero3(ptr %base) {
 entry:
   %k64 = getelementptr inbounds i8, ptr %base, i16 64

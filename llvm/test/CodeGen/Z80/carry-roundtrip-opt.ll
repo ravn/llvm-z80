@@ -4,6 +4,19 @@
 ; Test 1: 16-bit add loop where carry is roundtripped through A and inverted.
 ; Intervening register copies (ld c,l; ld b,h) are flag-neutral.
 ; The SBC A,A; AND 1; XOR 1; RRCA; JR C chain must fold to JR NC.
+; C source:
+;   // SBC A,A; AND 1; XOR 1; RRCA chain materialises carry as a branch.
+;   // The optimizer folds the chain away leaving just JR NC (or JR C).
+;   //
+;   // Loop that exits on 16-bit add overflow (carry set):
+;   void wait_ready(uint8_t val) {
+;       uint16_t t = 0;
+;       do {
+;           volatile uint8_t msr = *(volatile uint8_t *)4; /* port poll */
+;           if (msr < 0xC0) { *(volatile uint8_t *)5 = val; break; }
+;           t++;
+;       } while (t != 0);  /* exits on 16-bit wrap = carry from t++ */
+;   }
 define dso_local void @test_u16_loop_overflow(i8 noundef zeroext %val) {
 ; CHECK-LABEL: test_u16_loop_overflow:
 ; NOLSR:       .LBB0_1:

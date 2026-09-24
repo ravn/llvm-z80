@@ -6,6 +6,15 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s --check-prefix=SMALL
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s --check-prefix=SMALL
 
+; C source:
+;   // ravn/llvm-z80#244: at -O3 the i16 sdiv/udiv/srem/urem libcalls are
+;   // routed to _fast variants (DJNZ loop removed, ~14% faster); all other
+;   // opt levels keep the compact default routines.
+;   //
+;   int16_t  sdiv16(int16_t  a, int16_t  b) { return a / b; }
+;   uint16_t udiv16(uint16_t a, uint16_t b) { return a / b; }
+;   int16_t  smod16(int16_t  a, int16_t  b) { return a % b; }
+;   uint16_t umod16(uint16_t a, uint16_t b) { return a % b; }
 define i16 @sdiv16(i16 %a, i16 %b) {
 ; FAST-LABEL: _sdiv16:
 ; FAST:        {{call|jp}} ___divhi3_fast

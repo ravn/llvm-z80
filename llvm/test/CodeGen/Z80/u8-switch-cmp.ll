@@ -5,6 +5,15 @@
 ; so future codegen changes can't silently regress to 16-bit cmp
 ; widening.
 
+; C source:
+;   // ravn/llvm-z80#86 regression guard: switch on uint8_t discriminant must
+;   // use 8-bit CP, NOT 16-bit SUB/SBC after zero-extension.
+;   //
+;   extern void f0(void), f1(void), f2(void), fdef(void);
+;   void switch_3(uint8_t v) {
+;       switch (v) { case 0: f0(); break; case 1: f1(); break;
+;                    case 2: f2(); break; default: fdef(); }
+;   }
 declare void @f0()
 declare void @f1()
 declare void @f2()

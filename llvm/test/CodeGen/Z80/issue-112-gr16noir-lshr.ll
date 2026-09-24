@@ -30,6 +30,13 @@
 ; CHECK: srl
 ; CHECK-NEXT: rr
 ; CHECK: ret
+; C source:
+;   // ravn/llvm-z80#112: LSHR16/ASHR16 pseudo expansion called getSRLOpcode
+;   // with IYH/IYL sub-registers, which returned opcode 0 -> crash.
+;   // Fix: GR16NoIR register class (BC/DE/HL only) for LSHR/ASHR16 pseudos.
+;   //
+;   uint16_t lshr3(uint16_t x) { return x >> 3; }
+;   int16_t  ashr3(int16_t x)  { return x >> 3; }
 define i16 @lshr_chain(i16 %x) {
   %r = lshr i16 %x, 3
   ret i16 %r

@@ -22,6 +22,18 @@
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16"
 target triple = "z80"
 
+; C source:
+;   // ravn/llvm-z80#189 residual: greedy regalloc widened GR16_BCDE up to GR16
+;   // (via getLargestLegalSuperClass), re-introducing IX/IY, then parked a
+;   // loop-carried EQ/NE compare operand in IY -> emitted undocumented LD A,IYH.
+;   // Fix: refuse to widen any IY-excluding 16-bit subclass when IY is allocatable.
+;   //
+;   uint16_t call_via_ptr(uint16_t (*fn)(uint16_t, uint16_t),
+;                         uint16_t a, uint16_t n) {
+;       uint16_t acc = 0;
+;       while (a != n) { acc += fn(acc, a); a++; }
+;       return acc;
+;   }
 declare i16 @sub2(i16, i16) #0
 
 define internal fastcc i16 @call_via_ptr() unnamed_addr #0 {

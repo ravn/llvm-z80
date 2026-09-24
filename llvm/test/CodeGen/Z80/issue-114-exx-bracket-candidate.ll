@@ -42,6 +42,20 @@
 ; lands, flip the CHECK lines to assert the EXX shape and remove
 ; the BSS-slot symbol assertion.
 
+; C source:
+;   // ravn/llvm-z80#114: EXX-bracket candidate -- outer 16-bit counter
+;   // spilled to BSS across an inner do-while because all three GR16 pairs
+;   // are occupied by inner-loop pointers + DJNZ counter.
+;   // EXX would replace the 8-byte ED43/ED4B BSS pair with 2x D9.
+;   //
+;   void render(uint8_t *dst, const uint8_t *src, uint16_t n, uint8_t stride) {
+;       for (uint16_t i = 0; i < n; i++) {
+;           uint8_t *dp = dst + i;
+;           const uint8_t *sp = src + i;
+;           uint8_t c = 8;
+;           do { *dp = *sp; dp += stride; sp += stride; } while (--c);
+;       }
+;   }
 @out_buf  = external global [0 x i8]
 @in_buf   = external global [0 x i8]
 @end_idx  = external global i16

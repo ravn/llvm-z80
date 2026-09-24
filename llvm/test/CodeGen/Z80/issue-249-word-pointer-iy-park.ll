@@ -14,6 +14,14 @@
 ; CHECK:     inc hl
 ; CHECK:     ld (hl),d
 ; CHECK:     jr
+; C source:
+;   // ravn/llvm-z80#249/#251: a *p++=i i16-store loop must not park the
+;   // walking pointer in IY (shuttle IY<->BC<->HL with push/pop per iteration).
+;   // The pointer must stay in main GR16 pairs {BC,DE,HL}.
+;   //
+;   void fill_i16(uint16_t *p, uint16_t n) {
+;       for (uint16_t i = n; i != 0; i--) *p++ = i;
+;   }
 define dso_local void @f(ptr noundef captures(address) %p, i16 noundef %n) #0 {
 entry:
   br label %loop

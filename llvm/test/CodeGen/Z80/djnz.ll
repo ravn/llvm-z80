@@ -8,6 +8,16 @@
 ; CHECK:      	ld	b,a
 ; CHECK:      	djnz	.LBB0_1
 ; CHECK:      	ret
+; C source:
+;   // DJNZ basic: loop counter in B, late opt converts DEC B; JR NZ -> DJNZ.
+;   // Also tests DJNZ with a loop body and a nested-loop shape.
+;   //
+;   void delay(uint8_t n) { for (; n != 0; n--) ; }
+;   uint8_t sum8(const uint8_t *p, uint8_t n) {
+;       uint8_t s = 0;
+;       for (uint8_t i = n; i != 0; i--) s += *p++;
+;       return s;
+;   }
 define void @delay(i8 %n) {
 entry:
   br label %loop

@@ -14,6 +14,15 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O2 < %s | FileCheck %s --check-prefix=SMALL
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s --check-prefix=SMALL
 
+; C source:
+;   // ravn/llvm-z80#283: at -O3 the i32 multiply is routed to __mulsi3_fast
+;   // (signed-magnitude, hits 32->16x16 demote path for (long)i16*i16 shapes,
+;   // ~2x faster).  All other opt levels keep __mulsi3 (compact, predictable).
+;   // Production firmware builds at -Os -> untouched.
+;   //
+;   int32_t  mul32(int32_t a,  int32_t b)  { return a * b; }
+;   int32_t  wmul(int16_t a,   int16_t b)  { return (int32_t)a * b; }
+;   uint32_t umul32(uint32_t a, uint32_t b) { return a * b; }
 define i32 @mul32(i32 %a, i32 %b) {
 ; FAST-LABEL: _mul32:
 ; FAST:        call ___mulsi3_fast

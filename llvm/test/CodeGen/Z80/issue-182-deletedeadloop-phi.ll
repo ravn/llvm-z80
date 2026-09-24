@@ -15,6 +15,19 @@
 ; the same array, where the first loop is rewritten to memcpy by
 ; `Z80PatternFillRecognize` and then deleted via `deleteDeadLoop`.
 
+; C source:
+;   // ravn/llvm-z80#182: upstream deleteDeadLoop kept phi entry 0 of an
+;   // exit-block phi, which could be the OTHER (live) loop's back-edge entry,
+;   // producing self-referencing instructions outside any phi.
+;   // Triggered when Z80PatternFillRecognize converts the first of two
+;   // sequential array-fill loops to memcpy and deleteDeadLoop removes it.
+;   //
+;   uint8_t a[100];
+;   void g(void) {
+;       for (uint16_t i = 0; i < 100; i++) a[i] = 0;  /* -> memcpy -> deleted */
+;       uint16_t s = 0;
+;       for (uint16_t j = 0; j < 100; j++) s += a[j]; /* second loop: survives */
+;   }
 @a = dso_local global [100 x i8] zeroinitializer, align 1
 
 ; CHECK-LABEL: g:

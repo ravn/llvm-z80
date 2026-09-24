@@ -21,6 +21,18 @@ target triple = "z80"
 
 ; Signature: llvm.z80.pattern.fill(ptr dst, iN pattern, i16 K, i16 count).
 ; K and count must be constants; pattern may be a runtime value.
+; C source:
+;   // ravn/llvm-z80#205: llvm.z80.pattern.fill target intrinsic replaces
+;   // Z80PatternFillRecognize's old UB-in-IR overlapping-memcpy representation.
+;   // It carries the "intentional forward overlap" contract explicitly and
+;   // lowers to: store K-byte seed once, then LDIR(src=dst, dst=dst+K, BC=K*(n-1)).
+;   //
+;   // Pattern-fill: repeat K-byte pattern p[] across dst[0..K*n-1].
+;   void pattern_fill_u16(uint16_t *dst, uint16_t pat, uint16_t n) {
+;       dst[0] = pat;
+;       // backend lowers the rest to LDIR(src=dst, dst=dst+1, BC=2*(n-1))
+;       for (uint16_t i = 1; i < n; i++) dst[i] = pat;
+;   }
 declare void @llvm.z80.pattern.fill.i16(ptr, i16, i16, i16)
 declare void @llvm.z80.pattern.fill.i8(ptr, i8, i16, i16)
 

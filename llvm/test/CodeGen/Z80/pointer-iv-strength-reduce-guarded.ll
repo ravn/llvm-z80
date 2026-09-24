@@ -21,6 +21,18 @@
 ;       be declined and left byte-identical.
 ; See tasks/session-2026-07-12-issue250-phase1a-spike.md.
 
+; C source:
+;   // ravn/llvm-z80#250 Phase-1a: Z80LoopInstrFormPrep inserts a preheader
+;   // on demand for zero-trip-guarded loops (if (c==0) skip) and applies the
+;   // pointer-walk strength reduction when the single relational exit lets
+;   // the old integer IV be eliminated.
+;   //
+;   extern uint8_t arr[256];
+;   uint16_t guarded_sum(uint8_t c) {
+;       uint16_t s = 0;
+;       if (c != 0) { for (uint8_t i = 0; i < c; i++) s += arr[i]; }
+;       return s;
+;   }
 @arr = dso_local global [256 x i8] zeroinitializer
 
 ; ---------------------------------------------------------------------------

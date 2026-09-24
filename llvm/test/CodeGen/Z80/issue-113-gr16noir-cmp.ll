@@ -30,6 +30,14 @@
 ; CHECK-NOT: xor	iy
 ; CHECK-NOT: xor	{{[ixy]}}{{[hl]}}
 ; CHECK:     ret
+; C source:
+;   // ravn/llvm-z80#113: XOR_CMP_EQ16/NE16 pseudo expansion called
+;   // getXOROpcode(IXH/IYH) -> emitted undocumented XOR IXH without
+;   // +undocumented guard.  Fix: GR16NoIR class for XOR_CMP pseudos.
+;   //
+;   #include <stdbool.h>
+;   bool eq16(uint16_t a, uint16_t b) { return a == b; }
+;   bool ne16(uint16_t a, uint16_t b) { return a != b; }
 define zeroext i1 @eq_i16(i16 %a, i16 %b) {
   %r = icmp eq i16 %a, %b
   ret i1 %r

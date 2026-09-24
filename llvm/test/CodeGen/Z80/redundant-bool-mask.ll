@@ -5,6 +5,15 @@
 ; one. Over a comparison that mask says nothing, and while it stands the
 ; comparison is hidden from everything that looks for one.
 
+; C source:
+;   // Widening an i1 branch condition to a byte leaves an AND 1 mask.
+;   // Over a comparison, that mask says nothing -- the comparison result
+;   // is already 0 or 1.  The mask is removed by target-specific KnownBits.
+;   //
+;   extern int32_t src32(void);
+;   extern void taken(void);
+;   void eq32(void) { if (src32() == 83810205L) taken(); }
+;   void eq64(void) { /* i64 compare: mask removal over 64-bit icmp */ }
 declare i32 @src32()
 declare i64 @src64()
 declare i16 @src16()

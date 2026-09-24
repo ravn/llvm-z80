@@ -61,6 +61,18 @@ target triple = "z80"
 ; CHECK:      	jr	nz,.LBB0_1
 ; CHECK:      	inc	sp
 ; CHECK:      	ret
+; C source:
+;   // ravn/llvm-z80#221: DJNZ and LD A,r;DEC A;LD r,A;OR A;JR NZ peepholes
+;   // used std::next(I) which landed on DBG_VALUE when compiled with -g,
+;   // silently bailing the rewrite and costing 3-4 B per loop.
+;   //
+;   extern void call(uint8_t x);
+;   void delay_mid(uint8_t outer, uint8_t inner) {
+;       for (uint8_t i = outer; i != 0; i--) {
+;           call(i);          /* clobbers A, forces counter reload -> LD A,r path */
+;           for (uint8_t j = inner; j != 0; j--) ; /* DJNZ */
+;       }
+;   }
 define void @delay(i8 %outer, i8 %inner) {
 entry:
   %nonzero = icmp ne i8 %outer, 0
