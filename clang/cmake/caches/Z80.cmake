@@ -23,3 +23,14 @@ set(LLVM_INCLUDE_BENCHMARKS OFF CACHE BOOL "")
 set(CMAKE_BUILD_TYPE Release CACHE STRING "")
 
 set(LLVM_TOOLCHAIN_TOOLS "llvm-readelf" CACHE STRING "")
+
+# Speed up repeat/parallel builds across multiple build-<name> trees (one per
+# branch/PR -- see tasks/plan-llvm-z80-upstream-pr-series-2026-09-06.md
+# "Build-tree isolation"): shared LLVM core objects are cached across trees,
+# so only Z80-backend + actually-changed files recompile per tree. No-op if
+# ccache isn't installed.
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "")
+  set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "")
+endif()
