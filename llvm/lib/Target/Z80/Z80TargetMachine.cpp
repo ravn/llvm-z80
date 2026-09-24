@@ -96,9 +96,13 @@ static cl::opt<bool> DisableFixupImplicitDefs(
 //   LICM only:  aes_text=2238 ts=16,571,818  pi PASS  <- chosen default
 //   both off:   aes_text=2226 ts=18,214,790  pi PASS
 //
-// 2026-09-06: fork owner @zlfn root-fixed the pi-cse miscompile (B15) in
-// commit 59d8fad47f3c.  MachineCSE re-enabled by default (cl::init(true)).
-// The regression guard lives in:
+// 2026-09-06: fork owner @zlfn landed the +static-frame implementation in
+// commit 59d8fad47f3c.  That commit changed eliminateFrameIndex to emit
+// direct absolute BSS addresses, altering the MIR shape enough that
+// Branch Folder no longer sees the "two consecutive DE stores from
+// constant loads" pattern it unsoundly hoisted -- a second mitigation,
+// not a Branch Folder root-fix (B15 is still open).  MachineCSE
+// re-enabled by default.  Regression guard:
 //   llvm/test/CodeGen/Z80/branch-folder-unsound-hoist-pi-cse-miscompile.ll
 static cl::opt<bool> EnableMachineLICM(
     "z80-enable-licm", cl::Hidden, cl::init(true),
