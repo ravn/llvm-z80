@@ -104,6 +104,34 @@ workspace-repoet. Kort: `--math32`-aritmetik er korrekt, men
 `-clib=newlib_iy`. Ikke undersøgt til bunds (root cause-hypotese: samme
 klasse fix som #35s `-D__LLVMZ80_IEEE_PRINTF`, men for klassisk clib).
 
+## Sammenligning: `upstream/main` alene (efterfølgende, samme session)
+
+Efter `build-upstream-main` blev færdig (3463/3463):
+
+**Lit-suite: 112/112 PASS (100%)** — vs 284 på fork-`main` (278 PASS + 5
+XPASS + 1 XFAIL). De 172 ekstra tests på fork-siden er alle jeres egne
+regressionstests (issue-*, z88dk-cc, static-frames osv.) som ikke findes
+opstrøms — forventet, ikke et problem. Ren upstream er selv 100% grøn på
+sit mindre testsæt.
+
+**z88dk-testsuite mod ren upstream: 4 PASS / 59 FAIL / 2 SKIP / 1 XFAIL**
+(vs 48/15/2/1 mod fork-`main`). Rodårsag identificeret entydigt:
+
+```
+clang (LLVM option parsing): Unknown command line argument '-z80-float-sdcccall0'.
+clang (LLVM option parsing): Unknown command line argument '-z80-classic-libc-cc'.
+```
+
+`zcc +cpm -compiler=llvmz80` injicerer **ubetinget** disse to `-mllvm`-flag
+(z88dk-siden, `src/zcc/zcc.c`) — begge er fork-only mllvm-options fra jeres
+math32/ABI-arbejde, findes slet ikke i `Z80TargetMachine.cpp`/
+`Z80Subtarget.cpp` på ren `upstream/main`. **Dette er arkitektonisk
+tilsigtet kobling, ikke en regression** — z88dk's `-compiler=llvmz80`-sti er
+skrevet specifikt til `ravn/llvm-z80`, ikke til upstream. Svaret på "kræver
+z88dk noget af fork-arbejdet" er dermed et klart, verificeret **ja** — hele
+zcc-integrationen er utænkelig uden mindst disse to mllvm-flags implementeret
+i backend'en.
+
 ## Åbne tråde til næste session
 
 1. **`build-upstream-main` var ikke færdig** da sessionen sluttede — fuldfør
