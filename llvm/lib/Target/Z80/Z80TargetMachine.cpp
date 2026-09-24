@@ -104,11 +104,7 @@ static cl::opt<bool> EnableMachineLICM(
     "z80-enable-licm", cl::Hidden, cl::init(true),
     cl::desc("Z80: enable MachineLICM + EarlyMachineLICM (default TRUE; "
              "set false to restore the pre-2026-06-08 disablePass workaround)"));
-static cl::opt<bool> EnableMachineCSE(
-    "z80-enable-cse", cl::Hidden, cl::init(true),
-    cl::desc("Z80: enable MachineCSE (default TRUE -- B15 pi-cse miscompile "
-             "was root-fixed by fork owner 59d8fad47f3c (2026-09-06); "
-             "set false to disable for diagnosis)"));
+
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   // Register both Z80 and SM83 targets.
@@ -335,9 +331,7 @@ public:
       disablePass(&EarlyMachineLICMID);
       disablePass(&MachineLICMID);
     }
-    if (!EnableMachineCSE) {
-      disablePass(&MachineCSELegacyID);
-    }
+
   }
 
   Z80TargetMachine &getZ80TargetMachine() const {
