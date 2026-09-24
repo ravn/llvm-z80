@@ -13,6 +13,15 @@
 ; pattern need r preserved across the test — those bail to the
 ; standard XOR/CPL path.
 
+; C source:
+;   typedef unsigned short uint16_t;
+;   uint16_t get_byte(void);
+;   void check(uint16_t r) {
+;       if (r != (uint16_t)-1) {}   /* INC rr; OR; JR NZ */
+;   }
+; Single-use `x != -1` (i16): INC rr; OR high; JR NZ (5 B) replaces the
+; CPL-based 8-byte sequence. Multi-use bails to the standard XOR/CPL path.
+
 declare i16 @get()
 declare void @action()
 declare void @timeout_fn()

@@ -11,6 +11,12 @@
 ; erases the op, size 1 emits a single byte store/load.  This test
 ; checks that no LDIR is emitted for these tiny constant sizes.
 
+; C source:
+;   void memset1(char *p, char v) { __builtin_memset(p, v, 1); }  /* LD (HL),A */
+;   void memset0(char *p, char v) { __builtin_memset(p, v, 0); }  /* erased */
+; Size-1 G_MEMSET must NOT emit LDIR: BC=0 causes a 65536-byte runaway.
+; Fix: size 0 → erased; size 1 → single LD (HL),A byte store.
+
 declare void @llvm.memset.p0.i16(ptr nocapture, i8, i16, i1)
 declare void @llvm.memcpy.p0.p0.i16(ptr nocapture, ptr nocapture, i16, i1)
 declare void @llvm.memmove.p0.p0.i16(ptr nocapture, ptr nocapture, i16, i1)

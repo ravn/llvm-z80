@@ -1,5 +1,12 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 
+; C source:
+;   typedef short int16_t;
+;   void ext_yes(void); void ext_no(void);
+;   void test_sgt_zero(int16_t x) { if (x > 0) ext_yes(); else ext_no(); }
+; Signed i16 > 0: XOR 0x80; SUB 1; SBC A,0x80 (narrowed 8-bit high-byte test)
+; instead of the 21-instruction full signed compare. From fdc_read_data_from_current_location.
+
 declare void @ext_yes()
 declare void @ext_no()
 

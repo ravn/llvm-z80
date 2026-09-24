@@ -6,6 +6,13 @@
 ; (2 B).  A is only read, so the value and flags survive and the tracked
 ; constant stays valid across consecutive fires.
 
+; C source:
+;   void take2(unsigned char a, unsigned char b);
+;   void f_zero(unsigned char x) { take2(0, 0); }   /* A=0 via XOR; LD L,A */
+;   void f_const(unsigned char x) { take2(7, 7); }  /* A=7 via LD A,7; LD L,A */
+; When A already holds constant K, `LD r,K` (2 B) → `LD r,A` (1 B).
+; Tracked across CP/OR/INC-other; fired repeatedly in the same sequence.
+
 declare void @take2(i8 zeroext, i8 zeroext)
 
 ; A is zeroed via `xor a` for the first argument; the second argument's

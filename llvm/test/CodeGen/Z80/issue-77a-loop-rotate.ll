@@ -23,6 +23,14 @@
 ; tighter guard or the peephole alternative for #77.  See the comment
 ; on `EnableZ80LoopRotate` in `Z80LoopRotate.cpp` for the numbers.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   void f(uint8_t n) { while (n--) {} }
+; Head-test loop: the `or a` re-derives Z from the counter after the loop body's
+; `dec a` already set it. Loop rotation moves the test into the latch, eliminating
+; the redundant `or a` and giving a self-looping single-BB structure.
+; Pass gated behind -enable-z80-loop-rotate (default off pending measurement).
+
 define void @countdown(ptr %p) {
 entry:
   br label %loop

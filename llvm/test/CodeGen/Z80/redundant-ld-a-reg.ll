@@ -14,6 +14,17 @@
 ; The single-block form is already handled by an existing peephole; the
 ; cross-block form (this issue) requires a small forward dataflow.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   uint8_t g;
+;   void f(uint8_t x) {
+;       g = x;
+;       if (g == 42) {}   /* LD A,r before CP: A = x already, LD A,reg is redundant */
+;       else {}
+;   }
+; LD A,reg followed by CP/OR/branch: if A already holds the same value (tracked
+; across basic blocks through CP/OR/INC-other/branches), the reload is removed.
+
 @g8 = external global i8
 
 declare i8 @compute()

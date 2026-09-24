@@ -17,6 +17,15 @@
 ; after the icmp's own SBC A, A, yielding the compact tail
 ; `sub 1; sbc a,a; ld e,a; ld d,a`.
 
+; C source:
+;   typedef unsigned short uint16_t;
+;   typedef short int16_t;
+;   uint16_t sel_eq(uint16_t a, uint16_t k) {
+;       return (a == k) ? 0xFFFFu : 0u;   /* sext(icmp eq) */
+;   }
+; (a == k) ? -1 : 0 in 16 bits: RRCA; SBC A,A pattern (3 B, 15 T)
+; instead of the 22-byte SBC+AND+RLCA+SBC chain.
+
 declare i16 @get()
 
 define i16 @select_test(i16 %a) {

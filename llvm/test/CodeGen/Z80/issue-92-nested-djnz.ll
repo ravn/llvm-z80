@@ -8,6 +8,17 @@
 ; MBB; the outer's dec/jr_nz lives in the latch MBB which branches to the
 ; outer header (a different MBB).
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   extern void *port;
+;   void nested_djnz(uint8_t outer, uint8_t inner) {
+;       do {
+;           do { *(volatile uint8_t *)port = 0; } while (--inner);
+;       } while (--outer);
+;   }
+; INNER loop counter must get B (DJNZ-eligible). Before the fix the OUTER
+; took B and the inner emitted DEC r; JR NZ (3 extra bytes per inner iter).
+
 @port = external global ptr
 
 ; The outer is allowed to use any non-B 8-bit register (anti-hint cluster).

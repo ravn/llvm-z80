@@ -37,6 +37,15 @@
 ; CHECK:      	ld	a,b
 ; CHECK:      	xor	c
 ; CHECK:      	ret
+; C source (AES rj_sb_inv rotate chain):
+;   typedef unsigned char uint8_t;
+;   uint8_t ror1(uint8_t x) { return (x >> 1) | (x << 7); }
+;   uint8_t rj_sb_inv(uint8_t x) {
+;       return ror1(x) ^ ror1(ror1(ror1(x)));   /* rotate by 1, 3, 6 */
+;   }
+; The commutative ALU shortcut (LD r,A; LD A,r2; XOR r → XOR r2) must NOT fire
+; when r is needed AFTER the XOR. Pre-fix: r read as uninitialized → wrong rotate.
+
 define zeroext i8 @rj_sb_inv(i8 zeroext %x) {
 ; Post-#161 codegen: the first rotated value MUST be preserved (it's
 ; needed for the third rotation, which the peephole would corrupt by

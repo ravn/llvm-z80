@@ -59,6 +59,18 @@
 ; CHECK:      	jr	.LBB0_1
 ; CHECK:      	ld	a,b
 ; CHECK:      	ret
+; C source (gf_log/gf_alog inner-loop shape):
+;   typedef unsigned char uint8_t;
+;   uint8_t gf_step(uint8_t acc, uint8_t cnt);
+;   uint8_t gf_loop(uint8_t n) {
+;       uint8_t acc = 0, cnt = n;
+;       while (cnt != 0) { acc = gf_step(acc, cnt); cnt--; }
+;       return acc;
+;   }
+; Two PHIs (acc + cnt) plus a dec/test pattern: the backend must reorder
+; TEST-THEN-DEC so the DEC comes first (Z flag set) and the TEST is elided.
+; Saves one OR A per iteration.
+
 define i8 @gf_alog(i16 noundef %0) nounwind {
 ;
 ; Post-fix: the loop header uses SUB 1 + JR C instead of the

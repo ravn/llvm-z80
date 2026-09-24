@@ -20,6 +20,20 @@
 ;     the current behaviour, see ravn/llvm-z80#92)
 
 
+; C source (various DJNZ shapes):
+;   typedef unsigned char uint8_t;
+;   void write_byte(uint8_t x);
+;   void do_while_djnz(uint8_t n) { do { write_byte(0); } while (--n); }
+;   void seq_djnz(uint8_t a, uint8_t b) {
+;       do { write_byte(0); } while (--a);
+;       do { write_byte(1); } while (--b);
+;   }
+;   void nested_djnz(uint8_t outer, uint8_t inner) {
+;       do { do { write_byte(0); } while (--inner); } while (--outer);
+;   }
+; u8 countdown loops lower to DJNZ (2 B) instead of DEC r; OR r; JR NZ (3-4 B).
+; Current backend assigns DJNZ to the OUTER loop counter (B-hint chain).
+
 @port = external global ptr, align 2
 @buf = external global [256 x i8], align 1
 @out = external global i8, align 1

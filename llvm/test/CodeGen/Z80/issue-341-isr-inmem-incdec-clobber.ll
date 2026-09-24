@@ -13,6 +13,15 @@
 ; Result: emit the original `ld a,(addr); inc a; ld (addr),a` form,
 ; which uses only A (already saved by `push af`).
 
+; C source:
+;   volatile unsigned char counter;
+;   __attribute__((interrupt))
+;   void isr(void) { counter++; }  /* INC (HL) would clobber HL in ISR! */
+; The in-memory INC/DEC peephole (LD A,(addr); INC A; LD (addr),A → LD HL,addr; INC (HL))
+; introduces an HL clobber AFTER PEI has frozen the callee-saved spill set.
+; In an interrupt handler, HL is never pushed/restored → interrupted code's HL corrupted.
+; Fix: bail from the peephole if the function is an interrupt handler and HL is not saved.
+
 @g = global i8 0
 
 define void @isr_incmem() #0 {

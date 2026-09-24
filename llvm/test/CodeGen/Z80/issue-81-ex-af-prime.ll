@@ -15,6 +15,13 @@
 ; CHECK-LABEL: _ex_af_lower:
 ; CHECK:       ex	af,af'
 ; CHECK:       ret
+; C source:
+;   void swap_af(void) {
+;       __asm("ex af, af'");   /* AsmLexer used to mis-tokenise the apostrophe */
+;   }
+; The integrated assembler must accept "ex af, af'" in inline asm.
+; Pre-fix: apostrophe opened an unterminated string literal → asm error.
+
 define void @ex_af_lower() naked {
   call void asm sideeffect "ex af, af'", ""()
   ret void

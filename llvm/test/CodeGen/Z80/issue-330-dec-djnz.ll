@@ -4,6 +4,18 @@
 ; CHECK-LABEL: countdown_djnz:
 ; CHECK-NOT:   ld	a,b
 ; CHECK:       djnz
+; C source:
+;   typedef unsigned char uint8_t;
+;   /* Case 1: counter already in B — direct DJNZ, no LD A,B / LD B,A */
+;   void countdown_djnz(uint8_t n) { for (; n != 0; n--) {} }
+;   /* Case 2: decrement while preserving A */
+;   uint8_t dec_preserve_a(uint8_t n) {
+;       uint8_t a_val = 42;
+;       for (; n != 0; n--) {}
+;       return a_val;
+;   }
+; Counter already in B: DEC B; JR NZ → DJNZ (2 B, no extra copies).
+
 define void @countdown_djnz(i8 zeroext %n) {
 entry:
   br label %loop

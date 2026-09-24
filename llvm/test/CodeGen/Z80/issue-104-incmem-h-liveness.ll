@@ -15,6 +15,18 @@
 ; lost (test_18_short_circuit_goto_O1 returned 0x000C instead of
 ; 0x000F because H got the high byte of `_g`'s address instead of c1).
 
+; C source:
+;   unsigned char g;
+;   unsigned char hold_h_across_incmem(void) {
+;       unsigned char c1 = g;
+;       g++;          /* INC (HL) candidate — but clobbers HL = c1's home */
+;       g++;          /* second increment */
+;       return c1;    /* c1 must still be in H; if peephole fired, H is corrupt */
+;   }
+; The LD HL,_g; INC (HL) rewrite clobbers H and L. With c1 live in H across the
+; rewrite, the peephole must bail — pre-fix it didn't check H/L liveness.
+; Bug: test_18_short_circuit_goto returned 0x000C instead of 0x000F.
+
 @g = dso_local global i8 0, align 1
 
 

@@ -17,6 +17,15 @@
 ; sub-register-liveness interaction fixed by #156428 (LiveVariables) +
 ; #210 (per-register-unit liveness); sub_lo now passes pio-irq AND sio.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   typedef unsigned short uint16_t;
+;   void check(uint16_t x) {
+;       if ((x & 0x7F) == 0) {}   /* high byte provably zero after & 0x7F */
+;   }
+; `(x & 0x7F) == 0`: high byte is provably zero after masking, so the EQ/NE
+; compare collapses to a single 8-bit CP instead of the two-byte SUB+OR path.
+
 declare i16 @recv_byte_t()
 
 ;

@@ -19,6 +19,16 @@
 ; Saves 2 B per fire for single-bit ops with A-readers.  Two-bit ops
 ; break even on size but cost extra T-states (skip).
 
+; C source:
+;   volatile unsigned char cfgtbl;
+;   void update_bit(unsigned char *dst) {
+;       unsigned char saved = cfgtbl;   /* A-reader between load and store */
+;       cfgtbl |= (1 << 2);             /* SET 2,(HL) — intervening A-read ok */
+;       *dst = saved;
+;   }
+; #147 peephole extends to fire when intervening insns READ A (but don't write it):
+; LD HL,addr; LD A,(HL); <A-read>; SET/RES n,(HL). Saves 3 B per site.
+
 @cfgtbl = external global i8
 
 declare void @sink(i8)

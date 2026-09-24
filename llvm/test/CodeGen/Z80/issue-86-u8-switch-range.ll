@@ -8,6 +8,15 @@
 ; CP N + JR NC (3 B), with the FLAGS-flip needed because CP and
 ; the 16-bit chain compute opposite-direction subtractions.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   void f01(void); void f02(void); void f04(void);
+;   void dispatch(uint8_t x) {
+;       switch (x) { case 1: f01(); break; case 2: f02(); break; case 4: f04(); break; }
+;   }
+; Switch on u8: GISel widens to i16 for jump-table indexing, but the bound check
+; should fold back to 8-bit CP N; JR NC (3 B) not 16-bit subtract (9 B).
+
 declare void @f01() ; declare void @f02() ; declare void @f04()
 declare void @f02()
 declare void @f04()

@@ -15,6 +15,12 @@
 ;   {SET,RES}_b_(HL) × N        ; (2 B each, N = popcount)
 ;                              ; = 5 B for single-bit (saves 3 B)
 
+; C source:
+;   volatile unsigned char g;
+;   void set_bit3(void)   { g |=  (1 << 3); }  /* SET 3,(HL) */
+;   void clear_bit3(void) { g &= ~(1 << 3); }  /* RES 3,(HL) */
+; LD A,(addr); OR/AND n; LD (addr),A (8 B) → LD HL,addr; SET/RES n,(HL) (5 B).
+
 @flag = external global i8
 
 ;

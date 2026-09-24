@@ -31,6 +31,15 @@
 ; CHECK-NOT: ld{{[ \t]+}}c,l
 ; CHECK-NOT: ld{{[ \t]+}}l,c
 ; CHECK-NOT: inc{{[ \t]+}}bc
+; C source:
+;   typedef unsigned short uint16_t;
+;   void countdown_i16_counter(uint16_t *p) {
+;       for (uint16_t i = 256; i != 0; i--)
+;           p[i - 1] = 0;
+;   }
+; i16 counter competes with the pointer for HL. Post-fix: counter goes to BC
+; (BCReg constraint via Z80SplitDjnzCounters); no LD C,L / LD L,C ping-pong.
+
 define void @countdown_i16_counter(ptr %p) {
 entry:
   br label %loop

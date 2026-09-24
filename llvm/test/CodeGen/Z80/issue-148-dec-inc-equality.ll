@@ -12,6 +12,13 @@
 ;   J{Z,NZ,C,NC}_e <target>
 ;   (then A redefined or dead along both paths)
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   void test_eq1(uint8_t a)    { if (a == 1)    {} }   /* DEC A; JR Z */
+;   void test_eq_ff(uint8_t a)  { if (a == 0xFF) {} }   /* INC A; JR Z */
+; XOR 1; JZ / CP 0xFF; JZ (4 B each) → DEC A; JZ / INC A; JZ (2 B each)
+; when A's modified value is dead after the branch.
+
 declare void @sink(i8)
 declare i8 @getbyte()
 

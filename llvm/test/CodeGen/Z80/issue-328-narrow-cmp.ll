@@ -1,5 +1,14 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   void ext_yes(void); void ext_no(void);
+;   void test_ugt_const(uint8_t x) {
+;       if ((x & 0xC0) == 0xC0) ext_yes(); else ext_no();
+;   }
+; `x > 191` (ugt 191, equivalent to (x & 0xC0) == 0xC0): CP 192; JR NC (4 B)
+; instead of the 16-bit subtraction chain (9 B). From fdc_read_when_ready.
+
 declare void @ext_yes()
 declare void @ext_no()
 

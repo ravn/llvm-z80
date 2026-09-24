@@ -1,5 +1,12 @@
 ; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 
+; C source:
+;   typedef signed char int8_t;
+;   void ext_yes(void); void ext_no(void);
+;   void test_slt_zero(int8_t x) { if (x < 0) ext_yes(); else ext_no(); }
+;   void test_sge_zero(int8_t x) { if (x >= 0) ext_yes(); else ext_no(); }
+; val < 0 (signed) → BIT 7,A; JR NZ (4 B) instead of full signed compare.
+
 declare void @ext_yes()
 declare void @ext_no()
 

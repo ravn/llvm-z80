@@ -11,6 +11,13 @@
 ; and any other downstream flag-consumer selects to its own fresh
 ; compare instruction.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   uint8_t logical_not(uint8_t x) { return x ^ 0xFF; }  /* CPL (1 B, 4 T) */
+;   uint8_t mask_inv(uint8_t x) { return ~x; }            /* same: G_XOR -1 */
+; G_XOR with immediate -1 (the canonical NOT form) → CPL (1 B) instead of
+; XOR 0xFF (2 B). Flag side-effects differ but S/Z/P are not observed post-NOT.
+
 define i8 @not_u8(i8 %x) {
 ; CHECK-LABEL: not_u8:
 ; CHECK: cpl

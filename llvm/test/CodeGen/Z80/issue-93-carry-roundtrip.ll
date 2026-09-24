@@ -27,6 +27,17 @@
 ;
 ; Combined: 11 B → 3 B per loop site.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   extern void *port;
+;   void const_trip_50(void) {
+;       for (uint8_t i = 206; i != 0; i++)   /* count-up from -50, wraps at 0 */
+;           *(volatile uint8_t *)port = 0;
+;   }
+; LSR rewrites countdown as count-up-from-(-N); wrap-to-zero test is
+; materialised as an 11-byte carry-roundtrip chain. Two peepholes collapse
+; it to INC r; JR NZ (2 B), saving 9 B per loop.
+
 @port = external dso_local global ptr, align 2
 
 ; CHECK-LABEL: const_trip_50:

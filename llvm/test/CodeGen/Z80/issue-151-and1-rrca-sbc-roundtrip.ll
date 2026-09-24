@@ -16,6 +16,14 @@
 ; Fix: post-RA peephole deletes the triple when it immediately
 ; follows another `sbc a, a`.
 
+; C source:
+;   typedef unsigned short uint16_t;
+;   int16_t sext_eq(uint16_t a, uint16_t b) {
+;       return (int16_t)((a == b) ? 0xFFFF : 0);  /* sext(icmp eq) */
+;   }
+; After #144: the AND 1; RRCA; SBC A,A triple round-trips A through {0,1}
+; back to {0xFF,0}. The triple is eliminated as a no-op vs the preceding SBC A,A.
+
 declare i16 @get()
 
 define i16 @select_test() {

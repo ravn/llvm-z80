@@ -11,6 +11,16 @@
 ; forcing LHS into HL evicted long-lived values out of HL across loops
 ; and regressed rcbios bios.cim by +27 B.
 
+; C source:
+;   typedef unsigned short uint16_t;
+;   extern uint16_t end_idx;
+;   void loop_until_end(uint16_t *p) {
+;       uint16_t i = 0;
+;       while (i != end_idx) { p[i] = 0; i++; }
+;   }
+; i16 EQ/NE where one operand is already in HL post-RA and HL is dead after
+; the compare: AND A; SBC HL,rr (3 B) replaces the 6-byte byte-XOR sequence.
+
 @end_idx = external global i16
 
 ; ---- HL is loop-carried (held across iterations): peephole must NOT

@@ -10,6 +10,21 @@
 ; recompute in the cold branch, leaving the scan-loop latch with a single IV.
 ; Default ON at -O2.
 
+; C source (Sieve of Eratosthenes inner scan):
+;   unsigned char flags[8191];
+;   void scan(void) {
+;       for (unsigned short i = 0; i < 8191; i++) {
+;           if (!flags[i]) continue;          /* hot: skip composites */
+;           unsigned short stride = 2*i+3;
+;           unsigned short start  = 3*i+3;
+;           for (unsigned short j = start; j < 8191; j += stride)
+;               flags[j] = 0;               /* cold: mark multiples */
+;       }
+;   }
+; LSR introduces two IVs (stride, start) into the hot scan loop for use only in
+; the cold branch. Z80SinkColdLoopIV rewrites them as on-demand recomputes,
+; leaving the hot latch with a single INC DE (freeing two register pairs).
+
 @flags = dso_local global [8192 x i8] zeroinitializer
 
 ; ON-LABEL: _scan:

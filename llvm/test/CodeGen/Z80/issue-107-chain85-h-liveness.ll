@@ -16,6 +16,15 @@
 target triple = "z80"
 
 %struct.three = type { i8, i8, i8 }
+; C source:
+;   struct three { unsigned char a, b, c; } buf;
+;   unsigned char hold_hl_across_chain(unsigned char *ptr) {
+;       buf.a = 17; buf.b = 34; buf.c = 51;  /* chain of 3 byte stores */
+;       return *ptr;   /* ptr arrives in HL; must survive the stores */
+;   }
+; The LD HL,#_buf; INC HL chain-rewrite clobbers HL (the ptr parameter).
+; Pre-fix: the chain peephole fired anyway, destroying ptr; the load read buf[2].
+
 @buf = dso_local global %struct.three zeroinitializer, align 1
 
 

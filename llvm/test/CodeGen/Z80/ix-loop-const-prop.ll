@@ -10,6 +10,16 @@
 ; The bug replaced PUSH IX; POP HL (correct loop counter) with
 ; LD HL,1 (constant), creating an infinite loop.
 
+; C source:
+;   void use(unsigned char x);
+;   void ix_loop_counter(unsigned char *base, unsigned char n) {
+;       for (unsigned char i = 0; i != n; i++)
+;           use(base[i]);
+;   }
+; When IX holds a loop counter (not a constant), IX constant propagation
+; must NOT fold INC IX into the initial LD IX,0 — i is loop-variant.
+; Pre-fix: the peephole replaced PUSH IX; POP HL (correct i) with LD HL,1 → infinite loop.
+
 declare void @use(i8 zeroext)
 
 define void @ix_loop_counter(ptr %base, i8 %n) {

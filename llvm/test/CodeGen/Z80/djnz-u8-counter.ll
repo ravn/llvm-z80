@@ -11,6 +11,20 @@
 ;                                   the do-while form so we don't lose
 ;                                   it during the while-form fix.
 
+; C source:
+;   typedef unsigned char uint8_t;
+;   extern void *port;
+;   void write_byte(uint8_t x);
+;   /* DJNZ fires: do { body; } while (--n) */
+;   void do_while_dec(uint8_t n) {
+;       do { write_byte(*(uint8_t *)port); } while (--n);
+;   }
+;   /* DJNZ does NOT fire yet: while (n--) {} — pinned as future work */
+;   void while_postdec(uint8_t n) {
+;       while (n--) { write_byte(*(uint8_t *)port); }
+;   }
+; do { } while (--n) → DJNZ (2 B). while (n--) still emits LD A,C/DEC A/LD C,A.
+
 @port = external global ptr, align 2
 
 declare void @write_byte(i8 zeroext)

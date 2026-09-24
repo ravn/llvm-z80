@@ -13,6 +13,16 @@
 ; offset-IV `gep(@flags, %k)` into a genuine pointer IV threaded through the
 ; loop, so the loop body only needs a single `add hl,de` per iteration.
 
+; C source (Sieve kill loop):
+;   unsigned char flags[8191];
+;   void kill(unsigned short start, unsigned short prime) {
+;       for (unsigned short j = start; j < 8191; j += prime)
+;           flags[j] = 0;
+;   }
+; Without Z80LoopInstrFormPrep: `ld hl,_flags` is reloaded every iteration
+; (+3 B per iter). With the pass: base is materialised once before the loop
+; and walked as a running pointer (`add hl,bc` only). Auto-on at -O2.
+
 @flags = dso_local global [8191 x i8] zeroinitializer
 
 ; CHECK-LABEL: kill:

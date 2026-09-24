@@ -10,6 +10,14 @@
 ; direction (z vs nz, c vs nc) may be swapped by later layout
 ; passes — we accept either.
 
+; C source:
+;   typedef unsigned short uint16_t;
+;   uint16_t get(void);
+;   void test_uge_256(void) { if (get() >= 256) {} }
+;   void test_ult_512(void) { if (get() < 512) {} }
+; `x >= N*256` folds to a single CP on the high byte (1-byte compare)
+; instead of the 9-byte LD BC,N; SUB/SBC chain.
+
 declare i16 @get()
 
 ;

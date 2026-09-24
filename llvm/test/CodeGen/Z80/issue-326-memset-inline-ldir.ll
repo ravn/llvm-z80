@@ -6,6 +6,16 @@
 ; a seed store followed by LDIR, rather than generating a runtime libcall to
 ; ___z80_memset_builtin.
 
+; C source:
+;   void test_memset_constant(void *dst, unsigned char val) {
+;       __builtin_memset(dst, val, 64);
+;   }
+;   void test_memset_one(void *dst, unsigned char val) {
+;       __builtin_memset(dst, val, 1);
+;   }
+; Constant size >= 2: inline as LD (HL),A + LDIR (no libcall).
+; Size 1: single LD (HL),A (no LDIR at all — size-1 LDIR wraps to 65536).
+
 declare void @llvm.memset.p0.i16(ptr nocapture writeonly, i8, i16, i1 immarg)
 
 ; (a) Constant size >= 2: should inline LD (HL),A followed by LDIR (no libcall)
