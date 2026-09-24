@@ -86,33 +86,20 @@ static cl::opt<bool> DisableFixupImplicitDefs(
     "z80-disable-fixup-implicit-defs", cl::Hidden, cl::init(false),
     cl::desc("Disable the Z80FixupImplicitDefs #156428 mitigation pass"));
 
-// ravn/llvm-z80#23 investigation (2026-06-08): the global disable of
-// MachineLICM + MachineCSE in Z80PassConfig is BOTH a size workaround
-// (#128 / #198) AND a correctness guard at -O2 (MachineCSE alone
-// miscompiles AES, isolated, verifier FAIL).  These two opt-in flags
-// let an investigation harness (aes256-corpus/task3_licm_ab.sh and the
-// new compiler-comparison-corpus benches) lift each disable
-// independently to MEASURE the workaround's cost.  Both default OFF.
-// CSE-enable refuses to apply at -O2 (the #198 miscompile would corrupt
-// the measurement); LICM-enable applies at all opt levels.
-// ravn/llvm-z80#23 resolution (2026-06-08, REVISED 2026-06-08 same-day):
-// historical `disablePass(LICM + EarlyLICM + CSE)` is now PARTIALLY removed
-// -- LICM enabled by default, CSE STILL DISABLED by default after a same-day
-// regression sweep on compiler-comparison-corpus surfaced a MachineCSE
-// miscompile on bench_pi.c at -Oz (#198 class -- "no longer reproduces" was
-// AES-specific, the pass still miscompiles other code).  Three-state
-// re-measurement on AES @ -Oz (aes256-corpus/probe_cse.sh):
-//   LICM+CSE on (the AES-only resolution):  aes_text=2156 bin=2516 ts=16,577,307  pi FAIL
-//   LICM only / CSE off (THIS DEFAULT):     aes_text=2238 bin=2595 ts=16,571,818  pi PASS
-//   both off (pre-#23):                     aes_text=2226 bin=2581 ts=18,214,790  pi PASS
-// Key insight: the AES -8.9% tstates win comes from LICM, NOT CSE; the
-// LICM-only cell is FASTER than LICM+CSE (16.572M vs 16.577M ts) and 9% faster
-// than pre-#23.  CSE only contributed size (+79 B aes_text without it).
-// We keep the speedup and avoid the pi miscompile by leaving CSE disabled.
-// LICM ships as default ON (the actual speedup driver).
-// pi miscompile reproducer: bench_pi.c @ -Oz, CSE on -> 880 B / 58.87M ts /
-//   verify FAIL; CSE off -> 887 B / 58.83M ts / verify PASS.  Not yet root-
-//   caused or filed (per HARD rule explain-before-filing; needs minimisation).
+// ravn/llvm-z80#23 history: MachineLICM and MachineCSE were both disabled
+// as a workaround for miscompiles (#128/#198).  Resolution in two steps:
+//
+// 2026-06-08: LICM re-enabled by default (the -8.9% tstates AES speedup came
+// entirely from LICM, not CSE).  CSE kept disabled after a same-day regression
+// sweep found a MachineCSE miscompile on bench_pi.c at -Oz:
+//   LICM+CSE:   aes_text=2156 ts=16,577,307  pi FAIL
+//   LICM only:  aes_text=2238 ts=16,571,818  pi PASS  <- chosen default
+//   both off:   aes_text=2226 ts=18,214,790  pi PASS
+//
+// 2026-09-06: fork owner @zlfn root-fixed the pi-cse miscompile (B15) in
+// commit 59d8fad47f3c.  MachineCSE re-enabled by default (cl::init(true)).
+// The regression guard lives in:
+//   llvm/test/CodeGen/Z80/branch-folder-unsound-hoist-pi-cse-miscompile.ll
 static cl::opt<bool> EnableMachineLICM(
     "z80-enable-licm", cl::Hidden, cl::init(true),
     cl::desc("Z80: enable MachineLICM + EarlyMachineLICM (default TRUE; "
