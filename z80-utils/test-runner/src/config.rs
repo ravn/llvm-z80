@@ -173,7 +173,14 @@ impl Paths {
 
     pub fn rt_lib(&self, target: Target) -> PathBuf {
         let t = target.triple();
-        self.build_dir.join(format!("lib/{t}/{t}_rt.lib"))
+        // Prefer the SDCC text-format .lib (works with sdldz80 -k/-l lazy
+        // search AND as a direct file argument).  Fall back to the ELF ar
+        // archive .a when sdar was not available at build time and only the
+        // ar archive was produced.  The .a must be passed as a direct file
+        // argument -- sdldz80 cannot lazily resolve symbols from ar archives.
+        let lib = self.build_dir.join(format!("lib/{t}/{t}_rt.lib"));
+        if lib.exists() { return lib; }
+        self.build_dir.join(format!("lib/{t}/{t}_rt.a"))
     }
 
     /// Source directory for ELF compiler-rt builtins (e.g. compiler-rt/lib/builtins/z80/).
