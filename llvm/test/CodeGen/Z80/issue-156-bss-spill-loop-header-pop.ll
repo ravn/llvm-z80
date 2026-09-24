@@ -30,7 +30,7 @@
 ;       while ((val & 0xFF) != (x & 0xFF)) {
 ;           uint8_t v = (uint8_t)val;
 ;           uint8_t t = (v << 1) ^ ((val & 0x80) ? 0x1Bu : 0u);
-;           val ^= (uint16_t)(v ^ t);
+;           val = (uint16_t)(v ^ t);   /* matches IR: xor(val&0xFF, t) */
 ;           if (++count == 0) break;
 ;       }
 ;       return count;
