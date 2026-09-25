@@ -41,4 +41,20 @@ let TargetPrefix = "z80" in {  // All intrinsics start with "llvm.z80."
   // void @llvm.z80.nop()
   def int_z80_nop : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects]>;
 
+  // Select interrupt mode 2 (IM 2) — Z80 only, not SM83
+  // void @llvm.z80.im2()
+  def int_z80_im2 : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects]>;
+
+  // Load the interrupt vector register I from A (LD I,A) — Z80 only
+  // void @llvm.z80.set_i(i8 val)
+  def int_z80_set_i : Intrinsic<[], [llvm_i8_ty], [IntrNoMem, IntrHasSideEffects]>;
+
+  // Fill memory with `count` copies of a K-byte little-endian pattern.
+  // Lowered to seed store + forward LDIR by the backend.
+  // void @llvm.z80.pattern.fill(ptr dst, iN pattern, i16 k, i16 count)
+  def int_z80_pattern_fill
+      : Intrinsic<[], [llvm_ptr_ty, llvm_anyint_ty, llvm_i16_ty, llvm_i16_ty],
+                  [IntrArgMemOnly, IntrWriteMem, IntrWillReturn,
+                   NoCapture<ArgIndex<0>>, WriteOnly<ArgIndex<0>>]>;
+
 }
