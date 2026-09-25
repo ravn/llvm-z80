@@ -111,6 +111,17 @@ namespace clang {
   };
   }
 
+  /// Z80 builtins
+  namespace Z80 {
+  enum {
+    LastTIBuiltin = clang::Builtin::FirstTSBuiltin - 1,
+#define GET_BUILTIN_ENUMERATORS
+#include "clang/Basic/BuiltinsZ80.inc"
+#undef GET_BUILTIN_ENUMERATORS
+    LastTSBuiltin
+  };
+  }
+
   /// PPC builtins
   namespace PPC {
     enum {
@@ -497,7 +508,8 @@ namespace clang {
        PPC::LastTSBuiltin, NVPTX::LastTSBuiltin, AMDGPU::LastTSBuiltin,
        X86::LastTSBuiltin, VE::LastTSBuiltin, RISCV::LastTSBuiltin,
        Hexagon::LastTSBuiltin, Mips::LastTSBuiltin, XCore::LastTSBuiltin,
-       SystemZ::LastTSBuiltin, WebAssembly::LastTSBuiltin, AVR::LastTSBuiltin});
+       SystemZ::LastTSBuiltin, WebAssembly::LastTSBuiltin, AVR::LastTSBuiltin,
+       Z80::LastTSBuiltin});
 
 } // end namespace clang.
 
