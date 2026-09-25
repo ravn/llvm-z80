@@ -29,6 +29,15 @@ cl::opt<Z80AsmFormatTy> Z80AsmFormat(
                clEnumValN(Z80AsmFormat_SDASZ80, "sdasz80",
                           "SDCC sdasz80 compatible")));
 
+// Some downstream assemblers for the ELF/GNU textual output have no 8-byte
+// data directive (e.g. z88dk's z80asm) and silently truncate `.quad`.
+// Opt-in, default off: a real GNU-as-compatible assembler handles `.quad`.
+static cl::opt<bool> Z80SplitQuadDirective(
+    "z80-split-quad-directive", cl::init(false), cl::Hidden,
+    cl::desc("Split 64-bit .quad global initializers into two .long "
+             "directives, for downstream assemblers lacking an 8-byte "
+             "data directive"));
+
 constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> AtSpecifierDefs[] = {
     {{"z80_imm8"}, Z80MCExpr::VK_IMM8},
     {{"z80_imm16"}, Z80MCExpr::VK_IMM16},
@@ -57,6 +66,13 @@ Z80MCAsmInfo::Z80MCAsmInfo(const Triple &TT, const MCTargetOptions &Options)
   // Maximum instruction length across all supported subtargets.
   MaxInstLength = 7;
   SupportsDebugInformation = true;
+
+  // Null Data64bitsDirective makes MCAsmStreamer split each 8-byte value
+  // into two little-endian .long emissions instead of .quad. Safe: a
+  // symbolic 8-byte value can't be formed on this target, so only the
+  // absolute-value emission path is reachable. Textual -S only.
+  if (Z80SplitQuadDirective)
+    Data64bitsDirective = nullptr;
 
   initializeAtSpecifiers(AtSpecifiers);
 }
