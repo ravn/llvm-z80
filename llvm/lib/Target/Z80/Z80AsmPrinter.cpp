@@ -74,9 +74,13 @@ public:
 
   void emitStartOfAsmFile(Module &M) override;
 
+  void emitFunctionEntryLabel() override;
+
   void emitGlobalVariable(const GlobalVariable *GV) override;
 
   void emitJumpTableInfo() override;
+
+  void emitEndOfAsmFile(Module &M) override;
 };
 
 // Simple pseudo-instructions have their lowering (with expansion to real
@@ -155,6 +159,38 @@ void Z80AsmPrinter::emitStartOfAsmFile(Module &M) {
   // TODO: Emit Z80-specific directives if needed
 }
 
+// Emits the function entry label.
+//
+// WHAT: Emits the primary symbol for the function, but suppresses the ELF-only
+//       $local alias when targeting sdasz80 or z80asm.
+// WHY:  On ELF, AsmPrinter generates an internal local alias (e.g. `L_foo$local`)
+//       to allow direct local calls. However, z80asm treats '$' as an invalid
+//       identifier character (syntax error), and neither z80asm nor sdasz80
+//       use or understand the ELF $local alias convention.
+//
+// Worked example:
+//   In `test_func`, standard ELF AsmPrinter would emit:
+//     _test_func:
+//     L_test_func$local:
+//   For z80asm, this method skips `L_test_func$local:`, emitting only `_test_func:`.
+void Z80AsmPrinter::emitFunctionEntryLabel() {
+  CurrentFnSym->redefineIfPossible();
+  OutStreamer->emitLabel(CurrentFnSym);
+
+  // Non-ELF targets (sdasz80 and z80asm) do not use ELF-style $local aliases.
+  if (MAI.isSDCC() || MAI.isZ80ASM())
+    return;
+
+  if (TM.getTargetTriple().isOSBinFormatELF()) {
+    MCSymbol *Sym = getSymbolPreferLocal(MF->getFunction());
+    if (Sym != CurrentFnSym) {
+      CurrentFnBeginLocal = Sym;
+      OutStreamer->emitLabel(Sym);
+      OutStreamer->emitSymbolAttribute(Sym, MCSA_ELF_TypeFunction);
+    }
+  }
+}
+
 void Z80AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
   if (MAI.isSDCC()) {
     // BSS locals: sdasz80 doesn't support .local/.comm directives.
@@ -172,6 +208,30 @@ void Z80AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
       OutStreamer->emitLabel(GVSym);
       for (uint64_t i = 0; i < Size; i++)
         OutStreamer->emitInt8(0);
+      return;
+    }
+  }
+
+  if (MAI.isZ80ASM()) {
+    // z80asm does not support .comm or .local directives.
+    // Zero-initialized or common variables must be emitted explicitly in
+    // bss_compiler using DEFS (which the z88dk CRT zeroes on startup).
+    if (!GV->hasInitializer() || GV->getInitializer()->isNullValue() ||
+        GV->hasCommonLinkage()) {
+      if (!GV->hasInitializer() && !GV->hasCommonLinkage())
+        return; // External declaration, nothing to emit.
+
+      MCSymbol *GVSym = getSymbol(GV);
+      const DataLayout &DL = GV->getDataLayout();
+      uint64_t Size = DL.getTypeAllocSize(GV->getValueType());
+      if (Size == 0)
+        Size = 1;
+
+      OutStreamer->switchSection(OutContext.getELFSection(".bss", 0, 0));
+      if (!GV->hasLocalLinkage())
+        OutStreamer->emitSymbolAttribute(GVSym, MCSA_Global);
+      OutStreamer->emitLabel(GVSym);
+      OutStreamer->emitZeros(Size);
       return;
     }
   }
@@ -227,6 +287,65 @@ void Z80AsmPrinter::emitJumpTableInfo() {
   }
   if (!JTInDiffSection)
     OutStreamer->emitDataRegion(MCDR_DataRegionEnd);
+}
+
+// Emits external symbol directives at the end of the asm file.
+//
+// WHAT: For z80asm, emits `\tEXTERN\t<symbol>` for all undefined, non-temporary
+//       symbols referenced in the translation unit.
+// WHY:  Unlike ELF assemblers which treat any unresolved symbol as an external
+//       reference implicitly, z88dk-z80asm requires explicit `EXTERN <sym>`
+//       directives for the librarian/linker to pull in referenced modules from
+//       libraries.
+//
+// NOTE: This follows the same design as PowerPC/AIX (PPCAIXAsmPrinter) using
+//       `MCSA_Extern`. It would make sense in the future to lift this logic
+//       directly into the shared `AsmPrinter::doFinalization` base class
+//       guarded by `MAI.getExternDirective() != nullptr`.
+//
+// Worked example:
+//   A module calls `external_call()` and `__divsint()`. Neither is defined
+//   in the module, but both exist in OutContext.getSymbols().
+//   This method collects them, sorts them deterministically by name, and emits:
+//     EXTERN  __divsint
+//     EXTERN  _external_call
+void Z80AsmPrinter::emitEndOfAsmFile(Module &M) {
+  if (!MAI.isZ80ASM())
+    return;
+
+  // Collect all undefined, non-temporary symbols that were referenced.
+  SmallVector<MCSymbol *, 16> ExternSymbols;
+  for (const auto &Entry : OutContext.getSymbols()) {
+    MCSymbol *Sym = Entry.getValue().Symbol;
+    if (!Sym)
+      continue;
+
+    // Skip defined symbols (functions, globals, constants defined in this TU).
+    if (Sym->isDefined())
+      continue;
+
+    // Skip temporary assembler labels (e.g. branch labels, string literals).
+    if (Sym->isTemporary())
+      continue;
+
+    // Skip ELF section-begin symbols (e.g. .rodata, .debug_info, .text).
+    // MCObjectFileInfo::initELFMCObjectFileInfo() creates MCSymbols for every
+    // ELF section.  These appear undefined and non-temporary in
+    // OutContext.getSymbols(), but they are not real external references.
+    // All C-mangled z80asm externals start with '_'; section names start with '.'.
+    if (Sym->getName().starts_with("."))
+      continue;
+
+    ExternSymbols.push_back(Sym);
+  }
+
+  // Sort deterministically for reproducible assembly output.
+  llvm::sort(ExternSymbols, [](const MCSymbol *LHS, const MCSymbol *RHS) {
+    return LHS->getName() < RHS->getName();
+  });
+
+  for (MCSymbol *Sym : ExternSymbols)
+    OutStreamer->emitSymbolAttribute(Sym, MCSA_Extern);
 }
 
 } // namespace
