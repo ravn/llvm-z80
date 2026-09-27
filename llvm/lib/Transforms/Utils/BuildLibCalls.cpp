@@ -1552,7 +1552,12 @@ FunctionCallee llvm::getOrInsertLibFunc(Module *M, const TargetLibraryInfo &TLI,
   // the classic-library CC so calls built on top of it (e.g. InstCombine's
   // printf -> puts) match the real, linked implementation's ABI instead of
   // silently corrupting args/return at runtime.
-  if (StampZ80ClassicLibcCC && M->getTargetTriple().isZ80() &&
+  const Triple &TT = M->getTargetTriple();
+  bool ShouldStampClassic =
+      StampZ80ClassicLibcCC.getNumOccurrences()
+          ? StampZ80ClassicLibcCC
+          : (TT.isZ80() && TT.getEnvironment() == Triple::Z88DK);
+  if (ShouldStampClassic && TT.isZ80() &&
       F->isDeclaration() && !F->isVarArg() &&
       F->getCallingConv() == CallingConv::C)
     F->setCallingConv(CallingConv::Z80_SmallC);

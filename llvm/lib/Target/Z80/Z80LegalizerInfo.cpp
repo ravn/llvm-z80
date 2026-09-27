@@ -56,6 +56,15 @@ static cl::opt<bool> UseSDCCCall0ForF32Libcalls(
              "runtime, NOT the ELF path's own compiler-rt float runtime, "
              "which expects the default C ABI (sdcccall(1))."));
 
+/// Check if f32 libcalls should use CallingConv::Z80_SDCCCall0.
+/// If -z80-float-sdcccall0 is explicitly passed, it takes precedence;
+/// otherwise, target triple environment Triple::Z88DK defaults to true.
+static bool shouldUseSDCCCall0ForF32(const MachineFunction &MF) {
+  if (UseSDCCCall0ForF32Libcalls.getNumOccurrences())
+    return UseSDCCCall0ForF32Libcalls;
+  return MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+}
+
 /// Check if all three fast-math flags (nnan, ninf, nsz) are set.
 /// If only some are set, emit a one-time remark so the user knows why the
 /// fast soft-float path was not selected.
@@ -1060,7 +1069,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       llvm_unreachable("unexpected opcode");
     }
 
-    CallingConv::ID LibcallCC = UseSDCCCall0ForF32Libcalls
+    CallingConv::ID LibcallCC = shouldUseSDCCCall0ForF32(MF)
                                      ? CallingConv::Z80_SDCCCall0
                                      : CallingConv::C;
     auto Status = Helper.createLibcall(FuncName, {Dst, F32Ty, 0},
@@ -1297,7 +1306,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         return true;
       }
       Register UnordResult = MRI.createGenericVirtualRegister(S16);
-      CallingConv::ID LibcallCC = UseSDCCCall0ForF32Libcalls
+      CallingConv::ID LibcallCC = shouldUseSDCCCall0ForF32(MF)
                                        ? CallingConv::Z80_SDCCCall0
                                        : CallingConv::C;
       auto Status = Helper.createLibcall("__unordsf2", {UnordResult, I16Ty, 0},
@@ -1356,7 +1365,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return false;
     }
 
-    CallingConv::ID LibcallCC = UseSDCCCall0ForF32Libcalls
+    CallingConv::ID LibcallCC = shouldUseSDCCCall0ForF32(MF)
                                      ? CallingConv::Z80_SDCCCall0
                                      : CallingConv::C;
     Register CmpResult = MRI.createGenericVirtualRegister(S16);
@@ -1418,7 +1427,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     Register Dst = MI.getOperand(0).getReg();
     Register Src = MI.getOperand(1).getReg();
 
-    CallingConv::ID F32LibcallCC = UseSDCCCall0ForF32Libcalls
+    CallingConv::ID F32LibcallCC = shouldUseSDCCCall0ForF32(MF)
                                        ? CallingConv::Z80_SDCCCall0
                                        : CallingConv::C;
 
