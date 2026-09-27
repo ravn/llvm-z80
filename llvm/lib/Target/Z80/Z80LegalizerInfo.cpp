@@ -1057,9 +1057,13 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       llvm_unreachable("unexpected opcode");
     }
 
+    CallingConv::ID LibcallCC =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
+            ? CallingConv::Z80_SDCCCall0
+            : CallingConv::C;
     auto Status = Helper.createLibcall(FuncName, {Dst, F32Ty, 0},
                                        {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
-                                       CallingConv::C, LocObserver, &MI);
+                                       LibcallCC, LocObserver, &MI);
     if (Status != LegalizerHelper::Legalized)
       return false;
     MI.eraseFromParent();
@@ -1291,9 +1295,13 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
         return true;
       }
       Register UnordResult = MRI.createGenericVirtualRegister(S16);
+      CallingConv::ID LibcallCC =
+          MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
+              ? CallingConv::Z80_SDCCCall0
+              : CallingConv::C;
       auto Status = Helper.createLibcall("__unordsf2", {UnordResult, I16Ty, 0},
                                          {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
-                                         CallingConv::C, LocObserver, &MI);
+                                         LibcallCC, LocObserver, &MI);
       if (Status != LegalizerHelper::Legalized)
         return false;
       auto Zero = MIRBuilder.buildConstant(S16, 0);
@@ -1347,10 +1355,14 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       return false;
     }
 
+    CallingConv::ID LibcallCC =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
+            ? CallingConv::Z80_SDCCCall0
+            : CallingConv::C;
     Register CmpResult = MRI.createGenericVirtualRegister(S16);
     auto Status = Helper.createLibcall(LibcallName, {CmpResult, I16Ty, 0},
                                        {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
-                                       CallingConv::C, LocObserver, &MI);
+                                       LibcallCC, LocObserver, &MI);
     if (Status != LegalizerHelper::Legalized)
       return false;
 
@@ -1386,6 +1398,59 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     MI.eraseFromParent();
     return true;
   }
+
+  case TargetOpcode::G_FPTOSI:
+  case TargetOpcode::G_FPTOUI:
+  case TargetOpcode::G_SITOFP:
+  case TargetOpcode::G_UITOFP: {
+    MachineFunction &MF = MIRBuilder.getMF();
+    auto &Ctx = MF.getFunction().getContext();
+    Type *F32Ty = Type::getFloatTy(Ctx);
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    Register Dst = MI.getOperand(0).getReg();
+    Register Src = MI.getOperand(1).getReg();
+
+    CallingConv::ID F32LibcallCC =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
+            ? CallingConv::Z80_SDCCCall0
+            : CallingConv::C;
+
+    const char *FuncName;
+    Type *DstTy, *SrcTy;
+    switch (MI.getOpcode()) {
+    case TargetOpcode::G_FPTOSI:
+      FuncName = "__fixsfsi";
+      DstTy = I32Ty;
+      SrcTy = F32Ty;
+      break;
+    case TargetOpcode::G_FPTOUI:
+      FuncName = "__fixunssfsi";
+      DstTy = I32Ty;
+      SrcTy = F32Ty;
+      break;
+    case TargetOpcode::G_SITOFP:
+      FuncName = "__floatsisf";
+      DstTy = F32Ty;
+      SrcTy = I32Ty;
+      break;
+    case TargetOpcode::G_UITOFP:
+      FuncName = "__floatunsisf";
+      DstTy = F32Ty;
+      SrcTy = I32Ty;
+      break;
+    default:
+      llvm_unreachable("unexpected opcode");
+    }
+
+    auto Status =
+        Helper.createLibcall(FuncName, {Dst, DstTy, 0}, {{Src, SrcTy, 0}},
+                             F32LibcallCC, LocObserver, &MI);
+    if (Status != LegalizerHelper::Legalized)
+      return false;
+    MI.eraseFromParent();
+    return true;
+  }
+
 
   case TargetOpcode::G_MEMCPY: {
     // Z80 copies a block with LDIR: HL = source, DE = destination, BC = count,

@@ -129,6 +129,15 @@ void Z80TargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__z80__");
     Builder.defineMacro("__Z80__");
   }
+
+  if (getTriple().getEnvironment() == llvm::Triple::Z88DK) {
+    Builder.defineMacro("__Z88DK__");
+    Builder.defineMacro("__z88dk__");
+    Builder.defineMacro("__Z88DK");
+    Builder.defineMacro("__z88dk");
+    Builder.defineMacro("__LLVMZ80__");
+    Builder.defineMacro("__LLVMZ80");
+  }
   // compiler-rt/{z80,sm83} has no complex helpers, so `a * b` and `a / b` on
   // _Complex would only fail at link time with an undefined __mulsc3 or
   // __divsc3. Say so up front instead; portable code guards <complex.h> on

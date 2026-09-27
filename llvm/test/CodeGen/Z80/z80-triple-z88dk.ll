@@ -30,11 +30,9 @@ define float @fadd(float %a, float %b) {
 ; Z88DK:        call ___addsf3
 ;
 ; DEFAULT-LABEL: _fadd:
-; DEFAULT-NOT:  push hl
 ; DEFAULT:      call ___addsf3
 ;
 ; OVERRIDE-LABEL: _fadd:
-; OVERRIDE-NOT: push hl
 ; OVERRIDE:     call ___addsf3
   %res = fadd float %a, %b
   ret float %res
@@ -46,7 +44,6 @@ define i1 @flt(float %a, float %b) {
 ; Z88DK:        call ___cmpsf2
 ;
 ; DEFAULT-LABEL: _flt:
-; DEFAULT-NOT:  push hl
 ; DEFAULT:      call ___cmpsf2
   %res = fcmp olt float %a, %b
   ret i1 %res

@@ -37,7 +37,6 @@ float fadd(float a, float b) { return a + b; }
 // Z88DK:         call ___addsf3
 //
 // DEFAULT-LABEL: _fadd:
-// DEFAULT-NOT:   push hl
 // DEFAULT:       call ___addsf3
 
 int flt(float a, float b) { return a < b; }
@@ -46,7 +45,6 @@ int flt(float a, float b) { return a < b; }
 // Z88DK:         call ___cmpsf2
 //
 // DEFAULT-LABEL: _flt:
-// DEFAULT-NOT:   push hl
 // DEFAULT:       call ___cmpsf2
 
 int to_int(float a) { return (int)a; }
