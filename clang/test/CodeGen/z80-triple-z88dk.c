@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -triple z80-unknown-none-z88dk -O1 -S -o - %s | FileCheck %s --check-prefix=Z88DK
 // RUN: %clang_cc1 -triple z80 -O1 -S -o - %s | FileCheck %s --check-prefix=DEFAULT
+// RUN: %clang_cc1 -triple z80-unknown-none-z88dk -mdouble=64 -O1 -S -o - %s | FileCheck %s --check-prefix=OVERRIDE-64
 // RUN: %clang_cc1 -triple z80-unknown-none-z88dk -E -dM /dev/null | FileCheck %s --check-prefix=MACROS
 // RUN: %clang_cc1 -triple z80 -E -dM /dev/null | FileCheck %s --check-prefix=DEFAULT-MACROS
 
@@ -64,3 +65,33 @@ float to_float(int a) { return (float)a; }
 // DEFAULT-LABEL: _to_float:
 // DEFAULT-NOT:   push hl
 // DEFAULT:       call ___floatsisf
+
+// 3. Target triple defaults to 32-bit double and long double (matching z88dk math32)
+double dadd(double a, double b) { return a + b; }
+// Z88DK-LABEL:   _dadd:
+// Z88DK:         push hl
+// Z88DK:         call ___addsf3
+//
+// DEFAULT-LABEL: _dadd:
+// DEFAULT:       call ___adddf3
+
+int dsize(void) { return (int)sizeof(double); }
+// Z88DK-LABEL:   _dsize:
+// Z88DK:         ld de, 4
+// Z88DK:         ret
+//
+// DEFAULT-LABEL: _dsize:
+// DEFAULT:       ld de, 8
+// DEFAULT:       ret
+//
+// OVERRIDE-64-LABEL: _dsize:
+// OVERRIDE-64:        ld de, 8
+
+int ldsize(void) { return (int)sizeof(long double); }
+// Z88DK-LABEL:   _ldsize:
+// Z88DK:         ld de, 4
+// Z88DK:         ret
+//
+// DEFAULT-LABEL: _ldsize:
+// DEFAULT:       ld de, 8
+// DEFAULT:       ret
