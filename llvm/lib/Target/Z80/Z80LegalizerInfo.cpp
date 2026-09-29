@@ -304,7 +304,8 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder(G_MUL)
       .legalFor({S8, S16})
       .scalarize(0)
-      .libcallFor({S32, S64})
+      .customFor({S32})     // z88dk: direct l_mulu_32_32x32 via EXX; others: libcall
+      .libcallFor({S64})
       .narrowScalarIf(LegalityPredicates::typeIs(0, S128),
                       LegalizeMutations::changeTo(0, S64))
       .widenScalarToNextPow2(0)
@@ -780,6 +781,64 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   MachineRegisterInfo &MRI = *MIRBuilder.getMRI();
 
   switch (MI.getOpcode()) {
+  case TargetOpcode::G_MUL: {
+    // i32 multiply: for the z88dk triple call l_mulu_32_32x32 directly using
+    // the EXX protocol (both 32-bit operands in registers via alt bank),
+    // avoiding the stack-based __mulsi3 ABI.  Other targets fall back to the
+    // __mulsi3 libcall.
+    MachineFunction &MF = MIRBuilder.getMF();
+    LLT S16 = LLT::scalar(16);
+    Register Dst  = MI.getOperand(0).getReg();
+    Register Src1 = MI.getOperand(1).getReg();
+    Register Src2 = MI.getOperand(2).getReg();
+
+    if (!isZ88DKTriple(MF) ||
+        MF.getSubtarget<Z80Subtarget>().hasSM83() ||
+        MRI.getType(Dst).getSizeInBits() != 32) {
+      // Fall back to the generic __mulsi3 libcall.
+      auto Res = Helper.libcall(MI, LocObserver);
+      if (Res != LegalizerHelper::Legalized)
+        return false;
+      return true;
+    }
+
+    MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+
+    // Split each 32-bit operand: getReg(0)=lo16, getReg(1)=hi16.
+    auto Src1Parts = MIRBuilder.buildUnmerge(S16, Src1);
+    auto Src2Parts = MIRBuilder.buildUnmerge(S16, Src2);
+
+    // l_mulu_32_32x32 ABI: dehl = dehl * dehl' (DE=high, HL=low).
+    // The core trashes IX; save/restore it around the call.
+    // Sequence:
+    //   PUSH IX                     ; preserve IX (core trashes it)
+    //   DE←src1_hi, HL←src1_lo     ; core format for arg1
+    //   EXX                         ; arg1 → alt bank (DE':HL')
+    //   DE←src2_hi, HL←src2_lo     ; core format for arg2 (main bank)
+    //   CALL l_mulu_32_32x32        ; result: DE=hi, HL=lo
+    //   POP IX
+    //   EX_DE_HL                    ; DE:HL → HL:DE (Clang i32 layout)
+    MIRBuilder.buildInstr(Z80::PUSH_IX);
+    MIRBuilder.buildCopy(Register(Z80::DE), Src1Parts.getReg(1)); // src1 hi
+    MIRBuilder.buildCopy(Register(Z80::HL), Src1Parts.getReg(0)); // src1 lo
+    MIRBuilder.buildInstr(Z80::EXX); // arg1 → alt bank
+    MIRBuilder.buildCopy(Register(Z80::DE), Src2Parts.getReg(1)); // src2 hi
+    MIRBuilder.buildCopy(Register(Z80::HL), Src2Parts.getReg(0)); // src2 lo
+    buildZ88DKCall(MIRBuilder, "l_mulu_32_32x32",
+                   {Z80::HL, Z80::DE, Z80::BC});
+    MIRBuilder.buildInstr(Z80::POP_IX);
+
+    // Result: DE=hi, HL=lo.  One EX_DE_HL converts to Clang's HL=hi, DE=lo.
+    MIRBuilder.buildInstr(Z80::EX_DE_HL);
+    // After EX_DE_HL: HL=hi, DE=lo — matches Clang's i32 layout.
+    auto ResLo = MIRBuilder.buildCopy(S16, Register(Z80::DE));
+    auto ResHi = MIRBuilder.buildCopy(S16, Register(Z80::HL));
+    MIRBuilder.buildMergeLikeInstr(Dst, {ResLo.getReg(0), ResHi.getReg(0)});
+
+    MI.eraseFromParent();
+    return true;
+  }
+
   case TargetOpcode::G_FENCE:
     // Z80 is single-threaded with no memory reordering — fences are no-ops.
     MI.eraseFromParent();

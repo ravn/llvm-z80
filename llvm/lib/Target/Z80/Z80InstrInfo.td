@@ -87,7 +87,15 @@ let mayLoad = 0, mayStore = 0, hasSideEffects = 0 in {
 def EX_DE_HL : Inst8<"ex de,hl", 0xEB> { let Uses = [DE, HL]; let Defs = [DE, HL]; }
 }
 def EX_AF_AF : Inst8<"ex af,af'", 0x08>;
-def EXX : Inst8<"exx", 0xD9>;
+// EXX swaps HL/DE/BC with their alternate-bank counterparts.
+// LLVM has no model for the alternate bank.  We declare the registers that
+// matter for our use (32-bit multiply passes HL:DE in/out; BC' is unused).
+// Uses: HL and DE are read (the values going to alt bank).
+// Defs: HL, DE, BC are newly defined (fresh from alt bank; BC is undefined).
+def EXX : Inst8<"exx", 0xD9> {
+  let Uses = [HL, DE];
+  let Defs = [HL, DE, BC];
+}
 let mayLoad = true, mayStore = true, hasSideEffects = false in
 def EX_SPind_HL : Inst8<"ex (sp),hl", 0xE3> { let Uses = [SP, HL]; let Defs = [HL]; }
 
