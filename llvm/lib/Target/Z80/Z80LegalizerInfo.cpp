@@ -65,6 +65,21 @@ static bool shouldUseSDCCCall0ForF32(const MachineFunction &MF) {
   return MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
 }
 
+static bool isZ88DKTriple(const MachineFunction &MF) {
+  return MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+}
+
+/// Emit a direct call to a z88dk asm_* core via a raw MCSymbol, bypassing
+/// C-name underscore mangling.  Registers in ImplicitUses are marked implicit.
+static void buildZ88DKCall(MachineIRBuilder &MIRBuilder, StringRef CoreName,
+                           ArrayRef<Register> ImplicitUses) {
+  MachineFunction &MF = MIRBuilder.getMF();
+  MCSymbol *Sym = MF.getContext().getOrCreateSymbol(CoreName);
+  auto MIB = MIRBuilder.buildInstr(Z80::CALL_nn).addSym(Sym);
+  for (Register R : ImplicitUses)
+    MIB.addUse(R, RegState::Implicit);
+}
+
 /// Check if all three fast-math flags (nnan, ninf, nsz) are set.
 /// If only some are set, emit a one-time remark so the user knows why the
 /// fast soft-float path was not selected.
@@ -1621,6 +1636,17 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       Dir = Direction::LDIR;
     }
     if (Dir == Direction::Unknown) {
+      // z88dk: call asm_memmove(HL=src, DE=dst, BC=n) directly.
+      if (isZ88DKTriple(MIRBuilder.getMF()) && STI.hasZ80()) {
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+        MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
+        MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
+        MIRBuilder.buildCopy(Register(Z80::BC), Size);
+        buildZ88DKCall(MIRBuilder, "asm_memmove",
+                       {Z80::HL, Z80::DE, Z80::BC});
+        MI.eraseFromParent();
+        return true;
+      }
       auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
       if (Result != LegalizerHelper::Legalized)
         return false;
@@ -1645,6 +1671,17 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     // would need the end pointers computed before the zero test, so leave
     // those to the libcall and only handle a constant length here.
     if (!SizeC) {
+      // z88dk: call asm_memmove for runtime-length backward copy too.
+      if (isZ88DKTriple(MIRBuilder.getMF()) && STI.hasZ80()) {
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+        MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
+        MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
+        MIRBuilder.buildCopy(Register(Z80::BC), Size);
+        buildZ88DKCall(MIRBuilder, "asm_memmove",
+                       {Z80::HL, Z80::DE, Z80::BC});
+        MI.eraseFromParent();
+        return true;
+      }
       auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
       if (Result != LegalizerHelper::Legalized)
         return false;
@@ -1695,13 +1732,29 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     // G_MEMSET has i8 val operand which must be promoted to i16
     // so the calling convention assigns it to DE (2nd i16 reg param)
     // instead of treating it as an i8 arg.
+    Register DstPtr = MI.getOperand(0).getReg();
     Register ValReg = MI.getOperand(1).getReg();
+    Register SzReg  = MI.getOperand(2).getReg();
     LLT ValTy = MRI.getType(ValReg);
 
     if (ValTy.getSizeInBits() < 16) {
       MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
       auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
-      MI.getOperand(1).setReg(ZExt.getReg(0));
+      ValReg = ZExt.getReg(0);
+      MI.getOperand(1).setReg(ValReg);
+    }
+
+    // z88dk: call asm_memset(HL=dst, E=byte, BC=count) directly.
+    // The zero-extended val is in DE so E holds the byte value; ABI matches.
+    if (isZ88DKTriple(MIRBuilder.getMF()) &&
+        !MIRBuilder.getMF().getSubtarget<Z80Subtarget>().hasSM83()) {
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::DE), ValReg);
+      MIRBuilder.buildCopy(Register(Z80::BC), SzReg);
+      buildZ88DKCall(MIRBuilder, "asm_memset", {Z80::HL, Z80::DE, Z80::BC});
+      MI.eraseFromParent();
+      return true;
     }
 
     auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
