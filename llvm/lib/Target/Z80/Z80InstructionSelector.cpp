@@ -534,6 +534,29 @@ bool Z80InstructionSelector::selectUDivMod8(MachineInstr &MI, bool IsDiv) {
         !RBI.constrainGenericRegister(Src2Reg, Z80::GR8RegClass, MRI))
       return false;
 
+    // z88dk triple: call l_fast_divu_8_8x8 directly.
+    // Core ABI: L=dividend, E=divisor → L=quotient, E=remainder.
+    // Caller ABI here: A=dividend, L=divisor → A=result.
+    // Map: copy divisor to E first (before L is overwritten), then dividend to L.
+    bool IsZ88DK8 = !MF.getSubtarget<Z80Subtarget>().hasSM83() &&
+                    MF.getTarget().getTargetTriple().getEnvironment() ==
+                        Triple::Z88DK;
+    if (IsZ88DK8) {
+      MCSymbol *Sym =
+          MF.getContext().getOrCreateSymbol("l_fast_divu_8_8x8");
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::E).addReg(Src2Reg);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::L).addReg(Src1Reg);
+      BuildMI(MBB, MI, DL, TII.get(Z80::CALL_nn))
+          .addSym(Sym)
+          .addUse(Z80::L, RegState::Implicit)
+          .addUse(Z80::E, RegState::Implicit);
+      // quotient in L, remainder in E
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+          .addReg(IsDiv ? Z80::L : Z80::E);
+      MI.eraseFromParent();
+      return true;
+    }
+
     const char *FuncName = IsDiv ? "__udivqi3" : "__umodqi3";
     Module *M = const_cast<Module *>(MF.getFunction().getParent());
     FunctionCallee Func = M->getOrInsertFunction(
