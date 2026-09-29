@@ -80,6 +80,33 @@ static void buildZ88DKCall(MachineIRBuilder &MIRBuilder, StringRef CoreName,
     MIB.addUse(R, RegState::Implicit);
 }
 
+/// Emit the common prefix for z88dk 32-bit div/mod via EXX protocol:
+///   {DE,HL}←dividend; EXX; {DE,HL}←divisor; CALL core.
+/// After return: main DE:HL = quotient, alt DE':HL' = remainder.
+/// IX is NOT saved here: the function prologue already saves it as callee-saved
+/// and with +static-frame (BSS locals) IX is not used for frame access after
+/// the prologue, so the core clobbering IX is harmless until the epilogue
+/// restores it.
+static void emitZ88DKDiv32Prologue(MachineIRBuilder &B,
+                                   Register DividendLo, Register DividendHi,
+                                   Register DivisorLo,  Register DivisorHi,
+                                   StringRef CoreName) {
+  B.buildCopy(Register(Z80::DE), DividendHi);
+  B.buildCopy(Register(Z80::HL), DividendLo);
+  B.buildInstr(Z80::EXX);
+  B.buildCopy(Register(Z80::DE), DivisorHi);
+  B.buildCopy(Register(Z80::HL), DivisorLo);
+  buildZ88DKCall(B, CoreName, {Z80::HL, Z80::DE, Z80::BC});
+}
+
+/// Build a 32-bit result vreg from physical DE (high) and HL (low).
+static void buildDivResult(MachineIRBuilder &B, Register Dst) {
+  LLT S16 = LLT::scalar(16);
+  auto Lo = B.buildCopy(S16, Register(Z80::HL));
+  auto Hi = B.buildCopy(S16, Register(Z80::DE));
+  B.buildMergeLikeInstr(Dst, {Lo.getReg(0), Hi.getReg(0)});
+}
+
 /// Check if all three fast-math flags (nnan, ninf, nsz) are set.
 /// If only some are set, emit a one-time remark so the user knows why the
 /// fast soft-float path was not selected.
@@ -339,7 +366,8 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder({G_UDIV, G_UREM, G_SDIV, G_SREM})
       .legalFor({S8, S16})
       .scalarize(0)
-      .libcallFor({S32, S64, S128})
+      .customFor({S32})     // z88dk: direct l_div[su]_32_32x32 via EXX
+      .libcallFor({S64, S128})
       .widenScalarToNextPow2(0)
       .clampScalar(0, S8, S128);
 
@@ -809,16 +837,14 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     auto Src2Parts = MIRBuilder.buildUnmerge(S16, Src2);
 
     // l_mulu_32_32x32 ABI: dehl = dehl * dehl' (DE=high, HL=low).
-    // The core trashes IX; save/restore it around the call.
+    // IX is NOT saved: function prologue already saves it and with +static-frame
+    // IX is not used for frame access after the prologue.
     // Sequence:
-    //   PUSH IX                     ; preserve IX (core trashes it)
     //   DE←src1_hi, HL←src1_lo     ; core format for arg1
     //   EXX                         ; arg1 → alt bank (DE':HL')
     //   DE←src2_hi, HL←src2_lo     ; core format for arg2 (main bank)
     //   CALL l_mulu_32_32x32        ; result: DE=hi, HL=lo
-    //   POP IX
     //   EX_DE_HL                    ; DE:HL → HL:DE (Clang i32 layout)
-    MIRBuilder.buildInstr(Z80::PUSH_IX);
     MIRBuilder.buildCopy(Register(Z80::DE), Src1Parts.getReg(1)); // src1 hi
     MIRBuilder.buildCopy(Register(Z80::HL), Src1Parts.getReg(0)); // src1 lo
     MIRBuilder.buildInstr(Z80::EXX); // arg1 → alt bank
@@ -826,7 +852,6 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     MIRBuilder.buildCopy(Register(Z80::HL), Src2Parts.getReg(0)); // src2 lo
     buildZ88DKCall(MIRBuilder, "l_mulu_32_32x32",
                    {Z80::HL, Z80::DE, Z80::BC});
-    MIRBuilder.buildInstr(Z80::POP_IX);
 
     // Result: DE=hi, HL=lo.  One EX_DE_HL converts to Clang's HL=hi, DE=lo.
     MIRBuilder.buildInstr(Z80::EX_DE_HL);
@@ -835,6 +860,51 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     auto ResHi = MIRBuilder.buildCopy(S16, Register(Z80::HL));
     MIRBuilder.buildMergeLikeInstr(Dst, {ResLo.getReg(0), ResHi.getReg(0)});
 
+    MI.eraseFromParent();
+    return true;
+  }
+
+  case TargetOpcode::G_SDIV:
+  case TargetOpcode::G_UDIV:
+  case TargetOpcode::G_SREM:
+  case TargetOpcode::G_UREM: {
+    // i32 div/rem for z88dk: call l_div[su]_32_32x32 directly via EXX.
+    // Non-z88dk falls back to libcall (__divsi3 etc.).
+    MachineFunction &MF = MIRBuilder.getMF();
+    Register Dst      = MI.getOperand(0).getReg();
+    Register Dividend = MI.getOperand(1).getReg();
+    Register Divisor  = MI.getOperand(2).getReg();
+
+    if (!isZ88DKTriple(MF) ||
+        MF.getSubtarget<Z80Subtarget>().hasSM83() ||
+        MRI.getType(Dst).getSizeInBits() != 32) {
+      auto Res = Helper.libcall(MI, LocObserver);
+      if (Res != LegalizerHelper::Legalized)
+        return false;
+      return true;
+    }
+
+    MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+    LLT S16 = LLT::scalar(16);
+    unsigned Op = MI.getOpcode();
+    bool IsSigned = (Op == TargetOpcode::G_SDIV || Op == TargetOpcode::G_SREM);
+    bool IsRem    = (Op == TargetOpcode::G_SREM || Op == TargetOpcode::G_UREM);
+    StringRef Core = IsSigned ? "l_divs_32_32x32" : "l_divu_32_32x32";
+
+    auto DivParts = MIRBuilder.buildUnmerge(S16, Dividend);
+    auto DisParts = MIRBuilder.buildUnmerge(S16, Divisor);
+
+    emitZ88DKDiv32Prologue(MIRBuilder,
+        DivParts.getReg(0), DivParts.getReg(1),  // dividend lo, hi
+        DisParts.getReg(0), DisParts.getReg(1),  // divisor  lo, hi
+        Core);
+
+    if (IsRem) {
+      // Remainder in alt bank; EXX brings it to main.
+      MIRBuilder.buildInstr(Z80::EXX);
+    }
+    // main DE=result_hi, HL=result_lo
+    buildDivResult(MIRBuilder, Dst);
     MI.eraseFromParent();
     return true;
   }
@@ -1034,11 +1104,36 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     if (MRI.getType(QuotReg).getSizeInBits() != 32)
       return true;
 
-    // quotient = __(u)divmodsi4(dividend, divisor, &remainder), with a
-    // byte-aligned slot for the remainder as for G_FMODF.
     bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
     Register RemReg = MI.getOperand(1).getReg();
     MachineFunction &MF = MIRBuilder.getMF();
+
+    // z88dk: use EXX protocol — no stack slot needed; core leaves quotient
+    // in main DE:HL and remainder in alt DE':HL'.
+    if (isZ88DKTriple(MF) && !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      LLT S16 = LLT::scalar(16);
+      StringRef Core = IsSigned ? "l_divs_32_32x32" : "l_divu_32_32x32";
+
+      auto DivParts = MIRBuilder.buildUnmerge(S16, MI.getOperand(2).getReg());
+      auto DisParts = MIRBuilder.buildUnmerge(S16, MI.getOperand(3).getReg());
+
+      emitZ88DKDiv32Prologue(MIRBuilder,
+          DivParts.getReg(0), DivParts.getReg(1),
+          DisParts.getReg(0), DisParts.getReg(1),
+          Core);
+
+      // Quotient in main DE:HL.
+      buildDivResult(MIRBuilder, QuotReg);
+      // Remainder in alt DE':HL'; EXX brings it to main.
+      MIRBuilder.buildInstr(Z80::EXX);
+      buildDivResult(MIRBuilder, RemReg);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Non-z88dk: quotient = __(u)divmodsi4(dividend, divisor, &remainder),
+    // with a byte-aligned stack slot for the remainder.
     LLVMContext &Ctx = MF.getFunction().getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
     int FI = MF.getFrameInfo().CreateStackObject(4, Align(1),
