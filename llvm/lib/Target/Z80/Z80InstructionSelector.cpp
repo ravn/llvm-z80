@@ -379,25 +379,21 @@ bool Z80InstructionSelector::selectRuntimeLibCall16(MachineInstr &MI,
       !RBI.constrainGenericRegister(Src2Reg, Z80::GR16RegClass, MRI))
     return false;
 
-  // z88dk triple: call l_* cores directly; result in HL (div/mul) or DE (mod).
+  // z88dk triple: call l_* cores directly.  Use addSym with a raw MCSymbol
+  // so the exact asm name (e.g. "l_divs_16_16x16") is emitted without the
+  // C-name underscore prefix that addExternalSymbol/addGlobalAddress apply.
+  // Result in HL (div/mul) or DE (mod) per z88dk core ABI.
   bool IsZ88DK = MF.getTarget().getTargetTriple().getEnvironment() ==
                  Triple::Z88DK;
   if (IsZ88DK && !STI.hasSM83()) {
     if (const Z88DKLibCall16 *LC = findZ88DKLibCall16(FuncName)) {
-      Module *M = const_cast<Module *>(MF.getFunction().getParent());
-      FunctionCallee Func = M->getOrInsertFunction(
-          LC->Z88DKName,
-          FunctionType::get(Type::getInt16Ty(M->getContext()),
-                            {Type::getInt16Ty(M->getContext()),
-                             Type::getInt16Ty(M->getContext())},
-                            false));
-      GlobalValue *GV = cast<GlobalValue>(Func.getCallee());
+      MCSymbol *Sym = MF.getContext().getOrCreateSymbol(LC->Z88DKName);
       BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::HL)
           .addReg(Src1Reg);
       BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::DE)
           .addReg(Src2Reg);
       BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CALL_nn))
-          .addGlobalAddress(GV)
+          .addSym(Sym)
           .addUse(Z80::HL, RegState::Implicit)
           .addUse(Z80::DE, RegState::Implicit);
       BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
