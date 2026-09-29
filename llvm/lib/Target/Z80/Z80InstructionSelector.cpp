@@ -297,6 +297,36 @@ Z80InstructionSelector::countFoldablePatternsInBB(MachineBasicBlock &MBB,
   return Count;
 }
 
+// Map compiler-rt 16-bit div/mod/mul names to z88dk's l_* cores.
+// z88dk's cores take (HL=arg1, DE=arg2) and return:
+//   l_divs/divu_16_16x16 : HL=quotient, DE=remainder
+//   l_mulu_16_16x16      : HL=product
+// The remainder ops (mod*) already return in DE — no fixup needed.
+struct Z88DKLibCall16 {
+  const char *CompilerRTName;
+  const char *Z88DKName;
+  bool ResultInHL; // true: copy from HL; false: copy from DE (remainder)
+};
+static const Z88DKLibCall16 Z88DKLibCalls16[] = {
+    {"__divhi3",      "l_divs_16_16x16", true},
+    {"__divhi3_fast", "l_divs_16_16x16", true},
+    {"__udivhi3",     "l_divu_16_16x16", true},
+    {"__udivhi3_fast","l_divu_16_16x16", true},
+    {"__mulhi3",      "l_mulu_16_16x16", true},
+    {"__umulhi3",     "l_mulu_16_16x16", true},
+    {"__modhi3",      "l_divs_16_16x16", false},
+    {"__modhi3_fast", "l_divs_16_16x16", false},
+    {"__umodhi3",     "l_divu_16_16x16", false},
+    {"__umodhi3_fast","l_divu_16_16x16", false},
+};
+
+static const Z88DKLibCall16 *findZ88DKLibCall16(const char *Name) {
+  for (const auto &E : Z88DKLibCalls16)
+    if (strcmp(E.CompilerRTName, Name) == 0)
+      return &E;
+  return nullptr;
+}
+
 // At -O3 (CodeGenOptLevel::Aggressive), route i16 div/mod runtime calls to
 // the repeated-subtraction _fast variants (__divhi3_fast, __udivhi3_fast,
 // __modhi3_fast, __umodhi3_fast), ~31% faster on division-heavy code than
@@ -305,6 +335,9 @@ Z80InstructionSelector::countFoldablePatternsInBB(MachineBasicBlock &MBB,
 // so the extra code size is paid only by opt-for-speed code that actually
 // divides. Z80 only -- SM83's __udivhi3 has a different register ABI and no
 // unrolled variant on-disk.
+// For the z88dk triple the _fast names map to the same l_* core (z88dk has
+// no bounded fast variant); selectDivModRuntimeName still renames so that
+// findZ88DKLibCall16 resolves them correctly.
 static const char *selectDivModRuntimeName(const MachineFunction &MF,
                                            const Z80Subtarget &STI,
                                            const char *Base) {
@@ -323,6 +356,8 @@ static const char *selectDivModRuntimeName(const MachineFunction &MF,
 // Emit a runtime library call for 16-bit binary ops.
 // Z80:  HL=Src1, DE=Src2, result in DE  (__sdcccall(1))
 // SM83: DE=Src1, BC=Src2, result in BC  (__sdcccall(1))
+// z88dk triple: HL=Src1, DE=Src2, result in HL (div/mul) or DE (mod),
+//   calling z88dk's l_* cores directly — no bridge wrapper needed.
 bool Z80InstructionSelector::selectRuntimeLibCall16(MachineInstr &MI,
                                                     const char *FuncName) {
   MachineBasicBlock &MBB = *MI.getParent();
@@ -343,6 +378,34 @@ bool Z80InstructionSelector::selectRuntimeLibCall16(MachineInstr &MI,
       !RBI.constrainGenericRegister(Src1Reg, Z80::GR16RegClass, MRI) ||
       !RBI.constrainGenericRegister(Src2Reg, Z80::GR16RegClass, MRI))
     return false;
+
+  // z88dk triple: call l_* cores directly; result in HL (div/mul) or DE (mod).
+  bool IsZ88DK = MF.getTarget().getTargetTriple().getEnvironment() ==
+                 Triple::Z88DK;
+  if (IsZ88DK && !STI.hasSM83()) {
+    if (const Z88DKLibCall16 *LC = findZ88DKLibCall16(FuncName)) {
+      Module *M = const_cast<Module *>(MF.getFunction().getParent());
+      FunctionCallee Func = M->getOrInsertFunction(
+          LC->Z88DKName,
+          FunctionType::get(Type::getInt16Ty(M->getContext()),
+                            {Type::getInt16Ty(M->getContext()),
+                             Type::getInt16Ty(M->getContext())},
+                            false));
+      GlobalValue *GV = cast<GlobalValue>(Func.getCallee());
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::HL)
+          .addReg(Src1Reg);
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::DE)
+          .addReg(Src2Reg);
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::CALL_nn))
+          .addGlobalAddress(GV)
+          .addUse(Z80::HL, RegState::Implicit)
+          .addUse(Z80::DE, RegState::Implicit);
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+          .addReg(LC->ResultInHL ? Z80::HL : Z80::DE);
+      MI.eraseFromParent();
+      return true;
+    }
+  }
 
   Module *M = const_cast<Module *>(MF.getFunction().getParent());
   FunctionCallee Func = M->getOrInsertFunction(
