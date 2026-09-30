@@ -46,13 +46,14 @@ define i16 @urem16(i16 %a, i16 %b) {
   ret i16 %r
 }
 
-; Fused signed div+rem (single __divhi3 call yields quot+rem) must also flip
-; to _fast at -O3.
+; Fused signed div+rem uses __divmodhi4, which applies the correct sign to the
+; remainder (unlike __divhi3 which leaves |rem| in HL).  No _fast variant
+; exists for __divmodhi4, so the same routine is used at all opt levels.
 define i16 @sdivrem16(i16 %a, i16 %b) {
 ; FAST-LABEL: _sdivrem16:
-; FAST:        call ___divhi3_fast
+; FAST:        call ___divmodhi4
 ; SMALL-LABEL: _sdivrem16:
-; SMALL:       call ___divhi3{{$}}
+; SMALL:       call ___divhi3
   %q = sdiv i16 %a, %b
   %r = srem i16 %a, %b
   %s = add i16 %q, %r

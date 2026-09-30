@@ -4048,8 +4048,11 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       return false;
 
     bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
-    const char *FuncName = selectDivModRuntimeName(
-        MF, STI, IsSigned ? "__divhi3" : "__udivhi3");
+    // The ...hi3 routines promise only the quotient, so this calls the
+    // ...hi4 pair, which names the remainder as a result too.
+    // Z80:  __(u)divmodhi4: HL=dividend, DE=divisor → DE=quot, HL=rem
+    // SM83: __(u)divmodhi4: DE=dividend, BC=divisor → BC=quot, HL=rem
+    const char *FuncName = IsSigned ? "__divmodhi4" : "__udivmodhi4";
     Module *M = const_cast<Module *>(MF.getFunction().getParent());
     FunctionCallee Func = M->getOrInsertFunction(
         FuncName, FunctionType::get(Type::getInt16Ty(M->getContext()),
