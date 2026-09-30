@@ -27,13 +27,13 @@ define void @test_func() {
 define float @fadd(float %a, float %b) {
 ; Z88DK-LABEL:  _fadd:
 ; Z88DK:        push hl
-; Z88DK:        call ___addsf3
+; Z88DK:        call cm32_sdcc_fsadd
 ;
 ; DEFAULT-LABEL: _fadd:
 ; DEFAULT:      call ___addsf3
 ;
 ; OVERRIDE-LABEL: _fadd:
-; OVERRIDE:     call ___addsf3
+; OVERRIDE:     call cm32_sdcc_fsadd
   %res = fadd float %a, %b
   ret float %res
 }
@@ -52,7 +52,7 @@ define i1 @flt(float %a, float %b) {
 define float @sitofp(i16 %a) {
 ; Z88DK-LABEL:  _sitofp:
 ; Z88DK:        push hl
-; Z88DK:        call ___floatsisf
+; Z88DK:        call cm32_sdcc___slong2fs
 ;
 ; DEFAULT-LABEL: _sitofp:
 ; DEFAULT-NOT:  push hl

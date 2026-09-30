@@ -26,6 +26,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/TargetParser/Triple.h"
 
 using namespace llvm;
 
@@ -64,10 +65,41 @@ bool Z80MCInstLower::lowerOperand(const MachineOperand &MO, MCOperand &MCOp) {
     MCOp =
         lowerSymbolOperand(MO, AP.GetBlockAddressSymbol(MO.getBlockAddress()));
     break;
-  case MachineOperand::MO_ExternalSymbol:
-    MCOp =
-        lowerSymbolOperand(MO, AP.GetExternalSymbolSymbol(MO.getSymbolName()));
+  case MachineOperand::MO_ExternalSymbol: {
+    StringRef SymName = MO.getSymbolName();
+    // For z88dk triple, remap compiler-rt f32 arithmetic/conversion names to
+    // math32 equivalents directly.  math32 cores are z80asm PUBLIC labels
+    // without a leading underscore; using GetExternalSymbolSymbol would add
+    // the Mach-O '_' prefix (from the data layout's m:o mangling), so we
+    // create an MCSymbol instead to emit the raw name.
+    const MCSymbol *Sym = nullptr;
+    if (AP.TM.getTargetTriple().getEnvironment() == Triple::Z88DK) {
+      static constexpr struct { const char *From; const char *To; } Remap[] = {
+          {"__addsf3",      "cm32_sdcc_fsadd"},
+          {"__addsf3_fast", "cm32_sdcc_fsadd"},
+          {"__subsf3",      "cm32_sdcc_fssub"},
+          {"__subsf3_fast", "cm32_sdcc_fssub"},
+          {"__mulsf3",      "cm32_sdcc_fsmul"},
+          {"__mulsf3_fast", "cm32_sdcc_fsmul"},
+          {"__divsf3",      "cm32_sdcc_fsdiv"},
+          {"__divsf3_fast", "cm32_sdcc_fsdiv"},
+          {"__fixsfsi",     "cm32_sdcc___fs2sint"},
+          {"__fixunssfsi",  "cm32_sdcc___fs2uint"},
+          {"__floatsisf",   "cm32_sdcc___slong2fs"},
+          {"__floatunsisf", "cm32_sdcc___ulong2fs"},
+      };
+      for (const auto &E : Remap) {
+        if (SymName == E.From) {
+          Sym = Ctx.getOrCreateSymbol(E.To);
+          break;
+        }
+      }
+    }
+    if (!Sym)
+      Sym = AP.GetExternalSymbolSymbol(SymName);
+    MCOp = lowerSymbolOperand(MO, Sym);
     break;
+  }
   case MachineOperand::MO_GlobalAddress: {
     const GlobalValue *GV = MO.getGlobal();
     MCOp = lowerSymbolOperand(MO, AP.getSymbol(GV));
