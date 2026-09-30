@@ -26,6 +26,7 @@
 #include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -47,6 +48,10 @@ namespace {
 
 class Z80AsmPrinter : public AsmPrinter {
   Z80MCInstLower InstLowering;
+
+  // For C_LINE deduplication: only emit when file/line changes.
+  unsigned LastCLineNum = 0;
+  StringRef LastCLineFile;
 
 public:
   explicit Z80AsmPrinter(TargetMachine &TM,
@@ -101,6 +106,23 @@ void Z80AsmPrinter::EmitToStreamer(MCStreamer &S, MCInst &Inst) {
 }
 
 void Z80AsmPrinter::emitInstruction(const MachineInstr *MI) {
+  // Emit a C_LINE directive before each instruction when targeting z80asm and
+  // the instruction carries debug location info. z80asm's -debug flag turns
+  // these into __C_LINE_<n>_<file> address symbols in the .map file, giving a
+  // source-level address map without any binary overhead in the ROM.
+  if (MAI.isZ80ASM()) {
+    if (const DILocation *Loc = MI->getDebugLoc()) {
+      unsigned Line = Loc->getLine();
+      StringRef File = Loc->getFilename();
+      if (Line && (Line != LastCLineNum || File != LastCLineFile)) {
+        OutStreamer->emitRawText("\tC_LINE " + Twine(Line) +
+                                ", \"" + File + "\"");
+        LastCLineNum = Line;
+        LastCLineFile = File;
+      }
+    }
+  }
+
   // Do any auto-generated pseudo lowerings.
   if (MCInst OutInst; lowerPseudoInstExpansion(MI, OutInst)) {
     EmitToStreamer(*OutStreamer, OutInst);
