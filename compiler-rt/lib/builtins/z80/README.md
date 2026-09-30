@@ -13,11 +13,25 @@ startup code, and the default linker script.
 | `crt0_sdcc.asm` | startup for the SDCC toolchain (`sdldz80`) |
 | `z80.ld` | default linker script, flat 64 KB image from 0x0000 |
 | `LICENSE` | Zlib OR Apache-2.0 WITH LLVM-exception OR MIT |
+| `z80asm/` | z80asm-format variants for the `z80-unknown-none-z88dk` target (see below) |
 
 `llvm/lib/Target/Z80/CMakeLists.txt` builds two flavours from the same sources:
 `llvm-mc` + `llvm-ar` produce `lib/z80/z80_rt.a` for the ELF path, and
 `sdasz80` + `sdar` produce `lib/z80/z80_rt.lib` for the SDCC path (only when
 those tools are installed).
+
+### `z80asm/` — z88dk target variants
+
+Files in `z80asm/` use z80asm assembler syntax (`SECTION`/`PUBLIC`/`EXTERN`)
+and the sdcccall(0) ABI (all arguments on the stack, caller cleanup) required
+by the `z80-unknown-none-z88dk` triple.  They are built by z88dk's own
+assembler and library build system, not by the CMakeLists here.
+
+Where a function exists in both directories, the two implementations share the
+same GCC-level semantics but differ in assembler format, calling convention,
+and dependencies.  The flat `z80/` files are self-contained; the `z80asm/`
+variants may depend on z88dk runtime symbols (e.g. `m32_compare` from math32)
+that are always present in that target context.
 
 ## Calling convention
 
