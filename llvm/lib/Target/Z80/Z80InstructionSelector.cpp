@@ -4003,17 +4003,35 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
             Flag = Z80::MO_ADDR16_HI;
           }
         }
-        MachineInstr *GlobalDef =
+        // Resolve the ptr source of G_PTRTOINT, looking through a constant
+        // G_PTR_ADD so that ptrtoint(gep(global, const)) also folds.
+        MachineInstr *PtrIntDef =
             AddrDef && AddrDef->getOpcode() == TargetOpcode::G_PTRTOINT
-                ? MRI.getVRegDef(AddrDef->getOperand(1).getReg())
+                ? AddrDef
                 : nullptr;
-        if (GlobalDef &&
-            GlobalDef->getOpcode() == TargetOpcode::G_GLOBAL_VALUE) {
+        MachineInstr *GlobalDef = nullptr;
+        int64_t ExtraOffset = 0;
+        if (PtrIntDef) {
+          MachineInstr *PtrSrc =
+              MRI.getVRegDef(PtrIntDef->getOperand(1).getReg());
+          if (PtrSrc && PtrSrc->getOpcode() == TargetOpcode::G_PTR_ADD &&
+              MRI.hasOneNonDBGUse(PtrIntDef->getOperand(1).getReg())) {
+            auto OffVal = getIConstantVRegValWithLookThrough(
+                PtrSrc->getOperand(2).getReg(), MRI);
+            if (OffVal)
+              ExtraOffset = OffVal->Value.getSExtValue();
+            PtrSrc = MRI.getVRegDef(PtrSrc->getOperand(1).getReg());
+          }
+          if (PtrSrc && PtrSrc->getOpcode() == TargetOpcode::G_GLOBAL_VALUE)
+            GlobalDef = PtrSrc;
+        }
+        if (GlobalDef) {
           if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
             return false;
           const MachineOperand &GVOp = GlobalDef->getOperand(1);
           BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::LD_r_n), DstReg)
-              .addGlobalAddress(GVOp.getGlobal(), GVOp.getOffset(), Flag);
+              .addGlobalAddress(GVOp.getGlobal(),
+                                GVOp.getOffset() + ExtraOffset, Flag);
           MI.eraseFromParent(); // erase G_TRUNC
           // The address chain (G_LSHR, G_PTRTOINT, G_GLOBAL_VALUE, shift
           // amount) may have other users; whatever is now dead is removed
