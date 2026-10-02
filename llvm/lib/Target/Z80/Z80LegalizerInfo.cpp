@@ -1393,41 +1393,44 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     CmpInst::Predicate OrderedPred =
         IsUnordered ? CmpInst::getOrderedPredicate(Pred) : Pred;
 
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+    CallingConv::ID LibcallCC =
+        IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
+
+    // \01 prefix bypasses Mach-O '_' mangling for z88dk: __cmpsf2 → __cmpsf2
+    // (two underscores) instead of ___cmpsf2 (three).
     const char *LibcallName;
     CmpInst::Predicate ICmpPred;
     switch (OrderedPred) {
     case CmpInst::FCMP_OEQ:
-      LibcallName = Fast ? "__cmpsf2_fast" : "__cmpsf2";
+      LibcallName = Fast ? "__cmpsf2_fast" : (IsZ88DK ? "\01__cmpsf2" : "__cmpsf2");
       ICmpPred = CmpInst::ICMP_EQ;
       break;
     case CmpInst::FCMP_OLT:
-      LibcallName = Fast ? "__cmpsf2_fast" : "__cmpsf2";
+      LibcallName = Fast ? "__cmpsf2_fast" : (IsZ88DK ? "\01__cmpsf2" : "__cmpsf2");
       ICmpPred = CmpInst::ICMP_SLT;
       break;
     case CmpInst::FCMP_OLE:
-      LibcallName = Fast ? "__cmpsf2_fast" : "__cmpsf2";
+      LibcallName = Fast ? "__cmpsf2_fast" : (IsZ88DK ? "\01__cmpsf2" : "__cmpsf2");
       ICmpPred = CmpInst::ICMP_SLE;
       break;
     case CmpInst::FCMP_OGT:
-      LibcallName = Fast ? "__cmpsf2_fast" : "__gtsf2";
+      LibcallName = Fast ? "__cmpsf2_fast" : (IsZ88DK ? "\01__gtsf2" : "__gtsf2");
       ICmpPred = CmpInst::ICMP_SGT;
       break;
     case CmpInst::FCMP_OGE:
-      LibcallName = Fast ? "__cmpsf2_fast" : "__gesf2";
+      LibcallName = Fast ? "__cmpsf2_fast" : (IsZ88DK ? "\01__gesf2" : "__gesf2");
       ICmpPred = CmpInst::ICMP_SGE;
       break;
     case CmpInst::FCMP_ONE:
-      LibcallName = Fast ? "__cmpsf2_fast" : "__cmpsf2";
+      LibcallName = Fast ? "__cmpsf2_fast" : (IsZ88DK ? "\01__cmpsf2" : "__cmpsf2");
       ICmpPred = CmpInst::ICMP_NE;
       break;
     default:
       return false;
     }
 
-    CallingConv::ID LibcallCC =
-        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
-            ? CallingConv::Z80_SDCCCall0
-            : CallingConv::C;
     Register CmpResult = MRI.createGenericVirtualRegister(S16);
     auto Status = Helper.createLibcall(LibcallName, {CmpResult, I16Ty, 0},
                                        {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
@@ -1442,9 +1445,10 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     } else {
       // Need __unordsf2 call for NaN handling.
       Register UnordResult = MRI.createGenericVirtualRegister(S16);
-      auto UStatus = Helper.createLibcall("__unordsf2", {UnordResult, I16Ty, 0},
+      const char *UnordName = IsZ88DK ? "\01__unordsf2" : "__unordsf2";
+      auto UStatus = Helper.createLibcall(UnordName, {UnordResult, I16Ty, 0},
                                           {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
-                                          CallingConv::C, LocObserver, &MI);
+                                          LibcallCC, LocObserver, &MI);
       if (UStatus != LegalizerHelper::Legalized)
         return false;
 

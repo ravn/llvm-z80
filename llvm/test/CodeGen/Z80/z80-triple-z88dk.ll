@@ -33,7 +33,7 @@ define float @fadd(float %a, float %b) {
 
 define i1 @flt(float %a, float %b) {
 ; Z88DK-LABEL:  _flt:
-; Z88DK:        call ___cmpsf2
+; Z88DK:        call __cmpsf2
 ;
 ; DEFAULT-LABEL: _flt:
 ; DEFAULT:      call ___cmpsf2
