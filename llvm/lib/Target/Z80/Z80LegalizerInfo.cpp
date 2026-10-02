@@ -29,6 +29,8 @@
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IntrinsicsZ80.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -1644,6 +1646,22 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       Dir = Direction::LDIR;
     }
     if (Dir == Direction::Unknown) {
+      // z88dk: call asm_memmove directly (HL=src, DE=dst, BC=count).
+      // Handles overlap internally via direction check + LDIR/LDDR.
+      MachineFunction &MF = MIRBuilder.getMF();
+      if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+        MCSymbol *Sym = MF.getContext().getOrCreateSymbol("asm_memmove");
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+        MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
+        MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
+        MIRBuilder.buildCopy(Register(Z80::BC), Size);
+        MIRBuilder.buildInstr(Z80::CALL_nn).addSym(Sym)
+            .addUse(Z80::HL, RegState::Implicit)
+            .addUse(Z80::DE, RegState::Implicit)
+            .addUse(Z80::BC, RegState::Implicit);
+        MI.eraseFromParent();
+        return true;
+      }
       auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
       if (Result != LegalizerHelper::Legalized)
         return false;
@@ -1714,19 +1732,37 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_MEMSET: {
-    // C memset takes (void*, int, size_t). On Z80, int = i16.
-    // G_MEMSET has i8 val operand which must be promoted to i16
-    // so the calling convention assigns it to DE (2nd i16 reg param)
-    // instead of treating it as an i8 arg.
+    Register DstPtr = MI.getOperand(0).getReg();
     Register ValReg = MI.getOperand(1).getReg();
+    Register Size   = MI.getOperand(2).getReg();
     LLT ValTy = MRI.getType(ValReg);
+    MachineFunction &MF = MIRBuilder.getMF();
 
+    // z88dk: call asm_memset directly (HL=dst, DE=val(E=low byte), BC=count).
+    if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      // Zero-extend val to i16 so it fits DE; asm_memset reads only E.
+      Register Val16 = ValReg;
+      if (ValTy.getSizeInBits() < 16)
+        Val16 = MIRBuilder.buildZExt(LLT::scalar(16), ValReg).getReg(0);
+      MCSymbol *Sym = MF.getContext().getOrCreateSymbol("asm_memset");
+      MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::DE), Val16);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::CALL_nn).addSym(Sym)
+          .addUse(Z80::HL, RegState::Implicit)
+          .addUse(Z80::DE, RegState::Implicit)
+          .addUse(Z80::BC, RegState::Implicit);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Non-z88dk: promote i8 val to i16 then use generic memset libcall.
     if (ValTy.getSizeInBits() < 16) {
       MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
       auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
       MI.getOperand(1).setReg(ZExt.getReg(0));
     }
-
     auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
     if (Result != LegalizerHelper::Legalized)
       return false;
