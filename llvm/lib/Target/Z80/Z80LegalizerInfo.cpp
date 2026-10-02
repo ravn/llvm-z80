@@ -566,12 +566,14 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   // reference-compiles policy as the f64 routines.
   getActionDefinitionsBuilder({G_FPTOSI, G_FPTOUI})
       .scalarize(0)
+      .customFor({{S32, S32}})
       .libcallForCartesianProduct({S32, S64, S128}, {S32, S64})
       .minScalar(0, S32)
       .minScalar(1, S32);
 
   getActionDefinitionsBuilder({G_SITOFP, G_UITOFP})
       .scalarize(0)
+      .customFor({{S32, S32}})
       .libcallForCartesianProduct({S32, S64}, {S32, S64, S128})
       .minScalar(0, S32)
       .minScalar(1, S32);
@@ -1039,28 +1041,38 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     Register RHS = MI.getOperand(2).getReg();
 
     bool Fast = hasAllFastFlags(MI, MIRBuilder);
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+
+    // z88dk: call cm32_sdcc_* (sdcccall(0) ABI adapter to math32 kernels).
+    // Both args pushed on stack; cm32_sdcc_fsreadr moves RHS into DEHL then
+    // tails into m32_fsadd/etc. Calling m32_* directly (LHS stack, RHS DEHL)
+    // requires ISel-level physreg setup — deferred as a future optimization.
     const char *FuncName;
     switch (MI.getOpcode()) {
     case TargetOpcode::G_FADD:
-      FuncName = Fast ? "__addsf3_fast" : "__addsf3";
+      // \01 prefix bypasses Mach-O '_' mangling for z88dk asm library symbols.
+      FuncName = IsZ88DK ? "\01cm32_sdcc_fsadd"
+                         : (Fast ? "__addsf3_fast" : "__addsf3");
       break;
     case TargetOpcode::G_FSUB:
-      FuncName = Fast ? "__subsf3_fast" : "__subsf3";
+      FuncName = IsZ88DK ? "\01cm32_sdcc_fssub"
+                         : (Fast ? "__subsf3_fast" : "__subsf3");
       break;
     case TargetOpcode::G_FMUL:
-      FuncName = Fast ? "__mulsf3_fast" : "__mulsf3";
+      FuncName = IsZ88DK ? "\01cm32_sdcc_fsmul"
+                         : (Fast ? "__mulsf3_fast" : "__mulsf3");
       break;
     case TargetOpcode::G_FDIV:
-      FuncName = Fast ? "__divsf3_fast" : "__divsf3";
+      FuncName = IsZ88DK ? "\01cm32_sdcc_fsdiv"
+                         : (Fast ? "__divsf3_fast" : "__divsf3");
       break;
     default:
       llvm_unreachable("unexpected opcode");
     }
 
     CallingConv::ID LibcallCC =
-        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
-            ? CallingConv::Z80_SDCCCall0
-            : CallingConv::C;
+        IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
     auto Status = Helper.createLibcall(FuncName, {Dst, F32Ty, 0},
                                        {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
                                        LibcallCC, LocObserver, &MI);
@@ -1410,31 +1422,31 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     Register Dst = MI.getOperand(0).getReg();
     Register Src = MI.getOperand(1).getReg();
 
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
     CallingConv::ID F32LibcallCC =
-        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK
-            ? CallingConv::Z80_SDCCCall0
-            : CallingConv::C;
+        IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
 
     const char *FuncName;
     Type *DstTy, *SrcTy;
     switch (MI.getOpcode()) {
     case TargetOpcode::G_FPTOSI:
-      FuncName = "__fixsfsi";
+      FuncName = IsZ88DK ? "\01cm32_sdcc___fs2sint" : "__fixsfsi";
       DstTy = I32Ty;
       SrcTy = F32Ty;
       break;
     case TargetOpcode::G_FPTOUI:
-      FuncName = "__fixunssfsi";
+      FuncName = IsZ88DK ? "\01cm32_sdcc___fs2uint" : "__fixunssfsi";
       DstTy = I32Ty;
       SrcTy = F32Ty;
       break;
     case TargetOpcode::G_SITOFP:
-      FuncName = "__floatsisf";
+      FuncName = IsZ88DK ? "\01cm32_sdcc___slong2fs" : "__floatsisf";
       DstTy = F32Ty;
       SrcTy = I32Ty;
       break;
     case TargetOpcode::G_UITOFP:
-      FuncName = "__floatunsisf";
+      FuncName = IsZ88DK ? "\01cm32_sdcc___ulong2fs" : "__floatunsisf";
       DstTy = F32Ty;
       SrcTy = I32Ty;
       break;

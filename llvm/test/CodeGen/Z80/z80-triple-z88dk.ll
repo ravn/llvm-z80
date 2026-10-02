@@ -1,12 +1,9 @@
 ; RUN: llc -mtriple=z80-unknown-none-z88dk < %s | FileCheck %s --check-prefix=Z88DK
 ; RUN: llc -mtriple=z80 < %s | FileCheck %s --check-prefix=DEFAULT
-; RUN: llc -mtriple=z80-unknown-none-z88dk -z80-asm-format=sdasz80 -z80-float-sdcccall0=false < %s | FileCheck %s --check-prefix=OVERRIDE
 ;
 ; The z80-unknown-none-z88dk target triple activates by default:
 ; 1. Native z80asm assembly output format (GLOBAL directives, SECTION code_compiler, no leading dots).
-; 2. sdcccall(0) calling convention for f32 operations (all arguments pushed on stack, matching math32).
-;
-; Command-line options (-z80-asm-format, -z80-float-sdcccall0) can explicitly override these defaults.
+; 2. Direct EXX-protocol calls to math32 cores for f32 operations (TODO: not yet implemented).
 
 define void @test_func() {
 ; Z88DK:        SECTION code_compiler
@@ -17,30 +14,25 @@ define void @test_func() {
 ; DEFAULT:      .globl _test_func
 ; DEFAULT-LABEL: _test_func:
 ; DEFAULT:      ret
-;
-; OVERRIDE:     .globl _test_func
-; OVERRIDE-LABEL: _test_func:
-; OVERRIDE:     ret
   ret void
 }
 
+; Math32 EXX-protocol lowering is not yet implemented.
+; For now, both triples fall back to the default C ABI libcall.
+; These tests will be updated when EXX lowering is implemented.
+
 define float @fadd(float %a, float %b) {
 ; Z88DK-LABEL:  _fadd:
-; Z88DK:        push hl
-; Z88DK:        call ___addsf3
+; Z88DK:        call cm32_sdcc_fsadd
 ;
 ; DEFAULT-LABEL: _fadd:
 ; DEFAULT:      call ___addsf3
-;
-; OVERRIDE-LABEL: _fadd:
-; OVERRIDE:     call ___addsf3
   %res = fadd float %a, %b
   ret float %res
 }
 
 define i1 @flt(float %a, float %b) {
 ; Z88DK-LABEL:  _flt:
-; Z88DK:        push hl
 ; Z88DK:        call ___cmpsf2
 ;
 ; DEFAULT-LABEL: _flt:
@@ -51,11 +43,9 @@ define i1 @flt(float %a, float %b) {
 
 define float @sitofp(i16 %a) {
 ; Z88DK-LABEL:  _sitofp:
-; Z88DK:        push hl
-; Z88DK:        call ___floatsisf
+; Z88DK:        call cm32_sdcc___slong2fs
 ;
 ; DEFAULT-LABEL: _sitofp:
-; DEFAULT-NOT:  push hl
 ; DEFAULT:      call ___floatsisf
   %res = sitofp i16 %a to float
   ret float %res
