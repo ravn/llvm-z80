@@ -29,10 +29,15 @@ MCSection *Z80TargetObjectFile::getExplicitSectionGlobal(
   return TargetLoweringObjectFileELF::getExplicitSectionGlobal(GO, SK, TM);
 }
 
-// z80asm reads '.' as an operator. '@' is legal in its identifiers but never in
-// C ones, so the replacement cannot collide with a user name.
+// z80asm reads '.' as an operator so it cannot appear in symbol names.
+// Replace '.' with '_': z80asm allows '_' in identifiers and LLVM's
+// private literals (.str, .str.1 …) never conflict with user C names
+// because C identifiers cannot contain '.'. '@' was the previous
+// replacement but z80asm treats 'X@Y' as a local-label composition
+// (global X, local Y), causing "local label with global prefix" errors
+// for LLVM-emitted names like L_@str.
 static void replaceDots(SmallVectorImpl<char> &Name) {
-  llvm::replace(Name, '.', '@');
+  llvm::replace(Name, '.', '_');
 }
 
 MCSymbol *Z80TargetObjectFile::getTargetSymbol(const GlobalValue *GV,

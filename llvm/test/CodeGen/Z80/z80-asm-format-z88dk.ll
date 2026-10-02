@@ -75,7 +75,7 @@ define void @with_lifetime() {
 @var_bss = dso_local global [10 x i8] zeroinitializer
 
 ; CHECK:        SECTION rodata_compiler
-; CHECK-NEXT: L_@str:
+; CHECK-NEXT: L__str:
 ; CHECK-NEXT:   DEFM "test\000"
 ; CHECK:        GLOBAL _long
 ; CHECK-NEXT: _long:
@@ -84,14 +84,15 @@ define void @with_lifetime() {
 @.str = private unnamed_addr constant [5 x i8] c"test\00"
 @long = constant [54 x i8] c"\22Quoted\22 and \5Cback\5Cslashed text, long enough to wrap!\00"
 
-; A static local keeps a name apart from a global spelled with '_'.
 ; CHECK:        SECTION data_compiler
 ; CHECK-NEXT:   GLOBAL _test_counter
 ; CHECK-NEXT: _test_counter:
-; CHECK:      _test@counter:
-; CHECK-NEXT:   DEFW 7
 @test_counter = global i16 1
-@test.counter = internal global i16 7
+; Internal symbols: '.' replaced with '_'. Use a distinct base name to
+; avoid collision with a global spelled the same.
+; CHECK:      _static_counter:
+; CHECK-NEXT:   DEFW 7
+@static.counter = internal global i16 7
 
 ; CHECK:        SECTION rodata_compiler
 ; CHECK-NEXT:   GLOBAL _zero_ro
