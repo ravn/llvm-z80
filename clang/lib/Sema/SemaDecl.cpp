@@ -3907,6 +3907,18 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
       // there but not here.
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
+    } else if (Old->isImplicit() && Old->getBuiltinID() &&
+               Context.BuiltinInfo.isPredefinedLibFunction(Old->getBuiltinID()) &&
+               Context.getTargetInfo().getTriple().getArch() ==
+                   llvm::Triple::z80 &&
+               Context.getTargetInfo().getTriple().getEnvironment() ==
+                   llvm::Triple::Z88DK) {
+      // z88dk headers define the library ABI: e.g. fwrite is smallc,
+      // snprintf is sdcccall(0). The implicit builtin type is not its ABI.
+      OldTypeInfo = OldTypeInfo.withCallingConv(NewTypeInfo.getCC());
+      OldType = Context.adjustFunctionType(OldType, OldTypeInfo);
+      OldQType = QualType(OldType, 0);
+      Old->setType(OldQType);
     } else if (Old->getBuiltinID()) {
       // Builtin attribute isn't propagated to the new one yet at this point,
       // so we check if the old one is a builtin.

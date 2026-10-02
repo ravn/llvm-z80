@@ -69,6 +69,11 @@ jobs:
             build/bin/llvm-lit -v llvm/test/MC/Z80/
           fi
 
+      - name: Run z88dk libc frontend ABI regression
+        run: |
+          ninja -C build clang
+          build/bin/llvm-lit -v clang/test/CodeGen/z80-z88dk-libc-builtin-cc.c
+
       - name: Summary
         if: always()
         run: |

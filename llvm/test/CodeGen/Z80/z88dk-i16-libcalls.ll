@@ -3,8 +3,12 @@
 ;
 ; z88dk triple calls z88dk l_* cores directly (register protocol):
 ;   mul:  l_mulu_16_16x16  HL×DE → HL
-;   sdiv: l_divs_16_16x16  HL÷DE → DE=quot, HL=rem
-;   udiv: l_divu_16_16x16  HL÷DE → DE=quot, HL=rem
+;   sdiv: l_divs_16_16x16  HL/DE -> HL=quot, DE=rem
+;   udiv: l_divu_16_16x16  HL/DE -> HL=quot, DE=rem
+; C repro: int quotient(int a, int b) { return a / b; }
+;          int remainder(int a, int b) { return a % b; }
+; For -30000 / 7, HL=-4285 and DE=-5 after the core call. The default
+; C return ABI is DE: division must exchange the pairs, modulo must not.
 ;
 ; ELF uses standard __mulhi3/__divmodhi4 libcalls.
 
@@ -22,6 +26,8 @@ define i16 @mul(i16 %a, i16 %b) {
 define i16 @sdiv(i16 %a, i16 %b) {
 ; Z88DK-LABEL: _sdiv:
 ; Z88DK:         call l_divs_16_16x16
+; Z88DK-NEXT:    ex de,hl
+; Z88DK-NEXT:    ret
 ; Z88DK-NOT:     call ___divhi3
 ;
 ; ELF-LABEL: _sdiv:
@@ -33,6 +39,7 @@ define i16 @sdiv(i16 %a, i16 %b) {
 define i16 @srem(i16 %a, i16 %b) {
 ; Z88DK-LABEL: _srem:
 ; Z88DK:         call l_divs_16_16x16
+; Z88DK-NEXT:    ret
 ; Z88DK-NOT:     call ___modhi3
 ;
 ; ELF-LABEL: _srem:
@@ -44,6 +51,8 @@ define i16 @srem(i16 %a, i16 %b) {
 define i16 @udiv(i16 %a, i16 %b) {
 ; Z88DK-LABEL: _udiv:
 ; Z88DK:         call l_divu_16_16x16
+; Z88DK-NEXT:    ex de,hl
+; Z88DK-NEXT:    ret
 ; Z88DK-NOT:     call ___udivhi3
 ;
 ; ELF-LABEL: _udiv:
@@ -55,6 +64,7 @@ define i16 @udiv(i16 %a, i16 %b) {
 define i16 @urem(i16 %a, i16 %b) {
 ; Z88DK-LABEL: _urem:
 ; Z88DK:         call l_divu_16_16x16
+; Z88DK-NEXT:    ret
 ; Z88DK-NOT:     call ___umodhi3
 ;
 ; ELF-LABEL: _urem:
@@ -66,6 +76,12 @@ define i16 @urem(i16 %a, i16 %b) {
 define {i16, i16} @sdivrem(i16 %a, i16 %b) {
 ; Z88DK-LABEL: _sdivrem:
 ; Z88DK:         call l_divs_16_16x16
+; Z88DK-NEXT:    ld c,e
+; Z88DK-NEXT:    ld b,d
+; Z88DK-NEXT:    ex de,hl
+; Z88DK-NEXT:    ld l,c
+; Z88DK-NEXT:    ld h,b
+; Z88DK-NEXT:    ret
 ;
 ; ELF-LABEL: _sdivrem:
 ; ELF:           call ___divmodhi4

@@ -23,6 +23,7 @@ const PATHS: &[&str] = &[
     "llvm/test/MC/Z80",
     "clang/test/CodeGen/z80-asm-label.c",
     "clang/test/CodeGen/z80-struct-vararg.c",
+    "clang/test/CodeGen/z80-z88dk-libc-builtin-cc.c",
     "clang/test/Driver/z80-include-paths.c",
 ];
 
