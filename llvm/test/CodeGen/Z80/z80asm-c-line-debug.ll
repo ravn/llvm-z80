@@ -1,14 +1,15 @@
 ; Test that C_LINE directives are emitted in z80asm format when debug info is present.
-; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z80asm -O1 < %s | FileCheck %s
-; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z80asm -O1 < %s | FileCheck %s --check-prefix=NODUP
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z88dk -O1 < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z88dk -O1 < %s | FileCheck %s --check-prefix=NODUP
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -O1 < %s | FileCheck %s --check-prefix=ELF
 
 ; The add instruction is the first real instruction (line 3); dbg.value at
 ; line 2 produces no machine instruction so C_LINE 2 is never emitted.
-; CHECK:     C_LINE 3, "test.c"
+; Scope info is appended: "file::func::level::scope".
+; CHECK:     C_LINE 3, "test.c::add::0::0"
 ; CHECK-NEXT: add hl,de
 ; CHECK-NEXT: ex de,hl
-; CHECK-NEXT: C_LINE 4, "test.c"
+; CHECK-NEXT: C_LINE 4, "test.c::add::0::0"
 ; CHECK-NEXT: ret
 
 ; C_LINE must not be emitted twice for the same location.
