@@ -257,6 +257,7 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder(G_MUL)
       .legalFor({S8, S16})
       .scalarize(0)
+      .customFor({S32})
       .libcallFor({S32, S64})
       .narrowScalarIf(LegalityPredicates::typeIs(0, S128),
                       LegalizeMutations::changeTo(0, S64))
@@ -291,6 +292,7 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder({G_UDIV, G_UREM, G_SDIV, G_SREM})
       .legalFor({S8, S16})
       .scalarize(0)
+      .customFor({S32})
       .libcallFor({S32, S64, S128})
       .widenScalarToNextPow2(0)
       .clampScalar(0, S8, S128);
@@ -914,6 +916,54 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     return true;
   }
 
+  case TargetOpcode::G_MUL: {
+    Register DstReg = MI.getOperand(0).getReg();
+    if (MRI.getType(DstReg).getSizeInBits() != 32)
+      return false;
+    MachineFunction &MF = MIRBuilder.getMF();
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+    auto &Ctx = MF.getFunction().getContext();
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
+    const char *Name = IsZ88DK ? "\01__mulsi3" : "__mulsi3";
+    return Helper.createLibcall(Name, {DstReg, I32Ty, 0},
+                                {{MI.getOperand(1).getReg(), I32Ty, 0},
+                                 {MI.getOperand(2).getReg(), I32Ty, 1}},
+                                CC, LocObserver, &MI) ==
+               LegalizerHelper::Legalized &&
+           (MI.eraseFromParent(), true);
+  }
+
+  case TargetOpcode::G_SDIV:
+  case TargetOpcode::G_UDIV:
+  case TargetOpcode::G_SREM:
+  case TargetOpcode::G_UREM: {
+    Register DstReg = MI.getOperand(0).getReg();
+    if (MRI.getType(DstReg).getSizeInBits() != 32)
+      return false;
+    MachineFunction &MF = MIRBuilder.getMF();
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+    auto &Ctx = MF.getFunction().getContext();
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
+    const char *FuncName;
+    switch (MI.getOpcode()) {
+    case TargetOpcode::G_SDIV: FuncName = IsZ88DK ? "\01__divsi3"  : "__divsi3";  break;
+    case TargetOpcode::G_UDIV: FuncName = IsZ88DK ? "\01__udivsi3" : "__udivsi3"; break;
+    case TargetOpcode::G_SREM: FuncName = IsZ88DK ? "\01__modsi3"  : "__modsi3";  break;
+    case TargetOpcode::G_UREM: FuncName = IsZ88DK ? "\01__umodsi3" : "__umodsi3"; break;
+    default: llvm_unreachable("unexpected opcode");
+    }
+    return Helper.createLibcall(FuncName, {DstReg, I32Ty, 0},
+                                {{MI.getOperand(1).getReg(), I32Ty, 0},
+                                 {MI.getOperand(2).getReg(), I32Ty, 1}},
+                                CC, LocObserver, &MI) ==
+               LegalizerHelper::Legalized &&
+           (MI.eraseFromParent(), true);
+  }
+
   case TargetOpcode::G_UDIVREM:
   case TargetOpcode::G_SDIVREM: {
     // i16 is selected in ISel.
@@ -926,17 +976,22 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
     Register RemReg = MI.getOperand(1).getReg();
     MachineFunction &MF = MIRBuilder.getMF();
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
     LLVMContext &Ctx = MF.getFunction().getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
+    CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
+    const char *FuncName = IsSigned ? (IsZ88DK ? "\01__divmodsi4" : "__divmodsi4")
+                                    : (IsZ88DK ? "\01__udivmodsi4" : "__udivmodsi4");
     int FI = MF.getFrameInfo().CreateStackObject(4, Align(1),
                                                  /*isSpillSlot=*/false);
     auto Slot = MIRBuilder.buildFrameIndex(LLT::pointer(0, 16), FI);
     if (Helper.createLibcall(
-            IsSigned ? "__divmodsi4" : "__udivmodsi4", {QuotReg, I32Ty, 0},
+            FuncName, {QuotReg, I32Ty, 0},
             {{MI.getOperand(2).getReg(), I32Ty, 0},
              {MI.getOperand(3).getReg(), I32Ty, 1},
              {Slot.getReg(0), PointerType::get(Ctx, 0), 2}},
-            CallingConv::C, LocObserver, &MI) != LegalizerHelper::Legalized)
+            CC, LocObserver, &MI) != LegalizerHelper::Legalized)
       return false;
     auto *MMO =
         MF.getMachineMemOperand(MachinePointerInfo::getFixedStack(MF, FI),
