@@ -23,6 +23,15 @@ implementering og endelige resultater står i afsnit 9.
 
 ## 2. Triple-styret float — z88dk math32
 
+**Version baseline:** arbejdet med float/soft-float begyndte før math32-løftet
+fra z88dk 2.4 til den aktuelle 2.5-udviklingslinje. I v2.4 lå runtime under
+`libsrc/_DEVELOPMENT/` og `-lm` betød genmath; den nuværende linje har math32
+under `libsrc/math/float/math32/` og gør math32 til `-lm`-default. De
+eksisterende SDCC ABI-adaptere, som denne backend kalder, er byte-identiske
+mellem de to træer for de verificerede entry points, men det siger ikke, at
+runtime-numerik eller library resolution er uændret. Resultater i denne plan
+gælder kun den aktuelle udviklingslinjes runtime.
+
 **Valgt retning (2026-10-03):** kald z88dk's eksisterende math32 ABI-indgange
 `cm32_sdcc_*` med `CallingConv::Z80_SDCCCall0`. Der må ikke tilføjes
 nye bridge-/wrapper-filer for at få dette til at virke — hverken i llvm-z80
@@ -118,10 +127,11 @@ Guard: `MAI.isZ88DK()` — den nye metode fra #58 er allerede på plads.
 - **Negative tests**: samme IR mod `z80-unknown-elf` giver compiler-rt-navne, default C ABI, DWARF
 
 **Runtime-tests (`z80-utils/test-runner/testcases/clang/`):**
-- `z88dk_float_arith.c` — bit-exact IEEE-754 mod z88dk math32 for
-  arithmetic/conversions
-- Float compare runtime-matrix — finite ordered predicates og fast-math;
-  NaN er eksplicit uden for runtime-testens understøttede inputdomæne
+- `z88dk_float_arith.c` — arithmetic/conversions against independent expected
+  values, respecting documented math32 rounding/denormal behavior
+- Float compare runtime-matrix — strict/unordered predicates, explicit
+  `nnan`, and NaN patterns in either operand position; finite/Inf/zero
+  controls are included
 - `z88dk_printf_puts.c` — printf("hello\n") → puts under ntvcm
 - `z88dk_memmove_overlap.c` — overlappende memmove korrekthed
 - `z88dk_i32_div.c` — stor divisor+kvotient, verificer mod host
@@ -141,15 +151,19 @@ branch; den aktive lowering bruger stadig `__divsi3`-familien. Det tidligere
 udsagn om at hele integer-integrationen allerede var implementeret her var
 for bredt. Den historiske baseline verificerer ikke den nuværende branch.
 
-**Verificeret 2026-10-03:** 142/142 Z80 lit-tests passerer; root
+**Verificeret 2026-10-03, før NaN-opfølgningen:** 142/142 Z80 lit-tests
+passerer; root
 `run-llvmz80-tests.sh` passerer (432 runtime: 426 PASS/0 FAIL/6 SKIP; lit:
-149 PASS/0 FAIL). Begge `runtime_fcmp` finite-only tests passerer via
+149 PASS/0 FAIL). De daværende `runtime_fcmp` finite-only tests passerer via
 zcc/ntvcm. `z88dk/libsrc/l/llvmz80.lst` udelader lokalt `__cmpsf2.asm`, og
 compare-tests linker og kører uden den. `run-z88dk-tests.sh` gennemførte alle
 68 tests: 44 PASS, 13 FAIL, 11 XFAIL. Fejlene er i benchmark, stdio/FILE*,
 integer-div/rem, long, printf-return og qsort-tests; ingen FCMP-test fejlede.
 Der er ikke kørt en før-baseline for de øvrige fejl, så de kan ikke kaldes
 præ-eksisterende eller tilskrives denne ændring. NaN-semantikken er ikke testet.
+
+Dette statusafsnit er den oprindelige pre-NaN-verifikation; den senere
+NaN-matrix og korrigerede compare-kontrakt står i afsnit 9 nedenfor.
 
 Resterende:
 1. Triage er afsluttet for de 13 FAILs, se nedenfor; implementation og
@@ -469,9 +483,30 @@ Ingen nye bridges/wrappers er tilføjet.
 Før compilerændringen fejlede lit-regressionen og alle 20 NaN-kombinationer
 i C-testens IEEE-resultatmatrix; finite kontroller passerede. Efter ændringen
 passerer matricen ved O0/O2/O3/Oz samt finite kontroller med
-`-fno-honor-nans` og `-ffast-math`. De eksisterende fcmp, fast-fcmp, float og
-fconv runtime-scripts passerer. Backend/MC/frontend lit: 150 PASS.
-Math32's aritmetik og lokale bibliotek er ikke ændret eller genbygget.
+`-fno-honor-nans` og `-ffast-math`. Backend/MC/frontend lit: 150 PASS.
+
+Den udvidede `runtime_float.c` arithmetic-test afslørede først 13 NaN/Inf
+afvigelser. Dette var stale build state, ikke en verificeret backendfejl:
+`lib/clibs/math32.lib` var dateret 11. august, mens math32-assemblykilderne
+med special-case-håndtering var fra 27. september. Efter rebuild af Z80-
+math32-arkivet blev samme emitted float-test genlinket med z80asm og bestod
+`ALL PASS`; friske genlinks af fconv, libm, strict-fcmp og fast-fcmp bestod
+også. Ingen backend- eller runtime-kilde blev ændret for dette.
+
+Efter math32-arkivopfriskningen fejlede printf-autoformat først ved link, fordi
+`lib/clibs/cpm_clib.lib` fra 11. august manglede den aktuelle
+`__stdio_printf_sign_0` helper. Det aktuelle CP/M-arkiv blev genbygget og
+installeret; den officielle zcc/ntvcm-test bestod med
+`PASS: stock printf("%f") auto-selects classic converters (no #pragma)`.
+zcc's hardcodede `/tmp`-stier blev kun ændret i en isoleret scratch-build af
+testdriveren, så testartefakter blev holdt under `scratch/tmp`.
+
+Math32-arkivernes Makefile sporer nu assembly- og `.lst`-kilder for alle 13
+varianter. `test/clang/math32_archive_deps.sh` dækker afhængighedsgrafen; den
+fejlede før rettelsen, og `make -W` bekræftede en faktisk genbygning af
+`math32.lib` ved simuleret ændring af en assemblykilde. Den installerede
+archive-kopi blev synkroniseret byte-identisk, og printf-autoformat runtime-
+testen bestod igen mod den genbyggede math32-runtime.
 
 ## Risici
 
