@@ -18,8 +18,8 @@ ingen nye bridges/wrappere i llvm-z80 eller z88dk.
 
 `upstream-z88dk-native-runtime` er oprettet fra `upstream/main`, og integrationen
 er allerede landet på branchen. De historiske cherry-pick-kommandoer nedenfor
-er ikke længere en udførelsesplan; fortsæt fra branchens aktuelle tree og ret
-kun de rester, der står i afsnit 7.
+er ikke længere en udførelsesplan. Afsnit 7 beskriver den daværende restliste;
+implementering og endelige resultater står i afsnit 9.
 
 ## 2. Triple-styret float — z88dk math32
 
@@ -32,7 +32,7 @@ EXX-lowering til `m32_*`-kernerne er ikke et krav. Hvis der mangler en
 eksisterende runtime-indgang, registreres det som en åben gap; der skrives
 ikke en ny adapter som workaround.
 
-**Implementeret i branchen; end-to-end-verifikation mangler:**
+**Implementeret og end-to-end-verificeret; resultater i afsnit 9:**
 - G_FADD → `cm32_sdcc_fsadd`, G_FSUB → `cm32_sdcc_fssub`, G_FMUL → `cm32_sdcc_fsmul`, G_FDIV → `cm32_sdcc_fsdiv`
 - G_FPTOSI → `cm32_sdcc___fs2sint`, G_FPTOUI → `cm32_sdcc___fs2uint`
 - G_SITOFP → `cm32_sdcc___slong2fs`, G_UITOFP → `cm32_sdcc___ulong2fs`

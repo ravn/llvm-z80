@@ -3,7 +3,7 @@
 ;
 ; The z80-unknown-none-z88dk target triple activates by default:
 ; 1. Native z80asm assembly output format (GLOBAL directives, SECTION code_compiler, no leading dots).
-; 2. Direct EXX-protocol calls to math32 cores for f32 operations (TODO: not yet implemented).
+; 2. Calls to existing math32 sdcccall(0) entries for f32 operations.
 
 define void @test_func() {
 ; Z88DK:        SECTION code_compiler
@@ -17,9 +17,7 @@ define void @test_func() {
   ret void
 }
 
-; Math32 EXX-protocol lowering is not yet implemented.
-; For now, both triples fall back to the default C ABI libcall.
-; These tests will be updated when EXX lowering is implemented.
+; Z88DK uses existing math32 adapters; the default triple keeps compiler-rt.
 
 define float @fadd(float %a, float %b) {
 ; Z88DK-LABEL:  _fadd:
