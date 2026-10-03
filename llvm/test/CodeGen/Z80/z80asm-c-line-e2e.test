@@ -12,16 +12,14 @@ set -e
 Z80ASM=$(command -v z88dk-z80asm 2>/dev/null || echo "")
 ZCC=$(command -v zcc 2>/dev/null || echo "")
 NTVCM=$(command -v ntvcm 2>/dev/null || echo "")
-CLANG=$(command -v clang 2>/dev/null || echo "")
+LLVMZ80EXE=${LLVMZ80EXE:-$(command -v clang 2>/dev/null || echo "")}
 
-for tool in "$Z80ASM" "$ZCC" "$NTVCM" "$CLANG"; do
+for tool in "$Z80ASM" "$ZCC" "$NTVCM" "$LLVMZ80EXE"; do
   if [ -z "$tool" ]; then
     echo "SKIP: required tool not found on PATH (z88dk-z80asm, zcc, ntvcm, clang)"
     exit 0
   fi
 done
-
-LLVMZ80EXE=${LLVMZ80EXE:-$CLANG}
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
