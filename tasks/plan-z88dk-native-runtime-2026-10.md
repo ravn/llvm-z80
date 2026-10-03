@@ -76,16 +76,15 @@ dækning.
 
 ## 4. Runtime library-aware optimization CC (printf→puts)
 
-Ingen flag. `StampZ80ClassicLibcCC` cl::opt fjernes. Direkte triple-check i `llvm/lib/Transforms/Utils/BuildLibCalls.cpp`:
-
-```cpp
-if (TT.isZ80() && TT.getEnvironment() == Triple::Z88DK &&
-    F->isDeclaration() && !F->isVarArg() &&
-    F->getCallingConv() == CallingConv::C)
-  F->setCallingConv(CallingConv::Z80_SmallC);
-```
-
-Supplerende: `clang/lib/Basic/Targets/Z80.cpp` skal anerkende `Z80_SmallC` som C-kompatibel i `checkCallingConvention` (commit `d004bcf92444` fra `upstream-classic-libc-cc`).
+**Beslutning 2026-10-03:** ingen target-specifik CC-stamping i BuildLibCalls.
+Den tidligere stamping ændrede eksisterende deklarationer uden at opdatere
+tidligere kald og er fjernet. SimplifyLibCalls' konservative ABI-gate beholdes:
+headerens sdcccall(0)-printf optimeres ikke til SmallC-puts.
+`z88dk/test/clang/runtime_printf_puts.c` og `.sh` kontrollerer fraværet af
+folding og korrekt output ved O2/O3/Oz. Almindelige C-konventionsdeklarationer
+beholder LLVM's almindelige optimeringsadfærd.
+Frontendens accept af eksplicitte headerkonventioner er fortsat nødvendig;
+den gør ikke disse konventioner C-kompatible i LLVM's libcall-simplifier.
 
 ## 5. C_LINE direktiver
 

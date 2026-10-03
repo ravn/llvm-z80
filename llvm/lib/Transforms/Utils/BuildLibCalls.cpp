@@ -1523,16 +1523,6 @@ FunctionCallee llvm::getOrInsertLibFunc(Module *M, const TargetLibraryInfo &TLI,
   Function *F = cast<Function>(C.getCallee());
   assert(F->getFunctionType() == T && "Function type does not match.");
 
-  // Classic-ABI z88dk (z80-unknown-none-z88dk) uses __smallc for libc calls.
-  // Stamp synthesized declarations so InstCombine-generated calls (printf→puts
-  // etc.) match the real linked ABI instead of silently corrupting args.
-  const Triple &TT = M->getTargetTriple();
-  if (TT.isZ80() && TT.getEnvironment() == Triple::Z88DK &&
-      F->isDeclaration() && !F->isVarArg() &&
-      F->getCallingConv() == CallingConv::C)
-    F->setCallingConv(CallingConv::Z80_SmallC);
-
-
   switch (TheLibFunc) {
   case LibFunc_fputc:
   case LibFunc_putchar:
