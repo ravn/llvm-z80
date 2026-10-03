@@ -91,10 +91,10 @@ pub fn elf_to_bin(objcopy: &Path, elf: &Path, bin: &Path) -> Result<(), String> 
 /// on a loaded one. Wall-clock seconds are not, and deriving one from the other
 /// made a busy machine fail tests that were doing nothing wrong.
 ///
-/// A wall-clock kill still exists, but only as a backstop for an emulator that
-/// has wedged rather than one that is merely slow, so it is set far above any
-/// budget a test should need.
-const WALL_LIMIT: Duration = Duration::from_secs(900);
+/// Independently bound each emulator process to 30 seconds. The cycle counter
+/// resets whenever PC revisits the start trigger (JP 0 can run forever), so it
+/// cannot guarantee termination. Wall-clock exhaustion is an error, not a pass.
+const WALL_LIMIT: Duration = Duration::from_secs(30);
 
 /// What a program left behind when it stopped.
 pub struct RunResult {
@@ -154,7 +154,9 @@ pub fn run_program(
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("emulator wedged: no exit after {}s", WALL_LIMIT.as_secs()));
+                    let _ = reader.join();
+                    return Err(format!("emulator timeout: {}: no exit after {}s",
+                                       bin.display(), WALL_LIMIT.as_secs()));
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -237,7 +239,9 @@ pub fn run_to_halt(
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("emulator wedged: no exit after {}s", WALL_LIMIT.as_secs()));
+                    let _ = reader.join();
+                    return Err(format!("emulator timeout: {}: no exit after {}s",
+                                       bin.display(), WALL_LIMIT.as_secs()));
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -281,5 +285,64 @@ pub fn check_result(
         Ok(())
     } else {
         Err((got_padded, exp_padded))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe_dir() -> std::path::PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scratch/tmp");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = crate::suite::unique_tmp_dir(&root);
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn emulator_wall_limit_is_thirty_seconds() {
+        assert_eq!(WALL_LIMIT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn emulator_wall_timeout_kills_counter_reset_loop() {
+        assert_eq!(WALL_LIMIT, Duration::from_secs(30));
+        let dir = probe_dir();
+        let bin = dir.join("loop.bin");
+        // JP 0 revisits the default start trigger and resets ticks' counter.
+        std::fs::write(&bin, [0xc3, 0, 0]).unwrap();
+        std::thread::scope(|scope| {
+            for with_dump in [false, true] {
+                let bin = &bin;
+                let dump = dir.join("loop.ram");
+                scope.spawn(move || {
+                    let error = if with_dump {
+                        run_program(bin, Target::Z80, "0x0003", 0, &dump, 1000)
+                            .err().expect("loop must time out")
+                    } else {
+                        run_to_halt(bin, Target::Z80, "0x0003", 1000)
+                            .expect_err("loop must time out")
+                    };
+                    assert!(error.contains("no exit after 30s"), "{error}");
+                    assert!(!dump.exists(), "timeout must not read a RAM result");
+                });
+            }
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn emulator_halt_still_returns_value() {
+        let dir = probe_dir();
+        let bin = dir.join("halt.bin");
+        // JP 3 reaches _halt; bytes 4 and 5 hold the independent result 0x1234.
+        std::fs::write(&bin, [0xc3, 3, 0, 0, 0x34, 0x12]).unwrap();
+        run_to_halt(&bin, Target::Z80, "0x0003", 1000).unwrap();
+        let result = run_program(&bin, Target::Z80, "0x0003", 4,
+                                 &dir.join("halt.ram"), 1000).unwrap();
+        assert_eq!(result.value, "1234");
+        assert!(result.cycles < 1000);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

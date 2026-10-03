@@ -63,6 +63,16 @@ clang --target=z80 my_module.c sdcc_code.o -o output.elf
 
 Dynamic test runner for LLVM-Z80. Compiles C and LLVM IR test programs, runs them on a Z80/SM83 emulator, and verifies results.
 
+Each emulator process has an independent 30-second wall-clock deadline.
+Exceeding it kills and reaps the process and reports a timeout error, never a
+successful result. Cycle budgets still apply, but cannot replace this deadline:
+ticks resets its cycle count whenever PC revisits the start trigger. The
+deadline is per emulation, not a total suite time limit.
+
+REL linking must exit successfully before its output is emulated. A leftover
+or partial IHX file does not make a failed link valid; linker diagnostics are
+reported as FATAL.
+
 ### Quick Start
 
 ```bash

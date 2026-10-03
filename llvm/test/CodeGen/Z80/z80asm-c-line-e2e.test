@@ -1,0 +1,76 @@
+#!/bin/sh
+# RUN: sh %s
+#
+# End-to-end test: C (CP/M Hello World) → zcc +cpm -compiler=llvmz80 -Cg-g
+# → z80asm -debug → .map with __C_LINE_* symbols, then ntvcm execution check.
+#
+# Requires z88dk-z80asm, zcc, and ntvcm on PATH plus LLVMZ80EXE or clang.
+# Skips silently if any prerequisite is missing.
+
+set -e
+
+Z80ASM=$(command -v z88dk-z80asm 2>/dev/null || echo "")
+ZCC=$(command -v zcc 2>/dev/null || echo "")
+NTVCM=$(command -v ntvcm 2>/dev/null || echo "")
+LLVMZ80EXE=${LLVMZ80EXE:-$(command -v clang 2>/dev/null || echo "")}
+
+for tool in "$Z80ASM" "$ZCC" "$NTVCM" "$LLVMZ80EXE"; do
+  if [ -z "$tool" ]; then
+    echo "SKIP: required tool not found on PATH (z88dk-z80asm, zcc, ntvcm, clang)"
+    exit 0
+  fi
+done
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+cat > "$TMPDIR/hello.c" << 'EOF'
+#include <stdio.h>
+
+int main(void) {
+    printf("Hello, World!\n");
+    return 0;
+}
+EOF
+
+# Compile: C → CP/M .com binary + .map with C_LINE debug symbols.
+# -Cg-g passes -g to clang so DebugLoc is available for C_LINE emission.
+ZCCCFG=${ZCCCFG:-$(dirname "$ZCC")/../lib/config/}
+LLVMZ80EXE="$LLVMZ80EXE" ZCCCFG="$ZCCCFG" \
+  "$ZCC" +cpm -compiler=llvmz80 -Cg-g \
+    -o "$TMPDIR/hello" -debug -m "$TMPDIR/hello.c"
+
+# Run under CP/M emulator and capture output.
+OUTPUT=$("$NTVCM" "$TMPDIR/hello" 2>/dev/null)
+echo "ntvcm output: $OUTPUT"
+
+echo "$OUTPUT" | grep -q "Hello, World!" || {
+  echo "FAIL: expected 'Hello, World!' in output, got: $OUTPUT"
+  exit 1
+}
+
+# Map file must contain __C_LINE_ entries for hello.c.
+MAP="$TMPDIR/hello.map"
+
+grep "__C_LINE_" "$MAP" | grep -q "hello.c" || {
+  echo "FAIL: no __C_LINE_ entries referencing hello.c in map"
+  grep "__C_LINE_" "$MAP" | head -5
+  exit 1
+}
+
+# printf call is on line 4, return on line 5 — both must appear.
+grep -q "__C_LINE_4_" "$MAP" || {
+  echo "FAIL: no C_LINE entry for line 4 (printf)"
+  grep "__C_LINE_" "$MAP" | head -10
+  exit 1
+}
+
+grep -q "__C_LINE_5_" "$MAP" || {
+  echo "FAIL: no C_LINE entry for line 5 (return)"
+  grep "__C_LINE_" "$MAP" | head -10
+  exit 1
+}
+
+# Show the debug address map for hello.c lines.
+echo "PASS: C_LINE address map for hello.c:"
+grep "__C_LINE_" "$MAP" | grep "hello.c"

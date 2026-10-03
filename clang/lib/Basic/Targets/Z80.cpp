@@ -39,6 +39,14 @@ Z80TargetInfo::Z80TargetInfo(const llvm::Triple &Triple, const TargetOptions &)
   FloatAlign = 8;
   DoubleAlign = 8;
   LongDoubleAlign = 8;
+  if (Triple.getEnvironment() == llvm::Triple::Z88DK) {
+    // z88dk classic library only supports 32-bit floats (math32); default
+    // double and long double to 32-bit IEEE-754 binary32 under z88dk.
+    DoubleWidth = 32;
+    DoubleFormat = &llvm::APFloat::IEEEsingle();
+    LongDoubleWidth = 32;
+    LongDoubleFormat = &llvm::APFloat::IEEEsingle();
+  }
   // The fixed-point types (_Accum/_Fract) and the storage-only float types
   // (__fp16, __bf16) have their own layout fields and default to their
   // natural alignment; everything is byte-aligned here.
@@ -128,6 +136,15 @@ void Z80TargetInfo::getTargetDefines(const LangOptions &Opts,
   } else {
     Builder.defineMacro("__z80__");
     Builder.defineMacro("__Z80__");
+  }
+
+  if (getTriple().getEnvironment() == llvm::Triple::Z88DK) {
+    Builder.defineMacro("__Z88DK__");
+    Builder.defineMacro("__z88dk__");
+    Builder.defineMacro("__Z88DK");
+    Builder.defineMacro("__z88dk");
+    Builder.defineMacro("__LLVMZ80__");
+    Builder.defineMacro("__LLVMZ80");
   }
   // compiler-rt/{z80,sm83} has no complex helpers, so `a * b` and `a / b` on
   // _Complex would only fail at link time with an undefined __mulsc3 or

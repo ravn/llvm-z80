@@ -26,6 +26,7 @@
 #include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -47,6 +48,12 @@ namespace {
 
 class Z80AsmPrinter : public AsmPrinter {
   Z80MCInstLower InstLowering;
+
+  // For C_LINE deduplication: only emit when file/line/scope changes.
+  unsigned LastCLineNum = 0;
+  StringRef LastCLineFile;
+  const DIScope *LastCLineScope = nullptr;
+
 
 public:
   explicit Z80AsmPrinter(TargetMachine &TM,
@@ -101,6 +108,58 @@ void Z80AsmPrinter::EmitToStreamer(MCStreamer &S, MCInst &Inst) {
 }
 
 void Z80AsmPrinter::emitInstruction(const MachineInstr *MI) {
+  // Emit a C_LINE directive before each instruction when targeting z80asm and
+  // the instruction carries debug location info. z80asm's -debug flag turns
+  // these into __C_LINE_<n>_<file> address symbols in the .map file, giving a
+  // source-level address map without any binary overhead in the ROM.
+  if (MAI.isZ88DK()) {
+    if (const DILocation *Loc = MI->getDebugLoc()) {
+      unsigned Line = Loc->getLine();
+      StringRef File = Loc->getFilename();
+      const DIScope *Scope = Loc->getScope();
+      if (Line && (Line != LastCLineNum || File != LastCLineFile ||
+                   Scope != LastCLineScope)) {
+        // Walk the scope chain to find the enclosing function name and the
+        // lexical block depth/index, matching sccz80's
+        // "file.c::func::level::scope" format understood by z88dk-ticks.
+        StringRef FuncName;
+        unsigned Level = 0;
+        unsigned ScopeBlock = 0;
+        const DIScope *S = Scope;
+        while (S) {
+          if (const auto *SP = dyn_cast<DISubprogram>(S)) {
+            FuncName = SP->getName();
+            break;
+          }
+          if (isa<DILexicalBlock>(S)) {
+            if (Level == 0)
+              ScopeBlock = Line; // use line as a proxy scope id
+            Level++;
+          }
+          S = S->getScope();
+        }
+
+        std::string FilePart = File.str();
+        if (!FuncName.empty()) {
+          FilePart += "::" + FuncName.str() +
+                      "::" + std::to_string(Level) +
+                      "::" + std::to_string(ScopeBlock);
+        }
+        // C_LINE uses raw strings: escaping would change the debug filename.
+        if (StringRef(FilePart).find_first_of("\"\r\n") != StringRef::npos)
+          OutContext.reportError(
+              {}, "C_LINE cannot represent quotes or line breaks in debug "
+                  "filenames or function names");
+        else
+          OutStreamer->emitRawText("\tC_LINE " + Twine(Line) +
+                                  ", \"" + FilePart + "\"");
+        LastCLineNum = Line;
+        LastCLineFile = File;
+        LastCLineScope = Scope;
+      }
+    }
+  }
+
   // Do any auto-generated pseudo lowerings.
   if (MCInst OutInst; lowerPseudoInstExpansion(MI, OutInst)) {
     EmitToStreamer(*OutStreamer, OutInst);
