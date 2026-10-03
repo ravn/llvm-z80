@@ -37,13 +37,14 @@ ikke en ny adapter som workaround.
 - G_FPTOSI → `cm32_sdcc___fs2sint`, G_FPTOUI → `cm32_sdcc___fs2uint`
 - G_SITOFP → `cm32_sdcc___slong2fs`, G_UITOFP → `cm32_sdcc___ulong2fs`
 
-**Float compare følger foreløbig en finite-only-testpolicy:** NaN er uden for
-runtime-inputdomænet efter brugerens valg. Math32' faktiske NaN-adfærd er ikke
-verificeret; tests må hverken forudsætte den eller hævde IEEE NaN-semantik.
-Compilerens mapping bruger eksisterende `cm32_sdcc___fseq`, `___fsneq`,
-`___fslt` og `___fsgt`-indgange til finite værdier. `ORD`/`UNO` sættes til
-konstanter inden for denne begrænsede kontrakt. Der må ikke tilføjes nye
-runtime- eller compiler-bridge-/wrapper-filer.
+**Float compare (opdateret 2026-10-03):** z88dk-targetet indebærer ikke
+`nnan`. Uden et eksplicit `nnan` klassificeres begge operander via den
+eksisterende `cm32_sdcc_fpclassify` (klasse 2 = NaN). `ORD`/`UNO` bygger på
+klassifikationen; øvrige predicates kombinerer den med eksisterende
+`cm32_sdcc___fseq`, `___fsneq`, `___fslt` og `___fsgt`. Ordered predicates
+er false ved NaN, unordered predicates true. Med `nnan` udelades
+klassifikationen, og `ORD`/`UNO` kan foldes til konstanter. Der tilføjes
+ingen runtime- eller compiler-bridge-/wrapper-filer.
 
 Fjern `__cmpsf2.asm`-afhængigheden først, når alle relevante predicates er
 korrekt håndteret, og runtime-testen linker og passerer uden den fil.
@@ -76,10 +77,12 @@ Mekanisme: rå `MCSymbol` via `MCContext::getOrCreateSymbol(StringRef)` — IKKE
 | memset (G_MEMSET) | `asm_memset` (HL=dst, E=val, BC=count) | fast |
 
 **Float compare status:** `cm32_sdcc___fseq`, `___fsneq`, `___fslt` og
-`___fsgt` findes i z88dk's runtime og bruges til finite predicates. NaN er
-uden for testkontrakten; den faktiske NaN-adfærd er fortsat uafklaret. Fast-
-math og alle fire eksisterende predicate-symboler har compile/runtime-
-dækning.
+`___fsgt` findes i z88dk's runtime, men ordner NaN-bitmønstre som tal.
+Compilerens strict lowering korrigerer resultatet med den eksisterende
+klassifikationsfunktion. Lit dækker alle 14 ikke-konstante predicates samt
+`nnan`/`ninf`-kontroller; C-runtime-testen bruger uafhængige IEEE-resultatmasker,
+finite/Inf/zero-kontroller og flere NaN-bitmønstre i begge operandpositioner.
+Dette ændrer ikke math32's aritmetik eller dens denormal-policy.
 
 ## 4. Runtime library-aware optimization CC (printf→puts)
 
@@ -454,6 +457,21 @@ fundet i gennemgangen. Det er ikke en garanti for alle ABI/inputformer:
 NaN er fortsat uverificeret, SM83 er ikke dækket af native Z80-kerner, og
 link-surveyens 10 LINK_ERROR er ikke runtime-correctness-resultater.
 Lokale commits forberedes i compiler-, runtime- og workspace-repo; ingen push.
+
+### NaN-kontrakt trukket tilbage (2026-10-03)
+
+Den ovenstående finite-only-afgrænsning beskriver tidligere testresultater,
+ikke den aktuelle compilerkontrakt. Targetvalget giver ikke længere et
+implicit `nnan`. Strict comparisons bruger eksisterende
+`cm32_sdcc_fpclassify` på begge operander; kun eksplicit `nnan` undtager dem.
+Ingen nye bridges/wrappers er tilføjet.
+
+Før compilerændringen fejlede lit-regressionen og alle 20 NaN-kombinationer
+i C-testens IEEE-resultatmatrix; finite kontroller passerede. Efter ændringen
+passerer matricen ved O0/O2/O3/Oz samt finite kontroller med
+`-fno-honor-nans` og `-ffast-math`. De eksisterende fcmp, fast-fcmp, float og
+fconv runtime-scripts passerer. Backend/MC/frontend lit: 150 PASS.
+Math32's aritmetik og lokale bibliotek er ikke ændret eller genbygget.
 
 ## Risici
 

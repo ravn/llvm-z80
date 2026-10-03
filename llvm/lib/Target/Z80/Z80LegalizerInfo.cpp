@@ -1431,10 +1431,39 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     bool IsZ88DK =
         MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
 
-    // The z88dk runtime contract excludes NaNs, so ORD/UNO are constant over
-    // its supported finite-value input domain.
+    bool NoNaNs = MI.getFlag(MachineInstr::FmNoNans);
+    Register NaNBool;
+    // math32 comparisons order NaN bit patterns like numbers. Classify each
+    // input first: (NaN, 1.0) gives classes (2, 0), hence unordered=true.
+    // Only an explicit nnan flag permits omitting this correction.
+    if (IsZ88DK && !NoNaNs) {
+      auto NaNClass = MIRBuilder.buildConstant(S16, 2);
+      for (Register Operand : {LHS, RHS}) {
+        Register Class = MRI.createGenericVirtualRegister(S16);
+        if (Helper.createLibcall("\01cm32_sdcc_fpclassify", {Class, I16Ty, 0},
+                                 {{Operand, F32Ty, 0}},
+                                 CallingConv::Z80_SDCCCall0, LocObserver,
+                                 &MI) != LegalizerHelper::Legalized)
+          return false;
+        auto IsNaN = MIRBuilder.buildICmp(CmpInst::ICMP_EQ, S1, Class,
+                                          NaNClass);
+        if (!NaNBool)
+          NaNBool = IsNaN.getReg(0);
+        else
+          NaNBool = MIRBuilder.buildOr(S1, NaNBool, IsNaN).getReg(0);
+      }
+    }
+
     if (Pred == CmpInst::FCMP_ORD || Pred == CmpInst::FCMP_UNO) {
-      if (Fast || IsZ88DK) {
+      if (IsZ88DK && !NoNaNs) {
+        if (Pred == CmpInst::FCMP_ORD)
+          MIRBuilder.buildNot(Dst, NaNBool);
+        else
+          MIRBuilder.buildCopy(Dst, NaNBool);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (Fast || (IsZ88DK && NoNaNs)) {
         MIRBuilder.buildConstant(Dst, Pred == CmpInst::FCMP_ORD ? 1 : 0);
         MI.eraseFromParent();
         return true;
@@ -1469,8 +1498,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     CallingConv::ID LibcallCC =
         IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
 
-    // Existing z88dk helpers cover finite ordered predicates; NaN behavior
-    // is outside the supported runtime contract.
+    // Existing math32 helpers supply the ordered result for non-NaN inputs.
     if (IsZ88DK) {
       const char *FuncName;
       switch (OrderedPred) {
@@ -1496,9 +1524,18 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       MIRBuilder.buildICmp(CmpInst::ICMP_NE, CmpBool, CmpResult, Zero16);
       if (OrderedPred == CmpInst::FCMP_OLE ||
           OrderedPred == CmpInst::FCMP_OGE)
-        MIRBuilder.buildNot(Dst, CmpBool);
-      else
+        CmpBool = MIRBuilder.buildNot(S1, CmpBool).getReg(0);
+
+      // For (NaN, 1.0), discard math32's bitwise ordering: ordered
+      // predicates are false and unordered predicates true.
+      if (NoNaNs)
         MIRBuilder.buildCopy(Dst, CmpBool);
+      else if (IsUnordered)
+        MIRBuilder.buildOr(Dst, CmpBool, NaNBool);
+      else {
+        auto Ordered = MIRBuilder.buildNot(S1, NaNBool);
+        MIRBuilder.buildAnd(Dst, CmpBool, Ordered);
+      }
       MI.eraseFromParent();
       return true;
     }
