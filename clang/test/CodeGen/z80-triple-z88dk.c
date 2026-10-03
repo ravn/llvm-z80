@@ -43,7 +43,7 @@ float fadd(float a, float b) { return a + b; }
 int flt(float a, float b) { return a < b; }
 // Z88DK-LABEL:   _flt:
 // Z88DK:         push hl
-// Z88DK:         call ___cmpsf2
+// Z88DK:         call cm32_sdcc___fslt
 //
 // DEFAULT-LABEL: _flt:
 // DEFAULT:       call ___cmpsf2
@@ -51,7 +51,7 @@ int flt(float a, float b) { return a < b; }
 int to_int(float a) { return (int)a; }
 // Z88DK-LABEL:   _to_int:
 // Z88DK:         push hl
-// Z88DK:         call ___fixsfsi
+// Z88DK:         call cm32_sdcc___fs2sint
 //
 // DEFAULT-LABEL: _to_int:
 // DEFAULT-NOT:   push hl
@@ -60,7 +60,7 @@ int to_int(float a) { return (int)a; }
 float to_float(int a) { return (float)a; }
 // Z88DK-LABEL:   _to_float:
 // Z88DK:         push hl
-// Z88DK:         call ___floatsisf
+// Z88DK:         call cm32_sdcc___slong2fs
 //
 // DEFAULT-LABEL: _to_float:
 // DEFAULT-NOT:   push hl
@@ -70,7 +70,7 @@ float to_float(int a) { return (float)a; }
 double dadd(double a, double b) { return a + b; }
 // Z88DK-LABEL:   _dadd:
 // Z88DK:         push hl
-// Z88DK:         call ___addsf3
+// Z88DK:         call cm32_sdcc_fsadd
 //
 // DEFAULT-LABEL: _dadd:
 // DEFAULT:       call ___adddf3
