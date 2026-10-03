@@ -147,8 +147,14 @@ void Z80AsmPrinter::emitInstruction(const MachineInstr *MI) {
                       "::" + std::to_string(Level) +
                       "::" + std::to_string(ScopeBlock);
         }
-        OutStreamer->emitRawText("\tC_LINE " + Twine(Line) +
-                                ", \"" + FilePart + "\"");
+        // C_LINE uses raw strings: escaping would change the debug filename.
+        if (StringRef(FilePart).find_first_of("\"\r\n") != StringRef::npos)
+          OutContext.reportError(
+              {}, "C_LINE cannot represent quotes or line breaks in debug "
+                  "filenames or function names");
+        else
+          OutStreamer->emitRawText("\tC_LINE " + Twine(Line) +
+                                  ", \"" + FilePart + "\"");
         LastCLineNum = Line;
         LastCLineFile = File;
         LastCLineScope = Scope;
