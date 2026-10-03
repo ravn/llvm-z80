@@ -52,6 +52,13 @@ PR #59 lukkes — flagets funktion er absorberet i triplen.
 
 ## 3. Native libcall-navne
 
+**Symbolencoding (2026-10-03):** z80asm-navne med punktummer length-encodes
+efter LLVM's symbolpræfikser: `_test.counter` -> `L5__test7_counter` og
+`L_.str.1` -> `L2_L_3_str1_1`. Navne uden punktummer ændres ikke, så
+almindelige C-/runtime-navne bevarer ABI'et. Længder tæller bytes og
+bevarer tomme dele. Kollisionsgarantien omfatter almindelige C-symboler,
+ikke brugerdefinerede eksplicitte asm-navne.
+
 Mekanisme: rå `MCSymbol` via `MCContext::getOrCreateSymbol(StringRef)` — IKKE `GetExternalSymbolSymbol` (Mach-O tilføjer `_`-præfiks).
 
 | LLVM-navn | z88dk-navn | ABI |

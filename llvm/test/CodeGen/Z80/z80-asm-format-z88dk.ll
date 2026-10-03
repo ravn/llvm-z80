@@ -75,7 +75,7 @@ define void @with_lifetime() {
 @var_bss = dso_local global [10 x i8] zeroinitializer
 
 ; CHECK:        SECTION rodata_compiler
-; CHECK-NEXT: L__str:
+; CHECK-NEXT: L2_L_3_str:
 ; CHECK-NEXT:   DEFM "test\000"
 ; CHECK:        GLOBAL _long
 ; CHECK-NEXT: _long:
@@ -88,9 +88,8 @@ define void @with_lifetime() {
 ; CHECK-NEXT:   GLOBAL _test_counter
 ; CHECK-NEXT: _test_counter:
 @test_counter = global i16 1
-; Internal symbols: '.' replaced with '_'. Use a distinct base name to
-; avoid collision with a global spelled the same.
-; CHECK:      _static_counter:
+; Internal dotted names are length-encoded after the C prefix.
+; CHECK:      L7__static7_counter:
 ; CHECK-NEXT:   DEFW 7
 @static.counter = internal global i16 7
 

@@ -29,15 +29,26 @@ MCSection *Z80TargetObjectFile::getExplicitSectionGlobal(
   return TargetLoweringObjectFileELF::getExplicitSectionGlobal(GO, SK, TM);
 }
 
-// z80asm reads '.' as an operator so it cannot appear in symbol names.
-// Replace '.' with '_': z80asm allows '_' in identifiers and LLVM's
-// private literals (.str, .str.1 …) never conflict with user C names
-// because C identifiers cannot contain '.'. '@' was the previous
-// replacement but z80asm treats 'X@Y' as a local-label composition
-// (global X, local Y), causing "local label with global prefix" errors
-// for LLVM-emitted names like L_@str.
-static void replaceDots(SmallVectorImpl<char> &Name) {
-  llvm::replace(Name, '.', '_');
+// z80asm treats '.' as an operator. Encode each dot-separated part of the
+// already-prefixed name as length_part: _test.counter -> L5__test7_counter.
+// Lengths preserve boundaries; L<digit> stays separate from C's _ and L_.
+static void encodeDottedName(SmallVectorImpl<char> &Name) {
+  StringRef Original(Name.data(), Name.size());
+  if (!Original.contains('.'))
+    return;
+
+  SmallString<128> Encoded("L");
+  do {
+    auto [Part, Rest] = Original.split('.');
+    Encoded += Twine(Part.size()).str();
+    Encoded += '_';
+    Encoded += Part;
+    // Keep empty parts, including the last part of a trailing dot.
+    if (!Original.contains('.'))
+      break;
+    Original = Rest;
+  } while (true);
+  Name.assign(Encoded.begin(), Encoded.end());
 }
 
 MCSymbol *Z80TargetObjectFile::getTargetSymbol(const GlobalValue *GV,
@@ -47,7 +58,7 @@ MCSymbol *Z80TargetObjectFile::getTargetSymbol(const GlobalValue *GV,
 
   SmallString<128> NameStr;
   TM.getNameWithPrefix(NameStr, GV, getMangler(), /*MayAlwaysUsePrivate=*/true);
-  replaceDots(NameStr);
+  encodeDottedName(NameStr);
   return getContext().getOrCreateSymbol(NameStr);
 }
 
@@ -56,5 +67,5 @@ void Z80TargetObjectFile::getNameWithPrefix(SmallVectorImpl<char> &OutName,
                                             const TargetMachine &TM) const {
   TargetLoweringObjectFileELF::getNameWithPrefix(OutName, GV, TM);
   if (TM.getMCAsmInfo().isZ88DK())
-    replaceDots(OutName);
+    encodeDottedName(OutName);
 }
