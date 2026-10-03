@@ -35,7 +35,7 @@ void test_func(char c) {
 float fadd(float a, float b) { return a + b; }
 // Z88DK-LABEL:   _fadd:
 // Z88DK:         push hl
-// Z88DK:         call ___addsf3
+// Z88DK:         call cm32_sdcc_fsadd
 //
 // DEFAULT-LABEL: _fadd:
 // DEFAULT:       call ___addsf3
