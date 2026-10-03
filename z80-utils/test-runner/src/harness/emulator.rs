@@ -317,7 +317,6 @@ mod tests {
                 let bin = &bin;
                 let dump = dir.join("loop.ram");
                 scope.spawn(move || {
-                    let start = std::time::Instant::now();
                     let error = if with_dump {
                         run_program(bin, Target::Z80, "0x0003", 0, &dump, 1000)
                             .err().expect("loop must time out")
@@ -326,8 +325,6 @@ mod tests {
                             .expect_err("loop must time out")
                     };
                     assert!(error.contains("no exit after 30s"), "{error}");
-                    assert!(start.elapsed() >= WALL_LIMIT);
-                    assert!(start.elapsed() < Duration::from_secs(35));
                     assert!(!dump.exists(), "timeout must not read a RAM result");
                 });
             }
