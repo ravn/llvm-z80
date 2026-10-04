@@ -76,6 +76,7 @@ jobs:
             clang/test/CodeGen/z80-z88dk-libc-builtin-cc.c \
             clang/test/CodeGen/z80-triple-z88dk.c \
             clang/test/CodeGen/z80-default-calling-conv.c \
+            clang/test/CodeGen/z80-default-calling-conv-builtins.c \
             clang/test/Driver/z80-default-calling-conv.c \
             clang/test/Frontend/z80-default-calling-conv-cxx.cpp \
             clang/test/Frontend/z80-default-calling-conv-invalid-target.c
