@@ -59,6 +59,12 @@ public:
   bool allowsLargerPreferedTypeAlignment() const override { return false; }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
+
+  CallingConv getDefaultCallingConv() const override {
+    return getTriple().getEnvironment() == llvm::Triple::Z88DK
+               ? CC_Z80SDCCCall0
+               : CC_C;
+  }
 };
 
 } // namespace targets
