@@ -31,7 +31,10 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsZ80.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <optional>
 
@@ -317,6 +320,43 @@ bool Z80InstructionSelector::selectRuntimeLibCall16(MachineInstr &MI,
       !RBI.constrainGenericRegister(Src2Reg, Z80::GR16RegClass, MRI))
     return false;
 
+  // z88dk: call l_* cores directly (register protocol, no Mach-O '_' prefix).
+  // __mulhi3  → l_mulu_16_16x16  : HL×DE → HL
+  // The cores return HL=quotient and DE=remainder, unlike compiler-rt.
+  // For -30000 / 7, HL=-4285 and DE=-5; modulo must read DE.
+  if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+    struct Z88DKMapping { const char *From; const char *To; Register ResultReg; };
+    static const Z88DKMapping Mappings[] = {
+      {"__mulhi3",  "l_mulu_16_16x16", Z80::HL},
+      {"__divhi3",  "l_divs_16_16x16", Z80::HL},
+      {"__modhi3",  "l_divs_16_16x16", Z80::DE},
+      {"__udivhi3", "l_divu_16_16x16", Z80::HL},
+      {"__umodhi3", "l_divu_16_16x16", Z80::DE},
+    };
+    for (const auto &Map : Mappings) {
+      if (StringRef(FuncName) != Map.From)
+        continue;
+      MCSymbol *Sym = MF.getContext().getOrCreateSymbol(StringRef(Map.To));
+      const DebugLoc &DL = MI.getDebugLoc();
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+          .addReg(Src1Reg);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::DE)
+          .addReg(Src2Reg);
+      BuildMI(MBB, MI, DL, TII.get(Z80::CALL_nn))
+          .addSym(Sym)
+          .addUse(Z80::HL, RegState::Implicit)
+          .addUse(Z80::DE, RegState::Implicit)
+          .addDef(Z80::HL, RegState::ImplicitDefine)
+          .addDef(Z80::DE, RegState::ImplicitDefine)
+          .addDef(Z80::BC, RegState::ImplicitDefine)
+          .addDef(Z80::AF, RegState::ImplicitDefine);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+          .addReg(Map.ResultReg);
+      MI.eraseFromParent();
+      return true;
+    }
+  }
+
   Module *M = const_cast<Module *>(MF.getFunction().getParent());
   FunctionCallee Func = M->getOrInsertFunction(
       FuncName, FunctionType::get(Type::getInt16Ty(M->getContext()),
@@ -447,6 +487,24 @@ bool Z80InstructionSelector::selectUDivMod8(MachineInstr &MI, bool IsDiv) {
         !RBI.constrainGenericRegister(Src1Reg, Z80::GR8RegClass, MRI) ||
         !RBI.constrainGenericRegister(Src2Reg, Z80::GR8RegClass, MRI))
       return false;
+
+    if (!MF.getSubtarget<Z80Subtarget>().hasSM83() &&
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+      // The existing core takes L/E and returns L=quotient, E=remainder.
+      // 200/7 therefore returns L=28, E=4; A is only scratch.
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::L)
+          .addReg(Src1Reg);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::E)
+          .addReg(Src2Reg);
+      BuildMI(MBB, MI, DL, TII.get(Z80::CALL_nn))
+          .addSym(MF.getContext().getOrCreateSymbol("l_fast_divu_8_8x8"))
+          .addUse(Z80::L, RegState::Implicit)
+          .addUse(Z80::E, RegState::Implicit);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), DstReg)
+          .addReg(IsDiv ? Z80::L : Z80::E);
+      MI.eraseFromParent();
+      return true;
+    }
 
     const char *FuncName = IsDiv ? "__udivqi3" : "__umodqi3";
     Module *M = const_cast<Module *>(MF.getFunction().getParent());
@@ -3939,6 +3997,36 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       return false;
 
     bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
+
+    // z88dk: call l_div[su]_16_16x16 directly (register protocol).
+    // HL=dividend, DE=divisor -> HL=quotient, DE=remainder.
+    // Use getOrCreateSymbol (not getOrInsertFunction) to avoid Mach-O '_' prefix.
+    if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+      const char *Z88DKName =
+          IsSigned ? "l_divs_16_16x16" : "l_divu_16_16x16";
+      MCSymbol *Sym =
+          MF.getContext().getOrCreateSymbol(StringRef(Z88DKName));
+      const DebugLoc &DL = MI.getDebugLoc();
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::HL)
+          .addReg(LHSReg);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), Z80::DE)
+          .addReg(RHSReg);
+      BuildMI(MBB, MI, DL, TII.get(Z80::CALL_nn))
+          .addSym(Sym)
+          .addUse(Z80::HL, RegState::Implicit)
+          .addUse(Z80::DE, RegState::Implicit)
+          .addDef(Z80::DE, RegState::Implicit)
+          .addDef(Z80::HL, RegState::Implicit)
+          .addDef(Z80::BC, RegState::Implicit)
+          .addDef(Z80::AF, RegState::Implicit);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), QuotReg)
+          .addReg(Z80::HL);
+      BuildMI(MBB, MI, DL, TII.get(TargetOpcode::COPY), RemReg)
+          .addReg(Z80::DE);
+      MI.eraseFromParent();
+      return true;
+    }
+
     const char *FuncName = IsSigned ? "__divmodhi4" : "__udivmodhi4";
     Module *M = const_cast<Module *>(MF.getFunction().getParent());
     FunctionCallee Func = M->getOrInsertFunction(

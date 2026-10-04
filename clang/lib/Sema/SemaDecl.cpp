@@ -3897,6 +3897,7 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
   bool RequiresAdjustment = false;
 
   if (OldTypeInfo.getCC() != NewTypeInfo.getCC()) {
+    const auto &Triple = Context.getTargetInfo().getTriple();
     FunctionDecl *First = Old->getFirstDecl();
     const FunctionType *FT =
         First->getType().getCanonicalType()->castAs<FunctionType>();
@@ -3907,6 +3908,15 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
       // there but not here.
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
+    } else if (Triple.isZ80() &&
+               Triple.getEnvironment() == llvm::Triple::Z88DK &&
+               Old->isImplicit() && Old->getBuiltinID() &&
+               Context.BuiltinInfo.isPredefinedLibFunction(Old->getBuiltinID())) {
+      // Explicit library declarations override the implicit builtin ABI.
+      OldTypeInfo = OldTypeInfo.withCallingConv(NewTypeInfo.getCC());
+      OldType = Context.adjustFunctionType(OldType, OldTypeInfo);
+      OldQType = QualType(OldType, 0);
+      Old->setType(OldQType);
     } else if (Old->getBuiltinID()) {
       // Builtin attribute isn't propagated to the new one yet at this point,
       // so we check if the old one is a builtin.

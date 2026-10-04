@@ -1522,6 +1522,7 @@ FunctionCallee llvm::getOrInsertLibFunc(Module *M, const TargetLibraryInfo &TLI,
   // of the caller to have called isLibFuncEmittable() first.
   Function *F = cast<Function>(C.getCallee());
   assert(F->getFunctionType() == T && "Function type does not match.");
+
   switch (TheLibFunc) {
   case LibFunc_fputc:
   case LibFunc_putchar:

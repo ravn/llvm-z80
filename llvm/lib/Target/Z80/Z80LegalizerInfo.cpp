@@ -24,14 +24,88 @@
 #include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/CodeGen/LibcallLoweringInfo.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IntrinsicsZ80.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
+
+// RTLIB owns the helper name and ABI, independently of the caller's ABI.
+static LegalizerHelper::LegalizeResult createRuntimeCall(
+    LegalizerHelper &Helper,
+    RTLIB::Libcall Call,
+    const CallLowering::ArgInfo &Result,
+    ArrayRef<CallLowering::ArgInfo> Args,
+    LostDebugLocObserver &LocObserver,
+    MachineInstr &MI)
+{
+  const auto *Libcalls = Helper.getLibcallLoweringInfo();
+  if (!Libcalls) {
+      return LegalizerHelper::UnableToLegalize;
+  }
+  RTLIB::LibcallImpl Impl = Libcalls->getLibcallImpl(Call);
+  if (Impl == RTLIB::Unsupported) {
+    return LegalizerHelper::UnableToLegalize;
+  }
+  StringRef Name = RTLIB::RuntimeLibcallsInfo::getLibcallImplName(Impl);
+  MachineFunction &MF = Helper.MIRBuilder.getMF();
+  const char *Symbol = Name.data();
+  if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+    // \01 prevents an extra '_'; MF owns the name retained by the operand.
+    Symbol = MF.createExternalSymbolName(("\01" + Name).str());
+  }
+  const CallingConv::ID CC = Libcalls->getLibcallImplCallingConv(Impl);
+  return Helper.createLibcall(Symbol, Result, Args, CC, LocObserver, &MI);
+}
+
+// Keep the dividend copies alive before EXX, and invalidate the main bank
+// when the alternate pair values become visible.
+static void exchangeZ88DKBanks(MachineIRBuilder &B) {
+  auto Exchange = B.buildInstr(Z80::EXX);
+  for (MCRegister R : {Z80::DE, Z80::HL}) {
+    Exchange.addUse(R, RegState::Implicit);
+    Exchange.addDef(R, RegState::Implicit);
+  }
+  Exchange.addDef(Z80::BC, RegState::Implicit);
+}
+
+// Existing z88dk i32 cores consume DE:HL in each bank, unlike Clang's
+// HL:DE layout. For 1000000/7, main DE:HL returns 142857 and the alternate
+// bank returns 1. Preserve IX even when the caller uses a dynamic frame.
+static void callZ88DKBinary32(MachineIRBuilder &B, StringRef Name,
+                             Register LHS, Register RHS) {
+  LLT S16 = LLT::scalar(16);
+  auto Left = B.buildUnmerge(S16, LHS);
+  auto Right = B.buildUnmerge(S16, RHS);
+  B.buildCopy(Register(Z80::DE), Left.getReg(1));
+  B.buildCopy(Register(Z80::HL), Left.getReg(0));
+  exchangeZ88DKBanks(B);
+  B.buildCopy(Register(Z80::DE), Right.getReg(1));
+  B.buildCopy(Register(Z80::HL), Right.getReg(0));
+  B.buildInstr(Z80::PUSH_IX);
+  auto *Sym = B.getMF().getContext().getOrCreateSymbol(Name);
+  B.buildInstr(Z80::CALL_nn)
+      .addSym(Sym)
+      .addUse(Z80::HL, RegState::Implicit)
+      .addUse(Z80::DE, RegState::Implicit)
+      .addDef(Z80::IX, RegState::Implicit);
+  B.buildInstr(Z80::POP_IX);
+}
+
+// Capture the main result before EXX exposes the alternate remainder.
+// The example above merges low=0x2e09, high=2 into quotient=142857.
+static void readZ88DKResult32(MachineIRBuilder &B, Register Dst) {
+  LLT S16 = LLT::scalar(16);
+  auto Lo = B.buildCopy(S16, Register(Z80::HL));
+  auto Hi = B.buildCopy(S16, Register(Z80::DE));
+  B.buildMergeLikeInstr(Dst, {Lo.getReg(0), Hi.getReg(0)});
+}
 
 /// Check if all three fast-math flags (nnan, ninf, nsz) are set.
 /// If only some are set, emit a one-time remark so the user knows why the
@@ -257,7 +331,8 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder(G_MUL)
       .legalFor({S8, S16})
       .scalarize(0)
-      .libcallFor({S32, S64})
+      .customFor({S32})
+      .libcallFor({S64})
       .narrowScalarIf(LegalityPredicates::typeIs(0, S128),
                       LegalizeMutations::changeTo(0, S64))
       .widenScalarToNextPow2(0)
@@ -291,7 +366,8 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   getActionDefinitionsBuilder({G_UDIV, G_UREM, G_SDIV, G_SREM})
       .legalFor({S8, S16})
       .scalarize(0)
-      .libcallFor({S32, S64, S128})
+      .customFor({S32})
+      .libcallFor({S64, S128})
       .widenScalarToNextPow2(0)
       .clampScalar(0, S8, S128);
 
@@ -566,12 +642,14 @@ Z80LegalizerInfo::Z80LegalizerInfo(const Z80Subtarget &STI) {
   // reference-compiles policy as the f64 routines.
   getActionDefinitionsBuilder({G_FPTOSI, G_FPTOUI})
       .scalarize(0)
+      .customFor({{S32, S32}})
       .libcallForCartesianProduct({S32, S64, S128}, {S32, S64})
       .minScalar(0, S32)
       .minScalar(1, S32);
 
   getActionDefinitionsBuilder({G_SITOFP, G_UITOFP})
       .scalarize(0)
+      .customFor({{S32, S32}})
       .libcallForCartesianProduct({S32, S64}, {S32, S64, S128})
       .minScalar(0, S32)
       .minScalar(1, S32);
@@ -912,6 +990,64 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     return true;
   }
 
+  case TargetOpcode::G_MUL:
+  case TargetOpcode::G_SDIV:
+  case TargetOpcode::G_UDIV:
+  case TargetOpcode::G_SREM:
+  case TargetOpcode::G_UREM: {
+    Register DstReg = MI.getOperand(0).getReg();
+    if (MRI.getType(DstReg).getSizeInBits() != 32)
+      return false;
+    RTLIB::Libcall Call;
+    const char *Core;
+    switch (MI.getOpcode()) {
+    case TargetOpcode::G_MUL:
+      Call = RTLIB::MUL_I32;
+      Core = "l_mulu_32_32x32";
+      break;
+    case TargetOpcode::G_SDIV:
+      Call = RTLIB::SDIV_I32;
+      Core = "l_divs_32_32x32";
+      break;
+    case TargetOpcode::G_UDIV:
+      Call = RTLIB::UDIV_I32;
+      Core = "l_divu_32_32x32";
+      break;
+    case TargetOpcode::G_SREM:
+      Call = RTLIB::SREM_I32;
+      Core = "l_divs_32_32x32";
+      break;
+    case TargetOpcode::G_UREM:
+      Call = RTLIB::UREM_I32;
+      Core = "l_divu_32_32x32";
+      break;
+    default:
+      llvm_unreachable("unexpected opcode");
+    }
+    Register LHS = MI.getOperand(1).getReg();
+    Register RHS = MI.getOperand(2).getReg();
+    MachineFunction &MF = MIRBuilder.getMF();
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+    if (IsZ88DK && !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
+      callZ88DKBinary32(MIRBuilder, Core, LHS, RHS);
+      // Division cores return remainder in the alternate bank.
+      if (MI.getOpcode() == TargetOpcode::G_SREM ||
+          MI.getOpcode() == TargetOpcode::G_UREM)
+        exchangeZ88DKBanks(MIRBuilder);
+      readZ88DKResult32(MIRBuilder, DstReg);
+    } else {
+      auto &Ctx = MF.getFunction().getContext();
+      Type *I32Ty = Type::getInt32Ty(Ctx);
+      if (createRuntimeCall(Helper, Call, {DstReg, I32Ty, 0},
+                            {{LHS, I32Ty, 0}, {RHS, I32Ty, 1}},
+                            LocObserver, MI) != LegalizerHelper::Legalized)
+        return false;
+    }
+    MI.eraseFromParent();
+    return true;
+  }
+
   case TargetOpcode::G_UDIVREM:
   case TargetOpcode::G_SDIVREM: {
     // i16 is selected in ISel.
@@ -924,17 +1060,30 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     bool IsSigned = MI.getOpcode() == TargetOpcode::G_SDIVREM;
     Register RemReg = MI.getOperand(1).getReg();
     MachineFunction &MF = MIRBuilder.getMF();
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
+    if (IsZ88DK && !MF.getSubtarget<Z80Subtarget>().hasSM83()) {
+      callZ88DKBinary32(MIRBuilder,
+                        IsSigned ? "l_divs_32_32x32" : "l_divu_32_32x32",
+                        MI.getOperand(2).getReg(), MI.getOperand(3).getReg());
+      readZ88DKResult32(MIRBuilder, QuotReg);
+      exchangeZ88DKBanks(MIRBuilder);
+      readZ88DKResult32(MIRBuilder, RemReg);
+      MI.eraseFromParent();
+      return true;
+    }
     LLVMContext &Ctx = MF.getFunction().getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
+    RTLIB::Libcall Call = IsSigned ? RTLIB::SDIVREM_I32 : RTLIB::UDIVREM_I32;
     int FI = MF.getFrameInfo().CreateStackObject(4, Align(1),
                                                  /*isSpillSlot=*/false);
     auto Slot = MIRBuilder.buildFrameIndex(LLT::pointer(0, 16), FI);
-    if (Helper.createLibcall(
-            IsSigned ? "__divmodsi4" : "__udivmodsi4", {QuotReg, I32Ty, 0},
+    if (createRuntimeCall(
+            Helper, Call, {QuotReg, I32Ty, 0},
             {{MI.getOperand(2).getReg(), I32Ty, 0},
              {MI.getOperand(3).getReg(), I32Ty, 1},
              {Slot.getReg(0), PointerType::get(Ctx, 0), 2}},
-            CallingConv::C, LocObserver, &MI) != LegalizerHelper::Legalized)
+            LocObserver, MI) != LegalizerHelper::Legalized)
       return false;
     auto *MMO =
         MF.getMachineMemOperand(MachinePointerInfo::getFixedStack(MF, FI),
@@ -1039,27 +1188,27 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     Register RHS = MI.getOperand(2).getReg();
 
     bool Fast = hasAllFastFlags(MI, MIRBuilder);
-    const char *FuncName;
+    RTLIB::Libcall Call;
     switch (MI.getOpcode()) {
     case TargetOpcode::G_FADD:
-      FuncName = Fast ? "__addsf3_fast" : "__addsf3";
+      Call = Fast ? RTLIB::FAST_ADD_F32 : RTLIB::ADD_F32;
       break;
     case TargetOpcode::G_FSUB:
-      FuncName = Fast ? "__subsf3_fast" : "__subsf3";
+      Call = Fast ? RTLIB::FAST_SUB_F32 : RTLIB::SUB_F32;
       break;
     case TargetOpcode::G_FMUL:
-      FuncName = Fast ? "__mulsf3_fast" : "__mulsf3";
+      Call = Fast ? RTLIB::FAST_MUL_F32 : RTLIB::MUL_F32;
       break;
     case TargetOpcode::G_FDIV:
-      FuncName = Fast ? "__divsf3_fast" : "__divsf3";
+      Call = Fast ? RTLIB::FAST_DIV_F32 : RTLIB::DIV_F32;
       break;
     default:
       llvm_unreachable("unexpected opcode");
     }
 
-    auto Status = Helper.createLibcall(FuncName, {Dst, F32Ty, 0},
-                                       {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
-                                       CallingConv::C, LocObserver, &MI);
+    auto Status = createRuntimeCall(Helper, Call, {Dst, F32Ty, 0},
+                                    {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
+                                    LocObserver, MI);
     if (Status != LegalizerHelper::Legalized)
       return false;
     MI.eraseFromParent();
@@ -1281,11 +1430,42 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     LLT S1 = LLT::scalar(1);
 
     bool Fast = hasAllFastFlags(MI, MIRBuilder);
+    bool IsZ88DK =
+        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
 
-    // FCMP_ORD/UNO: only need __unordsf2.
+    bool NoNaNs = MI.getFlag(MachineInstr::FmNoNans);
+    Register NaNBool;
+    // math32 comparisons order NaN bit patterns like numbers. Classify each
+    // input first: (NaN, 1.0) gives classes (2, 0), hence unordered=true.
+    // Only an explicit nnan flag permits omitting this correction.
+    if (IsZ88DK && !NoNaNs) {
+      auto NaNClass = MIRBuilder.buildConstant(S16, 2);
+      for (Register Operand : {LHS, RHS}) {
+        Register Class = MRI.createGenericVirtualRegister(S16);
+        if (Helper.createLibcall("\01cm32_sdcc_fpclassify", {Class, I16Ty, 0},
+                                 {{Operand, F32Ty, 0}},
+                                 CallingConv::Z80_SDCCCall0, LocObserver,
+                                 &MI) != LegalizerHelper::Legalized)
+          return false;
+        auto IsNaN = MIRBuilder.buildICmp(CmpInst::ICMP_EQ, S1, Class,
+                                          NaNClass);
+        if (!NaNBool)
+          NaNBool = IsNaN.getReg(0);
+        else
+          NaNBool = MIRBuilder.buildOr(S1, NaNBool, IsNaN).getReg(0);
+      }
+    }
+
     if (Pred == CmpInst::FCMP_ORD || Pred == CmpInst::FCMP_UNO) {
-      if (Fast) {
-        // nnan+ninf+nsz: ORD is always true, UNO is always false.
+      if (IsZ88DK && !NoNaNs) {
+        if (Pred == CmpInst::FCMP_ORD)
+          MIRBuilder.buildNot(Dst, NaNBool);
+        else
+          MIRBuilder.buildCopy(Dst, NaNBool);
+        MI.eraseFromParent();
+        return true;
+      }
+      if (Fast || (IsZ88DK && NoNaNs)) {
         MIRBuilder.buildConstant(Dst, Pred == CmpInst::FCMP_ORD ? 1 : 0);
         MI.eraseFromParent();
         return true;
@@ -1315,6 +1495,48 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     // Map unordered predicates to their ordered equivalents.
     CmpInst::Predicate OrderedPred =
         IsUnordered ? CmpInst::getOrderedPredicate(Pred) : Pred;
+
+    // Existing math32 helpers supply the ordered result for non-NaN inputs.
+    if (IsZ88DK) {
+      const char *FuncName;
+      switch (OrderedPred) {
+      case CmpInst::FCMP_OEQ: FuncName = "\01cm32_sdcc___fseq"; break;
+      case CmpInst::FCMP_ONE: FuncName = "\01cm32_sdcc___fsneq"; break;
+      case CmpInst::FCMP_OLT:
+      case CmpInst::FCMP_OGE: FuncName = "\01cm32_sdcc___fslt"; break;
+      case CmpInst::FCMP_OGT:
+      case CmpInst::FCMP_OLE: FuncName = "\01cm32_sdcc___fsgt"; break;
+      default:
+        return false;
+      }
+
+      Register CmpResult = MRI.createGenericVirtualRegister(S16);
+      if (Helper.createLibcall(FuncName, {CmpResult, I16Ty, 0},
+                               {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
+                               CallingConv::Z80_SDCCCall0, LocObserver,
+                               &MI) != LegalizerHelper::Legalized)
+        return false;
+
+      Register CmpBool = MRI.createGenericVirtualRegister(S1);
+      auto Zero16 = MIRBuilder.buildConstant(S16, 0);
+      MIRBuilder.buildICmp(CmpInst::ICMP_NE, CmpBool, CmpResult, Zero16);
+      if (OrderedPred == CmpInst::FCMP_OLE ||
+          OrderedPred == CmpInst::FCMP_OGE)
+        CmpBool = MIRBuilder.buildNot(S1, CmpBool).getReg(0);
+
+      // For (NaN, 1.0), discard math32's bitwise ordering: ordered
+      // predicates are false and unordered predicates true.
+      if (NoNaNs)
+        MIRBuilder.buildCopy(Dst, CmpBool);
+      else if (IsUnordered)
+        MIRBuilder.buildOr(Dst, CmpBool, NaNBool);
+      else {
+        auto Ordered = MIRBuilder.buildNot(S1, NaNBool);
+        MIRBuilder.buildAnd(Dst, CmpBool, Ordered);
+      }
+      MI.eraseFromParent();
+      return true;
+    }
 
     const char *LibcallName;
     CmpInst::Predicate ICmpPred;
@@ -1386,6 +1608,54 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     MI.eraseFromParent();
     return true;
   }
+
+  case TargetOpcode::G_FPTOSI:
+  case TargetOpcode::G_FPTOUI:
+  case TargetOpcode::G_SITOFP:
+  case TargetOpcode::G_UITOFP: {
+    MachineFunction &MF = MIRBuilder.getMF();
+    auto &Ctx = MF.getFunction().getContext();
+    Type *F32Ty = Type::getFloatTy(Ctx);
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    Register Dst = MI.getOperand(0).getReg();
+    Register Src = MI.getOperand(1).getReg();
+
+    RTLIB::Libcall Call;
+    Type *DstTy, *SrcTy;
+    switch (MI.getOpcode()) {
+    case TargetOpcode::G_FPTOSI:
+      Call = RTLIB::FPTOSINT_F32_I32;
+      DstTy = I32Ty;
+      SrcTy = F32Ty;
+      break;
+    case TargetOpcode::G_FPTOUI:
+      Call = RTLIB::FPTOUINT_F32_I32;
+      DstTy = I32Ty;
+      SrcTy = F32Ty;
+      break;
+    case TargetOpcode::G_SITOFP:
+      Call = RTLIB::SINTTOFP_I32_F32;
+      DstTy = F32Ty;
+      SrcTy = I32Ty;
+      break;
+    case TargetOpcode::G_UITOFP:
+      Call = RTLIB::UINTTOFP_I32_F32;
+      DstTy = F32Ty;
+      SrcTy = I32Ty;
+      break;
+    default:
+      llvm_unreachable("unexpected opcode");
+    }
+
+    auto Status =
+        createRuntimeCall(Helper, Call, {Dst, DstTy, 0}, {{Src, SrcTy, 0}},
+                          LocObserver, MI);
+    if (Status != LegalizerHelper::Legalized)
+      return false;
+    MI.eraseFromParent();
+    return true;
+  }
+
 
   case TargetOpcode::G_MEMCPY: {
     // Z80 copies a block with LDIR: HL = source, DE = destination, BC = count,
@@ -1512,6 +1782,22 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       Dir = Direction::LDIR;
     }
     if (Dir == Direction::Unknown) {
+      // z88dk: call asm_memmove directly (HL=src, DE=dst, BC=count).
+      // Handles overlap internally via direction check + LDIR/LDDR.
+      MachineFunction &MF = MIRBuilder.getMF();
+      if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+        MCSymbol *Sym = MF.getContext().getOrCreateSymbol("asm_memmove");
+        MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+        MIRBuilder.buildCopy(Register(Z80::HL), SrcPtr);
+        MIRBuilder.buildCopy(Register(Z80::DE), DstPtr);
+        MIRBuilder.buildCopy(Register(Z80::BC), Size);
+        MIRBuilder.buildInstr(Z80::CALL_nn).addSym(Sym)
+            .addUse(Z80::HL, RegState::Implicit)
+            .addUse(Z80::DE, RegState::Implicit)
+            .addUse(Z80::BC, RegState::Implicit);
+        MI.eraseFromParent();
+        return true;
+      }
       auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
       if (Result != LegalizerHelper::Legalized)
         return false;
@@ -1582,13 +1868,32 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
   }
 
   case TargetOpcode::G_MEMSET: {
-    // C memset takes (void*, int, size_t). On Z80, int = i16.
-    // G_MEMSET has i8 val operand which must be promoted to i16
-    // so the calling convention assigns it to DE (2nd i16 reg param)
-    // instead of treating it as an i8 arg.
+    Register DstPtr = MI.getOperand(0).getReg();
     Register ValReg = MI.getOperand(1).getReg();
+    Register Size   = MI.getOperand(2).getReg();
     LLT ValTy = MRI.getType(ValReg);
+    MachineFunction &MF = MIRBuilder.getMF();
 
+    // z88dk: call asm_memset directly (HL=dst, DE=val(E=low byte), BC=count).
+    if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+      MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
+      // Zero-extend val to i16 so it fits DE; asm_memset reads only E.
+      Register Val16 = ValReg;
+      if (ValTy.getSizeInBits() < 16)
+        Val16 = MIRBuilder.buildZExt(LLT::scalar(16), ValReg).getReg(0);
+      MCSymbol *Sym = MF.getContext().getOrCreateSymbol("asm_memset");
+      MIRBuilder.buildCopy(Register(Z80::HL), DstPtr);
+      MIRBuilder.buildCopy(Register(Z80::DE), Val16);
+      MIRBuilder.buildCopy(Register(Z80::BC), Size);
+      MIRBuilder.buildInstr(Z80::CALL_nn).addSym(Sym)
+          .addUse(Z80::HL, RegState::Implicit)
+          .addUse(Z80::DE, RegState::Implicit)
+          .addUse(Z80::BC, RegState::Implicit);
+      MI.eraseFromParent();
+      return true;
+    }
+
+    // Non-z88dk: promote i8 val to i16 then use generic memset libcall.
     if (ValTy.getSizeInBits() < 16) {
       MIRBuilder.setInsertPt(*MI.getParent(), MI.getIterator());
       auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);

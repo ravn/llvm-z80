@@ -4512,20 +4512,67 @@ def Z80MemCalls : LibcallsWithCC<
   (add __z80_memcpy_builtin, __z80_memmove_builtin, __z80_memset_builtin),
   Z80_BUILTIN>;
 
-def isZ80Family : RuntimeLibcallAvailability<(any_of IsArchZ80, IsArchSM83)>;
+def IsEnvironmentZ88DK
+    : LibcallPredicate<[{TT.getEnvironment() == Triple::Z88DK}]>;
+
+defset list<RuntimeLibcallImpl> Z80FastFloatCalls = {
+  def __addsf3_fast : RuntimeLibcallImpl<FAST_ADD_F32>;
+  def __subsf3_fast : RuntimeLibcallImpl<FAST_SUB_F32>;
+  def __mulsf3_fast : RuntimeLibcallImpl<FAST_MUL_F32>;
+  def __divsf3_fast : RuntimeLibcallImpl<FAST_DIV_F32>;
+}
+
+// Replace only ordinary helpers; memory workers and other libcalls retain
+// their existing conventions. EXX integer cores are lowered separately.
+defvar Z80IntegerCalls =
+    (add __mulsi3, __divsi3, __udivsi3, __modsi3, __umodsi3,
+         __divmodsi4, __udivmodsi4);
+defvar Z80OrdinaryCalls =
+    (add Z80IntegerCalls,
+         __addsf3, __subsf3, __mulsf3, __divsf3,
+         __fixsfsi, __fixunssfsi, __floatsisf, __floatunsisf);
+
+defset list<RuntimeLibcallImpl> Z88DKOrdinaryCalls = {
+  def cm32_sdcc_fsadd : RuntimeLibcallImpl<ADD_F32>;
+  def cm32_sdcc_fssub : RuntimeLibcallImpl<SUB_F32>;
+  def cm32_sdcc_fsmul : RuntimeLibcallImpl<MUL_F32>;
+  def cm32_sdcc_fsdiv : RuntimeLibcallImpl<DIV_F32>;
+  def cm32_sdcc_fsadd_fast : RuntimeLibcallImpl<FAST_ADD_F32, "cm32_sdcc_fsadd">;
+  def cm32_sdcc_fssub_fast : RuntimeLibcallImpl<FAST_SUB_F32, "cm32_sdcc_fssub">;
+  def cm32_sdcc_fsmul_fast : RuntimeLibcallImpl<FAST_MUL_F32, "cm32_sdcc_fsmul">;
+  def cm32_sdcc_fsdiv_fast : RuntimeLibcallImpl<FAST_DIV_F32, "cm32_sdcc_fsdiv">;
+  def cm32_sdcc___fs2sint : RuntimeLibcallImpl<FPTOSINT_F32_I32>;
+  def cm32_sdcc___fs2uint : RuntimeLibcallImpl<FPTOUINT_F32_I32>;
+  def cm32_sdcc___slong2fs : RuntimeLibcallImpl<SINTTOFP_I32_F32>;
+  def cm32_sdcc___ulong2fs : RuntimeLibcallImpl<UINTTOFP_I32_F32>;
+}
 
 // The legacy default arm, with the three block routines swapped for the
 // register-argument forms.  Its 128-bit and fp128 long-double sets are left
 // out; neither predicate holds on a 16-bit target.
-def Z80SystemLibrary
-    : SystemRuntimeLibrary<isZ80Family,
+defvar Z80CommonCalls =
       (add (sub DefaultRuntimeLibcallImpls,
                 memcpy, memmove, memset),
            Z80MemCalls,
            LibmHasSinCosF32, LibmHasSinCosF64,
            exp10f, exp10, exp10l_f128,
            __powisf2, __powidf2, __powitf2_f128,
-           DefaultStackProtector, DefaultSafeStackGlobals)>;
+           DefaultStackProtector, DefaultSafeStackGlobals);
+
+def Z80SystemLibrary
+    : SystemRuntimeLibrary<
+        RuntimeLibcallAvailability<
+          (all_of (any_of IsArchZ80, IsArchSM83), (not IsEnvironmentZ88DK))>,
+        (add Z80CommonCalls, Z80FastFloatCalls, __divmodsi4, __udivmodsi4)>;
+
+def Z88DKSystemLibrary
+    : SystemRuntimeLibrary<
+        RuntimeLibcallAvailability<
+          (all_of (any_of IsArchZ80, IsArchSM83), IsEnvironmentZ88DK)>,
+        (add (sub Z80CommonCalls, Z80OrdinaryCalls),
+             // Preserve existing SM83 fallbacks, not a library support claim.
+             LibcallsWithCC<(add Z80IntegerCalls, Z88DKOrdinaryCalls),
+                            Z80_SDCCCall0>)>;
 
 //===----------------------------------------------------------------------===//
 // AMD vector math library (AMDLIBM) functions

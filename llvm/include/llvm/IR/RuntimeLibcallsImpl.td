@@ -53,6 +53,7 @@ def ARM_AAPCS_VFP : LibcallCallingConv<[{CallingConv::ARM_AAPCS_VFP}]>;
 def X86_STDCALL : LibcallCallingConv<[{CallingConv::X86_StdCall}]>;
 def AVR_BUILTIN : LibcallCallingConv<[{CallingConv::AVR_BUILTIN}]>;
 def Z80_BUILTIN : LibcallCallingConv<[{CallingConv::Z80_Builtin}]>;
+def Z80_SDCCCall0 : LibcallCallingConv<[{CallingConv::Z80_SDCCCall0}]>;
 def SMEABI_PreserveMost_From_X0 : LibcallCallingConv<[{CallingConv::AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0}]>;
 def SMEABI_PreserveMost_From_X1 : LibcallCallingConv<[{CallingConv::AArch64_SME_ABI_Support_Routines_PreserveMost_From_X1}]>;
 def SMEABI_PreserveMost_From_X2 : LibcallCallingConv<[{CallingConv::AArch64_SME_ABI_Support_Routines_PreserveMost_From_X2}]>;
