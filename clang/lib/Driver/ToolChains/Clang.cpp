@@ -6384,6 +6384,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-ffreestanding");
 
   Args.AddLastArg(CmdArgs, options::OPT_fno_knr_functions);
+  Args.AddLastArg(CmdArgs, options::OPT_fdefault_calling_conv_EQ);
 
   BoundArch OffloadArch = JA.getOffloadingArch();
   auto SanitizeArgs =

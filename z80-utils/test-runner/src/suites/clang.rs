@@ -137,6 +137,10 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
 
         // Parse per-test EXTRA-FLAGS from source comments.
         let per_test_flags = parse_extra_flags_c(&source);
+        let per_test_sources = parse_extra_sources_c(&source)
+            .iter()
+            .map(|s| test_dir.join(s))
+            .collect::<Vec<_>>();
 
         // For the cross-opt-level differential oracle: the observed value at
         // each opt level (only Pass/Fail carry a value; Fatal/Skip don't).
@@ -163,6 +167,7 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
                 config.target,
                 opt,
                 &flags,
+                &per_test_sources,
                 &test_dir,
                 &source,
                 &elf_rt,
@@ -275,6 +280,7 @@ fn run_single(
     target: Target,
     opt: OptLevel,
     extra_flags: &[&str],
+    extra_sources: &[PathBuf],
     work_dir: &PathBuf,
     source: &str,
     elf_rt: &ElfRuntime,
@@ -282,47 +288,59 @@ fn run_single(
     let tmp_dir = unique_tmp_dir(work_dir);
     let _ = std::fs::create_dir_all(&tmp_dir);
 
-    let test_obj = tmp_dir.join(format!("{tag}.o"));
     let elf = tmp_dir.join(format!("{tag}.elf"));
     let bin = tmp_dir.join(format!("{tag}.bin"));
 
     // Compile to object only — the link step injects crt0 + compiler-rt
     // builtins + linker script explicitly so that _start, _halt, .bss
     // layout, and ___mulhi3 / ___udivhi3 / etc. are all resolved.
-    let mut cmd = Command::new(clang.as_os_str());
-    cmd.arg(format!("--target={}", target.triple()));
-    cmd.arg(format!("-{}", opt.clang_flag()));
-    cmd.arg("-c");
-    cmd.arg("-nostdlib");
-    cmd.arg("-ffreestanding");
-    for flag in extra_flags {
-        cmd.arg(flag);
-    }
-    cmd.arg(test_file.as_os_str());
-    cmd.arg("-o");
-    cmd.arg(test_obj.as_os_str());
-
-    match run_cmd_timeout(&mut cmd, COMPILE_TIMEOUT) {
-        Err(e) => {
-            remove_tmp_dir(&tmp_dir);
-            return TestResult::fatal(tag, format!("compile {e}"));
+    let mut test_objects = Vec::with_capacity(1 + extra_sources.len());
+    for (index, source_file) in std::iter::once(test_file)
+        .chain(extra_sources.iter())
+        .enumerate()
+    {
+        let obj = if index == 0 {
+            tmp_dir.join(format!("{tag}.o"))
+        } else {
+            tmp_dir.join(format!("{tag}_extra{index}.o"))
+        };
+        let mut cmd = Command::new(clang.as_os_str());
+        cmd.arg(format!("--target={}", target.triple()));
+        cmd.arg(format!("-{}", opt.clang_flag()));
+        cmd.arg("-c");
+        cmd.arg("-nostdlib");
+        cmd.arg("-ffreestanding");
+        for flag in extra_flags {
+            cmd.arg(flag);
         }
-        Ok((code, _, stderr)) if code != 0 => {
-            let err = extract_error(&stderr);
-            remove_tmp_dir(&tmp_dir);
-            return TestResult::fatal(tag, err);
+        cmd.arg(source_file.as_os_str());
+        cmd.arg("-o");
+        cmd.arg(obj.as_os_str());
+
+        match run_cmd_timeout(&mut cmd, COMPILE_TIMEOUT) {
+            Err(e) => {
+                remove_tmp_dir(&tmp_dir);
+                return TestResult::fatal(tag, format!("compile {e}"));
+            }
+            Ok((code, _, stderr)) if code != 0 => {
+                let err = extract_error(&stderr);
+                remove_tmp_dir(&tmp_dir);
+                return TestResult::fatal(tag, format!("compile {}: {err}", source_file.display()));
+            }
+            _ => test_objects.push(obj),
         }
-        _ => {}
     }
 
-    // Link: ld.lld -T <triple>.ld --gc-sections crt0.o test.o builtins/*.o
+    // Link: ld.lld -T <triple>.ld --gc-sections crt0.o test-objects builtins/*.o
     let lld = clang.parent().unwrap().join("ld.lld");
     let mut link = Command::new(lld.as_os_str());
     link.arg("--gc-sections");
     link.arg("-T");
     link.arg(elf_rt.linker_script.as_os_str());
     link.arg(elf_rt.crt0_obj.as_os_str());
-    link.arg(test_obj.as_os_str());
+    for obj in &test_objects {
+        link.arg(obj.as_os_str());
+    }
     for obj in &elf_rt.builtin_objs {
         link.arg(obj.as_os_str());
     }
@@ -382,4 +400,3 @@ fn run_single(
     }
     result
 }
-

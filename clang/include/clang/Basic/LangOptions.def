@@ -210,7 +210,7 @@ LANGOPT(CharIsSigned      , 1, 1, NotCompatible, "signed char")
 LANGOPT(WCharSize         , 4, 0, NotCompatible, "width of wchar_t")
 LANGOPT(WCharIsSigned        , 1, 0, NotCompatible, "signed or unsigned wchar_t")
 ENUM_LANGOPT(MSPointerToMemberRepresentationMethod, PragmaMSPointersToMembersKind, 2, PPTMK_BestCase, NotCompatible, "member-pointer representation method")
-ENUM_LANGOPT(DefaultCallingConv, DefaultCallingConvention, 3, DCC_None, NotCompatible, "default calling convention")
+ENUM_LANGOPT(DefaultCallingConv, DefaultCallingConvention, 4, DCC_None, NotCompatible, "default calling convention")
 
 LANGOPT(ShortEnums        , 1, 0, NotCompatible, "short enum types")
 

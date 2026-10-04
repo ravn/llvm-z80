@@ -294,6 +294,21 @@ pub fn parse_extra_flags_c(source: &str) -> Vec<String> {
     flags
 }
 
+/// Parse EXTRA-SOURCES directives from C source files.
+/// Format: `/* EXTRA-SOURCES: helper1.c helper2.c */`
+pub fn parse_extra_sources_c(source: &str) -> Vec<String> {
+    let mut sources = Vec::new();
+    for line in source.lines() {
+        let lower = line.to_lowercase();
+        if let Some(pos) = lower.find("extra-sources:") {
+            let after = &line[pos + "extra-sources:".len()..];
+            let content = after.split("*/").next().unwrap_or("").trim();
+            sources.extend(content.split_whitespace().map(str::to_string));
+        }
+    }
+    sources
+}
+
 /// Parse SKIP-IF directives from LLVM IR source files.
 /// Format: `; SKIP-IF: <token>`
 /// Token can be a target name or opt level.
@@ -402,6 +417,16 @@ pub fn run_cmd_timeout(
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    #[test]
+    fn parses_extra_translation_units() {
+        assert_eq!(
+            parse_extra_sources_c(
+                "/* EXTRA-SOURCES: helper.c support/second.c */\nint main(void);"
+            ),
+            vec!["helper.c".to_string(), "support/second.c".to_string()]
+        );
+    }
 
     #[test]
     fn keeps_dirs_owned_by_a_live_process() {

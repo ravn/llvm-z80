@@ -13510,6 +13510,10 @@ CallingConv ASTContext::getDefaultCallingConvention(bool IsVariadic,
     if (!IsVariadic)
       return CC_M68kRTD;
     break;
+  case LangOptions::DCC_Z80SDCCCall0:
+    return CC_Z80SDCCCall0;
+  case LangOptions::DCC_Z80SDCCCall1:
+    return CC_C;
   }
   return Target->getDefaultCallingConv();
 }

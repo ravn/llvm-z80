@@ -4907,6 +4907,25 @@ described in {doc}`OpenCLSupport` page.
 
 ### CPU Architectures Features and Limitations
 
+#### Z80
+
+For C translation units targeting Z80, `-fdefault-calling-conv=sdcccall0`
+selects SDCC's stack-based `__sdcccall(0)` convention for unannotated function
+types. `-fdefault-calling-conv=sdcccall1` selects the existing target default;
+omitting the option has the same behavior. The options are rejected for other
+targets and for C++ and Objective-C, so C++ method ABIs are not changed.
+
+The setting applies to function declarations, definitions, and function-pointer
+types. Use the same setting in every translation unit that declares or defines
+an affected function. Prototypes and callback types for prebuilt libraries must
+retain their library ABI with an explicit calling-convention attribute; the
+option does not change already-annotated function types or backend-generated
+runtime-library calls. In freestanding C, `main` retains the target ABI so
+startup code can call it and read its return value correctly; calls from `main`
+to other unannotated functions still use the selected convention. Existing
+attributes such as `sdcccall(0)`, `smallc`,
+`z88dk_fastcall`, and `z88dk_callee` remain explicit overrides.
+
 #### X86
 
 The support for X86 (both 32-bit and 64-bit) is considered stable on

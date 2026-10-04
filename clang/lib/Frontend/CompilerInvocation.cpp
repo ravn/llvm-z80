@@ -683,6 +683,18 @@ static bool FixupInvocation(CompilerInvocation &Invocation,
   if (Arg *A = Args.getLastArg(OPT_fdefault_calling_conv_EQ)) {
     auto DefaultCC = LangOpts.getDefaultCallingConv();
 
+    const bool IsZ80DefaultCC =
+        DefaultCC == LangOptions::DCC_Z80SDCCCall0 ||
+        DefaultCC == LangOptions::DCC_Z80SDCCCall1;
+    if (IsZ80DefaultCC && (LangOpts.CPlusPlus || LangOpts.ObjC)) {
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << A->getAsString(Args)
+          << (LangOpts.CPlusPlus ? "C++" : "Objective-C");
+    } else if (IsZ80DefaultCC && !T.isZ80()) {
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << A->getAsString(Args) << T.getTriple();
+    }
+
     bool emitError = (DefaultCC == LangOptions::DCC_FastCall ||
                       DefaultCC == LangOptions::DCC_StdCall) &&
                      Arch != llvm::Triple::x86;

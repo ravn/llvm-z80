@@ -9044,12 +9044,15 @@ def fnative_half_arguments_and_returns : Flag<["-"], "fnative-half-arguments-and
   HelpText<"Use the native __fp16 type for arguments and returns (and skip ABI-specific lowering)">,
   MarshallingInfoFlag<LangOpts<"NativeHalfArgsAndReturns">>,
   ImpliedByAnyOf<[open_cl.KeyPath, hlsl.KeyPath, hip.KeyPath]>;
+let Visibility = [ClangOption, CC1Option] in {
 def fdefault_calling_conv_EQ : Joined<["-"], "fdefault-calling-conv=">,
+  Group<f_Group>,
   HelpText<"Set default calling convention">,
-  Values<"cdecl,fastcall,stdcall,vectorcall,regcall,rtdcall">,
+  Values<"cdecl,fastcall,stdcall,vectorcall,regcall,rtdcall,sdcccall0,sdcccall1">,
   NormalizedValuesScope<"LangOptions">,
-  NormalizedValues<["DCC_CDecl", "DCC_FastCall", "DCC_StdCall", "DCC_VectorCall", "DCC_RegCall", "DCC_RtdCall"]>,
+  NormalizedValues<["DCC_CDecl", "DCC_FastCall", "DCC_StdCall", "DCC_VectorCall", "DCC_RegCall", "DCC_RtdCall", "DCC_Z80SDCCCall0", "DCC_Z80SDCCCall1"]>,
   MarshallingInfoEnum<LangOpts<"DefaultCallingConv">, "DCC_None">;
+}
 
 // These options cannot be marshalled, because they are used to set up the LangOptions defaults.
 def finclude_default_header : Flag<["-"], "finclude-default-header">,

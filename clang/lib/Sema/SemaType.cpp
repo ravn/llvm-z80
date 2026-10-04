@@ -3777,6 +3777,11 @@ static CallingConv getCCForDeclaratorChunk(
       if (!S.CheckCallingConvAttr(AL, CC, /*FunctionDecl=*/nullptr,
                                   S.CUDA().IdentifyTarget(D.getAttributes())) &&
           (!FTI.isVariadic || supportsVariadicCall(CC))) {
+        if (AL.getKind() == ParsedAttr::AT_Z88dkCallee &&
+            S.getLangOpts().getDefaultCallingConv() ==
+                LangOptions::DCC_Z80SDCCCall0 &&
+            S.Context.getTargetInfo().getTriple().isZ80())
+          return CC_Z80SDCCCall0;
         return CC;
       }
       break;
@@ -3785,6 +3790,18 @@ static CallingConv getCCForDeclaratorChunk(
     default:
       break;
     }
+  }
+
+  if (D.getContext() == DeclaratorContext::File &&
+      D.isFunctionDeclarator() && D.getIdentifier() &&
+      D.getIdentifier()->isStr("main") && !S.getLangOpts().CPlusPlus &&
+      !S.getLangOpts().ObjC &&
+      S.getLangOpts().getDefaultCallingConv() ==
+          LangOptions::DCC_Z80SDCCCall0 &&
+      S.Context.getTargetInfo().getTriple().isZ80()) {
+    // Even freestanding crt0 calls main with the target ABI; it reads the
+    // result from DE, while sdcccall(0) returns it in HL.
+    return S.Context.getTargetInfo().getDefaultCallingConv();
   }
 
   bool IsCXXInstanceMethod = false;
@@ -8493,7 +8510,13 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state, ParsedAttr &attr,
   if (CCOld != CC) {
     // There's already a calling-convention attribute on the type and the CCs
     // don't match.  A Z80 base and modifier compose; anything else conflicts.
-    if (S.getCallingConvAttributedType(type)) {
+    const bool IsDefaultSDCCCall0Callee =
+        attr.getKind() == ParsedAttr::AT_Z88dkCallee &&
+        CCOld == CC_Z80SDCCCall0 &&
+        S.getLangOpts().getDefaultCallingConv() ==
+            LangOptions::DCC_Z80SDCCCall0 &&
+        S.Context.getTargetInfo().getTriple().isZ80();
+    if (S.getCallingConvAttributedType(type) || IsDefaultSDCCCall0Callee) {
       CallingConv Composed;
       if (composeZ80CallingConvs(CCOld, CC, Composed)) {
         CC = Composed;
