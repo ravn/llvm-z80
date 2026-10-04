@@ -74,6 +74,9 @@ jobs:
           ninja -C build clang
           build/bin/llvm-lit -v \
             clang/test/CodeGen/z80-z88dk-libc-builtin-cc.c \
+            clang/test/CodeGen/z80-z88dk-target-abi.c \
+            clang/test/CodeGen/z80-z88dk-qsort-stack.c \
+            clang/test/CodeGen/z80-z88dk-sdcccall0-stack.c \
             clang/test/CodeGen/z80-triple-z88dk.c
 
       - name: Summary

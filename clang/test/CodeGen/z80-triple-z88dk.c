@@ -77,7 +77,7 @@ double dadd(double a, double b) { return a + b; }
 
 int dsize(void) { return (int)sizeof(double); }
 // Z88DK-LABEL:   _dsize:
-// Z88DK:         ld de,{{ ?}}4
+// Z88DK:         ld hl,{{ ?}}4
 // Z88DK:         ret
 //
 // DEFAULT-LABEL: _dsize:
@@ -85,11 +85,11 @@ int dsize(void) { return (int)sizeof(double); }
 // DEFAULT:       ret
 //
 // OVERRIDE-64-LABEL: _dsize:
-// OVERRIDE-64:        ld de,{{ ?}}8
+// OVERRIDE-64:        ld hl,{{ ?}}8
 
 int ldsize(void) { return (int)sizeof(long double); }
 // Z88DK-LABEL:   _ldsize:
-// Z88DK:         ld de,{{ ?}}4
+// Z88DK:         ld hl,{{ ?}}4
 // Z88DK:         ret
 //
 // DEFAULT-LABEL: _ldsize:
