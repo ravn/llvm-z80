@@ -3897,6 +3897,7 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
   bool RequiresAdjustment = false;
 
   if (OldTypeInfo.getCC() != NewTypeInfo.getCC()) {
+    const auto &Triple = Context.getTargetInfo().getTriple();
     FunctionDecl *First = Old->getFirstDecl();
     const FunctionType *FT =
         First->getType().getCanonicalType()->castAs<FunctionType>();
@@ -3907,14 +3908,11 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
       // there but not here.
       NewTypeInfo = NewTypeInfo.withCallingConv(OldTypeInfo.getCC());
       RequiresAdjustment = true;
-    } else if (Old->isImplicit() && Old->getBuiltinID() &&
-               Context.BuiltinInfo.isPredefinedLibFunction(Old->getBuiltinID()) &&
-               Context.getTargetInfo().getTriple().getArch() ==
-                   llvm::Triple::z80 &&
-               Context.getTargetInfo().getTriple().getEnvironment() ==
-                   llvm::Triple::Z88DK) {
-      // z88dk headers define the library ABI: e.g. fwrite is smallc,
-      // snprintf is sdcccall(0). The implicit builtin type is not its ABI.
+    } else if (Triple.isZ80() &&
+               Triple.getEnvironment() == llvm::Triple::Z88DK &&
+               Old->isImplicit() && Old->getBuiltinID() &&
+               Context.BuiltinInfo.isPredefinedLibFunction(Old->getBuiltinID())) {
+      // Explicit library declarations override the implicit builtin ABI.
       OldTypeInfo = OldTypeInfo.withCallingConv(NewTypeInfo.getCC());
       OldType = Context.adjustFunctionType(OldType, OldTypeInfo);
       OldQType = QualType(OldType, 0);

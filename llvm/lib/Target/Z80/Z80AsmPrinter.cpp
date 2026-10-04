@@ -38,6 +38,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 
 using namespace llvm;
@@ -139,7 +140,13 @@ void Z80AsmPrinter::emitInstruction(const MachineInstr *MI) {
           S = S->getScope();
         }
 
-        std::string FilePart = File.str();
+        // Preserve metadata remapping: /mapped/source + test.c stays mapped.
+        SmallString<256> SourcePath(File);
+        if (!sys::path::is_absolute(File) && !Loc->getDirectory().empty()) {
+          SourcePath = Loc->getDirectory();
+          sys::path::append(SourcePath, File);
+        }
+        std::string FilePart = SourcePath.str().str();
         if (!FuncName.empty()) {
           FilePart += "::" + FuncName.str() +
                       "::" + std::to_string(Level) +

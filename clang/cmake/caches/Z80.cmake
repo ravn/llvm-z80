@@ -2,8 +2,8 @@
 # Configure llvm-z80 for building
 # Usage:
 #   cmake -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON -DLLVM_CCACHE_BUILD=ON \
-#         -C clang/cmake/caches/Z80.cmake -G Ninja -S llvm -B build-macos-asserts
-#   ninja -C build-macos-asserts
+#         -C clang/cmake/caches/Z80.cmake -G Ninja -S llvm -B build
+#   ninja -C build
 #
 # -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON  prevents ccache from seeing ~45% of
 #   compile calls as uncacheable (PCH cannot be cached via RULE_LAUNCH_COMPILE).

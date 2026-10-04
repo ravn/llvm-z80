@@ -10,7 +10,7 @@
 ; ELF-NOT: C_LINE
 
 ; Preserve raw backslashes, spaces and UTF-8 bytes.
-; VALID: C_LINE 2, "path\with spaceé.c::example::0::0"
+; VALID: C_LINE 2, "./path\with spaceé.c::example::0::0"
 ; VALID-LABEL: _line_zero:
 ; VALID-NOT: C_LINE
 ; VALID: ret

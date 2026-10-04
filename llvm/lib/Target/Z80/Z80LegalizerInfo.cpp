@@ -1906,6 +1906,7 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
       auto ZExt = MIRBuilder.buildZExt(LLT::scalar(16), ValReg);
       MI.getOperand(1).setReg(ZExt.getReg(0));
     }
+
     auto Result = Helper.createMemLibcall(MRI, MI, LocObserver);
     if (Result != LegalizerHelper::Legalized)
       return false;
