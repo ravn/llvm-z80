@@ -1016,12 +1016,24 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
     const char *FuncName;
     switch (MI.getOpcode()) {
-    case TargetOpcode::G_SDIV: FuncName = IsZ88DK ? "\01__divsi3"  : "__divsi3";  break;
-    case TargetOpcode::G_UDIV: FuncName = IsZ88DK ? "\01__udivsi3" : "__udivsi3"; break;
-    case TargetOpcode::G_SREM: FuncName = IsZ88DK ? "\01__modsi3"  : "__modsi3";  break;
-    case TargetOpcode::G_UREM: FuncName = IsZ88DK ? "\01__umodsi3" : "__umodsi3"; break;
-    default: llvm_unreachable("unexpected opcode");
+    case TargetOpcode::G_SDIV:
+      FuncName = "\01__divsi3";
+      break;
+    case TargetOpcode::G_UDIV:
+      FuncName = "\01__udivsi3";
+      break;
+    case TargetOpcode::G_SREM:
+      FuncName = "\01__modsi3";
+      break;
+    case TargetOpcode::G_UREM:
+      FuncName = "\01__umodsi3";
+      break;
+    default:
+      llvm_unreachable("unexpected opcode");
     }
+    // Only z88dk uses the exact assembler spelling without mangling.
+    if (!IsZ88DK)
+      ++FuncName;
     return Helper.createLibcall(FuncName, {DstReg, I32Ty, 0},
                                 {{MI.getOperand(1).getReg(), I32Ty, 0},
                                  {MI.getOperand(2).getReg(), I32Ty, 1}},
