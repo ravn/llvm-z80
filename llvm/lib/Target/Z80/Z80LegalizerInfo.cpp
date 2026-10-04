@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/CodeGen/LibcallLoweringInfo.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
@@ -34,6 +35,34 @@
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
+
+// RTLIB owns the helper name and ABI, independently of the caller's ABI.
+static LegalizerHelper::LegalizeResult createRuntimeCall(
+    LegalizerHelper &Helper,
+    RTLIB::Libcall Call,
+    const CallLowering::ArgInfo &Result,
+    ArrayRef<CallLowering::ArgInfo> Args,
+    LostDebugLocObserver &LocObserver,
+    MachineInstr &MI)
+{
+  const auto *Libcalls = Helper.getLibcallLoweringInfo();
+  if (!Libcalls) {
+      return LegalizerHelper::UnableToLegalize;
+  }
+  RTLIB::LibcallImpl Impl = Libcalls->getLibcallImpl(Call);
+  if (Impl == RTLIB::Unsupported) {
+    return LegalizerHelper::UnableToLegalize;
+  }
+  StringRef Name = RTLIB::RuntimeLibcallsInfo::getLibcallImplName(Impl);
+  MachineFunction &MF = Helper.MIRBuilder.getMF();
+  const char *Symbol = Name.data();
+  if (MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK) {
+    // \01 prevents an extra '_'; MF owns the name retained by the operand.
+    Symbol = MF.createExternalSymbolName(("\01" + Name).str());
+  }
+  const CallingConv::ID CC = Libcalls->getLibcallImplCallingConv(Impl);
+  return Helper.createLibcall(Symbol, Result, Args, CC, LocObserver, &MI);
+}
 
 // Keep the dividend copies alive before EXX, and invalidate the main bank
 // when the alternate pair values become visible.
@@ -977,12 +1006,10 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     }
     auto &Ctx = MF.getFunction().getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
-    CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
-    const char *Name = IsZ88DK ? "\01__mulsi3" : "__mulsi3";
-    return Helper.createLibcall(Name, {DstReg, I32Ty, 0},
-                                {{MI.getOperand(1).getReg(), I32Ty, 0},
-                                 {MI.getOperand(2).getReg(), I32Ty, 1}},
-                                CC, LocObserver, &MI) ==
+    return createRuntimeCall(Helper, RTLIB::MUL_I32, {DstReg, I32Ty, 0},
+                             {{MI.getOperand(1).getReg(), I32Ty, 0},
+                              {MI.getOperand(2).getReg(), I32Ty, 1}},
+                             LocObserver, MI) ==
                LegalizerHelper::Legalized &&
            (MI.eraseFromParent(), true);
   }
@@ -1013,31 +1040,27 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     }
     auto &Ctx = MF.getFunction().getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
-    CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
-    const char *FuncName;
+    RTLIB::Libcall Call;
     switch (MI.getOpcode()) {
     case TargetOpcode::G_SDIV:
-      FuncName = "\01__divsi3";
+      Call = RTLIB::SDIV_I32;
       break;
     case TargetOpcode::G_UDIV:
-      FuncName = "\01__udivsi3";
+      Call = RTLIB::UDIV_I32;
       break;
     case TargetOpcode::G_SREM:
-      FuncName = "\01__modsi3";
+      Call = RTLIB::SREM_I32;
       break;
     case TargetOpcode::G_UREM:
-      FuncName = "\01__umodsi3";
+      Call = RTLIB::UREM_I32;
       break;
     default:
       llvm_unreachable("unexpected opcode");
     }
-    // Only z88dk uses the exact assembler spelling without mangling.
-    if (!IsZ88DK)
-      ++FuncName;
-    return Helper.createLibcall(FuncName, {DstReg, I32Ty, 0},
-                                {{MI.getOperand(1).getReg(), I32Ty, 0},
-                                 {MI.getOperand(2).getReg(), I32Ty, 1}},
-                                CC, LocObserver, &MI) ==
+    return createRuntimeCall(Helper, Call, {DstReg, I32Ty, 0},
+                             {{MI.getOperand(1).getReg(), I32Ty, 0},
+                              {MI.getOperand(2).getReg(), I32Ty, 1}},
+                             LocObserver, MI) ==
                LegalizerHelper::Legalized &&
            (MI.eraseFromParent(), true);
   }
@@ -1068,18 +1091,16 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     }
     LLVMContext &Ctx = MF.getFunction().getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
-    CallingConv::ID CC = IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
-    const char *FuncName = IsSigned ? (IsZ88DK ? "\01__divmodsi4" : "__divmodsi4")
-                                    : (IsZ88DK ? "\01__udivmodsi4" : "__udivmodsi4");
+    RTLIB::Libcall Call = IsSigned ? RTLIB::SDIVREM_I32 : RTLIB::UDIVREM_I32;
     int FI = MF.getFrameInfo().CreateStackObject(4, Align(1),
                                                  /*isSpillSlot=*/false);
     auto Slot = MIRBuilder.buildFrameIndex(LLT::pointer(0, 16), FI);
-    if (Helper.createLibcall(
-            FuncName, {QuotReg, I32Ty, 0},
+    if (createRuntimeCall(
+            Helper, Call, {QuotReg, I32Ty, 0},
             {{MI.getOperand(2).getReg(), I32Ty, 0},
              {MI.getOperand(3).getReg(), I32Ty, 1},
              {Slot.getReg(0), PointerType::get(Ctx, 0), 2}},
-            CC, LocObserver, &MI) != LegalizerHelper::Legalized)
+            LocObserver, MI) != LegalizerHelper::Legalized)
       return false;
     auto *MMO =
         MF.getMachineMemOperand(MachinePointerInfo::getFixedStack(MF, FI),
@@ -1184,41 +1205,27 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     Register RHS = MI.getOperand(2).getReg();
 
     bool Fast = hasAllFastFlags(MI, MIRBuilder);
-    bool IsZ88DK =
-        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
-
-    // z88dk: call cm32_sdcc_* (sdcccall(0) ABI adapter to math32 kernels).
-    // Both args pushed on stack; cm32_sdcc_fsreadr moves RHS into DEHL then
-    // tails into m32_fsadd/etc. Calling m32_* directly (LHS stack, RHS DEHL)
-    // requires ISel-level physreg setup — deferred as a future optimization.
-    const char *FuncName;
+    RTLIB::Libcall Call;
     switch (MI.getOpcode()) {
     case TargetOpcode::G_FADD:
-      // \01 prefix bypasses Mach-O '_' mangling for z88dk asm library symbols.
-      FuncName = IsZ88DK ? "\01cm32_sdcc_fsadd"
-                         : (Fast ? "__addsf3_fast" : "__addsf3");
+      Call = Fast ? RTLIB::FAST_ADD_F32 : RTLIB::ADD_F32;
       break;
     case TargetOpcode::G_FSUB:
-      FuncName = IsZ88DK ? "\01cm32_sdcc_fssub"
-                         : (Fast ? "__subsf3_fast" : "__subsf3");
+      Call = Fast ? RTLIB::FAST_SUB_F32 : RTLIB::SUB_F32;
       break;
     case TargetOpcode::G_FMUL:
-      FuncName = IsZ88DK ? "\01cm32_sdcc_fsmul"
-                         : (Fast ? "__mulsf3_fast" : "__mulsf3");
+      Call = Fast ? RTLIB::FAST_MUL_F32 : RTLIB::MUL_F32;
       break;
     case TargetOpcode::G_FDIV:
-      FuncName = IsZ88DK ? "\01cm32_sdcc_fsdiv"
-                         : (Fast ? "__divsf3_fast" : "__divsf3");
+      Call = Fast ? RTLIB::FAST_DIV_F32 : RTLIB::DIV_F32;
       break;
     default:
       llvm_unreachable("unexpected opcode");
     }
 
-    CallingConv::ID LibcallCC =
-        IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
-    auto Status = Helper.createLibcall(FuncName, {Dst, F32Ty, 0},
-                                       {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
-                                       LibcallCC, LocObserver, &MI);
+    auto Status = createRuntimeCall(Helper, Call, {Dst, F32Ty, 0},
+                                    {{LHS, F32Ty, 0}, {RHS, F32Ty, 1}},
+                                    LocObserver, MI);
     if (Status != LegalizerHelper::Legalized)
       return false;
     MI.eraseFromParent();
@@ -1634,31 +1641,26 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     Register Dst = MI.getOperand(0).getReg();
     Register Src = MI.getOperand(1).getReg();
 
-    bool IsZ88DK =
-        MF.getTarget().getTargetTriple().getEnvironment() == Triple::Z88DK;
-    CallingConv::ID F32LibcallCC =
-        IsZ88DK ? CallingConv::Z80_SDCCCall0 : CallingConv::C;
-
-    const char *FuncName;
+    RTLIB::Libcall Call;
     Type *DstTy, *SrcTy;
     switch (MI.getOpcode()) {
     case TargetOpcode::G_FPTOSI:
-      FuncName = IsZ88DK ? "\01cm32_sdcc___fs2sint" : "__fixsfsi";
+      Call = RTLIB::FPTOSINT_F32_I32;
       DstTy = I32Ty;
       SrcTy = F32Ty;
       break;
     case TargetOpcode::G_FPTOUI:
-      FuncName = IsZ88DK ? "\01cm32_sdcc___fs2uint" : "__fixunssfsi";
+      Call = RTLIB::FPTOUINT_F32_I32;
       DstTy = I32Ty;
       SrcTy = F32Ty;
       break;
     case TargetOpcode::G_SITOFP:
-      FuncName = IsZ88DK ? "\01cm32_sdcc___slong2fs" : "__floatsisf";
+      Call = RTLIB::SINTTOFP_I32_F32;
       DstTy = F32Ty;
       SrcTy = I32Ty;
       break;
     case TargetOpcode::G_UITOFP:
-      FuncName = IsZ88DK ? "\01cm32_sdcc___ulong2fs" : "__floatunsisf";
+      Call = RTLIB::UINTTOFP_I32_F32;
       DstTy = F32Ty;
       SrcTy = I32Ty;
       break;
@@ -1667,8 +1669,8 @@ bool Z80LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,
     }
 
     auto Status =
-        Helper.createLibcall(FuncName, {Dst, DstTy, 0}, {{Src, SrcTy, 0}},
-                             F32LibcallCC, LocObserver, &MI);
+        createRuntimeCall(Helper, Call, {Dst, DstTy, 0}, {{Src, SrcTy, 0}},
+                          LocObserver, MI);
     if (Status != LegalizerHelper::Legalized)
       return false;
     MI.eraseFromParent();
