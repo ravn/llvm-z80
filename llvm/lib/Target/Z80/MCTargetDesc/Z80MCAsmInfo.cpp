@@ -183,8 +183,8 @@ Z80MCAsmInfoZ88DK::Z80MCAsmInfoZ88DK(const Triple &TT,
   // Without a weak-reference directive every alias, local ones included, is
   // made global. z80asm has no weak symbols, and GLOBAL is the closest form.
   WeakRefDirective = "\tGLOBAL\t";
-  // Z80TargetObjectFile spells '.' in symbol names as '@'.
-  AllowAtInName = true;
+
+  // Z80TargetObjectFile encodes dotted symbol names with length-prefixed parts.
 
   initializeAtSpecifiers(AtSpecifiers);
 }
