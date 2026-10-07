@@ -19,7 +19,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Force JS actions onto Node 24 (Node 20 is deprecated on GHA runners)
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   PKG: LLVM-Z80-nightly-Linux-X64
 
@@ -43,8 +42,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
         run: |
-          # The attestation records the commit this run started from, so only
-          # that commit is built.
+          # The attestation records the run's commit, so only that one is built.
           passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/z80-ci.yml/runs?branch=main&event=push&status=success&head_sha=$GITHUB_SHA&per_page=1" \
                      --jq .total_count)
           current=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body --jq .body 2> /dev/null \
@@ -149,8 +147,6 @@ jobs:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: jq -c . "$BUNDLE" > "$PKG.tar.xz.jsonl"
 
-      # The release is created once and then updated in place, so its tag
-      # never moves and watchers are not notified every day.
       - name: Update the nightly release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -185,7 +181,7 @@ jobs:
             exit 0
           fi
 
-          # The body is updated last, so after a failed upload it still names
-          # the old commit and the next run builds again.
+          # prepare reads the built commit from the body, so it goes last.
           gh release upload nightly "$PKG.tar.xz" "$PKG.tar.xz.jsonl" --repo "$repo" --clobber
+          gh api -X PATCH "repos/$repo/git/refs/tags/nightly" -f sha="$GITHUB_SHA" > /dev/null
           gh release edit nightly --repo "$repo" --notes-file notes.md
