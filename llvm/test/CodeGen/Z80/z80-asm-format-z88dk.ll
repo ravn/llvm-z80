@@ -75,7 +75,7 @@ define void @with_lifetime() {
 @var_bss = dso_local global [10 x i8] zeroinitializer
 
 ; CHECK:        SECTION rodata_compiler
-; CHECK-NEXT: L2_L_3_str:
+; CHECK-NEXT: _2_L_3_str:
 ; CHECK-NEXT:   DEFM "test\000"
 ; CHECK:        GLOBAL _long
 ; CHECK-NEXT: _long:
@@ -88,7 +88,7 @@ define void @with_lifetime() {
 ; CHECK:        SECTION data_compiler
 ; CHECK-NEXT:   GLOBAL _test_counter
 ; CHECK-NEXT: _test_counter:
-; CHECK:      L7__static7_counter:
+; CHECK:      _7__static7_counter:
 ; CHECK-NEXT:   DEFW 7
 @test_counter = global i16 1
 @static.counter = internal global i16 7
