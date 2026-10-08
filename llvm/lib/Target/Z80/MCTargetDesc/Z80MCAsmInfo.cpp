@@ -184,8 +184,6 @@ Z80MCAsmInfoZ88DK::Z80MCAsmInfoZ88DK(const Triple &TT,
   // made global. z80asm has no weak symbols, and GLOBAL is the closest form.
   WeakRefDirective = "\tGLOBAL\t";
 
-  // Z80TargetObjectFile encodes dotted symbol names with length-prefixed parts.
-
   initializeAtSpecifiers(AtSpecifiers);
 }
 

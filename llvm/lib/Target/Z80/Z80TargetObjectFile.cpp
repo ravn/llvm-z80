@@ -13,6 +13,7 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/SectionKind.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
@@ -30,29 +31,18 @@ MCSection *Z80TargetObjectFile::getExplicitSectionGlobal(
 }
 
 // z80asm treats '.' as an operator. Encode each dot-separated part of the
-// already-prefixed name as length_part: _test.counter -> _5__test7_counter.
-// Lengths preserve boundaries; _<digit> stays separate from C's _<alpha> and
-// avoids the "L" prefix which LLVM treats as a temporary symbol in MC.
-//
-// Example: "_test.counter" -> part "_test" (len 5) + "counter" (len 7)
-//   Iteration 1: Encoded = "_" + "5__test"
-//   Iteration 2: Encoded = "_5__test" + "7_counter" -> "_5__test7_counter"
+// already-prefixed name as <length>_<part> prefixed with '_'.
 static void encodeDottedName(SmallVectorImpl<char> &Name) {
   StringRef Original(Name.data(), Name.size());
   if (!Original.contains('.'))
     return;
 
   SmallString<128> Encoded("_");
-  do {
-    auto [Part, Rest] = Original.split('.');
-    Encoded += Twine(Part.size()).str();
-    Encoded += '_';
-    Encoded += Part;
-    // Keep empty parts, including the last part of a trailing dot.
-    if (!Original.contains('.'))
-      break;
-    Original = Rest;
-  } while (true);
+  SmallVector<StringRef, 4> Parts;
+  Original.split(Parts, '.');
+  raw_svector_ostream OS(Encoded);
+  for (StringRef Part : Parts)
+    OS << Part.size() << '_' << Part;
   Name.assign(Encoded.begin(), Encoded.end());
 }
 
