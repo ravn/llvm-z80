@@ -1,11 +1,11 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="artwork/LLVM-Z80-light@10x.png">
-    <img width="2560" alt="LLVM-Z80" src="artwork/LLVM-Z80@10x.png">
+    <source media="(prefers-color-scheme: light)" srcset="z80-artwork/LLVM-Z80-light@10x.png">
+    <img width="2560" alt="LLVM-Z80" src="z80-artwork/LLVM-Z80@10x.png">
   </picture>
   <br/>
   <sub>Artwork by zlfn, based on the LLVM logo. Lettering assisted by AI & fonts.<br/>
-       Created with <a href="https://www.aseprite.org/">Aseprite</a> / <a href="artwork">Source files</a></sub>
+       Created with <a href="https://www.aseprite.org/">Aseprite</a> / <a href="z80-artwork">Source files</a></sub>
 </p>
 
 <!-- prettier-ignore -->
