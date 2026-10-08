@@ -923,7 +923,7 @@ enum : unsigned {
   //
   // Only valid for ELFOSABI_AMDGPU_HSA and ELFABIVERSION_AMDGPU_HSA_V4.
   EF_AMDGPU_FEATURE_XNACK_V4 = 0x300,
-  // XNACK is not supported.
+  // XNACK mode selection is not supported.
   EF_AMDGPU_FEATURE_XNACK_UNSUPPORTED_V4 = 0x000,
   // XNACK is any/default/unspecified.
   EF_AMDGPU_FEATURE_XNACK_ANY_V4 = 0x100,
@@ -936,7 +936,7 @@ enum : unsigned {
   //
   // Only valid for ELFOSABI_AMDGPU_HSA and ELFABIVERSION_AMDGPU_HSA_V4.
   EF_AMDGPU_FEATURE_SRAMECC_V4 = 0xc00,
-  // SRAMECC is not supported.
+  // SRAMECC mode selection is not supported.
   EF_AMDGPU_FEATURE_SRAMECC_UNSUPPORTED_V4 = 0x000,
   // SRAMECC is any/default/unspecified.
   EF_AMDGPU_FEATURE_SRAMECC_ANY_V4 = 0x400,
@@ -1383,6 +1383,12 @@ enum : unsigned {
   GRP_MASKPROC = 0xf0000000
 };
 
+// Combine a symbol's binding and type into st_info (ELF32_ST_INFO,
+// ELF64_ST_INFO).
+constexpr uint8_t getSymbolInfo(uint8_t Binding, uint8_t Type) {
+  return (Binding << 4) | (Type & 0x0f);
+}
+
 // Symbol table entries for ELF32.
 struct Elf32_Sym {
   Elf32_Word st_name;     // Symbol name (index into string table)
@@ -1399,7 +1405,7 @@ struct Elf32_Sym {
   void setBinding(unsigned char b) { setBindingAndType(b, getType()); }
   void setType(unsigned char t) { setBindingAndType(getBinding(), t); }
   void setBindingAndType(unsigned char b, unsigned char t) {
-    st_info = (b << 4) + (t & 0x0f);
+    st_info = getSymbolInfo(b, t);
   }
 };
 
@@ -1419,7 +1425,7 @@ struct Elf64_Sym {
   void setBinding(unsigned char b) { setBindingAndType(b, getType()); }
   void setType(unsigned char t) { setBindingAndType(getBinding(), t); }
   void setBindingAndType(unsigned char b, unsigned char t) {
-    st_info = (b << 4) + (t & 0x0f);
+    st_info = getSymbolInfo(b, t);
   }
 };
 
@@ -1829,6 +1835,7 @@ enum : unsigned {
 // LLVM-specific notes.
 enum {
   NT_LLVM_HWASAN_GLOBALS = 3,
+  NT_LLVM_DYNAMIC_DEBUGGING = 4,
 };
 
 // GNU note types.
