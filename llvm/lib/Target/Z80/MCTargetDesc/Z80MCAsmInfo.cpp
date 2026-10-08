@@ -20,6 +20,7 @@
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/TargetParser/Triple.h"
 
 namespace llvm {
@@ -141,6 +142,11 @@ void Z80MCAsmInfoSDCC::printSwitchToSection(const MCSection &Section,
                                             raw_ostream &OS) const {
   StringRef Name = Section.getName();
 
+  if (Name.starts_with("_")) {
+    OS << "\t.area\t" << Name << "\n";
+    return;
+  }
+
   // Map ELF section names to sdasz80 .area directives
   if (Name == ".text" || Name.starts_with(".text."))
     OS << "\t.area\t_CODE\n";
@@ -150,7 +156,10 @@ void Z80MCAsmInfoSDCC::printSwitchToSection(const MCSection &Section,
     OS << "\t.area\t_BSS\n";
   else if (Name == ".rodata" || Name.starts_with(".rodata."))
     OS << "\t.area\t_CODE\n";
-  // Silently ignore other sections (.note.GNU-stack, .comment, etc.)
+  else
+    reportFatalUsageError("Cannot map section '" + Name +
+                          "' to an sdasz80 area. If you want to use a custom "
+                          "name, prepend it with an underscore.");
 }
 
 //===----------------------------------------------------------------------===//
