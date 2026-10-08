@@ -32,6 +32,23 @@ _start:
 	ldir			; copy BC bytes: (HL) -> (DE)
 _bss_done:
 
+	;; Zero fill _DATA
+	ld	hl,#s__DATA
+	ld	bc,#l__DATA
+	ld	a,b
+	or	a,c
+	jr	z,_data_done	; skip if _DATA is empty
+	ld	(hl),#0			; zero first byte
+	dec	bc
+	ld	a,b
+	or	a,c
+	jr	z,_data_done	; size was 1, already done
+	ld	d,h
+	ld	e,l
+	inc	de				; DE = s__DATA + 1
+	ldir				; copy BC bytes: (HL) -> (DE)
+_data_done:
+
 	;; Copy the _INITIALIZER section to the start of the _INITIALIZED section.
 	;; It is expected that the _INITIALIZER section has the same size as the _INITIALIZED section.
 	;; Otherwise, we have a layout error.
@@ -57,8 +74,9 @@ _halt:
 	halt
 
 	;; Declare _BSS area so sdldz80 generates s__BSS and l__BSS symbols.
-	;; Same thing for _INITIALIZER and _INITIALIZED.
+	;; Same thing for _DATA, _INITIALIZER and _INITIALIZED.
 	.area _INITIALIZER
+	.area _DATA
 	.area _INITIALIZED
 	.area _BSS
 _exitcode:

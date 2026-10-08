@@ -23,8 +23,8 @@
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/BinaryFormat/ELF.h"
+#include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
@@ -161,33 +161,38 @@ void Z80AsmPrinter::emitStartOfAsmFile(Module &M) {
 }
 
 void Z80AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
-  if (MAI.isSDCC() &&
-      TM.getTargetTriple().getEnvironment() == Triple::SDCC &&
+  if (MAI.isSDCC() && TM.getTargetTriple().getEnvironment() == Triple::SDCC &&
       GV->hasInitializer() && !GV->isConstant() &&
       (GV->hasExternalLinkage() || GV->hasLocalLinkage()) &&
-      !GV->isThreadLocal() && !GV->hasSection() &&
-      !GV->hasComdat() && GV->getAddressSpace() == 0) {
+      !GV->isThreadLocal() && !GV->hasSection() && !GV->hasComdat() &&
+      GV->getAddressSpace() == 0) {
     const DataLayout &DL = GV->getDataLayout();
     MCSymbol *GVSym = getSymbol(GV);
     uint64_t Size = DL.getTypeAllocSize(GV->getValueType());
 
     if (getGVAlignment(GV, DL) != Align(1)) {
-      GV->getContext().emitError(
-          "SDCC initialized data requires alignment 1");
+      GV->getContext().emitError("SDCC initialized data requires alignment 1");
       return;
     }
 
-    OutStreamer->switchSection(
-      OutContext.getELFSection("_INITIALIZED", ELF::SHT_NOBITS, ELF::SHF_ALLOC | ELF::SHF_WRITE)
-    );
-    emitLinkage(GV, GVSym);
-    OutStreamer->emitLabel(GVSym);
-    OutStreamer->emitZeros(Size);
+    if (GV->getInitializer()->isNullValue()) {
+      // Zero integers and all-zero aggregates can go in the _DATA section.
+      OutStreamer->switchSection(OutContext.getELFSection(
+          "_DATA", ELF::SHT_NOBITS, ELF::SHF_ALLOC | ELF::SHF_WRITE));
+      emitLinkage(GV, GVSym);
+      OutStreamer->emitLabel(GVSym);
+      OutStreamer->emitZeros(Size);
+    } else {
+      OutStreamer->switchSection(OutContext.getELFSection(
+          "_INITIALIZED", ELF::SHT_NOBITS, ELF::SHF_ALLOC | ELF::SHF_WRITE));
+      emitLinkage(GV, GVSym);
+      OutStreamer->emitLabel(GVSym);
+      OutStreamer->emitZeros(Size);
 
-    OutStreamer->switchSection(
-      OutContext.getELFSection("_INITIALIZER", ELF::SHT_PROGBITS, ELF::SHF_ALLOC)
-    );
-    emitGlobalConstant(DL, GV->getInitializer());
+      OutStreamer->switchSection(OutContext.getELFSection(
+          "_INITIALIZER", ELF::SHT_PROGBITS, ELF::SHF_ALLOC));
+      emitGlobalConstant(DL, GV->getInitializer());
+    }
     return;
   }
 
@@ -195,9 +200,7 @@ void Z80AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
     // BSS locals: sdasz80 doesn't support .local/.comm directives.
     // Handle zero-initialized variables by emitting in _DATA with explicit
     // zero bytes. (.ds in sdasz80 reserves space but does NOT zero-initialize.)
-    if (!GV->isConstant() &&
-        !GV->hasSection() &&
-        GV->hasLocalLinkage() &&
+    if (!GV->isConstant() && !GV->hasSection() && GV->hasLocalLinkage() &&
         (!GV->hasInitializer() || GV->getInitializer()->isNullValue())) {
       MCSymbol *GVSym = getSymbol(GV);
       const DataLayout &DL = GV->getDataLayout();

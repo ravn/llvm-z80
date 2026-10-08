@@ -8,8 +8,8 @@
 ;===------------------------------------------------------------------------===;
 ;
 ; C runtime startup for SM83 (SDCC toolchain).
-; Sets up the stack pointer, zeroes .bss, copies _INITIALIZER to _INITIALIZED,
-; and calls main().
+; Sets up the stack pointer, zeroes .bss and _DATA, copies _INITIALIZER to
+; _INITIALIZED, and calls main().
 ;
 ; s__BSS and l__BSS are provided automatically by the SDCC linker (sdldgb).
 ; The _halt symbol marks the end-of-execution address for emulators.
@@ -40,6 +40,22 @@ _bss_loop:
 	jr	nz,_bss_loop
 _bss_done:
 
+	;; Zero-fill _DATA using ld (hl+),a auto-increment store.
+	ld	hl,#s__DATA
+	ld	de,#l__DATA
+	ld	a,d
+	or	a,e
+	jr	z,_data_done	; skip if _DATA is empty
+	xor	a,a				; A = 0
+_data_loop:
+	ld	(hl+),a			; (HL) = 0; HL++
+	dec	de
+	ld	a,d
+	or	a,e
+	ld	a,#0			; reset A without affecting flags
+	jr	nz,_data_loop
+_data_done:
+
 	;; Copy the _INITIALIZER section to the start of the _INITIALIZED section.
 	;; It is expected that the _INITIALIZER section has the same size as the _INITIALIZED section.
 	;; Otherwise, we have a layout error.
@@ -64,7 +80,8 @@ _halt:
 	halt
 
 	;; Declare _BSS area so sdldgb generates s__BSS and l__BSS symbols.
-	;; Same thing for _INITIALIZER and _INITIALIZED.
+	;; Same thing for _DATA, _INITIALIZER and _INITIALIZED.
 	.area _INITIALIZER
+	.area _DATA
 	.area _INITIALIZED
 	.area _BSS
