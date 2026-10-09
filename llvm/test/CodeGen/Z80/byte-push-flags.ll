@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=sm83 -O2 -stop-after=irtranslator < %s \
+; RUN: llc -mtriple=sm83 -O2 -stop-after=ir-translator < %s \
 ; RUN:   | FileCheck %s --check-prefix=MIR
 ; RUN: llc -verify-machineinstrs -mtriple=sm83 -O2 < %s \
 ; RUN:   | FileCheck %s --check-prefix=SM83

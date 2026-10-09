@@ -203,7 +203,9 @@ bool Z80StaticFrameAlloc::runOnModule(Module &M) {
       }
   }
 
-  CG.getCallsExternalNode()->removeAllCalledFunctions();
+  CallGraphNode *CallsExternal = CG.getCallsExternalNode();
+  while (!CallsExternal->empty())
+    CallsExternal->removeCallEdge(CallsExternal->begin());
 
   if (!FrameRegionSize)
     return false;

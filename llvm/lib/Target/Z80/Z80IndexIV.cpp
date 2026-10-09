@@ -189,7 +189,7 @@ PreservedAnalyses Z80IndexIV::run(Loop &L, LoopAnalysisManager &AM,
       }
 
       // The index must itself fit into 8 bits.
-      const auto *Index =
+      const SCEV *Index =
           SE.getAddRecExpr(/*Start=*/SE.getConstant(R->getType(), 0), Step, &L,
                            R->getNoWrapFlags());
       const auto IndexRange = SE.getSignedRange(Index);

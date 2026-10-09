@@ -114,8 +114,7 @@ Z80TargetMachine::Z80TargetMachine(const Target &T, const Triple &TT,
                                    std::optional<Reloc::Model> RM,
                                    std::optional<CodeModel::Model> CM,
                                    CodeGenOptLevel OL, bool JIT)
-    : CodeGenTargetMachineImpl(T, TT.computeDataLayout(), TT,
-                               selectZ80CPU(CPU, TT), FS, Options,
+    : CodeGenTargetMachineImpl(T, TT, selectZ80CPU(CPU, TT), FS, Options,
                                getEffectiveRelocModel(RM),
                                getEffectiveCodeModel(CM, CodeModel::Small), OL),
       SubTarget(TT, selectZ80CPU(CPU, TT).str(), FS.str(), *this) {
@@ -131,7 +130,7 @@ Z80TargetMachine::Z80TargetMachine(const Target &T, const Triple &TT,
   // instructions is worth a call. The target hook decides which functions
   // take the trade; -enable-machine-outliner still overrides both.
   this->Options.EnableMachineOutliner = true;
-  this->Options.SupportsDefaultOutlining = true;
+  setSupportsDefaultOutlining(true);
 
   // z80asm has neither PIC nor an address-significance table.
   if (getMCAsmInfo().isZ88DK()) {

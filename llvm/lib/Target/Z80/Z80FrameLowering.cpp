@@ -76,8 +76,8 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   // - Frame address is explicitly taken (e.g., varargs)
   // Otherwise, IX is freed for register allocation and stack access
   // uses SP-relative addressing (LD HL,offset; ADD HL,SP).
-  return MF.getTarget().Options.DisableFramePointerElim(MF) ||
-         MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken();
+  return MF.disableFramePointerElim() || MFI.hasVarSizedObjects() ||
+         MFI.isFrameAddressTaken();
 }
 
 bool Z80FrameLowering::usesStaticFrame(const MachineFunction &MF) const {
