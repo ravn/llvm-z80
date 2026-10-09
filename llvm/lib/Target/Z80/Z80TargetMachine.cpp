@@ -237,9 +237,12 @@ void Z80PassConfig::addIRPasses() {
   addPass(createAtomicExpandLegacyPass());
 
   // Whole-module analysis behind the static frame allocation; runs after
-  // LTO merging so the call graph covers the whole program.
-  if (getZ80TargetMachine().useStaticFrames())
-    addPass(createZ80NonReentrantPass(getZ80TargetMachine()));
+  // LTO merging so the call graph covers the whole program.  Always added:
+  // the pass checks function-level +static-frame attributes internally, so
+  // it is a no-op when no function in the module uses static frames.  This
+  // also handles LTO, where the backend TargetMachine may lack +static-frame
+  // in its default feature string even though all functions carry it.
+  addPass(createZ80NonReentrantPass(getZ80TargetMachine()));
 
   TargetPassConfig::addIRPasses();
   if (getOptLevel() != CodeGenOptLevel::None) {

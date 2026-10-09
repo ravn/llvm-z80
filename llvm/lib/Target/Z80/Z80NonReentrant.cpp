@@ -129,6 +129,21 @@ void Z80NonReentrantImpl::visitContext(const CallGraphNode &CGN) {
 }
 
 bool Z80NonReentrantImpl::run(Module &M) {
+  // The pass requires at least one function with +static-frame to be useful.
+  // Check function attributes rather than the target machine: when LTO links
+  // objects compiled with -Xclang -target-feature +static-frame, the LTO
+  // backend's TargetMachine is created with the module's default CPU/features
+  // (which may lack +static-frame even when all functions carry it), so
+  // TM.useStaticFrames() would incorrectly return false.
+  bool HasStaticFrame = false;
+  for (const Function &F : M.functions())
+    if (!F.isDeclaration() && TM.getSubtargetImpl(F)->hasStaticFrame()) {
+      HasStaticFrame = true;
+      break;
+    }
+  if (!HasStaticFrame)
+    return false;
+
   // This pass is the attribute's only legitimate writer; drop any that
   // arrived with the input IR so everything downstream is backed by this
   // run's analysis.
