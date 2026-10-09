@@ -27,19 +27,20 @@
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
-#include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
+#include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/SourceMgr.h"
 
 #include <memory>
 
@@ -255,6 +256,7 @@ private:
   MCRegister parseRegisterName(StringRef Name);
   MCRegister tryParseRegisterName();
   bool tryParseRegisterOperand(OperandVector &Operands);
+  bool tryParseShadowAF(OperandVector &Operands);
   bool parseOperand(OperandVector &Operands, StringRef Mnemonic);
   bool parseParenOperand(OperandVector &Operands);
   bool parseSDASZ80Indexed(OperandVector &Operands, const MCExpr *Disp,
@@ -266,14 +268,22 @@ private:
   /// Returns nullptr if the register doesn't use compound tokens.
   static const char *getCompoundToken(MCRegister Reg) {
     switch (Reg) {
-    case Z80::HL: return "(hl)";
-    case Z80::BC: return "(bc)";
-    case Z80::DE: return "(de)";
-    case Z80::SP: return "(sp)";
-    case Z80::C:  return "(c)";
-    case Z80::IX: return "(ix)";
-    case Z80::IY: return "(iy)";
-    default: return nullptr;
+    case Z80::HL:
+      return "(hl)";
+    case Z80::BC:
+      return "(bc)";
+    case Z80::DE:
+      return "(de)";
+    case Z80::SP:
+      return "(sp)";
+    case Z80::C:
+      return "(c)";
+    case Z80::IX:
+      return "(ix)";
+    case Z80::IY:
+      return "(iy)";
+    default:
+      return nullptr;
     }
   }
 
@@ -336,6 +346,29 @@ MCRegister Z80AsmParser::tryParseRegisterName() {
   return parseRegisterName(Name);
 }
 
+// `af'` in `ex af,af'`: the lexer would read the apostrophe as the start of a
+// character constant, so skip it here and hand the matcher the literal token.
+// If this is ever merged upstream, an AsmLexer option like
+// AllowApostropheInIdentifier would be the better fix.
+bool Z80AsmParser::tryParseShadowAF(OperandVector &Operands) {
+  const AsmToken &Tok = Parser.getTok();
+  if (!Tok.is(AsmToken::Identifier) ||
+      !Tok.getString().equals_insensitive("af"))
+    return true;
+  const char *Apostrophe = Tok.getEndLoc().getPointer();
+  if (*Apostrophe != '\'')
+    return true;
+
+  SourceMgr &SM = Parser.getSourceManager();
+  unsigned Buffer = SM.FindBufferContainingLoc(Tok.getEndLoc());
+  if (!Buffer)
+    return true;
+  Operands.push_back(Z80Operand::CreateToken("af'", Tok.getLoc()));
+  getLexer().setBuffer(SM.getMemoryBuffer(Buffer)->getBuffer(), Apostrophe + 1);
+  Parser.Lex(); // Eat `af`; lexing resumes after the apostrophe.
+  return false;
+}
+
 bool Z80AsmParser::tryParseRegisterOperand(OperandVector &Operands) {
   MCRegister Reg = tryParseRegisterName();
 
@@ -374,9 +407,8 @@ bool Z80AsmParser::parseParenOperand(OperandVector &Operands) {
       Parser.Lex(); // Eat register name
 
       // SM83 auto-increment/decrement: (hl+) or (hl-)
-      if (Reg == Z80::HL &&
-          (Parser.getTok().is(AsmToken::Plus) ||
-           Parser.getTok().is(AsmToken::Minus))) {
+      if (Reg == Z80::HL && (Parser.getTok().is(AsmToken::Plus) ||
+                             Parser.getTok().is(AsmToken::Minus))) {
         bool IsPlus = Parser.getTok().is(AsmToken::Plus);
         Parser.Lex(); // Eat +/-
 
@@ -384,8 +416,8 @@ bool Z80AsmParser::parseParenOperand(OperandVector &Operands) {
           return Error(Parser.getTok().getLoc(), "expected ')'");
         Parser.Lex(); // Eat ')'
 
-        Operands.push_back(Z80Operand::CreateToken(
-            IsPlus ? "(hl+)" : "(hl-)", LParenLoc));
+        Operands.push_back(
+            Z80Operand::CreateToken(IsPlus ? "(hl+)" : "(hl-)", LParenLoc));
         return false;
       }
 
@@ -512,11 +544,11 @@ bool Z80AsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
 
   // Try register
   if (getLexer().is(AsmToken::Identifier)) {
-    if (!tryParseRegisterOperand(Operands))
+    if (!tryParseShadowAF(Operands) || !tryParseRegisterOperand(Operands))
       return false;
 
-    // Not a register — check for condition code tokens (nz, z, nc, po, pe, p, m).
-    // These are used by conditional jr/jp/call/ret instructions and must be
+    // Not a register — check for condition code tokens (nz, z, nc, po, pe, p,
+    // m). These are used by conditional jr/jp/call/ret instructions and must be
     // emitted as Token operands for the AsmMatcher, not as expressions.
     // We must use string literals (not StringRef from .lower()) because
     // CreateToken stores a StringRef — the pointed-to data must be stable.
@@ -632,7 +664,8 @@ bool Z80AsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
   // but both LLVM and sdasz80 syntax commonly write "and a, 0x0F".
   // If we see mnemonic + A register + more operands, strip the A register.
   if (Operands.size() >= 3) {
-    std::string Mne = static_cast<Z80Operand &>(*Operands[0]).getToken().lower();
+    std::string Mne =
+        static_cast<Z80Operand &>(*Operands[0]).getToken().lower();
     if (Mne == "and" || Mne == "or" || Mne == "xor" || Mne == "sub" ||
         Mne == "cp") {
       Z80Operand &FirstOp = static_cast<Z80Operand &>(*Operands[1]);
@@ -683,11 +716,9 @@ ParseStatus Z80AsmParser::parseDirective(AsmToken DirectiveID) {
 
   getStreamer().switchSection(getContext().getELFSection(
       Section, Section == ".bss" ? ELF::SHT_NOBITS : ELF::SHT_PROGBITS,
-      Section == ".bss"
-          ? (ELF::SHF_ALLOC | ELF::SHF_WRITE)
-          : Section == ".data"
-                ? (ELF::SHF_ALLOC | ELF::SHF_WRITE)
-                : (ELF::SHF_ALLOC | ELF::SHF_EXECINSTR)));
+      Section == ".bss"    ? (ELF::SHF_ALLOC | ELF::SHF_WRITE)
+      : Section == ".data" ? (ELF::SHF_ALLOC | ELF::SHF_WRITE)
+                           : (ELF::SHF_ALLOC | ELF::SHF_EXECINSTR)));
 
   return ParseStatus::Success;
 }
@@ -735,13 +766,15 @@ bool Z80AsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   case Match_MissingFeature:
     return missingFeature(IDLoc, ErrorInfo);
   case Match_InvalidOperand:
+  case Match_InvalidPCRel8:
+  case Match_InvalidAddr16:
     return invalidOperand(IDLoc, Operands, ErrorInfo);
   case Match_MnemonicFail:
     return Error(IDLoc, "invalid instruction");
   case Match_immediate:
     return Error(IDLoc, "immediate operand out of range");
   default:
-    return true;
+    return Error(IDLoc, "invalid instruction");
   }
 }
 
@@ -754,7 +787,8 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80AsmParser() {
 #define GET_MATCHER_IMPLEMENTATION
 #include "Z80GenAsmMatcher.inc"
 
-// Defined after Z80GenAsmMatcher.inc to use generated matchTokenString/isSubclass.
+// Defined after Z80GenAsmMatcher.inc to use generated
+// matchTokenString/isSubclass.
 unsigned Z80AsmParser::validateTargetOperandClass(MCParsedAsmOperand &AsmOp,
                                                   unsigned ExpectedKind) {
   Z80Operand &Op = static_cast<Z80Operand &>(AsmOp);

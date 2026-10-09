@@ -67,9 +67,14 @@ Dynamic test runner for LLVM-Z80. Compiles C and LLVM IR test programs, runs the
 
 ```bash
 cd z80-utils
-cargo run                        # Run all test suites (default: O1, O2, Os)
-cargo run -- -full                  # Run all optimization levels (O0-Oz)
+cargo run                  # Print usage
+cargo run test             # The end-to-end suites (O1, O2, Os)
+cargo run full             # Everything a regression check needs
 ```
+
+`full` runs every suite at every optimisation level, this backend's LLVM lit
+tests, and the GCC C torture suite at O1, O2 and Os on both targets. It is the
+one to run before deciding a change is safe; `test` is the quick pass.
 
 ### Test Suites
 
@@ -105,29 +110,113 @@ cargo run llc -target sm83 -opt O0        # SM83, O0 only
 
 #### utils — elf2rel/rel2elf Converter Tests
 Tests the ELF ↔ SDCC .rel format converters through roundtrip and cross-link scenarios.
-Six test groups run in parallel: ELF roundtrip, REL roundtrip, elf2rel crosslink,
-rel2elf crosslink, ELF archive roundtrip, REL archive roundtrip.
+Test groups run in parallel: shipped crt0, ELF roundtrip, REL roundtrip,
+elf2rel crosslink, rel2elf crosslink, ELF archive roundtrip, REL archive
+roundtrip. The first links the way a user does, letting the clang driver pick
+the startup code, so the crt0 that actually ships stays covered.
 
 ```bash
-cargo run utils                           # Z80, O1
+cargo run utils                           # Z80, Os
 cargo run utils -target sm83              # SM83
 ```
 
-#### custom — Ad-hoc Compile Check
-Checks that files in `test-runner/testcases/custom/` compile without errors (no emulation).
+#### lit — LLVM's Own Tests
+
+Runs the lit tests this project owns: `llvm/test/CodeGen/Z80`,
+`llvm/test/MC/Z80` and the three z80 tests under `clang/test`. Also run by
+`full`.
 
 ```bash
-cargo run custom                          # Auto-discover .c/.ll files
-cargo run custom file.c                   # Specific file
+cargo run lit                             # all of them
+cargo run lit peephole                    # only tests whose name matches
 ```
+
+These are the only tests here that check *how* something is compiled rather
+than what it computes, so a peephole that stops firing shows up here and
+nowhere else. The rest of LLVM's test tree is upstream's business and is not
+run.
+
+#### torture — GCC C Torture Suite
+Runs `gcc.c-torture` from the `vendor/gcc-torture` submodule. Not part of the
+default run: it stays red while any backend bug is outstanding, which is the
+point. Nothing else needs the submodule, so a plain clone does not carry it:
+
+```bash
+git submodule update --init vendor/gcc-torture
+```
+
+```bash
+cargo run torture                          # both tiers, Z80, Os
+cargo run torture -tier execute -target sm83
+cargo run torture -emu-cycles 20000000000   # widen the budget for a slow test
+cargo run torture -run-skipped             # re-check what the manifest skips
+```
+
+Two tiers. `compile` only asserts that clang accepts the input, which is where
+compiler crashes surface most cheaply. `execute` runs self-checking tests, so
+the expected result is always zero and no `expect` directive is needed.
+
+Outcomes are `PASS`, `XFAIL` (a `dg-error` test rejected as upstream expects),
+`SKIP`, `ICE`, `CLANG` (a failure the manifest attributes to clang, still run so
+it turns green when clang fixes it), `FAIL`, `OPTIM` (an optimization that
+should have deleted a call did not), `TIMEOUT`, `COMPILE`, `LINK`, `TOOBIG`.
+
+`TIMEOUT` covers two different failures and can hide a miscompile. One is a
+test that needs more emulated cycles than its budget allows, which
+`-emu-cycles` settles. The other is a program that reached `__builtin_trap()`:
+that lowers to
+`HALT`, which stops the CPU somewhere other than `_halt`, so the run burns its
+whole budget and looks identical to a slow test. A test that traps got a wrong
+answer. z88dk-ticks does not report the final PC, so the runner cannot tell the
+two apart; treat a newly appearing `TIMEOUT` as something to investigate rather
+than as a slow test.
+
+`test-runner/torture/manifest.txt` lists only what the target structurally
+cannot do. A backend bug never belongs there: it keeps failing until it is
+fixed. Upstream's own `dg-skip-if`, `dg-require-effective-target` and
+`dg-options` are read straight from the test sources instead.
 
 #### bench — Code Size Benchmarks
 Measures compiled code size across benchmarks.
 
 ```bash
-cargo run bench                           # Z80, O1
-cargo run bench -target sm83 -opt Os      # SM83, Os
+cargo run bench                           # Z80, Os
+cargo run bench -target sm83 -opt O2      # SM83, O2
+cargo run bench -sdcc-allocs 100000       # let SDCC's allocator try harder
 ```
+
+Both benchmarks print the flags each toolchain was given, so a result can be
+read without guessing how it was produced. `-sdcc-allocs` sets SDCC's
+`--max-allocs-per-node`: its default is low so that compiles stay quick, and
+raising it wins several percent on both size and speed at several times the
+build time. It is off by default, since that is the code an SDCC user actually
+gets.
+
+#### stdcbench — Clang vs SDCC on an Outside Benchmark
+
+Builds [stdcbench](https://github.com/llvm-z80/stdcbench)'s c90base module with
+both toolchains and compares code size and emulated cycles. Not part of the
+default run.
+
+```bash
+git submodule update --init vendor/stdcbench
+
+cargo run stdcbench                        # Z80, Os, one iteration
+cargo run stdcbench -target sm83 -opt O2
+cargo run stdcbench -iterations 4
+cargo run stdcbench -sdcc-allocs 100000    # see the bench section
+```
+
+Only c90base is built: it calls nothing from the C library, while c90lib needs
+malloc, qsort and the string functions this freestanding target does not have.
+`test-runner/stdcbench/portme.{c,h}` supplies the target hooks, so the mirror
+stays byte-for-byte upstream.
+
+What is reported is cycles, not a stdcbench score. stdcbench scores work done
+per unit of wall-clock time and the emulator gives the guest no clock to read,
+so the harness pins the iteration count and measures the run exactly instead.
+The benchmark's own result checks still run, and the `Checks` column reports
+them; that column failing means the compiled code computed a wrong answer.
 
 ### Test File Format
 
@@ -172,4 +261,16 @@ define i16 @main() {
 * [`test-runner/testcases/clang/`](test-runner/testcases/clang/) — C source tests for Clang
 * [`test-runner/testcases/llc/`](test-runner/testcases/llc/) — LLVM IR tests for LLC
 * [`test-runner/testcases/sdcc/`](test-runner/testcases/sdcc/) — SDCC cross-build compatibility test pairs
-* [`test-runner/testcases/custom/`](test-runner/testcases/custom/) — User-supplied files for compile checking
+* [`vendor/gcc-torture/`](vendor/gcc-torture/) — GCC C torture suite (submodule)
+
+### Harness Runtime
+
+`test-runner/harness/{z80,sm83}/` holds the startup code the suites link, kept
+separate from the crt0 in `compiler-rt` because it records `main`'s return value
+at a symbol named `_exitcode`. The runner reads the result from there out of a
+RAM dump (`z88dk-ticks -output`) rather than from a register: registers are only
+visible under `-trace`, which prints every executed instruction and slows
+emulation by more than two orders of magnitude.
+
+`test-runner/torture/shim/` adds `abort`, `exit` and `link_error` for the
+torture tests, which are self-checking and call `abort()` on failure.

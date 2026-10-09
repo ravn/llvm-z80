@@ -188,7 +188,7 @@ void z80::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles)) {
     SmallString<256> Crt0Path(TC.getDriver().Dir);
     llvm::sys::path::append(Crt0Path, "..", "lib", SubDir,
-                             IsSM83 ? "sm83_crt0.o" : "z80_crt0.o");
+                            IsSM83 ? "sm83_crt0.o" : "z80_crt0.o");
     if (llvm::sys::fs::exists(Crt0Path))
       CmdArgs.push_back(Args.MakeArgString(Crt0Path));
   }
@@ -203,7 +203,7 @@ void z80::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     SmallString<256> RtLib(TC.getDriver().Dir);
     llvm::sys::path::append(RtLib, "..", "lib", SubDir,
-                             IsSM83 ? "sm83_rt.a" : "z80_rt.a");
+                            IsSM83 ? "sm83_rt.a" : "z80_rt.a");
     if (llvm::sys::fs::exists(RtLib))
       CmdArgs.push_back(Args.MakeArgString(RtLib));
   }
@@ -241,7 +241,7 @@ Tool *Z80ToolChain::buildLinker() const {
 }
 
 void Z80ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
-                                         ArgStringList &CC1Args,
+                                         ArgStringList &CC1Args, BoundArch,
                                          Action::OffloadKind) const {
   // When using the external SDCC assembler, emit sdasz80 assembly format.
   // With the integrated assembler, assembly goes directly through MC.
@@ -266,4 +266,33 @@ void Z80ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
   // Disable PHI node folding to keep if-else as branches.
   CC1Args.push_back("-mllvm");
   CC1Args.push_back("-two-entry-phi-node-folding-threshold=0");
+
+  // Load PRE in loops keeps loaded values in registers across iterations,
+  // which only adds spills with three register pairs.
+  CC1Args.push_back("-mllvm");
+  CC1Args.push_back("-enable-load-in-loop-pre=false");
+}
+
+void Z80ToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
+                                             ArgStringList &CC1Args) const {
+  // The host's headers must never be searched: glibc's stdint.h defines
+  // int32_t as int, which is 16 bits here, silently truncating every
+  // int32_t in a translation unit that includes it.
+  if (DriverArgs.hasArg(options::OPT_nostdinc))
+    return;
+
+  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+    SmallString<128> Dir(getDriver().ResourceDir);
+    llvm::sys::path::append(Dir, "include");
+    addSystemInclude(DriverArgs, CC1Args, Dir.str());
+  }
+
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc))
+    return;
+
+  if (!getDriver().SysRoot.empty()) {
+    SmallString<128> Dir(getDriver().SysRoot);
+    llvm::sys::path::append(Dir, "include");
+    addSystemInclude(DriverArgs, CC1Args, Dir.str());
+  }
 }

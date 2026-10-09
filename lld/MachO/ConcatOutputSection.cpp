@@ -15,6 +15,7 @@
 #include "Target.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "llvm/BinaryFormat/MachO.h"
+#include "llvm/Support/Parallel.h"
 #include <deque>
 
 using namespace llvm;
@@ -65,6 +66,9 @@ DenseMap<ThunkKey, ThunkInfo, ThunkMapKeyInfo> lld::macho::thunkMap;
 bool TextOutputSection::needsThunks() const {
   if (!target->usesThunks())
     return false;
+  // FIXME: It is not enough to just estimate the size of this section. We
+  // should compute parent->needsThunks by estimating the size of all __text
+  // sections. See https://github.com/llvm/llvm-project/issues/195387
   uint64_t isecAddr = addr;
   for (ConcatInputSection *isec : inputs)
     isecAddr = alignToPowerOf2(isecAddr, isec->align) + isec->getSize();
@@ -185,15 +189,54 @@ void TextOutputSection::createThunk(const ConcatInputSection &isec,
         /*noDeadStrip=*/false, /*isWeakDefCanBeHidden=*/false);
   }
   thunkInfo.sym->used = true;
+  thunkInfo.sym->branchExtensionThunk = true;
   target->populateThunk(thunkInfo.isec, funcSym, r.addend);
   updateBranchTargetToThunk(r, thunkInfo.sym);
   finalizeOne(thunkInfo.isec);
   thunks.push_back(thunkInfo.isec);
 }
 
+std::optional<uint64_t>
+TextOutputSection::estimateStubsEndVA(unsigned numPotentialThunks) const {
+  if (!parent)
+    return std::nullopt;
+
+  auto sections =
+      ArrayRef(parent->getSections())
+          .drop_until([&](const OutputSection *osec) { return osec == this; });
+
+  // Walk backwards to find the last stubs section
+  while (!sections.empty()) {
+    auto *osec = sections.back();
+    if (osec->isNeeded() && (osec == in.stubs || osec == in.objcStubs))
+      break;
+    sections.consume_back();
+  }
+  if (sections.empty())
+    return std::nullopt;
+
+  assert(inputs.empty() || inputs.back()->isFinal);
+  uint64_t estimatedStubsEnd =
+      addr + size + numPotentialThunks * target->thunkSize;
+  for (auto *osec : sections) {
+    if (osec == this)
+      continue;
+    if (!osec->isNeeded())
+      continue;
+    // Check if we will emit any more sections before the last stubs section
+    if (osec != in.stubs && osec != in.stubHelper && osec != in.objcStubs)
+      return std::nullopt;
+    estimatedStubsEnd =
+        alignToPowerOf2(estimatedStubsEnd, osec->align) + osec->getSize();
+  }
+  return estimatedStubsEnd;
+}
+
 bool TextOutputSection::isTargetStubsAndInRange(
     const ConcatInputSection &isec, const Relocation &r,
-    uint64_t estimatedStubsEnd) const {
+    std::optional<uint64_t> estimatedStubsEnd) const {
+  if (!estimatedStubsEnd.has_value())
+    return false;
   auto *funcSym = cast<Symbol *>(r.referent);
   if (!funcSym->isInStubs() && !(in.objcStubs && in.objcStubs->isNeeded() &&
                                  ObjCStubsSection::isObjCStubSymbol(funcSym)))
@@ -201,7 +244,7 @@ bool TextOutputSection::isTargetStubsAndInRange(
   if (r.addend)
     return false;
   uint64_t highVA = isec.getVA() + r.offset + target->forwardBranchRange;
-  return estimatedStubsEnd <= highVA;
+  return *estimatedStubsEnd <= highVA;
 }
 
 void TextOutputSection::finalize() {
@@ -294,15 +337,7 @@ void TextOutputSection::finalize() {
       branchTargets.insert(thunkKey);
   }
 
-  uint64_t estimatedTextEnd =
-      addr + size + branchTargets.size() * target->thunkSize;
-  uint64_t estimatedStubsEnd =
-      alignToPowerOf2(estimatedTextEnd, in.stubs->align) + in.stubs->getSize();
-  if (in.objcStubs && in.objcStubs->isNeeded())
-    estimatedStubsEnd =
-        alignToPowerOf2(estimatedStubsEnd, in.objcStubs->align) +
-        in.objcStubs->getSize();
-
+  auto estimatedStubsEnd = estimateStubsEndVA(branchTargets.size());
   for (auto [isec, r, thunk] : deferredBranchRedirects) {
     if (isTargetKnownInRange(*isec, *r))
       continue;
@@ -329,25 +364,20 @@ void TextOutputSection::finalize() {
 }
 
 void ConcatOutputSection::writeTo(uint8_t *buf) const {
-  for (ConcatInputSection *isec : inputs)
+  parallelForEach(inputs, [buf](ConcatInputSection *isec) {
     isec->writeTo(buf + isec->outSecOff);
+  });
 }
 
 void TextOutputSection::writeTo(uint8_t *buf) const {
-  // Merge input sections from thunk & ordinary vectors
-  size_t i = 0, ie = inputs.size();
-  size_t t = 0, te = thunks.size();
-  while (i < ie || t < te) {
-    while (i < ie && (t == te || inputs[i]->empty() ||
-                      inputs[i]->outSecOff < thunks[t]->outSecOff)) {
-      inputs[i]->writeTo(buf + inputs[i]->outSecOff);
-      ++i;
-    }
-    while (t < te && (i == ie || thunks[t]->outSecOff < inputs[i]->outSecOff)) {
-      thunks[t]->writeTo(buf + thunks[t]->outSecOff);
-      ++t;
-    }
-  }
+  // Inputs and thunks all write to their own range of the output buffer, so
+  // there is no need to interleave the two sorted vectors here.
+  parallelForEach(inputs, [buf](ConcatInputSection *isec) {
+    isec->writeTo(buf + isec->outSecOff);
+  });
+  parallelForEach(thunks, [buf](ConcatInputSection *thunk) {
+    thunk->writeTo(buf + thunk->outSecOff);
+  });
 }
 
 void ConcatOutputSection::finalizeFlags(InputSection *input) {

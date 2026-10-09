@@ -24,30 +24,33 @@ add_public_tablegen_target(Z80CommonTableGen)
 
 add_llvm_target(Z80CodeGen
   SM83CallLowering.cpp
+  Z80AccumulatorCopies.cpp
   Z80AsmPrinter.cpp
   Z80BranchCleanup.cpp
   Z80CallLowering.cpp
   Z80CallingConv.cpp
+  Z80CheckUnsupported.cpp
   Z80PreLegalizerCombiner.cpp
   Z80PostLegalizerCombiner.cpp
+  Z80DanglingDebugCleanup.cpp
   Z80ExpandPseudo.cpp
   Z80FixupImplicitDefs.cpp
   Z80FrameLowering.cpp
   Z80ISelLowering.cpp
   Z80IndexIV.cpp
   Z80InlineAsmLowering.cpp
-  Z80InstrCost.cpp
   Z80InstrInfo.cpp
   Z80InstructionSelector.cpp
-  Z80LateOptimization.cpp
   Z80LegalizerInfo.cpp
   Z80LowerSelect.cpp
   Z80MCInstLower.cpp
-  Z80PostRACompareMerge.cpp
-  Z80PostRAScavenging.cpp
+  Z80NarrowMemAccess.cpp
+  Z80NonReentrant.cpp
+  Z80PreEmitPeephole.cpp
   Z80RegisterBankInfo.cpp
   Z80RegisterInfo.cpp
   Z80ShiftRotateChain.cpp
+  Z80StaticFrameAlloc.cpp
   Z80Subtarget.cpp
   Z80TargetMachine.cpp
   Z80TargetObjectFile.cpp

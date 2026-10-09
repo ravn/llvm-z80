@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O0 < %s | FileCheck %s
 ; Test variadic function support (va_start, va_arg)
 
 target datalayout = "e-m:o-p:16:8-i16:8-i32:8-i64:8-n8:16"
@@ -18,8 +18,8 @@ define i16 @sum(i16 %count, ...) {
 ; va_start computes IX+6 (first vararg address):
 ; CHECK:       push ix
 ; CHECK-NEXT:  pop hl
-; CHECK:       ld bc,#6
-; CHECK-NEXT:  add hl,bc
+; CHECK:       ld [[OFF:bc|de]],#6
+; CHECK-NEXT:  add hl,[[OFF]]
   %ap = alloca ptr, align 1
   call void @llvm.va_start.p0(ptr %ap)
   %total = alloca i16, align 1

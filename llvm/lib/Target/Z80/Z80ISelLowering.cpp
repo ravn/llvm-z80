@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/CallingConvLower.h"
+#include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -25,6 +26,7 @@
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/KnownBits.h"
 
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
@@ -51,8 +53,22 @@ Z80TargetLowering::Z80TargetLowering(const Z80TargetMachine &TM,
   // Stack pointer register
   setStackPointerRegisterToSaveRestore(Z80::SP);
 
+  // Only an 8-bit access is a single instruction, and interrupts are taken
+  // between instructions. Anything wider becomes an __atomic_* libcall, which
+  // the runtime does not provide, so it fails to link rather than look atomic.
+  setMaxAtomicSizeInBitsSupported(8);
+
   // Z80 has limited jump table support
   setMaximumJumpTableSize(std::min(256u, getMaximumJumpTableSize()));
+
+  // Measured over the test suite at Os: on SM83 a switch of up to seven
+  // cases compiles smaller as a comparison tree than as a table (35 bytes
+  // on the one such switch in the suite, and every micro-sweep size up to
+  // eight cases), while on Z80 the generic threshold of four is already
+  // the size optimum, so only SM83 moves. Raising either past sixteen
+  // costs hundreds of bytes on interpreter-style dense switches.
+  if (STI.hasSM83())
+    setMinimumJumpTableEntries(8);
 
   // Z80 has no conditional move instruction, so SELECT is always expanded
   // to a branch sequence. Prefer branches over selects since they avoid
@@ -60,26 +76,47 @@ Z80TargetLowering::Z80TargetLowering(const Z80TargetMachine &TM,
   PredictableSelectIsExpensive = true;
 }
 
-MVT Z80TargetLowering::getRegisterType(MVT VT) const {
-  // Z80 has 8-bit and 16-bit registers
+// Values wider than a 16-bit register pair are passed and returned as
+// individual bytes: the SDCC conventions place them in arbitrary mixes of
+// 8-bit registers and stack slots, which the default largest-legal-type
+// breakdown (pairs of i16) cannot describe.
+MVT Z80TargetLowering::getRegisterTypeForCallingConv(LLVMContext &Context,
+                                                     CallingConv::ID CC,
+                                                     EVT VT) const {
   if (VT.getSizeInBits() > 16)
-    return MVT::i8; // Split larger values into bytes
+    return MVT::i8;
   if (VT.getSizeInBits() > 8)
     return MVT::i16;
-  return TargetLowering::getRegisterType(VT);
+  return TargetLowering::getRegisterTypeForCallingConv(Context, CC, VT);
 }
 
-unsigned
-Z80TargetLowering::getNumRegisters(LLVMContext &Context, EVT VT,
-                                   std::optional<MVT> RegisterVT) const {
+unsigned Z80TargetLowering::getNumRegistersForCallingConv(LLVMContext &Context,
+                                                          CallingConv::ID CC,
+                                                          EVT VT) const {
   if (VT.getSizeInBits() > 16)
-    return VT.getSizeInBits() / 8;
+    return divideCeil(VT.getSizeInBits(), 8);
   if (VT.getSizeInBits() > 8)
-    return 1; // One 16-bit register
-  return TargetLowering::getNumRegisters(Context, VT, RegisterVT);
+    return 1;
+  return TargetLowering::getNumRegistersForCallingConv(Context, CC, VT);
 }
 
-
+// A wide comparison becomes one of these target opcodes, which produce the
+// same zero-or-one boolean G_ICMP does. Nothing else can know that about a
+// target opcode, so without this the mask the widening of the condition
+// leaves behind never looks redundant.
+void Z80TargetLowering::computeKnownBitsForTargetInstr(
+    GISelValueTracking &Analysis, Register R, KnownBits &Known,
+    const APInt &DemandedElts, const MachineRegisterInfo &MRI,
+    unsigned Depth) const {
+  switch (MRI.getVRegDef(R)->getOpcode()) {
+  case Z80::G_Z80_ICMP32:
+  case Z80::G_Z80_ICMP64:
+    Known.Zero.setBitsFrom(1);
+    return;
+  default:
+    return;
+  }
+}
 
 TargetLowering::ConstraintType
 Z80TargetLowering::getConstraintType(StringRef Constraint) const {

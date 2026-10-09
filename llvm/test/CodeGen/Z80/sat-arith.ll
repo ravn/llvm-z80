@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=sdasz80 -O1 < %s | FileCheck %s
 
 declare i16 @llvm.uadd.sat.i16(i16, i16)
 declare i16 @llvm.usub.sat.i16(i16, i16)
@@ -64,7 +64,8 @@ define i16 @test_ssubsat(i16 %a, i16 %b) {
 ; Test: three-way signed comparison
 define i8 @test_scmp(i16 %a, i16 %b) {
 ; CHECK-LABEL: _test_scmp:
-; CHECK:       sbc hl,de
+; CHECK:       xor #128
+; CHECK:       sbc a,{{[a-l]}}
 ; CHECK:       ret
   %r = call i8 @llvm.scmp.i8.i16(i16 %a, i16 %b)
   ret i8 %r

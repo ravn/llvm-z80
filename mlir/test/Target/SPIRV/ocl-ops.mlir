@@ -37,8 +37,24 @@ spirv.module Physical64 OpenCL requires #spirv.vce<v1.0, [Kernel, Addresses, Vec
     %9 = spirv.CL.rsqrt %arg0 : f32
     // CHECK: {{%.*}} = spirv.CL.erf {{%.*}} : f32
     %10 = spirv.CL.erf %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.erfc {{%.*}} : f32
+    %erfc = spirv.CL.erfc %arg0 : f32
     // CHECK: {{%.*}} = spirv.CL.trunc {{%.*}} : f32
     %11 = spirv.CL.trunc %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.cbrt {{%.*}} : f32
+    %12 = spirv.CL.cbrt %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.copysign {{%.*}}, {{%.*}} : f32
+    %copysign = spirv.CL.copysign %arg0, %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.expm1 {{%.*}} : f32
+    %expm1 = spirv.CL.expm1 %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.fdim {{%.*}}, {{%.*}} : f32
+    %fdim = spirv.CL.fdim %arg0, %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.fmod {{%.*}}, {{%.*}} : f32
+    %fmod = spirv.CL.fmod %arg0, %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.hypot {{%.*}}, {{%.*}} : f32
+    %hypot = spirv.CL.hypot %arg0, %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.log1p {{%.*}} : f32
+    %log1p = spirv.CL.log1p %arg0 : f32
     spirv.Return
   }
 
@@ -96,6 +112,16 @@ spirv.module Physical64 OpenCL requires #spirv.vce<v1.0, [Kernel, Addresses, Vec
     %5 = spirv.CL.s_min %arg2, %arg3 : i32
     // CHECK: {{%.*}} = spirv.CL.u_min {{%.*}}, {{%.*}} : i32
     %6 = spirv.CL.u_min %arg2, %arg3 : i32
+    spirv.Return
+  }
+
+  spirv.func @clamp(%arg0 : f32, %arg1 : i32, %arg2 : i32) "None" {
+    // CHECK: {{%.*}} = spirv.CL.fclamp {{%[^,]*}}, {{%[^,]*}}, {{%[^,]*}} : f32
+    %0 = spirv.CL.fclamp %arg0, %arg0, %arg0 : f32
+    // CHECK: {{%.*}} = spirv.CL.s_clamp {{%[^,]*}}, {{%[^,]*}}, {{%[^,]*}} : i32
+    %1 = spirv.CL.s_clamp %arg1, %arg2, %arg2 : i32
+    // CHECK: {{%.*}} = spirv.CL.u_clamp {{%[^,]*}}, {{%[^,]*}}, {{%[^,]*}} : i32
+    %2 = spirv.CL.u_clamp %arg1, %arg2, %arg2 : i32
     spirv.Return
   }
 }

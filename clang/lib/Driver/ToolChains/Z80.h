@@ -34,8 +34,7 @@ public:
 /// Used when -fno-integrated-as is specified (SDCC .rel object format).
 class LLVM_LIBRARY_VISIBILITY SDCCLinker final : public Tool {
 public:
-  SDCCLinker(const ToolChain &TC)
-      : Tool("z80::SDCCLinker", "sdldz80", TC) {}
+  SDCCLinker(const ToolChain &TC) : Tool("z80::SDCCLinker", "sdldz80", TC) {}
 
   bool hasIntegratedCPP() const override { return false; }
   bool isLinkJob() const override { return true; }
@@ -86,8 +85,14 @@ public:
 
   void
   addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                        llvm::opt::ArgStringList &CC1Args,
+                        llvm::opt::ArgStringList &CC1Args, BoundArch BA,
                         Action::OffloadKind DeviceOffloadKind) const override;
+
+  // Bare-metal target: only the builtin resource headers and an explicit
+  // sysroot are searched, never the host's /usr/include.
+  void
+  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                            llvm::opt::ArgStringList &CC1Args) const override;
 };
 
 } // end namespace toolchains

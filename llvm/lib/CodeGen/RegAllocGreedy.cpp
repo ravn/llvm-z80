@@ -258,7 +258,6 @@ PreservedAnalyses RAGreedyPass::run(MachineFunction &MF,
     return PreservedAnalyses::all();
   auto PA = getMachineFunctionPassPreservedAnalyses();
   PA.preserveSet<CFGAnalyses>();
-  PA.preserve<MachineBlockFrequencyAnalysis>();
   PA.preserve<LiveIntervalsAnalysis>();
   PA.preserve<SlotIndexesAnalysis>();
   PA.preserve<LiveDebugVariablesAnalysis>();
@@ -322,7 +321,6 @@ const char *const RAGreedy::StageName[] = {
     "RS_Assign",
     "RS_Split",
     "RS_Split2",
-    "RS_LightSpill",
     "RS_Spill",
     "RS_Done"
 };
@@ -343,7 +341,6 @@ FunctionPass *llvm::createGreedyRegisterAllocator(RegAllocFilterFunc Ftor) {
 void RAGreedyLegacy::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesCFG();
   AU.addRequired<MachineBlockFrequencyInfoWrapperPass>();
-  AU.addPreserved<MachineBlockFrequencyInfoWrapperPass>();
   AU.addRequired<LiveIntervalsWrapperPass>();
   AU.addPreserved<LiveIntervalsWrapperPass>();
   AU.addRequired<SlotIndexesWrapperPass>();
@@ -353,9 +350,7 @@ void RAGreedyLegacy::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<LiveStacksWrapperLegacy>();
   AU.addPreserved<LiveStacksWrapperLegacy>();
   AU.addRequired<MachineDominatorTreeWrapperPass>();
-  AU.addPreserved<MachineDominatorTreeWrapperPass>();
   AU.addRequired<MachineLoopInfoWrapperPass>();
-  AU.addPreserved<MachineLoopInfoWrapperPass>();
   AU.addRequired<VirtRegMapWrapperLegacy>();
   AU.addPreserved<VirtRegMapWrapperLegacy>();
   AU.addRequired<LiveRegMatrixWrapperLegacy>();
@@ -688,7 +683,10 @@ RegAllocEvictionAdvisor::getOrderLimit(const LiveInterval &VirtReg,
 
     // It is normal for register classes to have a long tail of registers with
     // the same cost. We don't need to look at them if they're too expensive.
-    if (RegCosts[Order.getOrder().back()] >= CostPerUseLimit) {
+    // LastCostChange is an index into the original RegisterClassInfo order, so
+    // it cannot be used to shorten a custom order.
+    if (!Order.hasCustomOrder() &&
+        RegCosts[Order.getOrder().back()] >= CostPerUseLimit) {
       OrderLimit = RegClassInfo.getLastCostChange(RC);
       LLVM_DEBUG(dbgs() << "Only trying the first " << OrderLimit
                         << " regs.\n");
@@ -769,7 +767,7 @@ bool RAGreedy::addSplitConstraints(InterferenceCache::Cursor Intf,
 
     // Interference for the live-in value.
     if (BI.LiveIn) {
-      if (Intf.first() <= Indexes->getMBBStartIdx(BC.Number)) {
+      if (Intf.first() <= Indexes->getMBBStartIdx(BI.MBB)) {
         BC.Entry = SpillPlacement::MustSpill;
         ++Ins;
       } else if (Intf.first() < BI.FirstInstr) {
@@ -844,8 +842,15 @@ bool RAGreedy::addThroughConstraints(InterferenceCache::Cursor Intf,
         SlotIndex::isEarlierInstr(LIS->getInstructionIndex(*FirstNonDebugInstr),
                                   SA->getFirstSplitPoint(Number)))
       return false;
+
     // Interference for the live-in value.
-    if (Intf.first() <= Indexes->getMBBStartIdx(Number))
+    Register Reg = SA->getParent().reg();
+    auto InsertPt = MBB->SkipPHIsLabelsAndDebug(MBB->begin(), Reg);
+    SlotIndex InsertIdx = InsertPt == MBB->end()
+                              ? Indexes->getMBBEndIdx(MBB)
+                              : LIS->getInstructionIndex(*InsertPt);
+    if (Intf.first() <= Indexes->getMBBStartIdx(MBB) ||
+        SlotIndex::isEarlierInstr(Intf.first(), InsertIdx))
       BCS[B].Entry = SpillPlacement::MustSpill;
     else
       BCS[B].Entry = SpillPlacement::PrefSpill;
@@ -1176,7 +1181,7 @@ void RAGreedy::splitAroundRegion(LiveRangeEdit &LREdit,
     // Remainder interval. Don't try splitting again, spill if it doesn't
     // allocate.
     if (IntvMap[I] == 0) {
-      ExtraInfo->setStage(Reg, RS_LightSpill);
+      ExtraInfo->setStage(Reg, RS_Spill);
       continue;
     }
 
@@ -1493,7 +1498,7 @@ MCRegister RAGreedy::tryBlockSplit(const LiveInterval &VirtReg,
   for (unsigned I = 0, E = LREdit.size(); I != E; ++I) {
     const LiveInterval &LI = LIS->getInterval(LREdit.get(I));
     if (ExtraInfo->getOrInitStage(LI.reg()) == RS_New && IntvMap[I] == 0)
-      ExtraInfo->setStage(LI, RS_LightSpill);
+      ExtraInfo->setStage(LI, RS_Spill);
   }
 
   if (VerifyEnabled)
@@ -1588,8 +1593,7 @@ static bool readsLaneSubset(const MachineRegisterInfo &MRI,
 /// This is similar to spilling to a larger register class.
 MCRegister RAGreedy::tryInstructionSplit(const LiveInterval &VirtReg,
                                          AllocationOrder &Order,
-                                         SmallVectorImpl<Register> &NewVRegs,
-                                         bool LightSpill) {
+                                         SmallVectorImpl<Register> &NewVRegs) {
   const TargetRegisterClass *CurRC = MRI->getRegClass(VirtReg.reg());
   // There is no point to this if there are no larger sub-classes.
 
@@ -1987,14 +1991,7 @@ MCRegister RAGreedy::trySplit(const LiveInterval &VirtReg,
     MCRegister PhysReg = tryLocalSplit(VirtReg, Order, NewVRegs);
     if (PhysReg || !NewVRegs.empty())
       return PhysReg;
-    return tryInstructionSplit(VirtReg, Order, NewVRegs, false);
-  }
-
-  if (ExtraInfo->getStage(VirtReg) == RS_LightSpill) {
-    NamedRegionTimer T("light_spill", "Light Spilling", TimerGroupName,
-                       TimerGroupDescription, TimePassesIsEnabled);
-    SA->analyze(&VirtReg);
-    return tryInstructionSplit(VirtReg, Order, NewVRegs, true);
+    return tryInstructionSplit(VirtReg, Order, NewVRegs);
   }
 
   NamedRegionTimer T("global_split", "Global Splitting", TimerGroupName,
@@ -2390,6 +2387,18 @@ BlockFrequency RAGreedy::calcSpillCost(const LiveInterval &LI) {
 MCRegister RAGreedy::tryAssignCSRFirstTime(
     const LiveInterval &VirtReg, AllocationOrder &Order, MCRegister PhysReg,
     uint8_t &CostPerUseLimit, SmallVectorImpl<Register> &NewVRegs) {
+  if (ExtraInfo->getStage(VirtReg) == RS_Spill && VirtReg.isSpillable()) {
+    // We choose spill over using the CSR for the first time if the spill cost
+    // is lower than CSRCost.
+    SA->analyze(&VirtReg);
+    if (calcSpillCost(VirtReg) >= CSRCost)
+      return PhysReg;
+
+    // We are going to spill, set CostPerUseLimit to 1 to make sure that
+    // we will not use a callee-saved register in tryEvict.
+    CostPerUseLimit = 1;
+    return MCRegister();
+  }
   if (ExtraInfo->getStage(VirtReg) < RS_Split) {
     // We choose pre-splitting over using the CSR for the first time if
     // the cost of splitting is lower than CSRCost.
@@ -2398,22 +2407,13 @@ MCRegister RAGreedy::tryAssignCSRFirstTime(
     BlockFrequency BestCost = CSRCost; // Don't modify CSRCost.
     unsigned BestCand = calculateRegionSplitCost(VirtReg, Order, BestCost,
                                                  NumCands, true /*IgnoreCSR*/);
-    if (BestCand != NoCand) {
-      // Perform the actual pre-splitting.
-      doRegionSplit(VirtReg, BestCand, false/*HasCompact*/, NewVRegs);
-      return MCRegister();
-    }
-  }
-  if (VirtReg.isSpillable()) {
-    // We choose spill over using the CSR for the first time if the spill cost
-    // is lower than CSRCost.
-    SA->analyze(&VirtReg);
-    if (calcSpillCost(VirtReg) < CSRCost) {
-      // Set CostPerUseLimit to 1 to make sure that
-      // we will not use a callee-saved register in tryEvict.
-      CostPerUseLimit = 1;
-      return MCRegister();
-    }
+    if (BestCand == NoCand)
+      // Use the CSR if we can't find a region split below CSRCost.
+      return PhysReg;
+
+    // Perform the actual pre-splitting.
+    doRegionSplit(VirtReg, BestCand, false/*HasCompact*/, NewVRegs);
+    return MCRegister();
   }
   return PhysReg;
 }
@@ -2455,11 +2455,16 @@ void RAGreedy::initializeCSRCost() {
     }
   } else {
     uint64_t EntryFreq = MBFI->getEntryFreq().getFrequency();
-    CSRCost = BlockFrequency(TRI->getCSRFirstUseCost() * EntryFreq);
-    if (CSRCostScale < 100)
-      CSRCost *= BranchProbability(CSRCostScale, 100);
+    CSRCost = BlockFrequency(TRI->getCSRFirstUseCost(*MF) * EntryFreq);
+    unsigned Scale = TRI->getCSRCostScale(*MF);
+    // Command line specified CSRCostScale can override target's default value.
+    if (CSRCostScale.getNumOccurrences())
+      Scale = CSRCostScale;
+
+    if (Scale < 100)
+      CSRCost *= BranchProbability(Scale, 100);
     else
-      CSRCost /= BranchProbability(100, CSRCostScale);
+      CSRCost /= BranchProbability(100, Scale);
   }
 }
 
@@ -2655,7 +2660,6 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
                                        SmallVirtRegSet &FixedRegisters,
                                        RecoloringStack &RecolorStack,
                                        unsigned Depth) {
-
   uint8_t CostPerUseLimit = uint8_t(~0u);
   // First try assigning a free register.
   auto Order =
@@ -2736,8 +2740,6 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
   LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
   spiller().spill(LRE, &Order);
   ExtraInfo->setStage(NewVRegs.begin(), NewVRegs.end(), RS_Done);
-  for (Register VReg : NewVRegs)
-    LIS->getInterval(VReg).markNotSpillable();
 
   // Tell LiveDebugVariables about the new ranges. Ranges not being covered by
   // the new regs are kept in LDV (still mapping to the old register), until
@@ -2956,6 +2958,13 @@ bool RAGreedy::run(MachineFunction &mf) {
   // physical register.
   if (!hasVirtRegAlloc())
     return false;
+
+  // Canonicalize LiveDebugVariables' indexes here and again in
+  // emitDebugValues(); those are the only two points where it is clean, as
+  // splitting stales indexes again mid-run. Reclaiming erased entries needs
+  // its own entry point called from both, not a hook in packIndexes(), which
+  // renumberIndexes() also reaches.
+  DebugVars->canonicalizeIndexes(*Indexes);
 
   // Renumber to get accurate and consistent results from
   // SlotIndexes::getApproxInstrDistance.

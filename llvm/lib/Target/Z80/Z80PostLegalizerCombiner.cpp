@@ -22,6 +22,7 @@
 #include "llvm/CodeGen/GlobalISel/GIMatchTableExecutorImpl.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
+#include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 
@@ -39,38 +40,40 @@ namespace {
 #include "Z80GenPostLegalizeGICombiner.inc"
 #undef GET_GICOMBINER_TYPES
 
-// Match cross-size COPYs between virtual registers of different sizes.
-// The legalizer's narrowScalar can produce COPYs like s16→s8 which should
-// be G_TRUNC, or s8→s16 which should be G_ANYEXT. ISel constrains both
-// sides of a COPY to the same register class, causing conflicts.
-bool matchCrossSizeCopy(MachineInstr &MI, MachineRegisterInfo &MRI,
-                        unsigned &NewOpc) {
-  if (MI.getOpcode() != TargetOpcode::COPY)
+// A global displaced by constants is one address the linker settles. Carried
+// in the global's own offset it stays a single constant, which the localizer
+// then materializes next to each use instead of keeping it live from where
+// the displacement was added. Runs after legalization so that the
+// displacements the legalizer adds when it splits a wide access fold too.
+bool matchFoldGlobalOffset(MachineInstr &MI, MachineRegisterInfo &MRI,
+                           std::pair<const GlobalValue *, int64_t> &MatchInfo) {
+  int64_t Offset = 0;
+  MachineInstr *Def = &MI;
+  while (Def && Def->getOpcode() == TargetOpcode::G_PTR_ADD) {
+    std::optional<int64_t> Disp =
+        getIConstantVRegSExtVal(Def->getOperand(2).getReg(), MRI);
+    if (!Disp)
+      return false;
+    Offset += *Disp;
+    Def = MRI.getVRegDef(Def->getOperand(1).getReg());
+  }
+  if (!Def || Def->getOpcode() != TargetOpcode::G_GLOBAL_VALUE)
     return false;
-
-  Register DstReg = MI.getOperand(0).getReg();
-  Register SrcReg = MI.getOperand(1).getReg();
-
-  if (!DstReg.isVirtual() || !SrcReg.isVirtual())
-    return false;
-
-  LLT DstTy = MRI.getType(DstReg);
-  LLT SrcTy = MRI.getType(SrcReg);
-  if (!DstTy.isValid() || !SrcTy.isValid())
-    return false;
-
-  unsigned DstSize = DstTy.getSizeInBits();
-  unsigned SrcSize = SrcTy.getSizeInBits();
-  if (DstSize == SrcSize)
-    return false;
-
-  NewOpc = (DstSize < SrcSize) ? TargetOpcode::G_TRUNC : TargetOpcode::G_ANYEXT;
+  const MachineOperand &GVOp = Def->getOperand(1);
+  // Pointer arithmetic wraps at the width of a pointer; a sum past it would
+  // leave an out-of-range addend in the relocation.
+  MatchInfo = {GVOp.getGlobal(),
+               static_cast<int16_t>(GVOp.getOffset() + Offset)};
   return true;
 }
 
-void applyCrossSizeCopy(MachineInstr &MI, unsigned &NewOpc) {
-  const TargetInstrInfo &TII = *MI.getMF()->getSubtarget().getInstrInfo();
-  MI.setDesc(TII.get(NewOpc));
+void applyFoldGlobalOffset(
+    MachineInstr &MI, MachineIRBuilder &B,
+    const std::pair<const GlobalValue *, int64_t> &MatchInfo) {
+  B.setInstrAndDebugLoc(MI);
+  auto GV = B.buildGlobalValue(MI.getOperand(0).getReg(), MatchInfo.first);
+  GV->getOperand(1).setOffset(MatchInfo.second);
+  MI.eraseFromParent();
 }
 
 class Z80PostLegalizerCombinerImpl : public Combiner {

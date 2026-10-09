@@ -16,12 +16,15 @@
 
 #include "Z80FrameLowering.h"
 
+#include "llvm/ADT/SmallSet.h"
+
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
 #include "Z80MachineFunctionInfo.h"
 #include "Z80OpcodeUtils.h"
 #include "Z80RegisterInfo.h"
 #include "Z80Subtarget.h"
+#include "Z80TargetMachine.h"
 
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -31,6 +34,7 @@
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #define DEBUG_TYPE "z80-framelowering"
@@ -41,11 +45,28 @@ Z80FrameLowering::Z80FrameLowering()
     : TargetFrameLowering(StackGrowsDown, /*StackAlignment=*/Align(1),
                           /*LocalAreaOffset=*/-2) {}
 
+/// PUSH AF moves SP by two. The bytes it writes become frame space that the
+/// locals overwrite, so what it reads out of AF never reaches anything.
+static void emitStackAllocPush(MachineBasicBlock &MBB,
+                               MachineBasicBlock::iterator I,
+                               const DebugLoc &DL, const TargetInstrInfo &TII) {
+  MachineInstrBuilder MIB = BuildMI(MBB, I, DL, TII.get(Z80::PUSH_AF));
+  for (MachineOperand &MO : MIB->operands())
+    if (MO.isReg() && MO.isUse())
+      MO.setIsUndef();
+}
+
 bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
 
   // SM83 has no IX register — always use SP-relative addressing.
   if (STI.hasSM83())
+    return false;
+
+  // A static frame leaves nothing for a frame pointer to point at; this
+  // outranks the frame-pointer-elimination default, which exists for the
+  // sake of the stack frames this function does not have.
+  if (usesStaticFrame(MF))
     return false;
 
   const MachineFrameInfo &MFI = MF.getFrameInfo();
@@ -55,8 +76,126 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   // - Frame address is explicitly taken (e.g., varargs)
   // Otherwise, IX is freed for register allocation and stack access
   // uses SP-relative addressing (LD HL,offset; ADD HL,SP).
-  return MF.getTarget().Options.DisableFramePointerElim(MF) ||
-         MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken();
+  return MF.disableFramePointerElim() || MFI.hasVarSizedObjects() ||
+         MFI.isFrameAddressTaken();
+}
+
+bool Z80FrameLowering::usesStaticFrame(const MachineFunction &MF) const {
+  // The attribute records that the whole-module analysis proved at most one
+  // live activation, but the machinery that resolves the placeholder operands
+  // only runs behind the target machine's gate, so an attribute arriving in
+  // the input IR while the gate is off must lower as an ordinary stack frame.
+  // A variable-sized object needs SP movement regardless, and a taken frame
+  // address is defined in terms of the stack.
+  return static_cast<const Z80TargetMachine &>(MF.getTarget())
+             .useStaticFrames() &&
+         MF.getSubtarget<Z80Subtarget>().hasStaticFrame() &&
+         MF.getFunction().hasFnAttribute("nonreentrant") &&
+         !MF.getFunction().hasOptNone() &&
+         !MF.getFrameInfo().hasVarSizedObjects() &&
+         !MF.getFrameInfo().isFrameAddressTaken();
+}
+
+uint64_t Z80FrameLowering::staticFrameSize(const MachineFrameInfo &MFI) const {
+  uint64_t Size = 0;
+  for (int I = 0, E = MFI.getObjectIndexEnd(); I != E; ++I)
+    if (MFI.getStackID(I) == TargetStackID::NoAlloc &&
+        !MFI.isDeadObjectIndex(I))
+      Size += MFI.getObjectSize(I);
+  return Size;
+}
+
+// Count the frame accesses that pay an extra byte when their slot moves to a
+// static address: those that materialize the whole slot address in HL, which
+// on SM83 is `ld hl,nn` (three bytes) against the stack's `ldhl sp,e` (two).
+// A wide slot always takes that path; an eight-bit slot reached through the
+// accumulator's direct load/store does not, so only wide slots are counted.
+// A debug value naming a slot accesses nothing.
+static unsigned countWideFrameAccesses(const MachineFunction &MF) {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  unsigned N = 0;
+  for (const MachineBasicBlock &MBB : MF)
+    for (const MachineInstr &MI :
+         instructionsWithoutDebug(MBB.begin(), MBB.end()))
+      for (const MachineOperand &MO : MI.operands()) {
+        if (!MO.isFI())
+          continue;
+        int Idx = MO.getIndex();
+        if (Idx >= 0 && !MFI.isFixedObjectIndex(Idx) &&
+            MFI.getObjectSize(Idx) > 1)
+          ++N;
+      }
+  return N;
+}
+
+void Z80FrameLowering::processFunctionBeforeFrameFinalized(
+    MachineFunction &MF, RegScavenger *RS) const {
+  // Move the locals of a provably non-reentrant function out of the stack: the
+  // objects get function-local offsets here, and the module-wide layout pass
+  // later turns them into absolute addresses. Fixed objects (incoming stack
+  // arguments) stay where the caller pushed them.
+  if (usesStaticFrame(MF)) {
+    MachineFrameInfo &StaticMFI = MF.getFrameInfo();
+
+    // On SM83 an eight-bit slot is a free win in static memory (byte-neutral,
+    // a cycle cheaper), but a wide slot costs an extra byte per access. Moving
+    // the wide slots out too is what removes the stack pointer adjustment, so
+    // it pays off only while those extra bytes stay under the four bytes that
+    // adjustment costs. A speed build always takes the trade for the cycles;
+    // a size build keeps the wide slots on the stack once they no longer pay,
+    // leaving a mixed frame whose eight-bit slots are still static. Z80 has a
+    // direct absolute form for every class, so all of its slots go static.
+    bool KeepWideOnStack = false;
+    if (MF.getSubtarget<Z80Subtarget>().hasSM83() &&
+        MF.getFunction().hasOptSize()) {
+      const unsigned PrologueBytes = 4;
+      KeepWideOnStack = countWideFrameAccesses(MF) > PrologueBytes;
+    }
+
+    // Callee-saved registers are saved by pushes; their slots have to stay
+    // where the pushes put them.
+    SmallSet<int, 8> CSRSlots;
+    for (const CalleeSavedInfo &CS : StaticMFI.getCalleeSavedInfo())
+      if (!CS.isSpilledToReg())
+        CSRSlots.insert(CS.getFrameIdx());
+    int64_t Offset = 0;
+    for (int I = 0, E = StaticMFI.getObjectIndexEnd(); I != E; ++I) {
+      if (StaticMFI.isDeadObjectIndex(I) ||
+          StaticMFI.isVariableSizedObjectIndex(I) ||
+          StaticMFI.getStackID(I) != TargetStackID::Default ||
+          CSRSlots.count(I))
+        continue;
+      if (KeepWideOnStack && StaticMFI.getObjectSize(I) > 1)
+        continue;
+      StaticMFI.setStackID(I, TargetStackID::NoAlloc);
+      StaticMFI.setObjectOffset(I, Offset);
+      Offset += StaticMFI.getObjectSize(I);
+    }
+  }
+
+  // SP is at an arbitrary address when a function is entered and SM83's
+  // SP-relative addressing rules out realigning it, so an alignment above
+  // the byte-aligned stack cannot be honored. Anything that genuinely needs
+  // one (an OAM DMA source buffer, say) silently receives an arbitrary
+  // address today, so refuse loudly instead: the linker can place a static
+  // object at any alignment.
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  Align Requested = getStackAlign();
+  for (int I = MFI.getObjectIndexBegin(), E = MFI.getObjectIndexEnd(); I != E;
+       ++I) {
+    if (MFI.isDeadObjectIndex(I))
+      continue;
+    Requested = std::max(Requested, MFI.getObjectAlign(I));
+  }
+  if (Requested > getStackAlign()) {
+    const Function &F = MF.getFunction();
+    F.getContext().diagnose(DiagnosticInfoUnsupported(
+        F,
+        "an over-aligned stack object (alignment " + Twine(Requested.value()) +
+            ", but the stack is byte-aligned); use a static object for "
+            "aligned data",
+        F.getSubprogram()));
+  }
 }
 
 bool Z80FrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
@@ -90,14 +229,18 @@ MachineBasicBlock::iterator Z80FrameLowering::eliminateCallFramePseudoInstr(
   if (Amount == 0)
     return MBB.erase(MI);
 
-  // Clean up stack after call: restore SP by adding Amount.
+  // Clean up stack after call: restore SP by adding Amount. Every branch
+  // must agree with callFrameDestroyScratch below, which is how call
+  // lowering and liveness queries predict what this expansion touches.
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   if (STI.hasSM83() && Amount <= 127) {
     // SM83: ADD SP,e (2 bytes, doesn't clobber HL)
+    assert(callFrameDestroyScratch(STI, Amount) == Register());
     BuildMI(MBB, MI, DL, TII.get(Z80::ADD_SP_e)).addImm(Amount & 0xFF);
   } else if (Amount <= 16) {
     // Small amounts: use POP AF (each pops 2 bytes, clobbers A but not HL).
     // More compact than INC SP (1 byte per 2 bytes vs 1 byte per 1 byte).
+    assert(callFrameDestroyScratch(STI, Amount) == Register(Z80::A));
     unsigned PopCount = Amount / 2;
     for (unsigned i = 0; i < PopCount; ++i)
       BuildMI(MBB, MI, DL, TII.get(Z80::POP_AF));
@@ -105,12 +248,24 @@ MachineBasicBlock::iterator Z80FrameLowering::eliminateCallFramePseudoInstr(
       BuildMI(MBB, MI, DL, TII.get(Z80::INC_SP));
   } else {
     // Larger amounts: LD HL, Amount; ADD HL, SP; LD SP, HL
-    BuildMI(MBB, MI, DL, TII.get(Z80::LD_HL_nn)).addImm(Amount);
+    assert(callFrameDestroyScratch(STI, Amount) == Register(Z80::HL));
+    Z80::buildLD16n(MBB, MI, DL, TII, Z80::HL).addImm(Amount);
     BuildMI(MBB, MI, DL, TII.get(Z80::ADD_HL_SP));
     BuildMI(MBB, MI, DL, TII.get(Z80::LD_SP_HL));
   }
 
   return MBB.erase(MI);
+}
+
+Register Z80FrameLowering::callFrameDestroyScratch(const Z80Subtarget &STI,
+                                                   int64_t CallerPopBytes) {
+  if (CallerPopBytes == 0)
+    return Register(); // erased entirely
+  if (STI.hasSM83() && CallerPopBytes <= 127)
+    return Register(); // ADD SP,e
+  if (CallerPopBytes <= 16)
+    return Z80::A; // POP AF per two bytes
+  return Z80::HL;  // LD HL,N; ADD HL,SP; LD SP,HL
 }
 
 void Z80FrameLowering::emitPrologue(MachineFunction &MF,
@@ -142,19 +297,19 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
       unsigned PushCount = StackSize / 2;
       if (PushCount <= 4) {
         for (unsigned i = 0; i < PushCount; ++i)
-          BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_AF));
+          emitStackAllocPush(MBB, MBBI, DL, TII);
         if (StackSize % 2)
           BuildMI(MBB, MBBI, DL, TII.get(Z80::DEC_SP));
       } else {
         // Large frame: PUSH HL; LD HL,-(size-2); ADD HL,SP; LD SP,HL;
         // restore HL from IX-based save location.
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_HL));
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_HL_nn))
+        Z80::emitHLSavePush(MBB, MBBI, DL, TII);
+        Z80::buildLD16n(MBB, MBBI, DL, TII, Z80::HL)
             .addImm(-(int64_t)(StackSize - 2) & 0xFFFF);
         BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_HL_SP));
         BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_HL));
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_L_IXd)).addImm(-2);
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_H_IXd)).addImm(-1);
+        Z80::buildLoadIdx(MBB, MBBI, DL, TII, Z80::LD_r_IXd, Z80::L, -2);
+        Z80::buildLoadIdx(MBB, MBBI, DL, TII, Z80::LD_r_IXd, Z80::H, -1);
       }
     }
   } else {
@@ -162,7 +317,10 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
     // Callee-saved registers are already pushed by spillCalleeSavedRegisters.
     // We only need to allocate space for locals (StackSize - CSSize).
     const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
-    uint64_t LocalSize = StackSize - FI->getCalleeSavedFrameSize();
+    uint64_t CSSize = FI->getCalleeSavedFrameSize();
+    // Static frames can leave the tracked stack smaller than the pushed
+    // callee saves; an unsigned wrap here would emit allocation forever.
+    uint64_t LocalSize = StackSize > CSSize ? StackSize - CSSize : 0;
 
     if (LocalSize == 0)
       return;
@@ -187,12 +345,12 @@ void Z80FrameLowering::emitPrologue(MachineFunction &MF,
       if (HLLive || PushCount <= 12) {
         // Use PUSH AF (1 byte per 2 bytes, doesn't clobber any registers).
         for (unsigned i = 0; i < PushCount; ++i)
-          BuildMI(MBB, MBBI, DL, TII.get(Z80::PUSH_AF));
+          emitStackAllocPush(MBB, MBBI, DL, TII);
         if (LocalSize % 2)
           BuildMI(MBB, MBBI, DL, TII.get(Z80::DEC_SP));
       } else {
         // Large frame, HL not live: LD HL, -LocalSize; ADD HL, SP; LD SP, HL
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_HL_nn))
+        Z80::buildLD16n(MBB, MBBI, DL, TII, Z80::HL)
             .addImm(-(int64_t)LocalSize & 0xFFFF);
         BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_HL_SP));
         BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_HL));
@@ -231,7 +389,8 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
     // We must insert local deallocation BEFORE those callee-save restores,
     // since the stack layout is: [locals | callee-saves | ret-addr].
     const Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
-    uint64_t LocalSize = StackSize - FI->getCalleeSavedFrameSize();
+    uint64_t CSSize = FI->getCalleeSavedFrameSize();
+    uint64_t LocalSize = StackSize > CSSize ? StackSize - CSSize : 0;
 
     if (LocalSize == 0)
       return;
@@ -273,8 +432,7 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
 
       if (!HLLive) {
         // HL free: LD HL,LocalSize; ADD HL,SP; LD SP,HL (5 bytes total).
-        BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_HL_nn))
-            .addImm(LocalSize & 0xFFFF);
+        Z80::buildLD16n(MBB, MBBI, DL, TII, Z80::HL).addImm(LocalSize & 0xFFFF);
         BuildMI(MBB, MBBI, DL, TII.get(Z80::ADD_HL_SP));
         BuildMI(MBB, MBBI, DL, TII.get(Z80::LD_SP_HL));
       } else if (!ALive) {

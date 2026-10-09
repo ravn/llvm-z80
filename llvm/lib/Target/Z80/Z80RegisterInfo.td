@@ -103,17 +103,21 @@ class Z80RegPair<bits<16> num, string name, Register lo, Register hi>
 }
 
 // Main register pairs (encoding: BC=0, DE=1, HL=2, SP/AF=3)
-def BC : Z80RegPair<30, "bc", C, B>;
-def DE : Z80RegPair<31, "de", E, D>;
-def HL : Z80RegPair<32, "hl", L, H>;
-def AF : Z80RegPair<33, "af", F, A>;
+// The pair field of an opcode names BC=0, DE=1, HL=2 and then either SP or
+// AF depending on the instruction, so HWEncoding carries that rather than the
+// DWARF number the register is defined with.
+def BC : Z80RegPair<30, "bc", C, B> { let HWEncoding = 0; }
+def DE : Z80RegPair<31, "de", E, D> { let HWEncoding = 1; }
+def HL : Z80RegPair<32, "hl", L, H> { let HWEncoding = 2; }
+def AF : Z80RegPair<33, "af", F, A> { let HWEncoding = 3; }
 
 // Index registers
-def IX : Z80RegPair<34, "ix", IXL, IXH>;
-def IY : Z80RegPair<35, "iy", IYL, IYH>;
+// A DD or FD prefix makes the HL encoding mean IX or IY.
+def IX : Z80RegPair<34, "ix", IXL, IXH> { let HWEncoding = 2; }
+def IY : Z80RegPair<35, "iy", IYL, IYH> { let HWEncoding = 2; }
 
 // Stack pointer (no accessible sub-registers)
-def SP : Z80Reg<36, "sp">;
+def SP : Z80Reg<36, "sp"> { let HWEncoding = 3; }
 
 // Program counter (not directly accessible but needed)
 def PC : Z80Reg<37, "pc">;
@@ -137,7 +141,7 @@ def SF : Z80Reg<55, "sf">;   // Sign flag
 
 // Standalone FLAGS register for dependency tracking by RA/scheduler.
 // NOT a sub-register of AF to avoid implicit-def $af issues
-// (see known-issues.md: LDrn/CBRotate implicit-def problem).
+// (LDrn/CBRotate implicit-def problem).
 def FLAGS : Z80Reg<56, "flags">;
 
 //===----------------------------------------------------------------------===//
@@ -160,6 +164,15 @@ class Z80Reg16Class<dag RegList>: Z80RegClass<[i16], 8, RegList>;
 // Main 8-bit GPRs: B, C, D, E, H, L, A
 // These can be used with most 8-bit operations
 def GR8 : Z80Reg8Class<(add B, C, D, E, H, L, A)>;
+
+// The accumulator alone, for the operands of instructions that read or write
+// a byte in A. Its ranges have no choice of register, so they are allocated
+// first, local or not, and the values around them see where A is taken
+// before picking theirs.
+def Ac : Z80Reg8Class<(add A)> {
+  let AllocationPriority = 1;
+  let GlobalPriority = true;
+}
 
 //===----------------------------------------------------------------------===//
 //  16-bit register classes
@@ -222,8 +235,11 @@ def CCR : RegisterClass<"Z80", [i8], 8, (add FLAGS)> {
 // All 8-bit storage locations
 def Anyi8 : Z80Reg8Class<(add GR8)>;
 
-// All 16-bit storage locations
-def Anyi16 : Z80Reg16Class<(add BC, DE, HL, IX, IY, SP)>;
+// All 16-bit storage locations. SP holds the stack, not a value: it is
+// reserved, so no value is allocated to it, and leaving it out keeps a copy
+// to or from SP from being folded into a spill slot access, which has no
+// form for SP.
+def Anyi16 : Z80Reg16Class<(add BC, DE, HL, IX, IY)>;
 
 //===----------------------------------------------------------------------===//
 //  Fake registers for multi-word values

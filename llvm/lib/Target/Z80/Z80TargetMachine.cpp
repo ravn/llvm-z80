@@ -21,30 +21,38 @@
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
+#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/IndVarSimplify.h"
 #include "llvm/Transforms/Utils.h"
 
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
+#include "Z80AccumulatorCopies.h"
 #include "Z80BranchCleanup.h"
+#include "Z80CheckUnsupported.h"
 #include "Z80Combiner.h"
+#include "Z80DanglingDebugCleanup.h"
 #include "Z80ExpandPseudo.h"
 #include "Z80FixupImplicitDefs.h"
 #include "Z80IndexIV.h"
-#include "Z80LateOptimization.h"
 #include "Z80LowerSelect.h"
 #include "Z80MachineFunctionInfo.h"
-#include "Z80PostRACompareMerge.h"
-#include "Z80PostRAScavenging.h"
+#include "Z80NarrowMemAccess.h"
+#include "Z80NonReentrant.h"
+#include "Z80PreEmitPeephole.h"
 #include "Z80ShiftRotateChain.h"
+#include "Z80StaticFrameAlloc.h"
 #include "Z80TargetObjectFile.h"
 #include "Z80TargetTransformInfo.h"
 
@@ -57,33 +65,43 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
 
   PassRegistry &PR = *PassRegistry::getPassRegistry();
   initializeGlobalISel(PR);
+  initializeZ80AccumulatorCopiesPass(PR);
   initializeZ80BranchCleanupPass(PR);
+  initializeZ80CheckUnsupportedPass(PR);
+  initializeZ80DanglingDebugCleanupPass(PR);
   initializeZ80PreLegalizerCombinerPass(PR);
   initializeZ80PostLegalizerCombinerPass(PR);
   initializeZ80FixupImplicitDefsPass(PR);
-  initializeZ80LateOptimizationPass(PR);
+  initializeZ80PreEmitPeepholePass(PR);
   initializeZ80LowerSelectPass(PR);
-  initializeZ80PostRAScavengingPass(PR);
+  initializeZ80NarrowMemAccessPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
-  initializeZ80PostRACompareMergePass(PR);
+  initializeZ80NonReentrantPass(PR);
+  initializeZ80StaticFrameAllocPass(PR);
 }
 
-// Z80 data layout:
-// e = little endian
-// p:16:8 = 16-bit pointers with 8-bit alignment
-// i16:8 = 16-bit integers with 8-bit alignment
-// i32:8 = 32-bit integers with 8-bit alignment
-// f32:8 = 32-bit floats with 8-bit alignment
-// f64:8 = 64-bit floats with 8-bit alignment
-// n8:16 = native integer widths are 8 and 16 bits
-static const char *Z80DataLayout =
-    "e-m:o-p:16:8-i16:8-i32:8-i64:8-i128:8-f32:8-f64:8-n8:16";
+// On by default for both targets. On SM83 a wide slot costs a byte more in
+// static memory than on the stack, so frame lowering keeps a size build's
+// wide slots on the stack; an eight-bit slot is a win either way. Explicit
+// true/false overrides the default.
+static cl::opt<cl::boolOrDefault> EnableStaticFramesOpt(
+    "z80-static-frames",
+    cl::desc("Allocate the frames of provably non-reentrant functions in "
+             "static memory (default: on)"),
+    cl::init(cl::boolOrDefault::BOU_UNSET), cl::Hidden);
 
-/// Processes a CPU name.
-static StringRef getCPU(StringRef CPU, const Triple &TT) {
-  if (CPU.empty() || CPU == "generic")
-    return TT.getArch() == Triple::sm83 ? "sm83" : "z80";
-  return CPU;
+bool Z80TargetMachine::useStaticFrames() const {
+  if (getOptLevel() == CodeGenOptLevel::None)
+    return false;
+  switch (EnableStaticFramesOpt) {
+  case cl::boolOrDefault::BOU_TRUE:
+    return true;
+  case cl::boolOrDefault::BOU_FALSE:
+    return false;
+  case cl::boolOrDefault::BOU_UNSET:
+    return true;
+  }
+  llvm_unreachable("unhandled boolOrDefault");
 }
 
 static Reloc::Model getEffectiveRelocModel(std::optional<Reloc::Model> RM) {
@@ -96,10 +114,10 @@ Z80TargetMachine::Z80TargetMachine(const Target &T, const Triple &TT,
                                    std::optional<Reloc::Model> RM,
                                    std::optional<CodeModel::Model> CM,
                                    CodeGenOptLevel OL, bool JIT)
-    : CodeGenTargetMachineImpl(T, Z80DataLayout, TT, getCPU(CPU, TT), FS,
-                               Options, getEffectiveRelocModel(RM),
+    : CodeGenTargetMachineImpl(T, TT, selectZ80CPU(CPU, TT), FS, Options,
+                               getEffectiveRelocModel(RM),
                                getEffectiveCodeModel(CM, CodeModel::Small), OL),
-      SubTarget(TT, getCPU(CPU, TT).str(), FS.str(), *this) {
+      SubTarget(TT, selectZ80CPU(CPU, TT).str(), FS.str(), *this) {
   this->TLOF = std::make_unique<Z80TargetObjectFile>();
 
   initAsmInfo();
@@ -107,6 +125,18 @@ Z80TargetMachine::Z80TargetMachine(const Target &T, const Triple &TT,
   setGlobalISel(true);
   // Prevents fallback to SelectionDAG by allowing direct aborts.
   setGlobalISelAbort(GlobalISelAbortMode::Enable);
+
+  // Code size is the scarce resource here, and a repeated run of
+  // instructions is worth a call. The target hook decides which functions
+  // take the trade; -enable-machine-outliner still overrides both.
+  this->Options.EnableMachineOutliner = true;
+  setSupportsDefaultOutlining(true);
+
+  // z80asm has neither PIC nor an address-significance table.
+  if (getMCAsmInfo().isZ88DK()) {
+    this->RM = Reloc::Static;
+    this->Options.EmitAddrsig = false;
+  }
 }
 
 const Z80Subtarget *
@@ -114,18 +144,14 @@ Z80TargetMachine::getSubtargetImpl(const Function &F) const {
   Attribute CPUAttr = F.getFnAttribute("target-cpu");
   Attribute FSAttr = F.getFnAttribute("target-features");
 
-  auto CPU = getCPU(CPUAttr.isValid() ? CPUAttr.getValueAsString()
-                                      : StringRef(TargetCPU),
-                    TargetTriple)
+  auto CPU = selectZ80CPU(CPUAttr.isValid() ? CPUAttr.getValueAsString()
+                                            : StringRef(TargetCPU),
+                          TargetTriple)
                  .str();
   auto FS = FSAttr.isValid() ? FSAttr.getValueAsString().str() : TargetFS;
 
   auto &I = SubtargetMap[CPU + FS];
   if (!I) {
-    // This needs to be done before we create a new subtarget since any
-    // creation will depend on the TM and the code generation flags on the
-    // function that reside in TargetOptions.
-    resetTargetOptions(F);
     I = std::make_unique<Z80Subtarget>(TargetTriple, CPU, FS, *this);
   }
   return I.get();
@@ -191,6 +217,7 @@ public:
 
   // Register pressure is too high to work without optimized register
   // allocation.
+  void addPreRegAlloc() override;
   void addFastRegAlloc() override { addOptimizedRegAlloc(); }
   void addOptimizedRegAlloc() override;
 
@@ -205,20 +232,27 @@ TargetPassConfig *Z80TargetMachine::createPassConfig(PassManagerBase &PM) {
 }
 
 void Z80PassConfig::addIRPasses() {
-  // Z80 is single-threaded: lower all atomic operations to plain
-  // non-atomic load/store/rmw sequences at the IR level.
-  addPass(createLowerAtomicPass());
+  addPass(createZ80CheckUnsupportedPass());
+  addPass(createAtomicExpandLegacyPass());
+
+  // Whole-module analysis behind the static frame allocation; runs after
+  // LTO merging so the call graph covers the whole program.
+  if (getZ80TargetMachine().useStaticFrames())
+    addPass(createZ80NonReentrantPass(getZ80TargetMachine()));
 
   TargetPassConfig::addIRPasses();
-  // Clean up after LSR in particular.
-  if (getOptLevel() != CodeGenOptLevel::None)
+  if (getOptLevel() != CodeGenOptLevel::None) {
+    // Clean up after LSR in particular.
     addPass(createInstructionCombiningPass());
+    // After the combiner, which turns small memcpys into wide integers.
+    addPass(createZ80NarrowMemAccessPass());
+  }
 }
 
 bool Z80PassConfig::addPreISel() { return false; }
 
 bool Z80PassConfig::addIRTranslator() {
-  addPass(new IRTranslator(getOptLevel()));
+  addPass(new IRTranslatorLegacy(getOptLevel()));
   return false;
 }
 
@@ -230,7 +264,7 @@ void Z80PassConfig::addPreLegalizeMachineIR() {
 }
 
 bool Z80PassConfig::addLegalizeMachineIR() {
-  addPass(new Legalizer());
+  addPass(new LegalizerLegacy());
   return false;
 }
 
@@ -240,10 +274,11 @@ void Z80PassConfig::addPreRegBankSelect() {
   // that are required for instruction selection to succeed.
   addPass(createZ80PostLegalizerCombiner());
   addPass(createZ80LowerSelectPass());
+  addPass(createZ80DanglingDebugCleanupPass());
 }
 
 bool Z80PassConfig::addRegBankSelect() {
-  addPass(new RegBankSelect());
+  addPass(new RegBankSelectLegacy());
   return false;
 }
 
@@ -251,12 +286,19 @@ void Z80PassConfig::addPreGlobalInstructionSelect() {
   // This pass helps reduce the live ranges of constants to within a basic
   // block, which can greatly improve machine scheduling, as they can now be
   // moved around to keep register pressure low.
-  addPass(new Localizer());
+  addPass(new LocalizerLegacy());
 }
 
 bool Z80PassConfig::addGlobalInstructionSelect() {
-  addPass(new InstructionSelect());
+  addPass(new InstructionSelectLegacy());
+  addPass(createZ80DanglingDebugCleanupPass());
   return false;
+}
+
+void Z80PassConfig::addPreRegAlloc() {
+  // The machine SSA passes fold away the copies that give accumulator
+  // operands registers of their own; put them back before allocation.
+  addPass(createZ80AccumulatorCopiesPass());
 }
 
 void Z80PassConfig::addOptimizedRegAlloc() {
@@ -285,20 +327,32 @@ void Z80PassConfig::addPreSched2() {
   addPass(&FinalizeISelID);
   // Lower pseudos produced by control flow pseudos.
   addPass(&ExpandPostRAPseudosID);
-  addPass(createZ80PostRAScavengingPass());
+  // Copy lowering leaves the halves of a pair copy declared on the wrong one
+  // of the two byte moves. See Z80FixupImplicitDefs.cpp.
+  addPass(createZ80FixupImplicitDefsPass());
 
-  // This is currently mandatory, since it lowers CMPTermZ.
-  addPass(createZ80LateOptimizationPass());
+  // Every function's frame is final past PEI, so the static frames can be
+  // laid out module-wide and the placeholder operands resolved. Must run
+  // before the late peepholes so they see the final operands.
+  if (getZ80TargetMachine().useStaticFrames())
+    addPass(createZ80StaticFrameAllocPass());
 
-  // Remove redundant OR A / AND A when the Z flag is already valid
-  // from a preceding ALU instruction.
-  addPass(createZ80PostRACompareMerge());
+  if (getOptLevel() != CodeGenOptLevel::None) {
+    addPass(createZ80PreEmitPeepholePass());
+
+    // The peepholes above rewrite slot accesses into register copies and leave
+    // copies behind where they fold one instruction into another, so copy
+    // propagation runs after them. It is told to recognise LD r,r' through
+    // isCopyInstrImpl, since COPY is already lowered by this point.
+    addPass(createMachineCopyPropagationPass(/*UseCopyInstr=*/true));
+  }
 }
 
 void Z80PassConfig::addPreEmitPass() {
   addPass(&BranchRelaxationPassID);
   // Collapse JR_CC+JP trampolines from BranchRelaxation into JP_CC.
-  addPass(createZ80BranchCleanupPass());
+  if (getOptLevel() != CodeGenOptLevel::None)
+    addPass(createZ80BranchCleanupPass());
   // Expand pseudos that split MBBs (variable shift loops) after branch
   // relaxation. The generated JR/DJNZ branches are always short-range.
   addPass(createZ80ExpandPseudoPass());

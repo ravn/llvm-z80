@@ -85,7 +85,7 @@ class SPIRV_CLBinaryArithmeticOp<string mnemonic, int opcode, Type type,
 // Base class for OpenCL binary ops.
 class SPIRV_CLTernaryOp<string mnemonic, int opcode, Type resultType,
                       Type operandType, list<Trait> traits = []> :
-  SPIRV_CLOp<mnemonic, opcode, !listconcat([Pure], traits)> {
+  SPIRV_CLOp<mnemonic, opcode, !listconcat([NoMemoryEffect], traits)> {
 
   let arguments = (ins
     SPIRV_ScalarOrVectorOf<operandType>:$x,
@@ -274,6 +274,27 @@ def SPIRV_CLAtanhOp : SPIRV_CLUnaryArithmeticOp<"atanh", 8, SPIRV_Float > {
 
 // -----
 
+def SPIRV_CLCbrtOp : SPIRV_CLUnaryArithmeticOp<"cbrt", 11, SPIRV_Float> {
+  let summary = "Compute the cube root of x.";
+
+  let description = [{
+    Result Type and x must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.cbrt %0 : f32
+    %3 = spirv.CL.cbrt %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
 def SPIRV_CLCeilOp : SPIRV_CLUnaryArithmeticOp<"ceil", 12, SPIRV_Float> {
   let summary = [{
     Round x to integral value using the round to positive infinity rounding
@@ -292,6 +313,27 @@ def SPIRV_CLCeilOp : SPIRV_CLUnaryArithmeticOp<"ceil", 12, SPIRV_Float> {
     ```mlir
     %2 = spirv.CL.ceil %0 : f32
     %3 = spirv.CL.ceil %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLCopysignOp : SPIRV_CLBinaryArithmeticOp<"copysign", 13, SPIRV_Float> {
+  let summary = "Computes the value with the magnitude of x and the sign of y.";
+
+  let description = [{
+    Result Type, x and y must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.copysign %0, %1 : f32
+    %3 = spirv.CL.copysign %0, %1 : vector<3xf16>
     ```
   }];
 }
@@ -334,6 +376,29 @@ def SPIRV_CLCoshOp : SPIRV_CLUnaryArithmeticOp<"cosh", 15, SPIRV_Float > {
     ```mlir
     %2 = spirv.CL.cosh %0 : f32
     %3 = spirv.CL.cosh %1 : vector<4xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLErfcOp : SPIRV_CLUnaryArithmeticOp<"erfc", 17, SPIRV_Float> {
+  let summary = [{
+    Complementary error function of x.
+  }];
+
+  let description = [{
+    Result Type and x must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.erfc %0 : f32
+    %3 = spirv.CL.erfc %1 : vector<3xf16>
     ```
   }];
 }
@@ -428,6 +493,27 @@ def SPIRV_CLExp10Op : SPIRV_CLUnaryArithmeticOp<"exp10", 21, SPIRV_Float> {
 
 // -----
 
+def SPIRV_CLExpm1Op : SPIRV_CLUnaryArithmeticOp<"expm1", 22, SPIRV_Float> {
+  let summary = "Compute the base-e exponential of x minus 1.0.";
+
+  let description = [{
+    Result Type and x must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand,
+    must be of the same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.expm1 %0 : f32
+    %3 = spirv.CL.expm1 %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
 def SPIRV_CLFAbsOp : SPIRV_CLUnaryArithmeticOp<"fabs", 23, SPIRV_Float> {
   let summary = "Absolute value of operand";
 
@@ -497,6 +583,97 @@ def SPIRV_CLFMinOp : SPIRV_CLBinaryArithmeticOp<"fmin", 28, SPIRV_Float> {
 
 // -----
 
+def SPIRV_CLFClampOp : SPIRV_CLTernaryArithmeticOp<"fclamp", 95, SPIRV_Float> {
+  let summary = "Clamp x between min and max values.";
+
+  let description = [{
+    Returns min(max(x, minval), maxval). The resulting value is poison if
+    minval > maxval.
+
+    Result Type, x, minval and maxval must be floating-point or
+    vector(2,3,4,8,16) of floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %0 = spirv.CL.fclamp %x, %min, %max : f32
+    %1 = spirv.CL.fclamp %x, %min, %max : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLFdimOp : SPIRV_CLBinaryArithmeticOp<"fdim", 24, SPIRV_Float> {
+  let summary = "Compute the positive difference between x and y.";
+
+  let description = [{
+    Returns x - y if x > y, otherwise it returns +0.0.
+
+    Result Type, x and y must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.fdim %0, %1 : f32
+    %3 = spirv.CL.fdim %0, %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLFmodOp : SPIRV_CLBinaryArithmeticOp<"fmod", 29, SPIRV_Float> {
+  let summary = [{
+    Modulus. Returns x - y * trunc(x / y), with the same sign as x.
+  }];
+
+  let description = [{
+    Result Type, x and y must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.fmod %0, %1 : f32
+    %3 = spirv.CL.fmod %0, %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLHypotOp : SPIRV_CLBinaryArithmeticOp<"hypot", 32, SPIRV_Float> {
+  let summary = "Compute the square root of x^2 + y^2.";
+
+  let description = [{
+    Result Type, x and y must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.hypot %0, %1 : f32
+    %3 = spirv.CL.hypot %0, %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
 def SPIRV_CLFloorOp : SPIRV_CLUnaryArithmeticOp<"floor", 25, SPIRV_Float> {
   let summary = [{
     Round x to the integral value using the round to negative infinity
@@ -521,7 +698,7 @@ def SPIRV_CLFloorOp : SPIRV_CLUnaryArithmeticOp<"floor", 25, SPIRV_Float> {
 
 // -----
 
-def SPIRV_CLFmaOp : SPIRV_CLTernaryArithmeticOp<"fma", 26, SPIRV_Float> {
+def SPIRV_CLFmaOp : SPIRV_CLTernaryArithmeticOp<"fma", 26, SPIRV_Float, [AlwaysSpeculatable]> {
   let summary = [{
     Compute the correctly rounded floating-point representation of the sum
     of c with the infinitely precise product of a and b. Rounding of
@@ -652,7 +829,28 @@ def SPIRV_CLLog10Op : SPIRV_CLUnaryArithmeticOp<"log10", 39, SPIRV_Float> {
 
 // -----
 
-def SPIRV_CLMixOp : SPIRV_CLTernaryArithmeticOp<"mix", 99, SPIRV_Float> {
+def SPIRV_CLLog1pOp : SPIRV_CLUnaryArithmeticOp<"log1p", 40, SPIRV_Float> {
+  let summary = "Compute the natural logarithm of x + 1.0.";
+
+  let description = [{
+    Result Type and x must be floating-point or vector(2,3,4,8,16) of
+    floating-point values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.CL.log1p %0 : f32
+    %3 = spirv.CL.log1p %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLMixOp : SPIRV_CLTernaryArithmeticOp<"mix", 99, SPIRV_Float, [AlwaysSpeculatable]> {
   let summary = "Returns the linear blend of x & y implemented as: x + (y - x) * a";
 
   let description = [{
@@ -861,6 +1059,56 @@ def SPIRV_CLSAbsOp : SPIRV_CLUnaryArithmeticOp<"s_abs", 141, SPIRV_Integer> {
     ```mlir
     %2 = spirv.CL.s_abs %0 : i32
     %3 = spirv.CL.s_abs %1 : vector<3xi16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLSClampOp : SPIRV_CLTernaryArithmeticOp<"s_clamp", 149, SPIRV_Integer> {
+  let summary = "Clamp x between min and max values.";
+
+  let description = [{
+    Returns min(max(x, minval), maxval), where x, minval and maxval are
+    interpreted as signed integers. The resulting value is poison if
+    minval > maxval.
+
+    Result Type, x, minval and maxval must be integer or vector(2,3,4,8,16)
+    of integer values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %0 = spirv.CL.s_clamp %x, %min, %max : i32
+    %1 = spirv.CL.s_clamp %x, %min, %max : vector<3xi16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_CLUClampOp : SPIRV_CLTernaryArithmeticOp<"u_clamp", 150, SPIRV_Integer> {
+  let summary = "Clamp x between min and max values.";
+
+  let description = [{
+    Returns min(max(x, minval), maxval), where x, minval and maxval are
+    interpreted as unsigned integers. The resulting value is poison if
+    minval > maxval.
+
+    Result Type, x, minval and maxval must be integer or vector(2,3,4,8,16)
+    of integer values.
+
+    All of the operands, including the Result Type operand, must be of the
+    same type.
+
+    #### Example:
+
+    ```mlir
+    %0 = spirv.CL.u_clamp %x, %min, %max : i32
+    %1 = spirv.CL.u_clamp %x, %min, %max : vector<3xi16>
     ```
   }];
 }

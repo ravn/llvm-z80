@@ -30,7 +30,6 @@ class LiveRegMatrix;
 class MachineFunction;
 class MachineRegisterInfo;
 class RegisterClassInfo;
-class TargetInstrInfo;
 class TargetRegisterInfo;
 class VirtRegMap;
 
@@ -63,10 +62,6 @@ enum LiveRangeStage {
   /// progress.  This is used for split products that may not be making
   /// progress.
   RS_Split2,
-
-  /// Attempt to spill to a wider register class to hopefully avoid spilling
-  /// to the stack.
-  RS_LightSpill,
 
   /// Live range will be spilled.  No more splitting will be attempted.
   RS_Spill,
@@ -127,8 +122,8 @@ public:
   LLVM_ABI bool isUnusedCalleeSavedReg(MCRegister PhysReg) const;
 
   /// Returns true if this is an urgent eviction.
-  bool isUrgentEviction(const LiveInterval &VirtReg,
-                        const LiveInterval &Intf) const;
+  LLVM_ABI bool isUrgentEviction(const LiveInterval &VirtReg,
+                                 const LiveInterval &Intf) const;
 
 protected:
   LLVM_ABI RegAllocEvictionAdvisor(const MachineFunction &MF,
@@ -155,7 +150,6 @@ protected:
   LiveIntervals *const LIS;
   VirtRegMap *const VRM;
   MachineRegisterInfo *const MRI;
-  const TargetInstrInfo *const TII;
   const TargetRegisterInfo *const TRI;
   const RegisterClassInfo &RegClassInfo;
   const ArrayRef<uint8_t> RegCosts;
@@ -286,7 +280,7 @@ createReleaseModeAdvisorAnalysisLegacy();
 LLVM_ABI RegAllocEvictionAdvisorAnalysisLegacy *
 createDevelopmentModeAdvisorAnalysisLegacy();
 
-LLVM_ATTRIBUTE_RETURNS_NONNULL LLVM_ABI RegAllocEvictionAdvisorProvider *
+LLVM_ABI RegAllocEvictionAdvisorProvider *
 createReleaseModeAdvisorProvider(LLVMContext &Ctx);
 
 LLVM_ABI RegAllocEvictionAdvisorProvider *

@@ -21,12 +21,24 @@
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 
 #define DEBUG_TYPE "z80-expand-pseudo"
+
+STATISTIC(NumVarShifts, "Number of expandVarShift pseudos expanded");
+STATISTIC(NumMul8, "Number of expandMul8 pseudos expanded");
+STATISTIC(NumUDivMod8, "Number of expandUDivMod8 pseudos expanded");
+STATISTIC(NumSDivMod8, "Number of expandSDivMod8 pseudos expanded");
+STATISTIC(NumBlockMoves, "Number of expandGuardedBlockMove pseudos expanded");
+STATISTIC(NumSatArith8, "Number of expandSatArith8 pseudos expanded");
+STATISTIC(NumMul16, "Number of expandMul16 pseudos expanded");
+STATISTIC(NumUDivMod16, "Number of expandUDivMod16 pseudos expanded");
+STATISTIC(NumSDivMod16, "Number of expandSDivMod16 pseudos expanded");
 
 using namespace llvm;
 
@@ -51,6 +63,8 @@ private:
                       const Z80InstrInfo &TII, bool IsDiv);
   bool expandSDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
                       const Z80InstrInfo &TII, bool IsDiv);
+  bool expandGuardedBlockMove(MachineBasicBlock &MBB, MachineInstr &MI,
+                              const Z80InstrInfo &TII);
   bool expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
                        const Z80InstrInfo &TII);
   bool expandMul16(MachineBasicBlock &MBB, MachineInstr &MI,
@@ -135,10 +149,26 @@ bool Z80ExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
         Modified |= expandSatArith8(MBB, Inst, TII);
         MI = MBB.end();
         break;
+      case Z80::LDIR_GUARDED:
+        Modified |= expandGuardedBlockMove(MBB, Inst, TII);
+        MI = MBB.end();
+        break;
       default:
         break;
       }
     }
+  }
+
+  if (Modified) {
+    // Blocks created above start with no live-in list, which every later
+    // liveness query reads as "everything dead" — and several passes act on
+    // that answer. Recompute the blocks that have none; a block whose
+    // live-ins are genuinely empty recomputes back to empty.
+    SmallVector<MachineBasicBlock *, 8> NoLiveIns;
+    for (MachineBasicBlock &B : MF)
+      if (&B != &MF.front() && B.livein_empty())
+        NoLiveIns.push_back(&B);
+    fullyRecomputeLiveIns(NoLiveIns);
   }
 
   return Modified;
@@ -182,22 +212,23 @@ bool Z80ExpandPseudo::expandVarShift(MachineBasicBlock &MBB, MachineInstr &MI,
 
   // HeadMBB: test B for zero and branch.
   // INC B / DEC B sets Z flag based on original B value without changing it.
-  BuildMI(&MBB, DL, TII.get(Z80::INC_B));
-  BuildMI(&MBB, DL, TII.get(Z80::DEC_B));
+  Z80::buildIncDec8(&MBB, DL, TII, Z80::INC_r, Z80::B);
+  Z80::buildIncDec8(&MBB, DL, TII, Z80::DEC_r, Z80::B);
   BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
   MBB.addSuccessor(LoopMBB);
   MBB.addSuccessor(TailMBB);
 
-  // LoopMBB: emit shift instruction(s).
+  // LoopMBB: emit shift instruction(s). The 8-bit shifts work in whichever
+  // register the value was given.
   switch (MI.getOpcode()) {
   case Z80::SHL8_VAR:
-    BuildMI(LoopMBB, DL, TII.get(Z80::SLA_A));
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::SLA_r, MI.getOperand(0).getReg());
     break;
   case Z80::LSHR8_VAR:
-    BuildMI(LoopMBB, DL, TII.get(Z80::SRL_A));
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::SRL_r, MI.getOperand(0).getReg());
     break;
   case Z80::ASHR8_VAR:
-    BuildMI(LoopMBB, DL, TII.get(Z80::SRA_A));
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::SRA_r, MI.getOperand(0).getReg());
     break;
   case Z80::ROTL8_VAR:
     BuildMI(LoopMBB, DL, TII.get(Z80::RLCA));
@@ -209,18 +240,18 @@ bool Z80ExpandPseudo::expandVarShift(MachineBasicBlock &MBB, MachineInstr &MI,
     BuildMI(LoopMBB, DL, TII.get(Z80::ADD_HL_HL));
     break;
   case Z80::LSHR16_VAR:
-    BuildMI(LoopMBB, DL, TII.get(Z80::SRL_H));
-    BuildMI(LoopMBB, DL, TII.get(Z80::RR_L));
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::SRL_r, Z80::H);
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::RR_r, Z80::L);
     break;
   case Z80::ASHR16_VAR:
-    BuildMI(LoopMBB, DL, TII.get(Z80::SRA_H));
-    BuildMI(LoopMBB, DL, TII.get(Z80::RR_L));
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::SRA_r, Z80::H);
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::RR_r, Z80::L);
     break;
   }
 
   if (STI.hasSM83()) {
     // SM83 lacks DJNZ; use DEC B + JR NZ instead.
-    BuildMI(LoopMBB, DL, TII.get(Z80::DEC_B));
+    Z80::buildIncDec8(LoopMBB, DL, TII, Z80::DEC_r, Z80::B);
     BuildMI(LoopMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
     BuildMI(LoopMBB, DL, TII.get(Z80::DJNZ_e)).addMBB(LoopMBB);
@@ -229,6 +260,7 @@ bool Z80ExpandPseudo::expandVarShift(MachineBasicBlock &MBB, MachineInstr &MI,
   LoopMBB->addSuccessor(TailMBB); // fall through when done
 
   MI.eraseFromParent();
+  ++NumVarShifts;
   return true;
 }
 
@@ -246,6 +278,7 @@ bool Z80ExpandPseudo::expandMul8(MachineBasicBlock &MBB, MachineInstr &MI,
   //     add a, a      ; A <<= 1
   //     rl d          ; D <<= 1, MSB -> carry
   //     jr nc, SkipMBB
+  //   AddMBB:
   //     add a, e      ; A += multiplicand
   //   SkipMBB:
   //     djnz LoopMBB  ; B--; loop if B != 0
@@ -257,11 +290,13 @@ bool Z80ExpandPseudo::expandMul8(MachineBasicBlock &MBB, MachineInstr &MI,
   DebugLoc DL = MI.getDebugLoc();
 
   MachineBasicBlock *LoopMBB = MF->CreateMachineBasicBlock();
+  MachineBasicBlock *AddMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *SkipMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *TailMBB = MF->CreateMachineBasicBlock();
 
   MachineFunction::iterator InsertPos = std::next(MBB.getIterator());
   MF->insert(InsertPos, LoopMBB);
+  MF->insert(InsertPos, AddMBB);
   MF->insert(InsertPos, SkipMBB);
   MF->insert(InsertPos, TailMBB);
 
@@ -271,22 +306,26 @@ bool Z80ExpandPseudo::expandMul8(MachineBasicBlock &MBB, MachineInstr &MI,
   TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
 
   // HeadMBB: setup
-  BuildMI(&MBB, DL, TII.get(Z80::LD_D_A));           // D = multiplier
-  BuildMI(&MBB, DL, TII.get(Z80::XOR_A));            // A = 0
-  BuildMI(&MBB, DL, TII.get(Z80::LD_B_n)).addImm(8); // B = 8
+  Z80::buildLD8(&MBB, DL, TII, Z80::D, Z80::A);    // D = multiplier
+  Z80::buildZeroA(&MBB, DL, TII);                  // A = 0
+  Z80::buildLD8n(&MBB, DL, TII, Z80::B).addImm(8); // B = 8
   MBB.addSuccessor(LoopMBB);
 
-  // LoopMBB: shift and conditionally add
-  BuildMI(LoopMBB, DL, TII.get(Z80::ADD_A_A)); // A <<= 1
-  BuildMI(LoopMBB, DL, TII.get(Z80::RL_D));    // D <<= 1, MSB -> carry
+  // LoopMBB: shift, then conditionally skip the add
+  Z80::buildAlu8(LoopMBB, DL, TII, Z80::ADD_A_r, Z80::A); // A <<= 1
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::RL_r,
+                    Z80::D); // D <<= 1, MSB -> carry
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_NC_e)).addMBB(SkipMBB);
-  BuildMI(LoopMBB, DL, TII.get(Z80::ADD_A_E)); // A += multiplicand
-  LoopMBB->addSuccessor(SkipMBB);              // jr nc taken
-  LoopMBB->addSuccessor(SkipMBB);              // fall through (after add)
+  LoopMBB->addSuccessor(SkipMBB); // jr nc taken
+  LoopMBB->addSuccessor(AddMBB);  // fall through
+
+  // AddMBB: add the multiplicand when the shifted-out bit was set
+  Z80::buildAlu8(AddMBB, DL, TII, Z80::ADD_A_r, Z80::E); // A += multiplicand
+  AddMBB->addSuccessor(SkipMBB);
 
   // SkipMBB: loop back
   if (STI.hasSM83()) {
-    BuildMI(SkipMBB, DL, TII.get(Z80::DEC_B));
+    Z80::buildIncDec8(SkipMBB, DL, TII, Z80::DEC_r, Z80::B);
     BuildMI(SkipMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
     BuildMI(SkipMBB, DL, TII.get(Z80::DJNZ_e)).addMBB(LoopMBB);
@@ -295,9 +334,13 @@ bool Z80ExpandPseudo::expandMul8(MachineBasicBlock &MBB, MachineInstr &MI,
   SkipMBB->addSuccessor(TailMBB); // fall through when done
 
   MI.eraseFromParent();
+  ++NumMul8;
   return true;
 }
 
+// The inline-runtime expansions below annotate each emitted instruction in
+// column-aligned assembly style; keep the manual alignment.
+// clang-format off
 bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
                                      const Z80InstrInfo &TII, bool IsDiv) {
   // Expand UDIV8/UMOD8 pseudo into an 8-bit restoring division loop.
@@ -313,6 +356,7 @@ bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   //     rla           ; remainder = remainder*2 + carry
   //     cp e          ; compare remainder with divisor
   //     jr c, SkipMBB ; if remainder < divisor, skip
+  //   SubMBB:
   //     sub e         ; remainder -= divisor
   //     inc d         ; set quotient bit 0
   //   SkipMBB:
@@ -325,11 +369,13 @@ bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   DebugLoc DL = MI.getDebugLoc();
 
   MachineBasicBlock *LoopMBB = MF->CreateMachineBasicBlock();
+  MachineBasicBlock *SubMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *SkipMBB = MF->CreateMachineBasicBlock();
   MachineBasicBlock *TailMBB = MF->CreateMachineBasicBlock();
 
   MachineFunction::iterator InsertPos = std::next(MBB.getIterator());
   MF->insert(InsertPos, LoopMBB);
+  MF->insert(InsertPos, SubMBB);
   MF->insert(InsertPos, SkipMBB);
   MF->insert(InsertPos, TailMBB);
 
@@ -338,24 +384,29 @@ bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
 
   // HeadMBB: setup
-  BuildMI(&MBB, DL, TII.get(Z80::LD_D_A)); // D = dividend
-  BuildMI(&MBB, DL, TII.get(Z80::XOR_A));  // A = 0 (remainder)
-  BuildMI(&MBB, DL, TII.get(Z80::LD_B_n)).addImm(8);
+  Z80::buildLD8(&MBB, DL, TII, Z80::D, Z80::A); // D = dividend
+  Z80::buildZeroA(&MBB, DL, TII);               // A = 0 (remainder)
+  Z80::buildLD8n(&MBB, DL, TII, Z80::B).addImm(8);
   MBB.addSuccessor(LoopMBB);
 
   // LoopMBB: restoring division step
-  BuildMI(LoopMBB, DL, TII.get(Z80::SLA_D)); // shift dividend, MSB->carry
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::SLA_r,
+                    Z80::D);                 // shift dividend, MSB->carry
   BuildMI(LoopMBB, DL, TII.get(Z80::RLA));   // remainder = remainder*2 + carry
-  BuildMI(LoopMBB, DL, TII.get(Z80::CP_E));  // compare remainder vs divisor
+  Z80::buildAlu8(LoopMBB, DL, TII, Z80::CP_r,
+                 Z80::E); // compare remainder vs divisor
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_C_e)).addMBB(SkipMBB);
-  BuildMI(LoopMBB, DL, TII.get(Z80::SUB_E)); // remainder -= divisor
-  BuildMI(LoopMBB, DL, TII.get(Z80::INC_D)); // set quotient bit
-  LoopMBB->addSuccessor(SkipMBB);            // jr c taken
-  LoopMBB->addSuccessor(SkipMBB);            // fall through
+  LoopMBB->addSuccessor(SkipMBB); // jr c taken
+  LoopMBB->addSuccessor(SubMBB);  // fall through
+
+  // SubMBB: subtract and record the quotient bit
+  Z80::buildAlu8(SubMBB, DL, TII, Z80::SUB_r, Z80::E); // remainder -= divisor
+  Z80::buildIncDec8(SubMBB, DL, TII, Z80::INC_r, Z80::D); // set quotient bit
+  SubMBB->addSuccessor(SkipMBB);
 
   // SkipMBB: loop back
   if (STI.hasSM83()) {
-    BuildMI(SkipMBB, DL, TII.get(Z80::DEC_B));
+    Z80::buildIncDec8(SkipMBB, DL, TII, Z80::DEC_r, Z80::B);
     BuildMI(SkipMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
     BuildMI(SkipMBB, DL, TII.get(Z80::DJNZ_e)).addMBB(LoopMBB);
@@ -365,11 +416,12 @@ bool Z80ExpandPseudo::expandUDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
 
   // TailMBB: for UDIV8, move quotient from D to A
   if (IsDiv) {
-    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_A_D));
+    Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::A, Z80::D);
   }
   // For UMOD8, remainder is already in A
 
   MI.eraseFromParent();
+  ++NumUDivMod8;
   return true;
 }
 
@@ -450,20 +502,21 @@ bool Z80ExpandPseudo::expandSDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   // HeadMBB: save sign info to C, test dividend sign
   if (IsDiv) {
     // C = dividend XOR divisor (quotient sign in bit 7)
-    BuildMI(&MBB, DL, TII.get(Z80::XOR_E));  // A = dividend XOR divisor
-    BuildMI(&MBB, DL, TII.get(Z80::LD_C_A)); // C = XOR result
-    BuildMI(&MBB, DL,
-            TII.get(Z80::XOR_E)); // A = dividend (XOR is self-inverse)
+    Z80::buildAlu8(&MBB, DL, TII, Z80::XOR_r,
+                   Z80::E);                       // A = dividend XOR divisor
+    Z80::buildLD8(&MBB, DL, TII, Z80::C, Z80::A); // C = XOR result
+    // A = dividend (XOR is self-inverse)
+    Z80::buildAlu8(&MBB, DL, TII, Z80::XOR_r, Z80::E);
   } else {
     // C = original dividend (remainder sign in bit 7)
-    BuildMI(&MBB, DL, TII.get(Z80::LD_C_A)); // C = dividend
+    Z80::buildLD8(&MBB, DL, TII, Z80::C, Z80::A); // C = dividend
   }
   if (IsSM83) {
     // SM83: no JP P — use BIT 7,A + JR Z (jump if positive)
-    BuildMI(&MBB, DL, TII.get(Z80::BIT_7_A));
+    Z80::buildBitTest(&MBB, DL, TII, 7, Z80::A);
     BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(DvdPosMBB);
   } else {
-    BuildMI(&MBB, DL, TII.get(Z80::OR_A)); // set flags for sign test
+    Z80::buildAlu8(&MBB, DL, TII, Z80::OR_r, Z80::A); // set flags for sign test
     BuildMI(&MBB, DL, TII.get(Z80::JP_P_nn)).addMBB(DvdPosMBB);
   }
   MBB.addSuccessor(DvdPosMBB); // branch taken (positive)
@@ -472,46 +525,46 @@ bool Z80ExpandPseudo::expandSDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   // NegDvdMBB: negate dividend
   if (IsSM83) {
     BuildMI(NegDvdMBB, DL, TII.get(Z80::CPL));
-    BuildMI(NegDvdMBB, DL, TII.get(Z80::INC_A));
+    Z80::buildIncDec8(NegDvdMBB, DL, TII, Z80::INC_r, Z80::A);
   } else {
     BuildMI(NegDvdMBB, DL, TII.get(Z80::NEG));
   }
   NegDvdMBB->addSuccessor(DvdPosMBB); // fall through
 
   // DvdPosMBB: save |dividend|, test divisor sign
-  BuildMI(DvdPosMBB, DL, TII.get(Z80::LD_D_A)); // D = |dividend|
-  BuildMI(DvdPosMBB, DL, TII.get(Z80::BIT_7_E));
+  Z80::buildLD8(DvdPosMBB, DL, TII, Z80::D, Z80::A); // D = |dividend|
+  Z80::buildBitTest(DvdPosMBB, DL, TII, 7, Z80::E);
   BuildMI(DvdPosMBB, DL, TII.get(Z80::JR_Z_e)).addMBB(DsrPosMBB);
   DvdPosMBB->addSuccessor(DsrPosMBB); // jr z taken (positive)
   DvdPosMBB->addSuccessor(NegDsrMBB); // fall through (negative)
 
   // NegDsrMBB: negate divisor
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::XOR_A));
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::SUB_E));  // A = -divisor
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::LD_E_A)); // E = |divisor|
+  Z80::buildZeroA(NegDsrMBB, DL, TII);
+  Z80::buildAlu8(NegDsrMBB, DL, TII, Z80::SUB_r, Z80::E); // A = -divisor
+  Z80::buildLD8(NegDsrMBB, DL, TII, Z80::E, Z80::A);      // E = |divisor|
   NegDsrMBB->addSuccessor(DsrPosMBB); // fall through
 
   // DsrPosMBB: setup for unsigned division loop
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::XOR_A));            // A = 0 (remainder)
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::LD_B_n)).addImm(8); // B = loop counter
+  Z80::buildZeroA(DsrPosMBB, DL, TII);                  // A = 0 (remainder)
+  Z80::buildLD8n(DsrPosMBB, DL, TII, Z80::B).addImm(8); // B = loop counter
   DsrPosMBB->addSuccessor(LoopMBB);
 
   // LoopMBB: restoring division step — shift and compare
-  BuildMI(LoopMBB, DL, TII.get(Z80::SLA_D));
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::SLA_r, Z80::D);
   BuildMI(LoopMBB, DL, TII.get(Z80::RLA));
-  BuildMI(LoopMBB, DL, TII.get(Z80::CP_E));
+  Z80::buildAlu8(LoopMBB, DL, TII, Z80::CP_r, Z80::E);
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_C_e)).addMBB(SkipMBB);
   LoopMBB->addSuccessor(SkipMBB);    // jr c taken (remainder < divisor)
   LoopMBB->addSuccessor(SubIncMBB);  // fall through (remainder >= divisor)
 
   // SubIncMBB: subtract divisor, set quotient bit
-  BuildMI(SubIncMBB, DL, TII.get(Z80::SUB_E));
-  BuildMI(SubIncMBB, DL, TII.get(Z80::INC_D));
+  Z80::buildAlu8(SubIncMBB, DL, TII, Z80::SUB_r, Z80::E);
+  Z80::buildIncDec8(SubIncMBB, DL, TII, Z80::INC_r, Z80::D);
   SubIncMBB->addSuccessor(SkipMBB); // fall through
 
   // SkipMBB: loop control
   if (IsSM83) {
-    BuildMI(SkipMBB, DL, TII.get(Z80::DEC_B));
+    Z80::buildIncDec8(SkipMBB, DL, TII, Z80::DEC_r, Z80::B);
     BuildMI(SkipMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
     BuildMI(SkipMBB, DL, TII.get(Z80::DJNZ_e)).addMBB(LoopMBB);
@@ -522,10 +575,10 @@ bool Z80ExpandPseudo::expandSDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   // SignMBB: apply sign to result
   if (IsDiv) {
     // Quotient sign = XOR of dividend and divisor signs (saved in C bit 7)
-    BuildMI(SignMBB, DL, TII.get(Z80::LD_A_D)); // A = unsigned quotient
+    Z80::buildLD8(SignMBB, DL, TII, Z80::A, Z80::D); // A = unsigned quotient
   }
   // (SMOD: A already has remainder)
-  BuildMI(SignMBB, DL, TII.get(Z80::BIT_7_C));
+  Z80::buildBitTest(SignMBB, DL, TII, 7, Z80::C);
   BuildMI(SignMBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
   SignMBB->addSuccessor(TailMBB);   // jr z taken (positive)
   SignMBB->addSuccessor(NegResMBB);  // fall through (negative)
@@ -533,27 +586,49 @@ bool Z80ExpandPseudo::expandSDivMod8(MachineBasicBlock &MBB, MachineInstr &MI,
   // NegResMBB: negate result
   if (IsSM83) {
     BuildMI(NegResMBB, DL, TII.get(Z80::CPL));
-    BuildMI(NegResMBB, DL, TII.get(Z80::INC_A));
+    Z80::buildIncDec8(NegResMBB, DL, TII, Z80::INC_r, Z80::A);
   } else {
     BuildMI(NegResMBB, DL, TII.get(Z80::NEG));
   }
   NegResMBB->addSuccessor(TailMBB); // fall through
 
   MI.eraseFromParent();
+  ++NumSDivMod8;
   return true;
 }
 
-static unsigned getADD8Opc(Register Reg) {
-  static const unsigned T[] = {Z80::ADD_A_A, Z80::ADD_A_B, Z80::ADD_A_C,
-                               Z80::ADD_A_D, Z80::ADD_A_E, Z80::ADD_A_H,
-                               Z80::ADD_A_L};
-  return T[Z80::gr8RegToIndex(Reg)];
-}
+bool Z80ExpandPseudo::expandGuardedBlockMove(MachineBasicBlock &MBB,
+                                             MachineInstr &MI,
+                                             const Z80InstrInfo &TII) {
+  // LDIR_GUARDED:  LD A,B; OR C; JR Z,.done; LDIR; .done:
+  //
+  // LDIR decrements BC before testing it for zero, so a zero length would copy
+  // 65536 bytes.  The guard costs four bytes and is only emitted for lengths
+  // the compiler could not prove non-zero.
+  MachineFunction *MF = MBB.getParent();
+  DebugLoc DL = MI.getDebugLoc();
 
-static unsigned getSUBOpc(Register Reg) {
-  static const unsigned T[] = {Z80::SUB_A, Z80::SUB_B, Z80::SUB_C, Z80::SUB_D,
-                               Z80::SUB_E, Z80::SUB_H, Z80::SUB_L};
-  return T[Z80::gr8RegToIndex(Reg)];
+  MachineBasicBlock *TailMBB = MF->CreateMachineBasicBlock();
+  MF->insert(std::next(MBB.getIterator()), TailMBB);
+  TailMBB->splice(TailMBB->begin(), &MBB,
+                  std::next(MachineBasicBlock::iterator(MI)), MBB.end());
+  TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
+
+  MachineBasicBlock *MoveMBB = MF->CreateMachineBasicBlock();
+  MF->insert(TailMBB->getIterator(), MoveMBB);
+
+  Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::B);
+  Z80::buildAlu8(&MBB, DL, TII, Z80::OR_r, Z80::C);
+  BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
+  MBB.addSuccessor(TailMBB);
+  MBB.addSuccessor(MoveMBB);
+
+  BuildMI(MoveMBB, DL, TII.get(Z80::LDIR));
+  MoveMBB->addSuccessor(TailMBB);
+
+  MI.eraseFromParent();
+  ++NumBlockMoves;
+  return true;
 }
 
 bool Z80ExpandPseudo::expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
@@ -568,7 +643,7 @@ bool Z80ExpandPseudo::expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
   MachineFunction *MF = MBB.getParent();
   DebugLoc DL = MI.getDebugLoc();
   unsigned Opc = MI.getOpcode();
-  Register SrcReg = MI.getOperand(0).getReg();
+  Register SrcReg = MI.getOperand(2).getReg();
 
   bool IsAdd = (Opc == Z80::UADDSAT8 || Opc == Z80::SADDSAT8);
   bool IsSigned = (Opc == Z80::SADDSAT8 || Opc == Z80::SSUBSAT8);
@@ -585,9 +660,9 @@ bool Z80ExpandPseudo::expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
 
   // Emit the arithmetic instruction.
   if (IsAdd)
-    BuildMI(&MBB, DL, TII.get(getADD8Opc(SrcReg)));
+    Z80::buildAlu8(&MBB, DL, TII, Z80::ADD_A_r, SrcReg);
   else
-    BuildMI(&MBB, DL, TII.get(getSUBOpc(SrcReg)));
+    Z80::buildAlu8(&MBB, DL, TII, Z80::SUB_r, SrcReg);
 
   if (IsSigned) {
     // Signed: JP PO,.done (P/V=0 means no overflow)
@@ -603,7 +678,7 @@ bool Z80ExpandPseudo::expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
     // If result was positive (S=0): RLCA puts 0 in CF, SBC A,A = 0x00,
     //   XOR 0x80 = 0x80 (negative overflow → min negative)
     BuildMI(SatMBB, DL, TII.get(Z80::RLCA));
-    BuildMI(SatMBB, DL, TII.get(Z80::SBC_A_A));
+    Z80::buildSbcAA(SatMBB, DL, TII);
     BuildMI(SatMBB, DL, TII.get(Z80::XOR_n)).addImm(0x80);
     SatMBB->addSuccessor(TailMBB);
 
@@ -619,10 +694,10 @@ bool Z80ExpandPseudo::expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
 
     if (IsAdd) {
       // UADDSAT: saturate to 0xFF
-      BuildMI(SatMBB, DL, TII.get(Z80::LD_A_n)).addImm(0xFF);
+      Z80::buildLD8n(SatMBB, DL, TII, Z80::A).addImm(0xFF);
     } else {
       // USUBSAT: saturate to 0x00
-      BuildMI(SatMBB, DL, TII.get(Z80::XOR_A));
+      Z80::buildZeroA(SatMBB, DL, TII);
     }
     SatMBB->addSuccessor(TailMBB);
 
@@ -631,6 +706,7 @@ bool Z80ExpandPseudo::expandSatArith8(MachineBasicBlock &MBB, MachineInstr &MI,
   }
 
   MI.eraseFromParent();
+  ++NumSatArith8;
   return true;
 }
 
@@ -705,53 +781,53 @@ bool Z80ExpandPseudo::expandMul16(MachineBasicBlock &MBB, MachineInstr &MI,
 
   if (IsSM83) {
     // SM83 setup
-    BuildMI(&MBB, DL, TII.get(Z80::LD_B_H));           // BC = multiplicand
-    BuildMI(&MBB, DL, TII.get(Z80::LD_C_L));
-    BuildMI(&MBB, DL, TII.get(Z80::LD_H_n)).addImm(0); // HL = 0
-    BuildMI(&MBB, DL, TII.get(Z80::LD_L_n)).addImm(0);
-    BuildMI(&MBB, DL, TII.get(Z80::LD_A_n)).addImm(16); // A = counter
+    Z80::buildLD8(&MBB, DL, TII, Z80::B, Z80::H); // BC = multiplicand
+    Z80::buildLD8(&MBB, DL, TII, Z80::C, Z80::L);
+    Z80::buildLD8n(&MBB, DL, TII, Z80::H).addImm(0); // HL = 0
+    Z80::buildLD8n(&MBB, DL, TII, Z80::L).addImm(0);
+    Z80::buildLD8n(&MBB, DL, TII, Z80::A).addImm(16); // A = counter
   } else {
     // Z80 setup
     // The shift register is A:C (16-bit). A must hold the multiplier high byte,
     // not 0. The runtime __mulhi3 achieves this via "or b" (A = A | B = 0 | high).
-    BuildMI(&MBB, DL, TII.get(Z80::LD_B_D));            // B = multiplier high
-    BuildMI(&MBB, DL, TII.get(Z80::LD_C_E));            // C = multiplier low
+    Z80::buildLD8(&MBB, DL, TII, Z80::B, Z80::D);       // B = multiplier high
+    Z80::buildLD8(&MBB, DL, TII, Z80::C, Z80::E);       // C = multiplier low
     BuildMI(&MBB, DL, TII.get(Z80::EX_DE_HL));          // DE = multiplicand
-    BuildMI(&MBB, DL, TII.get(Z80::LD_A_B));            // A = multiplier high byte
-    BuildMI(&MBB, DL, TII.get(Z80::LD_H_n)).addImm(0);
-    BuildMI(&MBB, DL, TII.get(Z80::LD_L_n)).addImm(0); // HL = 0
-    BuildMI(&MBB, DL, TII.get(Z80::LD_B_n)).addImm(16); // B = counter
+    Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::B); // A = multiplier high byte
+    Z80::buildLD8n(&MBB, DL, TII, Z80::H).addImm(0);
+    Z80::buildLD8n(&MBB, DL, TII, Z80::L).addImm(0);  // HL = 0
+    Z80::buildLD8n(&MBB, DL, TII, Z80::B).addImm(16); // B = counter
   }
   MBB.addSuccessor(LoopMBB);
 
   if (IsSM83) {
     // SM83 loop: LSB-first shift-and-add
-    BuildMI(LoopMBB, DL, TII.get(Z80::SRL_D));          // DE >>= 1
-    BuildMI(LoopMBB, DL, TII.get(Z80::RR_E));           // LSB → carry
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::SRL_r, Z80::D); // DE >>= 1
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::RR_r, Z80::E);  // LSB → carry
     BuildMI(LoopMBB, DL, TII.get(Z80::JR_NC_e)).addMBB(SkipMBB);
     LoopMBB->addSuccessor(SkipMBB);                      // jr nc taken
     LoopMBB->addSuccessor(AddMBB);                       // fall through
 
     // AddMBB: conditional addition
-    BuildMI(AddMBB, DL, TII.get(Z80::ADD_HL_BC));       // result += multiplicand
+    Z80::buildAddHL(AddMBB, DL, TII, Z80::BC); // result += multiplicand
     AddMBB->addSuccessor(SkipMBB);                       // fall through
 
     // SM83 skip: shift multiplicand left, loop control
-    BuildMI(SkipMBB, DL, TII.get(Z80::SLA_C));          // BC <<= 1
-    BuildMI(SkipMBB, DL, TII.get(Z80::RL_B));
-    BuildMI(SkipMBB, DL, TII.get(Z80::DEC_A));
+    Z80::buildRotate8(SkipMBB, DL, TII, Z80::SLA_r, Z80::C); // BC <<= 1
+    Z80::buildRotate8(SkipMBB, DL, TII, Z80::RL_r, Z80::B);
+    Z80::buildIncDec8(SkipMBB, DL, TII, Z80::DEC_r, Z80::A);
     BuildMI(SkipMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
     // Z80 loop: MSB-first shift-and-add
     BuildMI(LoopMBB, DL, TII.get(Z80::ADD_HL_HL));      // result <<= 1
-    BuildMI(LoopMBB, DL, TII.get(Z80::RL_C));           // shift multiplier
+    Z80::buildRotate8(LoopMBB, DL, TII, Z80::RL_r, Z80::C); // shift multiplier
     BuildMI(LoopMBB, DL, TII.get(Z80::RLA));            // carry propagates
     BuildMI(LoopMBB, DL, TII.get(Z80::JR_NC_e)).addMBB(SkipMBB);
     LoopMBB->addSuccessor(SkipMBB);                      // jr nc taken
     LoopMBB->addSuccessor(AddMBB);                       // fall through
 
     // AddMBB: conditional addition
-    BuildMI(AddMBB, DL, TII.get(Z80::ADD_HL_DE));       // result += multiplicand
+    Z80::buildAddHL(AddMBB, DL, TII, Z80::DE); // result += multiplicand
     AddMBB->addSuccessor(SkipMBB);                       // fall through
 
     // Z80 skip: loop control
@@ -762,13 +838,14 @@ bool Z80ExpandPseudo::expandMul16(MachineBasicBlock &MBB, MachineInstr &MI,
 
   // TailMBB: move result to DE
   if (IsSM83) {
-    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_E_L));
-    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_D_H));
+    Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::E, Z80::L);
+    Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::D, Z80::H);
   } else {
     BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::EX_DE_HL));
   }
 
   MI.eraseFromParent();
+  ++NumMul16;
   return true;
 }
 
@@ -830,29 +907,30 @@ bool Z80ExpandPseudo::expandUDivMod16(MachineBasicBlock &MBB, MachineInstr &MI,
   TailMBB->transferSuccessorsAndUpdatePHIs(&MBB);
 
   // HeadMBB: setup
-  BuildMI(&MBB, DL, TII.get(Z80::LD_B_H));            // BC = dividend
-  BuildMI(&MBB, DL, TII.get(Z80::LD_C_L));
-  BuildMI(&MBB, DL, TII.get(Z80::LD_H_n)).addImm(0);  // HL = 0 (remainder)
-  BuildMI(&MBB, DL, TII.get(Z80::LD_L_n)).addImm(0);
-  BuildMI(&MBB, DL, TII.get(Z80::LD_A_n)).addImm(16); // A = counter
+  Z80::buildLD8(&MBB, DL, TII, Z80::B, Z80::H); // BC = dividend
+  Z80::buildLD8(&MBB, DL, TII, Z80::C, Z80::L);
+  Z80::buildLD8n(&MBB, DL, TII, Z80::H).addImm(0); // HL = 0 (remainder)
+  Z80::buildLD8n(&MBB, DL, TII, Z80::L).addImm(0);
+  Z80::buildLD8n(&MBB, DL, TII, Z80::A).addImm(16); // A = counter
   MBB.addSuccessor(LoopMBB);
 
   // LoopMBB: shift dividend, extend remainder
   if (IsSM83) {
     BuildMI(LoopMBB, DL, TII.get(Z80::PUSH_AF));        // save counter
   }
-  BuildMI(LoopMBB, DL, TII.get(Z80::SLA_C));            // shift BC left
-  BuildMI(LoopMBB, DL, TII.get(Z80::RL_B));             // MSB → carry
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::SLA_r, Z80::C); // shift BC left
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::RL_r, Z80::B);  // MSB → carry
   if (IsSM83) {
     // SM83: emulate ADC HL,HL (no native instruction)
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_A_L));
-    BuildMI(LoopMBB, DL, TII.get(Z80::ADC_A_L));
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_L_A));
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(LoopMBB, DL, TII.get(Z80::ADC_A_H));
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_H_A));
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::A, Z80::L);
+    Z80::buildAlu8(LoopMBB, DL, TII, Z80::ADC_A_r, Z80::L);
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::L, Z80::A);
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(LoopMBB, DL, TII, Z80::ADC_A_r, Z80::H);
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::H, Z80::A);
   } else {
-    BuildMI(LoopMBB, DL, TII.get(Z80::ADC_HL_HL));      // remainder*2 + carry
+    Z80::buildAdcSbcHL(LoopMBB, DL, TII, Z80::ADC_HL_rr,
+                       Z80::HL); // remainder*2 + carry
   }
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_C_e)).addMBB(OverflowMBB);
   LoopMBB->addSuccessor(OverflowMBB);                    // jr c taken
@@ -861,17 +939,18 @@ bool Z80ExpandPseudo::expandUDivMod16(MachineBasicBlock &MBB, MachineInstr &MI,
   // RestoreMBB: trial subtract, check, possibly restore
   if (IsSM83) {
     // SM83: emulate SBC HL,DE (no native instruction, carry=0 here)
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_A_L));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::SUB_E));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_L_A));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::SBC_A_D));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_H_A));
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::A, Z80::L);
+    Z80::buildAlu8(RestoreMBB, DL, TII, Z80::SUB_r, Z80::E);
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::L, Z80::A);
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(RestoreMBB, DL, TII, Z80::SBC_A_r, Z80::D);
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::H, Z80::A);
   } else {
-    BuildMI(RestoreMBB, DL, TII.get(Z80::SBC_HL_DE));   // trial subtract
+    Z80::buildAdcSbcHL(RestoreMBB, DL, TII, Z80::SBC_HL_rr,
+                       Z80::DE); // trial subtract
   }
   BuildMI(RestoreMBB, DL, TII.get(Z80::JR_NC_e)).addMBB(SetBitMBB);
-  BuildMI(RestoreMBB, DL, TII.get(Z80::ADD_HL_DE));     // restore remainder
+  Z80::buildAddHL(RestoreMBB, DL, TII, Z80::DE); // restore remainder
   BuildMI(RestoreMBB, DL, TII.get(Z80::JR_e)).addMBB(NextMBB);
   RestoreMBB->addSuccessor(SetBitMBB);                   // jr nc taken
   RestoreMBB->addSuccessor(NextMBB);                     // jr (restore path)
@@ -879,29 +958,30 @@ bool Z80ExpandPseudo::expandUDivMod16(MachineBasicBlock &MBB, MachineInstr &MI,
   // OverflowMBB: 17-bit remainder, always >= divisor
   if (IsSM83) {
     // SM83: subtract without SBC HL,DE (carry doesn't matter, result fits)
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_A_L));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::SUB_E));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_L_A));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::SBC_A_D));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_H_A));
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::A, Z80::L);
+    Z80::buildAlu8(OverflowMBB, DL, TII, Z80::SUB_r, Z80::E);
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::L, Z80::A);
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(OverflowMBB, DL, TII, Z80::SBC_A_r, Z80::D);
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::H, Z80::A);
   } else {
-    BuildMI(OverflowMBB, DL, TII.get(Z80::OR_A));       // clear carry
-    BuildMI(OverflowMBB, DL, TII.get(Z80::SBC_HL_DE));  // subtract
+    Z80::buildAlu8(OverflowMBB, DL, TII, Z80::OR_r, Z80::A); // clear carry
+    Z80::buildAdcSbcHL(OverflowMBB, DL, TII, Z80::SBC_HL_rr,
+                       Z80::DE); // subtract
   }
   OverflowMBB->addSuccessor(SetBitMBB);                  // fall through
 
   // SetBitMBB: set quotient bit
-  BuildMI(SetBitMBB, DL, TII.get(Z80::INC_C));          // quotient bit 0
+  Z80::buildIncDec8(SetBitMBB, DL, TII, Z80::INC_r, Z80::C); // quotient bit 0
   SetBitMBB->addSuccessor(NextMBB);                      // fall through
 
   // NextMBB: loop control
   if (IsSM83) {
     BuildMI(NextMBB, DL, TII.get(Z80::POP_AF));         // restore counter
-    BuildMI(NextMBB, DL, TII.get(Z80::DEC_A));
+    Z80::buildIncDec8(NextMBB, DL, TII, Z80::DEC_r, Z80::A);
     BuildMI(NextMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
-    BuildMI(NextMBB, DL, TII.get(Z80::DEC_A));
+    Z80::buildIncDec8(NextMBB, DL, TII, Z80::DEC_r, Z80::A);
     BuildMI(NextMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   }
   NextMBB->addSuccessor(LoopMBB);                        // loop back
@@ -910,19 +990,20 @@ bool Z80ExpandPseudo::expandUDivMod16(MachineBasicBlock &MBB, MachineInstr &MI,
   // TailMBB: move result to DE
   if (IsDiv) {
     // UDIV: DE = quotient (from BC)
-    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_E_C));
-    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_D_B));
+    Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::E, Z80::C);
+    Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::D, Z80::B);
   } else {
     // UMOD: DE = remainder (from HL)
     if (IsSM83) {
-      BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_E_L));
-      BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::LD_D_H));
+      Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::E, Z80::L);
+      Z80::buildLD8(*TailMBB, TailMBB->begin(), DL, TII, Z80::D, Z80::H);
     } else {
       BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(Z80::EX_DE_HL));
     }
   }
 
   MI.eraseFromParent();
+  ++NumUDivMod16;
   return true;
 }
 
@@ -995,110 +1076,110 @@ bool Z80ExpandPseudo::expandSDivMod16(MachineBasicBlock &MBB, MachineInstr &MI,
   // HeadMBB: determine result sign and make dividend positive
   if (IsDiv) {
     // SDIV: result sign = XOR of operand signs
-    BuildMI(&MBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(&MBB, DL, TII.get(Z80::XOR_D));  // bit 7 = result sign
+    Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(&MBB, DL, TII, Z80::XOR_r, Z80::D); // bit 7 = result sign
   } else {
     // SMOD: result sign = dividend sign
-    BuildMI(&MBB, DL, TII.get(Z80::LD_A_H));
+    Z80::buildLD8(&MBB, DL, TII, Z80::A, Z80::H);
   }
   BuildMI(&MBB, DL, TII.get(Z80::PUSH_AF));  // save sign info
 
   // Make dividend positive
-  BuildMI(&MBB, DL, TII.get(Z80::BIT_7_H));
+  Z80::buildBitTest(&MBB, DL, TII, 7, Z80::H);
   BuildMI(&MBB, DL, TII.get(Z80::JR_Z_e)).addMBB(DvdPosMBB);
   MBB.addSuccessor(DvdPosMBB);   // jr z taken (positive)
   MBB.addSuccessor(NegDvdMBB);   // fall through (negative)
 
   // NegDvdMBB: negate HL
-  BuildMI(NegDvdMBB, DL, TII.get(Z80::XOR_A));
-  BuildMI(NegDvdMBB, DL, TII.get(Z80::SUB_L));
-  BuildMI(NegDvdMBB, DL, TII.get(Z80::LD_L_A));
-  BuildMI(NegDvdMBB, DL, TII.get(Z80::SBC_A_A));
-  BuildMI(NegDvdMBB, DL, TII.get(Z80::SUB_H));
-  BuildMI(NegDvdMBB, DL, TII.get(Z80::LD_H_A));
+  Z80::buildZeroA(NegDvdMBB, DL, TII);
+  Z80::buildAlu8(NegDvdMBB, DL, TII, Z80::SUB_r, Z80::L);
+  Z80::buildLD8(NegDvdMBB, DL, TII, Z80::L, Z80::A);
+  Z80::buildSbcAA(NegDvdMBB, DL, TII);
+  Z80::buildAlu8(NegDvdMBB, DL, TII, Z80::SUB_r, Z80::H);
+  Z80::buildLD8(NegDvdMBB, DL, TII, Z80::H, Z80::A);
   NegDvdMBB->addSuccessor(DvdPosMBB);  // fall through
 
   // DvdPosMBB: make divisor positive
-  BuildMI(DvdPosMBB, DL, TII.get(Z80::BIT_7_D));
+  Z80::buildBitTest(DvdPosMBB, DL, TII, 7, Z80::D);
   BuildMI(DvdPosMBB, DL, TII.get(Z80::JR_Z_e)).addMBB(DsrPosMBB);
   DvdPosMBB->addSuccessor(DsrPosMBB);  // jr z taken (positive)
   DvdPosMBB->addSuccessor(NegDsrMBB);  // fall through (negative)
 
   // NegDsrMBB: negate DE
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::XOR_A));
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::SUB_E));
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::LD_E_A));
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::SBC_A_A));
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::SUB_D));
-  BuildMI(NegDsrMBB, DL, TII.get(Z80::LD_D_A));
+  Z80::buildZeroA(NegDsrMBB, DL, TII);
+  Z80::buildAlu8(NegDsrMBB, DL, TII, Z80::SUB_r, Z80::E);
+  Z80::buildLD8(NegDsrMBB, DL, TII, Z80::E, Z80::A);
+  Z80::buildSbcAA(NegDsrMBB, DL, TII);
+  Z80::buildAlu8(NegDsrMBB, DL, TII, Z80::SUB_r, Z80::D);
+  Z80::buildLD8(NegDsrMBB, DL, TII, Z80::D, Z80::A);
   NegDsrMBB->addSuccessor(DsrPosMBB);  // fall through
 
   // DsrPosMBB: setup for unsigned division (same as UDIV16)
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::LD_B_H));            // BC = dividend
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::LD_C_L));
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::LD_H_n)).addImm(0);  // HL = 0
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::LD_L_n)).addImm(0);
-  BuildMI(DsrPosMBB, DL, TII.get(Z80::LD_A_n)).addImm(16); // A = counter
+  Z80::buildLD8(DsrPosMBB, DL, TII, Z80::B, Z80::H); // BC = dividend
+  Z80::buildLD8(DsrPosMBB, DL, TII, Z80::C, Z80::L);
+  Z80::buildLD8n(DsrPosMBB, DL, TII, Z80::H).addImm(0); // HL = 0
+  Z80::buildLD8n(DsrPosMBB, DL, TII, Z80::L).addImm(0);
+  Z80::buildLD8n(DsrPosMBB, DL, TII, Z80::A).addImm(16); // A = counter
   DsrPosMBB->addSuccessor(LoopMBB);
 
   // LoopMBB..NextMBB: same division loop as UDIV16
   if (IsSM83) {
     BuildMI(LoopMBB, DL, TII.get(Z80::PUSH_AF));
   }
-  BuildMI(LoopMBB, DL, TII.get(Z80::SLA_C));
-  BuildMI(LoopMBB, DL, TII.get(Z80::RL_B));
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::SLA_r, Z80::C);
+  Z80::buildRotate8(LoopMBB, DL, TII, Z80::RL_r, Z80::B);
   if (IsSM83) {
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_A_L));
-    BuildMI(LoopMBB, DL, TII.get(Z80::ADC_A_L));
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_L_A));
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(LoopMBB, DL, TII.get(Z80::ADC_A_H));
-    BuildMI(LoopMBB, DL, TII.get(Z80::LD_H_A));
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::A, Z80::L);
+    Z80::buildAlu8(LoopMBB, DL, TII, Z80::ADC_A_r, Z80::L);
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::L, Z80::A);
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(LoopMBB, DL, TII, Z80::ADC_A_r, Z80::H);
+    Z80::buildLD8(LoopMBB, DL, TII, Z80::H, Z80::A);
   } else {
-    BuildMI(LoopMBB, DL, TII.get(Z80::ADC_HL_HL));
+    Z80::buildAdcSbcHL(LoopMBB, DL, TII, Z80::ADC_HL_rr, Z80::HL);
   }
   BuildMI(LoopMBB, DL, TII.get(Z80::JR_C_e)).addMBB(OverflowMBB);
   LoopMBB->addSuccessor(OverflowMBB);
   LoopMBB->addSuccessor(RestoreMBB);
 
   if (IsSM83) {
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_A_L));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::SUB_E));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_L_A));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::SBC_A_D));
-    BuildMI(RestoreMBB, DL, TII.get(Z80::LD_H_A));
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::A, Z80::L);
+    Z80::buildAlu8(RestoreMBB, DL, TII, Z80::SUB_r, Z80::E);
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::L, Z80::A);
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(RestoreMBB, DL, TII, Z80::SBC_A_r, Z80::D);
+    Z80::buildLD8(RestoreMBB, DL, TII, Z80::H, Z80::A);
   } else {
-    BuildMI(RestoreMBB, DL, TII.get(Z80::SBC_HL_DE));
+    Z80::buildAdcSbcHL(RestoreMBB, DL, TII, Z80::SBC_HL_rr, Z80::DE);
   }
   BuildMI(RestoreMBB, DL, TII.get(Z80::JR_NC_e)).addMBB(SetBitMBB);
-  BuildMI(RestoreMBB, DL, TII.get(Z80::ADD_HL_DE));
+  Z80::buildAddHL(RestoreMBB, DL, TII, Z80::DE);
   BuildMI(RestoreMBB, DL, TII.get(Z80::JR_e)).addMBB(NextMBB);
   RestoreMBB->addSuccessor(SetBitMBB);
   RestoreMBB->addSuccessor(NextMBB);
 
   if (IsSM83) {
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_A_L));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::SUB_E));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_L_A));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_A_H));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::SBC_A_D));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::LD_H_A));
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::A, Z80::L);
+    Z80::buildAlu8(OverflowMBB, DL, TII, Z80::SUB_r, Z80::E);
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::L, Z80::A);
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::A, Z80::H);
+    Z80::buildAlu8(OverflowMBB, DL, TII, Z80::SBC_A_r, Z80::D);
+    Z80::buildLD8(OverflowMBB, DL, TII, Z80::H, Z80::A);
   } else {
-    BuildMI(OverflowMBB, DL, TII.get(Z80::OR_A));
-    BuildMI(OverflowMBB, DL, TII.get(Z80::SBC_HL_DE));
+    Z80::buildAlu8(OverflowMBB, DL, TII, Z80::OR_r, Z80::A);
+    Z80::buildAdcSbcHL(OverflowMBB, DL, TII, Z80::SBC_HL_rr, Z80::DE);
   }
   OverflowMBB->addSuccessor(SetBitMBB);
 
-  BuildMI(SetBitMBB, DL, TII.get(Z80::INC_C));
+  Z80::buildIncDec8(SetBitMBB, DL, TII, Z80::INC_r, Z80::C);
   SetBitMBB->addSuccessor(NextMBB);
 
   if (IsSM83) {
     BuildMI(NextMBB, DL, TII.get(Z80::POP_AF));
-    BuildMI(NextMBB, DL, TII.get(Z80::DEC_A));
+    Z80::buildIncDec8(NextMBB, DL, TII, Z80::DEC_r, Z80::A);
     BuildMI(NextMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   } else {
-    BuildMI(NextMBB, DL, TII.get(Z80::DEC_A));
+    Z80::buildIncDec8(NextMBB, DL, TII, Z80::DEC_r, Z80::A);
     BuildMI(NextMBB, DL, TII.get(Z80::JR_NZ_e)).addMBB(LoopMBB);
   }
   NextMBB->addSuccessor(LoopMBB);
@@ -1107,36 +1188,38 @@ bool Z80ExpandPseudo::expandSDivMod16(MachineBasicBlock &MBB, MachineInstr &MI,
   // SignMBB: move result to DE, apply sign
   if (IsDiv) {
     // DE = quotient (from BC)
-    BuildMI(SignMBB, DL, TII.get(Z80::LD_D_B));
-    BuildMI(SignMBB, DL, TII.get(Z80::LD_E_C));
+    Z80::buildLD8(SignMBB, DL, TII, Z80::D, Z80::B);
+    Z80::buildLD8(SignMBB, DL, TII, Z80::E, Z80::C);
   } else {
     // DE = remainder (from HL)
     if (IsSM83) {
-      BuildMI(SignMBB, DL, TII.get(Z80::LD_D_H));
-      BuildMI(SignMBB, DL, TII.get(Z80::LD_E_L));
+      Z80::buildLD8(SignMBB, DL, TII, Z80::D, Z80::H);
+      Z80::buildLD8(SignMBB, DL, TII, Z80::E, Z80::L);
     } else {
       BuildMI(SignMBB, DL, TII.get(Z80::EX_DE_HL));
     }
   }
   // Check sign and conditionally negate DE
   BuildMI(SignMBB, DL, TII.get(Z80::POP_AF));   // restore sign info
-  BuildMI(SignMBB, DL, TII.get(Z80::BIT_7_A));
+  Z80::buildBitTest(SignMBB, DL, TII, 7, Z80::A);
   BuildMI(SignMBB, DL, TII.get(Z80::JR_Z_e)).addMBB(TailMBB);
   SignMBB->addSuccessor(TailMBB);   // jr z taken (positive)
   SignMBB->addSuccessor(NegResMBB);  // fall through (negative)
 
   // NegResMBB: negate DE
-  BuildMI(NegResMBB, DL, TII.get(Z80::XOR_A));
-  BuildMI(NegResMBB, DL, TII.get(Z80::SUB_E));
-  BuildMI(NegResMBB, DL, TII.get(Z80::LD_E_A));
-  BuildMI(NegResMBB, DL, TII.get(Z80::SBC_A_A));
-  BuildMI(NegResMBB, DL, TII.get(Z80::SUB_D));
-  BuildMI(NegResMBB, DL, TII.get(Z80::LD_D_A));
+  Z80::buildZeroA(NegResMBB, DL, TII);
+  Z80::buildAlu8(NegResMBB, DL, TII, Z80::SUB_r, Z80::E);
+  Z80::buildLD8(NegResMBB, DL, TII, Z80::E, Z80::A);
+  Z80::buildSbcAA(NegResMBB, DL, TII);
+  Z80::buildAlu8(NegResMBB, DL, TII, Z80::SUB_r, Z80::D);
+  Z80::buildLD8(NegResMBB, DL, TII, Z80::D, Z80::A);
   NegResMBB->addSuccessor(TailMBB);  // fall through
 
   MI.eraseFromParent();
+  ++NumSDivMod16;
   return true;
 }
+// clang-format on
 
 } // namespace
 

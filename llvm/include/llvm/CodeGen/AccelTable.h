@@ -207,7 +207,6 @@ public:
   template <typename... Types>
   void addName(DwarfStringPoolEntryRef Name, Types &&... Args);
   void clear() { Entries.clear(); }
-  void addEntries(AccelTable<DataT> &Table);
   const StringEntries getEntries() const { return Entries; }
 };
 
@@ -271,9 +270,6 @@ struct OffsetAndUnitID {
 };
 
 template <> struct DenseMapInfo<OffsetAndUnitID> {
-  static inline OffsetAndUnitID getEmptyKey() {
-    return OffsetAndUnitID(-1, -1, false);
-  }
   static unsigned getHashValue(const OffsetAndUnitID &Val) {
     return (unsigned)llvm::hash_combine(Val.offset(), Val.unitID(), Val.IsTU);
   }

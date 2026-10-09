@@ -79,10 +79,9 @@ unsigned Z80MCCodeEmitter::encodeImm(const MCInst &MI, unsigned OpNo,
 
   if (MO.isExpr()) {
     if (isa<Z80MCExpr>(MO.getExpr())) {
-      // If the expression is already a Z80MCExpr,
-      // we shouldn't perform any more fixups. Without this check, we would
-      // instead create a fixup to the symbol named 'lo8(symbol)' which
-      // is not correct.
+      // A Z80MCExpr already carries its own fixup, so adding another here
+      // would create one against the modifier expression instead of the
+      // symbol it wraps.
       return getExprOpValue(MO.getExpr(), Fixups, STI, Offset);
     }
 
@@ -128,6 +127,9 @@ unsigned Z80MCCodeEmitter::getMachineOpValue(const MCInst &MI,
                                              const MCOperand &MO,
                                              SmallVectorImpl<MCFixup> &Fixups,
                                              const MCSubtargetInfo &STI) const {
+  if (MO.isReg())
+    return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg());
+
   if (MO.isImm())
     return MO.getImm();
 

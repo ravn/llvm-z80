@@ -12,6 +12,9 @@ extern void sdcc_add_accum(u32 val);
 extern u16 sdcc_get_counter(void);
 extern u32 sdcc_get_accum(void);
 
+volatile u16 startup_counter = 42;
+volatile u16 startup_buf[64];
+
 int main(void) {
     volatile u16 status = 0;
 
@@ -52,5 +55,23 @@ int main(void) {
             status |= (1 << 3);
     }
 
-    return status; /* expect 0x000F */
+    /* Bit 4: startup_counter check */
+    if (startup_counter == 42) {
+        status |= (1 << 4);
+    }
+
+    /* Bit 5: startup_buf check */
+    {
+        int all_zero = 1;
+        for (int i = 0; i < 64; i++) {
+            if (startup_buf[i] != 0) {
+                all_zero = 0;
+                break;
+            }
+        }
+        if (all_zero)
+            status |= (1 << 5);
+    }
+
+    return status; /* expect 0x003F */
 }
