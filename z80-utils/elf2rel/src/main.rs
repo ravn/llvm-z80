@@ -50,6 +50,7 @@ const R_PCR: u8 = 0x04;
 const SDCC_AREAS: &[(&str, u8)] = &[
     ("_CODE", 0),
     ("_DATA", 0),
+    ("_BSS", 0),
     ("_INITIALIZED", 0),
     ("_DABS", 8),
     ("_HOME", 0),
@@ -62,12 +63,12 @@ const SDCC_AREAS: &[(&str, u8)] = &[
 const AR_MAGIC: &[u8; 8] = b"!<arch>\n";
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 
-fn section_to_area(name: &str) -> &'static str {
-    if name == ".text" || name.starts_with(".text.") {
+fn section_to_area(name: &str, sh_type: u32) -> &'static str {
+    if sh_type == elf::SHT_NOBITS {
+        "_BSS"
+    } else if name == ".text" || name.starts_with(".text.") {
         "_CODE"
     } else if name == ".data" || name.starts_with(".data.") {
-        "_DATA"
-    } else if name == ".bss" || name.starts_with(".bss.") {
         "_DATA"
     } else if name == ".rodata" || name.starts_with(".rodata.") {
         "_CODE"
@@ -354,19 +355,16 @@ fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String>
             continue;
         }
 
-        let area_name = section_to_area(name);
+        let area_name = section_to_area(name, sh_type);
         let area = area_data.get_mut(area_name).unwrap();
-        let offset = area.bytes.len() as u32;
-        section_area_map.insert(si, (area_name, offset));
+        let area_size = area_sizes.get_mut(area_name).unwrap();
+        section_area_map.insert(si, (area_name, *area_size));
+        *area_size += section.sh_size(endian);
 
         if sh_type == elf::SHT_PROGBITS {
             let section_data = section.data(endian, data).unwrap_or(&[]);
             area.bytes.extend_from_slice(section_data);
-        } else {
-            let size = section.sh_size(endian) as usize;
-            area.bytes.resize(area.bytes.len() + size, 0);
         }
-        *area_sizes.get_mut(area_name).unwrap() = area.bytes.len() as u32;
     }
 
     struct RelSymbol {
@@ -838,5 +836,55 @@ fn main() {
             eprintln!("error: {}", e);
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object::write::{Object, Symbol, SymbolSection};
+    use object::{
+        Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
+    };
+
+    #[test]
+    fn bss_takes_its_own_area_without_bytes() {
+        let mut obj = Object::new(BinaryFormat::Elf, Architecture::I386, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        obj.append_section_data(text, &[0xC9], 1);
+        for name in ["_a", "_b"] {
+            let bss = obj.add_section(
+                Vec::new(),
+                format!(".bss.{name}").into_bytes(),
+                SectionKind::UninitializedData,
+            );
+            obj.append_section_bss(bss, 0x800, 1);
+            obj.add_symbol(Symbol {
+                name: name.as_bytes().to_vec(),
+                value: 0,
+                size: 0x800,
+                kind: SymbolKind::Data,
+                scope: SymbolScope::Linkage,
+                weak: false,
+                section: SymbolSection::Section(bss),
+                flags: SymbolFlags::None,
+            });
+        }
+        let mut elf = obj.write().unwrap();
+        // object has no Z80 architecture, so write an i386 ELF32 and retarget it.
+        elf[18..20].copy_from_slice(&0x1F90u16.to_le_bytes());
+
+        let rel = convert_elf_to_rel(&elf, "bss").unwrap();
+        let expected = "XL4\n\
+            H 2 areas 3 global symbols\n\
+            M bss\n\
+            S .__.ABS. Def00000000\n\
+            A _CODE size 1 flags 0 addr 0\n\
+            T 00 00 00 00 C9\n\
+            R 00 00 00 00\n\
+            A _BSS size 1000 flags 0 addr 0\n\
+            S _a Def00000000\n\
+            S _b Def00000800\n";
+        assert_eq!(String::from_utf8(rel).unwrap(), expected);
     }
 }

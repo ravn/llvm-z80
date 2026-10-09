@@ -548,6 +548,7 @@ fn section_name(area_name: &str, _is_bss: bool) -> &str {
     match area_name {
         "_CODE" => ".text",
         "_DATA" => ".data",
+        "_BSS" => ".bss",
         "_HOME" => ".text.home",
         "_GSINIT" => ".text.gsinit",
         "_GSFINAL" => ".text.gsfinal",
@@ -562,7 +563,7 @@ fn section_name(area_name: &str, _is_bss: bool) -> &str {
 fn section_flags(area_name: &str) -> u32 {
     match area_name {
         "_CODE" | "_HOME" | "_GSINIT" | "_GSFINAL" | "_CABS" => SHF_ALLOC | SHF_EXECINSTR,
-        "_DATA" | "_INITIALIZED" | "_DABS" => SHF_ALLOC | SHF_WRITE,
+        "_DATA" | "_BSS" | "_INITIALIZED" | "_DABS" => SHF_ALLOC | SHF_WRITE,
         "_INITIALIZER" => SHF_ALLOC,
         _ => SHF_ALLOC,
     }
@@ -625,8 +626,9 @@ fn transform(raw: &mut RawModule) -> ElfModule {
         }
 
         // Step 2e: BSS detection
-        let is_bss =
-            area.name == "_DATA" && buf.relocs.is_empty() && buf.data.iter().all(|&b| b == 0);
+        let is_bss = matches!(area.name.as_str(), "_DATA" | "_BSS")
+            && buf.relocs.is_empty()
+            && buf.data.iter().all(|&b| b == 0);
         let sh_addr = if area.flags & AREA_FLAG_ABS != 0 {
             area.addr
         } else {

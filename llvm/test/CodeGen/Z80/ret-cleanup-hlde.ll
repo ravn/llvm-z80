@@ -1,6 +1,6 @@
 ; RUN: llc -mtriple=z80 -O1 -verify-machineinstrs < %s | FileCheck %s
-; RUN: llc -mtriple=z80 -O1 -stop-after=postrapseudos < %s | FileCheck %s --check-prefix=Z80MIR
-; RUN: llc -mtriple=sm83 -O1 -stop-after=postrapseudos < %s | FileCheck %s --check-prefix=SM83MIR
+; RUN: llc -mtriple=z80 -O1 -stop-after=post-ra-pseudos < %s | FileCheck %s --check-prefix=Z80MIR
+; RUN: llc -mtriple=sm83 -O1 -stop-after=post-ra-pseudos < %s | FileCheck %s --check-prefix=SM83MIR
 
 ; A float-returning function whose first argument is float is
 ; callee-cleanup (the SDCC float exception), and its return value
