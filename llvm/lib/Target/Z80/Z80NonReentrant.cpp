@@ -115,9 +115,14 @@ void Z80NonReentrantImpl::visitContext(const CallGraphNode &CGN) {
   }
   // A context does not extend into another context's root: an interrupt
   // handler reached from here still only ever runs in its own context.
+  // Similarly, a function asserting no-recurse is a context barrier: the
+  // programmer guarantees it has at most one live activation, so its
+  // subtree is isolated from the calling context.
   for (const CallGraphNode::CallRecord &CR : CGN) {
     const Function *Callee = CR.second->getFunction();
-    if (Callee && isContextRoot(*Callee))
+    if (Callee && (isContextRoot(*Callee) ||
+                   (!Callee->isDeclaration() &&
+                    TM.getSubtargetImpl(*Callee)->hasNoRecurse())))
       continue;
     visitContext(*CR.second);
   }
@@ -185,7 +190,17 @@ bool Z80NonReentrantImpl::run(Module &M) {
       continue;
     const CallGraphNode &N = **I->begin();
     Function *F = N.getFunction();
-    if (!F || F->isDeclaration() || F->doesNotRecurse() || callsSelf(N))
+    if (!F || F->isDeclaration() || F->doesNotRecurse())
+      continue;
+    // A function asserting no-recurse is taken at its word: mark it
+    // doesNotRecurse without inspecting the call graph further.
+    if (TM.getSubtargetImpl(*F)->hasNoRecurse()) {
+      F->setDoesNotRecurse();
+      ++NumDoesNotRecurse;
+      Changed = true;
+      continue;
+    }
+    if (callsSelf(N))
       continue;
     F->setDoesNotRecurse();
     ++NumDoesNotRecurse;
