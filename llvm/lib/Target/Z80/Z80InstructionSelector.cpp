@@ -1806,6 +1806,24 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    // Z80 (not SM83): 8-bit load from a linker-settled address uses the
+    // 3-byte LD A,(nn) instead of loading the address into a pair + 1-byte
+    // LD A,(BC/DE/HL) (4 bytes total).
+    if (DstTy.getSizeInBits() == 8 && MI.hasOneMemOperand() &&
+        !MBB.getParent()->getSubtarget<Z80Subtarget>().hasSM83()) {
+      const GlobalValue *GV = nullptr;
+      int64_t Offset = 0;
+      if (getGlobalAddr(AddrReg, MRI, GV, Offset)) {
+        if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+          return false;
+        buildAccOp(MBB, MI, DL, Z80::LOAD8_ABS, DstReg, Register(), MRI)
+            .addGlobalAddress(GV, Offset)
+            .cloneMemRefs(MI);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
+
     // A pair read from an address the linker settles takes one instruction,
     // against putting the address in a pointer register and reading the two
     // bytes through it. SM83 has no such instruction.
@@ -2027,6 +2045,23 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         BuildMI(MBB, MI, DL, TII.get(Z80::STORE16_ABS))
             .addGlobalAddress(GV, Offset)
             .addReg(SrcReg)
+            .cloneMemRefs(MI);
+        MI.eraseFromParent();
+        return true;
+      }
+    }
+
+    // Z80 (not SM83): 8-bit store to a linker-settled address uses 3-byte
+    // LD (nn),A instead of load-pair + 1-byte LD (BC/DE/HL),A (4 bytes).
+    if (SrcTy.getSizeInBits() == 8 && MI.hasOneMemOperand() &&
+        !MBB.getParent()->getSubtarget<Z80Subtarget>().hasSM83()) {
+      const GlobalValue *GV = nullptr;
+      int64_t Offset = 0;
+      if (getGlobalAddr(AddrReg, MRI, GV, Offset)) {
+        if (!RBI.constrainGenericRegister(SrcReg, Z80::GR8RegClass, MRI))
+          return false;
+        buildAccOp(MBB, MI, DL, Z80::STORE8_ABS, Register(), SrcReg, MRI)
+            .addGlobalAddress(GV, Offset)
             .cloneMemRefs(MI);
         MI.eraseFromParent();
         return true;

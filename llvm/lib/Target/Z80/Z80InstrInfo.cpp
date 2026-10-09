@@ -597,6 +597,8 @@ static const AccPseudo AccPseudos[] = {
     {Z80::SM83_LDH_Ac_nind, Z80::SM83_LDH_A_nind, AccPseudo::Operand},
     {Z80::SM83_LD_nnind_Ac, Z80::SM83_LD_nnind_A, AccPseudo::Operand},
     {Z80::SM83_LDH_nind_Ac, Z80::SM83_LDH_nind_A, AccPseudo::Operand},
+    {Z80::LOAD8_ABS, Z80::LD_A_nnind, AccPseudo::Operand},
+    {Z80::STORE8_ABS, Z80::LD_nnind_A, AccPseudo::Operand},
 };
 
 static const AccPseudo *getAccPseudo(unsigned Opc) {
