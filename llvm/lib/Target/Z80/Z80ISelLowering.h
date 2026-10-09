@@ -31,13 +31,7 @@ public:
     return false;
   }
 
-  // Soft-float comparison libcalls (__eqdf2, __nedf2, __ltdf2, ...) follow the
-  // GCC ABI and return a C `int`. On Z80 `int` is 16-bit, but TargetLowering's
-  // default getCmpLibcallReturnType() is i32. Leaving it at i32 makes the
-  // caller read a 32-bit result (HL:DE) from a routine that only defines the
-  // low 16 bits, so the high word is callee garbage and corrupts the boolean
-  // (e.g. `a == a` intermittently returns false). Override to i16 to match the
-  // runtime shims.
+  // Soft-float comparison libcalls return a C int, which is 16 bits here.
   MVT::SimpleValueType getCmpLibcallReturnType() const override {
     return MVT::i16;
   }
