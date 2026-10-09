@@ -50,12 +50,6 @@ const R_PCR: u8 = 0x04;
 const SDCC_AREAS: &[(&str, u8)] = &[
     ("_CODE", 0),
     ("_DATA", 0),
-    // Uninitialized statics (ELF .bss/.bss.*). Unlike _CODE/_DATA, this area's
-    // bytes are never written to the .rel file: SDCC's own _BSS convention is
-    // that the linker/crt0 zero it at load time, not that it is file-resident.
-    // Bug: elf2rel used to route .bss into _DATA and materialize real zero bytes
-    // for it, inflating every .COM by the full uninitialized static size.
-    // Fix: route .bss to a dedicated _BSS area; only its logical size grows.
     ("_BSS", 0),
     ("_INITIALIZED", 0),
     ("_DABS", 8),
@@ -69,13 +63,13 @@ const SDCC_AREAS: &[(&str, u8)] = &[
 const AR_MAGIC: &[u8; 8] = b"!<arch>\n";
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 
-fn section_to_area(name: &str) -> &'static str {
-    if name == ".text" || name.starts_with(".text.") {
+fn section_to_area(name: &str, sh_type: u32) -> &'static str {
+    if sh_type == elf::SHT_NOBITS {
+        "_BSS"
+    } else if name == ".text" || name.starts_with(".text.") {
         "_CODE"
     } else if name == ".data" || name.starts_with(".data.") {
         "_DATA"
-    } else if name == ".bss" || name.starts_with(".bss.") {
-        "_BSS"
     } else if name == ".rodata" || name.starts_with(".rodata.") {
         "_CODE"
     } else {
@@ -300,11 +294,6 @@ struct RelReloc {
 struct AreaData {
     bytes: Vec<u8>,
     relocs: Vec<(u32, RelReloc)>,
-    // Logical size of the area (used for symbol offsets and the "A <name> size <hex>"
-    // header). Equals bytes.len() for _CODE/_DATA. For _BSS (SHT_NOBITS sections),
-    // only this counter grows -- no bytes are ever appended to `bytes`, because BSS
-    // is allocated/zeroed by the linker/crt0 at load time, not file-resident.
-    logical_len: u32,
 }
 
 fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String> {
@@ -337,7 +326,6 @@ fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String>
             AreaData {
                 bytes: Vec::new(),
                 relocs: Vec::new(),
-                logical_len: 0,
             },
         );
     }
@@ -367,26 +355,16 @@ fn convert_elf_to_rel(data: &[u8], module_name: &str) -> Result<Vec<u8>, String>
             continue;
         }
 
-        let area_name = section_to_area(name);
+        let area_name = section_to_area(name, sh_type);
         let area = area_data.get_mut(area_name).unwrap();
-        // Use logical_len, not bytes.len(): for _BSS, bytes.len() stays 0
-        // while logical_len tracks the running total across .bss.* sections.
-        let offset = area.logical_len;
-        section_area_map.insert(si, (area_name, offset));
+        let area_size = area_sizes.get_mut(area_name).unwrap();
+        section_area_map.insert(si, (area_name, *area_size));
+        *area_size += section.sh_size(endian);
 
         if sh_type == elf::SHT_PROGBITS {
             let section_data = section.data(endian, data).unwrap_or(&[]);
             area.bytes.extend_from_slice(section_data);
-            area.logical_len = area.bytes.len() as u32;
-        } else {
-            // SHT_NOBITS (.bss): grow logical size only. Never append zero bytes
-            // to `bytes` -- that was the bug: materializing uninitialized statics
-            // as literal file-resident zero fill inflated every .COM by their size.
-            // _BSS is zeroed by the linker/crt0 at load time, not stored in the file.
-            let size = section.sh_size(endian) as usize;
-            area.logical_len += size as u32;
         }
-        *area_sizes.get_mut(area_name).unwrap() = area.logical_len;
     }
 
     struct RelSymbol {
@@ -858,5 +836,55 @@ fn main() {
             eprintln!("error: {}", e);
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object::write::{Object, Symbol, SymbolSection};
+    use object::{
+        Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
+    };
+
+    #[test]
+    fn bss_takes_its_own_area_without_bytes() {
+        let mut obj = Object::new(BinaryFormat::Elf, Architecture::I386, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        obj.append_section_data(text, &[0xC9], 1);
+        for name in ["_a", "_b"] {
+            let bss = obj.add_section(
+                Vec::new(),
+                format!(".bss.{name}").into_bytes(),
+                SectionKind::UninitializedData,
+            );
+            obj.append_section_bss(bss, 0x800, 1);
+            obj.add_symbol(Symbol {
+                name: name.as_bytes().to_vec(),
+                value: 0,
+                size: 0x800,
+                kind: SymbolKind::Data,
+                scope: SymbolScope::Linkage,
+                weak: false,
+                section: SymbolSection::Section(bss),
+                flags: SymbolFlags::None,
+            });
+        }
+        let mut elf = obj.write().unwrap();
+        // object has no Z80 architecture, so write an i386 ELF32 and retarget it.
+        elf[18..20].copy_from_slice(&0x1F90u16.to_le_bytes());
+
+        let rel = convert_elf_to_rel(&elf, "bss").unwrap();
+        let expected = "XL4\n\
+            H 2 areas 3 global symbols\n\
+            M bss\n\
+            S .__.ABS. Def00000000\n\
+            A _CODE size 1 flags 0 addr 0\n\
+            T 00 00 00 00 C9\n\
+            R 00 00 00 00\n\
+            A _BSS size 1000 flags 0 addr 0\n\
+            S _a Def00000000\n\
+            S _b Def00000800\n";
+        assert_eq!(String::from_utf8(rel).unwrap(), expected);
     }
 }
