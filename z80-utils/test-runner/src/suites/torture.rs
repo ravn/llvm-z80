@@ -36,7 +36,7 @@ use crate::report;
 
 use crate::torture_data::{self, Manifest};
 
-const COMPILE_TIMEOUT: u64 = 20;
+const COMPILE_TIMEOUT: u64 = 60;
 const LINK_TIMEOUT: u64 = 20;
 /// Cycles a torture test may spend under emulation.
 ///

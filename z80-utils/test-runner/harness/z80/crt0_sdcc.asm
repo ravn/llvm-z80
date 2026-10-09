@@ -32,6 +32,35 @@ _start:
 	ldir			; copy BC bytes: (HL) -> (DE)
 _bss_done:
 
+	;; Zero fill _DATA
+	ld	hl,#s__DATA
+	ld	bc,#l__DATA
+	ld	a,b
+	or	a,c
+	jr	z,_data_done	; skip if _DATA is empty
+	ld	(hl),#0			; zero first byte
+	dec	bc
+	ld	a,b
+	or	a,c
+	jr	z,_data_done	; size was 1, already done
+	ld	d,h
+	ld	e,l
+	inc	de				; DE = s__DATA + 1
+	ldir				; copy BC bytes: (HL) -> (DE)
+_data_done:
+
+	;; Copy the _INITIALIZER section to the start of the _INITIALIZED section.
+	;; It is expected that the _INITIALIZER section has the same size as the _INITIALIZED section.
+	;; Otherwise, we have a layout error.
+	ld	bc,#l__INITIALIZER
+	ld	a,b
+	or	a,c
+	jr	z,_init_done 		; skip if _INITIALIZER is empty
+	ld	hl,#s__INITIALIZER
+	ld	de,#s__INITIALIZED
+	ldir 					; copy _INITIALIZER to _INITIALIZED
+_init_done:
+
 	;; main() has the hosted signature and the tests read argc: several put it
 	;; in an array or add to it, so leaving whatever the .bss loop left in the
 	;; argument register makes their result depend on where .bss ends. The
@@ -45,6 +74,10 @@ _halt:
 	halt
 
 	;; Declare _BSS area so sdldz80 generates s__BSS and l__BSS symbols.
+	;; Same thing for _DATA, _INITIALIZER and _INITIALIZED.
+	.area _INITIALIZER
+	.area _DATA
+	.area _INITIALIZED
 	.area _BSS
 _exitcode:
 	.ds 2

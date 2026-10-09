@@ -199,7 +199,7 @@ fn run_single(
         cmd.arg(&crt0);
         cmd.arg(main_rel);
         cmd.arg(lib_rel);
-        cmd.arg(&rt);
+        cmd.arg("-l").arg(&rt);
         if let Some(lib) = sdcc_lib {
             cmd.args(["-l"]);
             cmd.arg(lib);

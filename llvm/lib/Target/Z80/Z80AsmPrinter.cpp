@@ -21,7 +21,9 @@
 #include "Z80RegisterInfo.h"
 #include "Z80Subtarget.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/Z80Flags.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -29,6 +31,7 @@
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAssembler.h"
@@ -77,6 +80,8 @@ public:
   void emitGlobalVariable(const GlobalVariable *GV) override;
 
   void emitJumpTableInfo() override;
+
+  void emitEndOfAsmFile(Module &M) override;
 };
 
 // Simple pseudo-instructions have their lowering (with expansion to real
@@ -156,11 +161,46 @@ void Z80AsmPrinter::emitStartOfAsmFile(Module &M) {
 }
 
 void Z80AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
+  if (MAI.isSDCC() && TM.getTargetTriple().getEnvironment() == Triple::SDCC &&
+      GV->hasInitializer() && !GV->isConstant() &&
+      (GV->hasExternalLinkage() || GV->hasLocalLinkage()) &&
+      !GV->isThreadLocal() && !GV->hasSection() && !GV->hasComdat() &&
+      GV->getAddressSpace() == 0) {
+    const DataLayout &DL = GV->getDataLayout();
+    MCSymbol *GVSym = getSymbol(GV);
+    uint64_t Size = DL.getTypeAllocSize(GV->getValueType());
+
+    if (getGVAlignment(GV, DL) != Align(1)) {
+      GV->getContext().emitError("SDCC initialized data requires alignment 1");
+      return;
+    }
+
+    if (GV->getInitializer()->isNullValue()) {
+      // Zero integers and all-zero aggregates can go in the _DATA section.
+      OutStreamer->switchSection(OutContext.getELFSection(
+          "_DATA", ELF::SHT_NOBITS, ELF::SHF_ALLOC | ELF::SHF_WRITE));
+      emitLinkage(GV, GVSym);
+      OutStreamer->emitLabel(GVSym);
+      OutStreamer->emitZeros(Size);
+    } else {
+      OutStreamer->switchSection(OutContext.getELFSection(
+          "_INITIALIZED", ELF::SHT_NOBITS, ELF::SHF_ALLOC | ELF::SHF_WRITE));
+      emitLinkage(GV, GVSym);
+      OutStreamer->emitLabel(GVSym);
+      OutStreamer->emitZeros(Size);
+
+      OutStreamer->switchSection(OutContext.getELFSection(
+          "_INITIALIZER", ELF::SHT_PROGBITS, ELF::SHF_ALLOC));
+      emitGlobalConstant(DL, GV->getInitializer());
+    }
+    return;
+  }
+
   if (MAI.isSDCC()) {
     // BSS locals: sdasz80 doesn't support .local/.comm directives.
     // Handle zero-initialized variables by emitting in _DATA with explicit
     // zero bytes. (.ds in sdasz80 reserves space but does NOT zero-initialize.)
-    if (GV->hasLocalLinkage() &&
+    if (!GV->isConstant() && !GV->hasSection() && GV->hasLocalLinkage() &&
         (!GV->hasInitializer() || GV->getInitializer()->isNullValue())) {
       MCSymbol *GVSym = getSymbol(GV);
       const DataLayout &DL = GV->getDataLayout();
@@ -173,6 +213,30 @@ void Z80AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
       for (uint64_t i = 0; i < Size; i++)
         OutStreamer->emitInt8(0);
       return;
+    }
+  }
+
+  if (MAI.isZ88DK()) {
+    if (GV->hasInitializer() && GV->getAlign() && *GV->getAlign() > 1)
+      OutContext.reportWarning(SMLoc(), "alignment of '" + GV->getName() +
+                                            "' is ignored in the z88dk format");
+
+    // z80asm has no .local/.comm, so define such globals in the BSS section.
+    if (GV->hasLocalLinkage() || GV->hasCommonLinkage()) {
+      const TargetLoweringObjectFile &TLOF = getObjFileLowering();
+      SectionKind Kind = TargetLoweringObjectFile::getKindForGlobal(GV, TM);
+      if (Kind.isCommon() ||
+          (Kind.isBSSLocal() &&
+           TLOF.SectionForGlobal(GV, Kind, TM) == TLOF.getBSSSection())) {
+        MCSymbol *GVSym = getSymbol(GV);
+        OutStreamer->switchSection(TLOF.getBSSSection());
+        if (!GV->hasLocalLinkage())
+          OutStreamer->emitSymbolAttribute(GVSym, MCSA_Global);
+        OutStreamer->emitLabel(GVSym);
+        OutStreamer->emitZeros(
+            std::max<uint64_t>(GV->getGlobalSize(GV->getDataLayout()), 1));
+        return;
+      }
     }
   }
 
@@ -227,6 +291,33 @@ void Z80AsmPrinter::emitJumpTableInfo() {
   }
   if (!JTInDiffSection)
     OutStreamer->emitDataRegion(MCDR_DataRegionEnd);
+}
+
+// z80asm needs every symbol defined elsewhere to be declared EXTERN.
+void Z80AsmPrinter::emitEndOfAsmFile(Module &M) {
+  if (!MAI.isZ88DK() || !OutStreamer->hasRawTextSupport())
+    return;
+
+  // Intrinsic declarations get symbols too, but nothing references them.
+  SmallPtrSet<const MCSymbol *, 8> Intrinsics;
+  for (const Function &F : M)
+    if (F.isIntrinsic())
+      Intrinsics.insert(getSymbol(&F));
+
+  // Section symbols are the only names that start with '.'.
+  SmallVector<const MCSymbol *, 16> Externs;
+  for (const auto &Entry : OutContext.getSymbols()) {
+    const MCSymbol *Sym = Entry.getValue().Symbol;
+    if (Sym && Sym->isUndefined() && !Sym->isTemporary() &&
+        !Sym->getName().starts_with(".") && !Intrinsics.contains(Sym))
+      Externs.push_back(Sym);
+  }
+
+  llvm::sort(Externs, [](const MCSymbol *L, const MCSymbol *R) {
+    return L->getName() < R->getName();
+  });
+  for (const MCSymbol *Sym : Externs)
+    OutStreamer->emitRawText("\tEXTERN\t" + Sym->getName());
 }
 
 } // namespace

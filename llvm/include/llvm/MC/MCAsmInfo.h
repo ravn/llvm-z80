@@ -114,6 +114,7 @@ protected:
   bool IsHLASM = false;
 
   bool IsSDCC = false;
+  bool IsZ88DK = false;
 
   /// This is the maximum possible length of an instruction, which is needed to
   /// compute the size of an inline asm.  Defaults to 4.
@@ -539,6 +540,7 @@ public:
   bool isAIX() const { return IsAIX; }
   bool isHLASM() const { return IsHLASM; }
   bool isSDCC() const { return IsSDCC; }
+  bool isZ88DK() const { return IsZ88DK; }
   bool isMachO() const { return HasSubsectionsViaSymbols; }
   bool hasCOFFAssociativeComdats() const { return HasCOFFAssociativeComdats; }
   bool hasCOFFComdatConstants() const { return HasCOFFComdatConstants; }
@@ -679,6 +681,21 @@ public:
     return ExceptionsType == ExceptionHandling::WinEH &&
            (WinEHEncodingType != WinEH::EncodingType::Invalid &&
             WinEHEncodingType != WinEH::EncodingType::X86);
+  }
+
+  /// Returns true if the exception tables reference the per-invoke EH labels
+  /// emitted around invokes. 32-bit x86 SEH and Wasm do not.
+  bool usesPerInvokeEHLabels() const {
+    switch (ExceptionsType) {
+    case ExceptionHandling::WinEH:
+      // 32-bit x86 SEH uses a state table, not per-invoke IP-to-state ranges.
+      return WinEHEncodingType != WinEH::EncodingType::X86;
+    case ExceptionHandling::None:
+    case ExceptionHandling::Wasm:
+      return false;
+    default:
+      return true;
+    }
   }
 
   bool doesDwarfUseRelocationsAcrossSections() const {

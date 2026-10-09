@@ -1,4 +1,4 @@
-# RUN: llc -verify-machineinstrs -mtriple=z80 -start-before=prolog-epilog -stop-after=postrapseudos %s -o - | FileCheck %s
+# RUN: llc -verify-machineinstrs -mtriple=z80 -start-before=prolog-epilog -stop-after=post-ra-pseudos %s -o - | FileCheck %s
 #
 # A frame slot that resolves to an IX displacement leaves the pair spill for the
 # post-RA expansion to split, which must reach the same conclusion about the

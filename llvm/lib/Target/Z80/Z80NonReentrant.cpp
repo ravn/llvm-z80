@@ -216,7 +216,9 @@ bool Z80NonReentrantImpl::run(Module &M) {
     FinishContext();
   }
 
-  CG.getCallsExternalNode()->removeAllCalledFunctions();
+  CallGraphNode *CallsExternal = CG.getCallsExternalNode();
+  while (!CallsExternal->empty())
+    CallsExternal->removeCallEdge(CallsExternal->begin());
 
   // A function the recursion walk never reached (internal, no callers, its
   // address never taken) keeps its stack frame even when the input IR calls
