@@ -63,6 +63,11 @@ bool Z80FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   if (STI.hasSM83())
     return false;
 
+  // Shadow-ISR functions save context via EXX/EX AF,AF' rather than an IX
+  // frame, so they never need IX as a frame pointer.
+  if (MF.getFunction().hasFnAttribute("interrupt") && STI.hasShadowISR())
+    return false;
+
   // A static frame leaves nothing for a frame pointer to point at; this
   // outranks the frame-pointer-elimination default, which exists for the
   // sake of the stack frames this function does not have.
@@ -451,6 +456,30 @@ void Z80FrameLowering::emitEpilogue(MachineFunction &MF,
   }
 }
 
+bool Z80FrameLowering::assignCalleeSavedSpillSlots(
+    MachineFunction &MF, const TargetRegisterInfo *TRI,
+    std::vector<CalleeSavedInfo> &CSI) const {
+  const auto &STI = MF.getSubtarget<Z80Subtarget>();
+  if (!MF.getFunction().hasFnAttribute("interrupt") || !STI.hasShadowISR())
+    return false; // use default slot assignment
+
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  for (auto &CS : CSI) {
+    Register Reg = CS.getReg();
+    if (Reg == Z80::AF || Reg == Z80::BC || Reg == Z80::DE || Reg == Z80::HL) {
+      // Saved by EXX / EX AF,AF' — no stack slot needed.
+      CS.setRestored(false);
+      // Leave FrameIdx unset (default -1 / invalid) so PEI won't emit
+      // a stack-based reload for these registers.
+    } else {
+      // IY (and any other surviving register) gets a real stack slot.
+      int FI = MFI.CreateStackObject(2, Align(1), true);
+      CS.setFrameIdx(FI);
+    }
+  }
+  return true;
+}
+
 void Z80FrameLowering::determineCalleeSaves(MachineFunction &MF,
                                             BitVector &SavedRegs,
                                             RegScavenger *RS) const {
@@ -469,19 +498,43 @@ bool Z80FrameLowering::spillCalleeSavedRegisters(
 
   MachineFunction &MF = *MBB.getParent();
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  const auto &STI = MF.getSubtarget<Z80Subtarget>();
   DebugLoc DL;
   if (MI != MBB.end())
     DL = MI->getDebugLoc();
 
-  // Track callee-saved frame size for prologue/epilogue local-only allocation.
-  Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
-  FI->setCalleeSavedFrameSize(CSI.size() * 2);
+  bool IsShadowISR = MF.getFunction().hasFnAttribute("interrupt") &&
+                     STI.hasShadowISR();
 
-  // Spill registers using PUSH
+  // Shadow-ISR: AF/BC/DE/HL are preserved by EXX/EX AF,AF'; only IY is pushed.
+  const auto isShadowSaved = [&](Register R) -> bool {
+    return IsShadowISR && (R == Z80::AF || R == Z80::BC ||
+                           R == Z80::DE || R == Z80::HL);
+  };
+
+  // Track how many registers go on the stack (for emitPrologue LocalSize calc).
+  unsigned StackedCount = 0;
+  for (const CalleeSavedInfo &CS : CSI)
+    if (!isShadowSaved(CS.getReg()))
+      ++StackedCount;
+
+  Z80FunctionInfo *FI = MF.getInfo<Z80FunctionInfo>();
+  FI->setCalleeSavedFrameSize(StackedCount * 2);
+
+  if (IsShadowISR) {
+    // EXX saves BC/DE/HL; EX AF,AF' saves AF — 2 bytes vs 4 PUSHes (4 bytes).
+    BuildMI(MBB, MI, DL, TII.get(Z80::EXX)).setMIFlag(MachineInstr::FrameSetup);
+    BuildMI(MBB, MI, DL, TII.get(Z80::EX_AF_AF))
+        .setMIFlag(MachineInstr::FrameSetup);
+  }
+
+  // PUSH the remaining callee-saved registers (for shadow-ISR: only IY).
   for (const CalleeSavedInfo &CS : CSI) {
     Register Reg = CS.getReg();
-    unsigned Opcode = Z80::getPushOpcode(Reg);
+    if (isShadowSaved(Reg))
+      continue;
 
+    unsigned Opcode = Z80::getPushOpcode(Reg);
     if (Opcode) {
       BuildMI(MBB, MI, DL, TII.get(Opcode)).setMIFlag(MachineInstr::FrameSetup);
     } else {
@@ -500,21 +553,41 @@ bool Z80FrameLowering::restoreCalleeSavedRegisters(
 
   MachineFunction &MF = *MBB.getParent();
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  const auto &STI = MF.getSubtarget<Z80Subtarget>();
   DebugLoc DL;
   if (MI != MBB.end())
     DL = MI->getDebugLoc();
 
-  // Restore registers using POP in reverse order
+  bool IsShadowISR = MF.getFunction().hasFnAttribute("interrupt") &&
+                     STI.hasShadowISR();
+
+  const auto isShadowSaved = [&](Register R) -> bool {
+    return IsShadowISR && (R == Z80::AF || R == Z80::BC ||
+                           R == Z80::DE || R == Z80::HL);
+  };
+
+  // POP callee-saved registers in reverse order.
+  // For shadow-ISR, skip AF/BC/DE/HL (restored by EX AF,AF' / EXX below).
   for (auto I = CSI.rbegin(), E = CSI.rend(); I != E; ++I) {
     Register Reg = I->getReg();
-    unsigned Opcode = Z80::getPopOpcode(Reg);
+    if (isShadowSaved(Reg))
+      continue;
 
+    unsigned Opcode = Z80::getPopOpcode(Reg);
     if (Opcode) {
       BuildMI(MBB, MI, DL, TII.get(Opcode))
           .setMIFlag(MachineInstr::FrameDestroy);
     } else {
       llvm_unreachable("Unexpected CSR without pop opcode");
     }
+  }
+
+  if (IsShadowISR) {
+    // EX AF,AF' restores AF; EXX restores BC/DE/HL (reverse of save order).
+    BuildMI(MBB, MI, DL, TII.get(Z80::EX_AF_AF))
+        .setMIFlag(MachineInstr::FrameDestroy);
+    BuildMI(MBB, MI, DL, TII.get(Z80::EXX))
+        .setMIFlag(MachineInstr::FrameDestroy);
   }
 
   return true;

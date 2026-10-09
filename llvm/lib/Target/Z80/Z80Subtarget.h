@@ -84,6 +84,7 @@ public:
 
   bool hasStaticFrame() const { return StaticFrame; }
   bool hasNoRecurse() const { return !Recurse; }
+  bool hasShadowISR() const { return ShadowISR; }
   bool inlineI16Runtime() const { return InlineI16Runtime; }
 
   // Feature queries
@@ -112,6 +113,7 @@ private:
 
   bool StaticFrame = false;
   bool Recurse = false;
+  bool ShadowISR = false;
   bool InlineI16Runtime = false;
 
   Z80InstrInfo InstrInfo;

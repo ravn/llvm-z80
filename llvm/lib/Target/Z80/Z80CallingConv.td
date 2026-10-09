@@ -64,3 +64,10 @@ def Z80_CSR : CalleeSavedRegs<(add IX)>;
 
 // Interrupt handler saves all register pairs (push/pop only works on pairs)
 def Z80_Interrupt_CSR : CalleeSavedRegs<(add AF, BC, DE, HL, IX, IY)>;
+
+// Shadow-register ISR: BC/DE/HL saved by EXX, AF by EX AF,AF'.
+// The RA still sees AF/BC/DE/HL as callee-saved (so it won't insert its own
+// PUSH/POP for them), but spillCalleeSavedRegisters emits EXX + EX AF,AF'
+// instead of explicit PUSH AF/BC/DE/HL.  Only IY needs an explicit PUSH/POP.
+// Use only when the main code never executes EXX (i.e. +shadow-isr is set).
+def Z80_Interrupt_Shadow_CSR : CalleeSavedRegs<(add AF, BC, DE, HL, IY)>;

@@ -24,6 +24,12 @@ class Z80FrameLowering : public TargetFrameLowering {
 public:
   Z80FrameLowering();
 
+  // For shadow-ISR mode: mark AF/BC/DE/HL as preserved-without-stack so PEI
+  // does not create frame objects for them (they are saved by EXX/EX AF,AF').
+  bool assignCalleeSavedSpillSlots(MachineFunction &MF,
+                                   const TargetRegisterInfo *TRI,
+                                   std::vector<CalleeSavedInfo> &CSI) const override;
+
   bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MI,
                                  ArrayRef<CalleeSavedInfo> CSI,

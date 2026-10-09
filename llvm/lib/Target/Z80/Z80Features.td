@@ -64,6 +64,16 @@ def FeatureRecurse
     : SubtargetFeature<"recurse", "Recurse", "true",
                        "Function may recurse; clear with no-recurse to assert non-reentrance">;
 
+// When set, __interrupt functions save/restore BC/DE/HL and AF via EXX and
+// EX AF,AF' (shadow-register swap) rather than explicit PUSH/POP.  Only IY
+// is explicitly pushed/popped.  Safe when the main code never executes EXX
+// (i.e. no inline EXX, no integer division that uses the shadow bank).
+// For code that does use EXX (e.g. rcbios, cpnos), leave this unset so ISRs
+// fall back to the conservative full PUSH/POP save of AF/BC/DE/HL/IX/IY.
+def FeatureShadowISR
+    : SubtargetFeature<"shadow-isr", "ShadowISR", "true",
+                       "ISR uses EXX/EX AF,AF' for context save instead of PUSH/POP AF/BC/DE/HL">;
+
 // Inline-expand 16-bit runtime library calls (__mulhi3, __udivhi3, __divhi3,
 // __umodhi3, __modhi3) as shift-and-add / restoring-division loops instead of
 // emitting CALL instructions to z80_rt.lib.  This eliminates the runtime

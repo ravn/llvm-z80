@@ -164,7 +164,7 @@ bool Z80TargetInfo::isValidFeatureName(StringRef Feature) const {
   static constexpr StringRef Known[] = {
       "z80",          "z180",         "r800",
       "ez80",         "sm83",         "undocumented",
-      "static-frame", "recurse", "inline-i16-runtime",
+      "static-frame", "recurse", "shadow-isr", "inline-i16-runtime",
   };
   return llvm::is_contained(Known, Feature);
 }
