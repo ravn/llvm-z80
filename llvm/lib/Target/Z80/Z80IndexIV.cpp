@@ -63,7 +63,8 @@ static bool narrowIV(Loop &L, PHINode *PN, ScalarEvolution &SE,
     return false;
 
   // Every use, the phi and its step aside, must want no more than a byte.
-  SmallVector<Instruction *, 8> Uses;
+  // Each entry is (instruction, which IV value — PN or Step — caused the use).
+  SmallVector<std::pair<Instruction *, Value *>, 8> Uses;
   for (Value *V : {static_cast<Value *>(PN), static_cast<Value *>(Step)})
     for (User *U : V->users()) {
       auto *I = cast<Instruction>(U);
@@ -75,12 +76,22 @@ static bool narrowIV(Loop &L, PHINode *PN, ScalarEvolution &SE,
             !SE.isLoopInvariant(SE.getSCEV(Other), &L) ||
             !FitsByte(SE.getSCEV(Other)))
           return false;
+      } else if (isa<GetElementPtrInst>(I)) {
+        // A GEP using this IV as index is acceptable when the IV is the
+        // current-iteration value (PN): narrowIV replaces the operand with
+        // zext(narrow_iv), which is semantically identical.  This lets
+        // pointer-increment loops (unit-stride, GEP-rewrite skipped) still
+        // get a narrow counter.  Reject GEPs using the post-increment (Step):
+        // placing zext(NarrowStep) before the GEP in the header would violate
+        // dominance since Step is defined in the latch.
+        if (V != static_cast<Value *>(PN))
+          return false;
       } else if (!(isa<TruncInst>(I) &&
                    I->getType()->getIntegerBitWidth() <= 8) &&
                  !isa<ZExtInst>(I)) {
         return false;
       }
-      Uses.push_back(I);
+      Uses.push_back({I, V});
     }
   if (Uses.empty())
     return false;
@@ -107,9 +118,8 @@ static bool narrowIV(Loop &L, PHINode *PN, ScalarEvolution &SE,
         Rewriter.expandCodeFor(
             SE.getTruncateExpr(AR->getStepRecurrence(SE), I8), I8, Step));
 
-  for (Instruction *I : Uses) {
-    bool OfPN =
-        I->getOperand(0) == PN || (isa<ICmpInst>(I) && I->getOperand(1) == PN);
+  for (auto [I, V] : Uses) {
+    bool OfPN = V == static_cast<Value *>(PN);
     Value *Narrow = OfPN ? NarrowPN : NarrowStep;
     IRBuilder<> Builder(I);
     Value *New;
@@ -125,6 +135,14 @@ static bool narrowIV(Loop &L, PHINode *PN, ScalarEvolution &SE,
                      : Builder.CreateICmp(Pred, Other, Narrow);
     } else if (isa<ZExtInst>(I)) {
       New = Builder.CreateZExt(Narrow, I->getType());
+    } else if (isa<GetElementPtrInst>(I)) {
+      // Replace the wide-IV operand (always PN, checked above) in this GEP
+      // with zext(NarrowPN).  The GEP stays; only the index operand narrows.
+      Value *WideNarrow = Builder.CreateZExt(NarrowPN, PN->getType());
+      for (Use &Op : I->operands())
+        if (Op.get() == V)
+          Op.set(WideNarrow);
+      continue; // GEP updated in place; no replaceAllUsesWith/erase.
     } else {
       New = Builder.CreateTrunc(Narrow, I->getType());
     }
@@ -200,8 +218,23 @@ PreservedAnalyses Z80IndexIV::run(Loop &L, LoopAnalysisManager &AM,
         continue;
       }
 
+      // Unit-stride pointer loops are not improved by Base+Index rewriting.
+      // A simple pointer increment (INC HL) costs one byte per iteration and
+      // keeps the pointer in one register pair with no extra live values.
+      // Rewriting to Base+uglygep(index) introduces an additional 16-bit live
+      // value computed each iteration, which on Z80's three register pairs
+      // (BC, DE, HL) forces the register allocator to spill when the loop
+      // already uses two pointer pairs — turning 20-byte loops into 66-byte
+      // ones. Skip the rewrite for unit stride; narrowIV still runs below.
+      if (auto *SC = dyn_cast<SCEVConstant>(Step))
+        if (SC->getAPInt().abs().isOne()) {
+          LLVM_DEBUG(dbgs() << "Skipping unit-stride pointer GEP: "
+                               "INC HL is at least as cheap.\n");
+          continue;
+        }
+
       // Once the step and index are both known to fit in 8 bits, we can
-      // always rewrite to a 16-bit base + 8-bit index.
+      // rewrite to a 16-bit base + 8-bit index.
       LLVM_DEBUG(dbgs() << "Rewriting to 8-bit index.\n");
       ++NumIndexIVs;
       Changed = true;
