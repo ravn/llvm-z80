@@ -8,11 +8,13 @@
 // Z80 Device/Processor Definitions
 //===---------------------------------------------------------------------===//
 
-// Every processor allows static frames; a function opts out through the
-// no-static-frame spelling of the target attribute.
+// Every processor allows static frames and allows recursion by default.
+// A function opts out of static frames through the no-static-frame spelling
+// of the target attribute. A function asserts non-reentrance through the
+// no-recurse spelling, which clears the recurse feature.
 class Proc<string Name, list<SubtargetFeature> Features>
     : Processor<Name, NoItineraries,
-                !listconcat(Features, [FeatureStaticFrame])>;
+                !listconcat(Features, [FeatureStaticFrame, FeatureRecurse])>;
 
 //===---------------------------------------------------------------------===//
 // Standard Z80 Processors

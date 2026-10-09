@@ -53,6 +53,17 @@ def FeatureStaticFrame
     : SubtargetFeature<"static-frame", "StaticFrame", "true",
                        "Allow this function's frame in static memory">;
 
+// Every processor enables this; a function that clears it (spelled
+// __attribute__((target("no-recurse"))) in C) asserts that it never re-enters
+// while running: no direct or indirect recursion, and no concurrent activation
+// from a second execution context (e.g. an ISR firing during its execution).
+// The non-reentrant analysis treats such a function as proven doesNotRecurse
+// and as a context barrier, isolating its subtree from the caller's context.
+// Unsound if violated: a reentrant call will silently corrupt the static frame.
+def FeatureRecurse
+    : SubtargetFeature<"recurse", "Recurse", "true",
+                       "Function may recurse; clear with no-recurse to assert non-reentrance">;
+
 // Inline-expand 16-bit runtime library calls (__mulhi3, __udivhi3, __divhi3,
 // __umodhi3, __modhi3) as shift-and-add / restoring-division loops instead of
 // emitting CALL instructions to z80_rt.lib.  This eliminates the runtime
