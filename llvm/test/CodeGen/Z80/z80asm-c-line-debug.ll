@@ -5,11 +5,11 @@
 
 ; The add instruction is the first real instruction (line 3); dbg.value at
 ; line 2 produces no machine instruction so C_LINE 2 is never emitted.
-; Scope info is appended: "file::func::level::scope".
-; CHECK:     C_LINE 3, "test.c::add::0::0"
+; Scope info is appended: "file::func".
+; CHECK:     C_LINE 3, "test.c::add"
 ; CHECK-NEXT: add hl,de
 ; CHECK-NEXT: ex de,hl
-; CHECK-NEXT: C_LINE 4, "test.c::add::0::0"
+; CHECK-NEXT: C_LINE 4, "test.c::add"
 ; CHECK-NEXT: ret
 
 ; C_LINE must not be emitted twice for the same location.

@@ -1,16 +1,23 @@
 ; RUN: split-file %s %t
-; RUN: not llc -mtriple=z80 -z80-asm-format=z88dk -verify-machineinstrs -o - %t/invalid.ll 2>&1 | FileCheck %s --check-prefix=ERROR --implicit-check-not="C_LINE 2,"
+; RUN: llc -mtriple=z80 -z80-asm-format=z88dk -verify-machineinstrs -o - %t/invalid.ll 2>&1 | FileCheck %s --check-prefix=BADFILE
 ; RUN: llc -mtriple=z80 -verify-machineinstrs -o - %t/invalid.ll | FileCheck %s --check-prefix=ELF
 ; RUN: llc -mtriple=z80 -z80-asm-format=z88dk -verify-machineinstrs -o - %t/valid.ll | FileCheck %s --check-prefix=VALID
 
-; C equivalent: void example(void) {} with debug filenames/function names
-; containing quotes, LF or CR. C_LINE uses raw strings, not decoded escapes.
-; ERROR-COUNT-6: error: C_LINE cannot represent quotes or line breaks in debug filenames or function names
-; ERROR-NOT: error:
+; Bad filenames: C_LINE is skipped with a warning (optional debug info, not a build error).
+; BADFILE-COUNT-3: warning: C_LINE skipped: filename contains quotes or line breaks
+; BADFILE-NOT: warning:
+; BADFILE-NOT: C_LINE
+
+; Bad function names: degrade to "file" form only (no ::func appended).
+; BADFILE: C_LINE 2, "test.c"
+; BADFILE: C_LINE 2, "test.c"
+; BADFILE: C_LINE 2, "test.c"
+
+; ELF format must NOT emit C_LINE directives.
 ; ELF-NOT: C_LINE
 
-; Preserve raw backslashes, spaces and UTF-8 bytes.
-; VALID: C_LINE 2, "path\with spaceé.c::example::0::0"
+; Preserve raw backslashes, spaces and UTF-8 bytes in the file::func form.
+; VALID: C_LINE 2, "path\with spaceé.c::example"
 ; VALID-LABEL: _line_zero:
 ; VALID-NOT: C_LINE
 ; VALID: ret
