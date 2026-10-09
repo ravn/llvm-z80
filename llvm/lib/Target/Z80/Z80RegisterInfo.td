@@ -166,6 +166,20 @@ def GR16 : Z80Reg16Class<(add BC, DE, HL)>;
 // BC and DE, for a pair used alongside HL
 def GR16_BCDE : Z80Reg16Class<(add BC, DE)>;
 
+// HL only — used to constrain the address operand of COMPARE8_IND so RA
+// allocates HL, enabling the 1-byte CP (HL) instruction.
+def GR16_HL : Z80Reg16Class<(add HL)>;
+
+// 16-bit registers for PUSH/POP: BC, DE, HL, AF
+def GR16_AF : Z80Reg16Class<(add BC, DE, HL, AF)>;
+
+// 16-bit registers for ADD HL,rr: BC, DE, HL, SP
+def GR16_SP : Z80Reg16Class<(add BC, DE, HL, SP)>;
+
+// 16-bit registers including SP (for LD rr,nn etc)
+def GR16_All : Z80Reg16Class<(add BC, DE, HL, SP)>;
+
+
 // Index registers only
 def IR16 : Z80Reg16Class<(add IX, IY)>;
 
