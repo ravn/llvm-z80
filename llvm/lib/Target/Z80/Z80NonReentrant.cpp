@@ -139,12 +139,32 @@ bool Z80NonReentrantImpl::run(Module &M) {
       Changed = true;
     }
 
-  // Any external call may end up calling any externally-callable function,
-  // which lets the SCC walk see recursion that passes through code outside
-  // the module or through a function pointer.
+  // An indirect or external call may call back into the module through any
+  // externally-visible entry point that the programmer has NOT asserted is
+  // single-activation. Functions marked __no_recurse (hasNoRecurse) guarantee
+  // at most one live activation, so they cannot be a re-entry target; exclude
+  // them from the artificial feedback edge.
+  //
+  // Using the full externalCallingNode (which reaches all external-linkage
+  // functions regardless of no-recurse) inflates SCCs unnecessarily: a ROM
+  // whose only external entries all have __no_recurse ends up in one giant
+  // SCC because extern calls to e.g. delay routines create a cycle through
+  // the external calling node back into main(). The selective edges below
+  // let the SCC walk see those entry points as non-recursive boundaries.
   assert(CG.getCallsExternalNode()->empty());
-  CG.getCallsExternalNode()->addCalledFunction(nullptr,
-                                               CG.getExternalCallingNode());
+  for (Function &F : M.functions()) {
+    if (F.isDeclaration() || !F.hasExternalLinkage())
+      continue;
+    if (TM.getSubtargetImpl(F)->hasNoRecurse())
+      continue;
+    CG.getCallsExternalNode()->addCalledFunction(nullptr, CG[&F]);
+  }
+  // If every external-linkage function in the module has __no_recurse, the
+  // programmer has asserted that none of them can be re-entered via an
+  // indirect call from within the module. Leave callsExternalNode empty so
+  // the SCC walk does not create a spurious cycle. When at least one
+  // non-__no_recurse entry exists, the loop above added it, and the SCC
+  // walk conservatively treats indirect calls as potentially reaching it.
 
   // Operations like block copies and wide arithmetic only become calls
   // during instruction selection, so their callees have no edge in the IR

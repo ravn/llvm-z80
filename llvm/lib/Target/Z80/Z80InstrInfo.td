@@ -731,6 +731,12 @@ def STORE8_IND : Z80Pseudo<(outs), (ins Ac:$src, GR16:$addr)> {
   let mayLoad = false;
   let mayStore = true;
 }
+// Compare A with memory at HL. The GR16_HL constraint forces the address into
+// HL so RA sees the requirement and the post-RA expander emits CP (HL).
+def COMPARE8_IND : Z80Pseudo<(outs), (ins Ac:$lhs, GR16_HL:$addr)> {
+  let mayLoad = true;
+  let mayStore = false;
+}
 
 // Direct access to an address the linker settles: a global, or a global plus a
 // constant. Z80 reaches one in a single instruction per pair, against putting

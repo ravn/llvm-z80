@@ -816,10 +816,27 @@ std::optional<Register> Z80InstructionSelector::emitEqualityTest(
       buildAccOp(MBB, I, DL, FlagsOnly ? Z80::CP_Ac_n : Z80::SUB_Ac_n, Diff,
                  LHS, MRI)
           .addImm(*C & 0xFF);
-    else
+    else {
+      // For branch-fused compares, fold a single-use G_LOAD into CP (HL)
+      // to save the separate register load (2 bytes → 1 byte per compare).
+      if (FlagsOnly) {
+        MachineInstr *RHSDef = MRI.getVRegDef(RHS);
+        if (RHSDef && RHSDef->getOpcode() == TargetOpcode::G_LOAD &&
+            MRI.hasOneNonDBGUse(RHS)) {
+          Register AddrReg = RHSDef->getOperand(1).getReg();
+          if (RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,
+                                           MRI)) {
+            RHSDef->eraseFromParent();
+            buildAccOp(MBB, I, DL, Z80::COMPARE8_IND, Register(), LHS, MRI)
+                .addReg(AddrReg);
+            return Register();
+          }
+        }
+      }
       buildAccOp(MBB, I, DL, FlagsOnly ? Z80::CP_Ac_r : Z80::SUB_Ac_r, Diff,
                  LHS, MRI)
           .addReg(RHS);
+    }
     return Diff;
   }
 
@@ -2995,15 +3012,29 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       };
 
       // CP sets the carry when its left operand is below its right one.
+      // When R is the result of a single-use G_LOAD, fold it into COMPARE8_IND
+      // (CP (HL)) to save the separate register load: 2 bytes → 1 byte, and
+      // avoids spilling to an IX frame when no spare register exists.
       auto emitCP = [&](Register L, Register R) {
-        if (auto C = getRHSConst(R))
-          buildAccOp(MBB, MI, MI.getDebugLoc(), Z80::CP_Ac_n, Register(), L,
-                     MRI)
+        const DebugLoc &DL = MI.getDebugLoc();
+        if (auto C = getRHSConst(R)) {
+          buildAccOp(MBB, MI, DL, Z80::CP_Ac_n, Register(), L, MRI)
               .addImm(*C & 0xFF);
-        else
-          buildAccOp(MBB, MI, MI.getDebugLoc(), Z80::CP_Ac_r, Register(), L,
-                     MRI)
-              .addReg(R);
+          return;
+        }
+        MachineInstr *RDef = MRI.getVRegDef(R);
+        if (RDef && RDef->getOpcode() == TargetOpcode::G_LOAD &&
+            MRI.hasOneNonDBGUse(R)) {
+          Register AddrReg = RDef->getOperand(1).getReg();
+          if (RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,
+                                           MRI)) {
+            RDef->eraseFromParent();
+            buildAccOp(MBB, MI, DL, Z80::COMPARE8_IND, Register(), L, MRI)
+                .addReg(AddrReg);
+            return;
+          }
+        }
+        buildAccOp(MBB, MI, DL, Z80::CP_Ac_r, Register(), L, MRI).addReg(R);
       };
 
       if (!RBI.constrainGenericRegister(LHS, Z80::GR8RegClass, MRI) ||
