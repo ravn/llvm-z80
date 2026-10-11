@@ -114,7 +114,10 @@ void Z80AsmPrinter::emitInstruction(const MachineInstr *MI) {
   // the instruction carries debug location info. z80asm's -debug flag turns
   // these into __C_LINE_<n>_<file> address symbols in the .map file, giving a
   // source-level address map without any binary overhead in the ROM.
-  if (MAI.isZ88DK()) {
+  // emitRawText only works on streamers that support it (the asm path, -S).
+  // Under -c the object streamer has no raw-text support; DWARF handles
+  // debug info there, so dropping the C_LINE directive is correct.
+  if (MAI.isZ88DK() && OutStreamer->hasRawTextSupport()) {
     if (const DILocation *Loc = MI->getDebugLoc()) {
       unsigned Line = Loc->getLine();
       StringRef File = Loc->getFilename();

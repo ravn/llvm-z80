@@ -2,6 +2,11 @@
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z88dk -O1 < %s | FileCheck %s
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z88dk -O1 < %s | FileCheck %s --check-prefix=NODUP
 ; RUN: llc -verify-machineinstrs -mtriple=z80 -O1 < %s | FileCheck %s --check-prefix=ELF
+; Issue #410: object emission under z88dk-triple used to crash because
+; emitInstruction unconditionally called emitRawText (C_LINE), which the
+; object streamer rejects. Guarded with hasRawTextSupport(); object path
+; now completes and drops C_LINE (DWARF carries the info in -c builds).
+; RUN: llc -verify-machineinstrs -mtriple=z80 -z80-asm-format=z88dk -O1 -filetype=obj -o /dev/null < %s
 
 ; The add instruction is the first real instruction (line 3); dbg.value at
 ; line 2 produces no machine instruction so C_LINE 2 is never emitted.
