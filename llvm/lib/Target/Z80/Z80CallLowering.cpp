@@ -243,6 +243,28 @@ static ArgAssignment classifyArgFastCall(const CallingConvRegs &Regs,
   return Result;
 }
 
+/// Assign argument \p Index of \p NumArgs under a z88dk runtime convention.
+static ArgAssignment classifyArgZ88dkRuntime(const CallingConvRegs &Regs,
+                                             const Z80CCAxes &Axes,
+                                             unsigned Index, unsigned NumArgs,
+                                             unsigned BitWidth) {
+  if (Axes.Base == Z80CCBase::Sccz80Runtime) {
+    unsigned RegParamCount = 0;
+    if (Index + 1 != NumArgs)
+      return ArgAssignment();
+    return classifyArgFastCall(Regs, RegParamCount, BitWidth);
+  }
+  if (BitWidth > 16) {
+    if (Index != 0)
+      return ArgAssignment();
+    return {true, Regs.First_I32_Hi, Regs.First_I32_Lo, FIRST_I32};
+  }
+  static const MCPhysReg Pairs[] = {Z80::HL, Z80::DE, Z80::BC};
+  if (Index >= std::size(Pairs))
+    return ArgAssignment();
+  return {true, Pairs[Index], Register(), FIRST_I16};
+}
+
 /// Classify a single argument based on current register state.
 /// Uses CallingConvRegs to look up the correct physical registers.
 ArgAssignment classifyArg(const CallingConvRegs &Regs, unsigned &RegParamCount,
@@ -655,7 +677,7 @@ bool Z80CallLoweringCommon::lowerFormalArguments(
   bool IsVarArg = F.isVarArg();
   CallingConv::ID CC = F.getCallingConv();
 
-  if (isUnsupportedCCForSubtarget(MF, CC))
+  if (isUnsupportedCCForSubtarget(MF, CC) || decodeZ80CC(CC).isZ88dkRuntime())
     return false;
 
   // Even with no arguments, an sret-demoted return still needs its hidden
@@ -1071,6 +1093,11 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
     return false;
 
   const CallingConvRegs &Regs = getRegsForCC(CC);
+  const Z80CCAxes Axes = decodeZ80CC(CC);
+  const unsigned NumArgs = Info.OrigArgs.size();
+  if (Info.Callee.isSymbol())
+    Info.Callee = MachineOperand::CreateES(
+        getZ80CalleeName(MF, Info.Callee.getSymbolName(), CC));
 
   // Handle sret demotion for libcalls with large return types (e.g., i64).
   // The generic createLibcall() doesn't call canLowerReturn(), so
@@ -1145,8 +1172,11 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
     if (BitWidth == 0)
       BitWidth = 16;
 
-    ArgAssignment Assign = classifyArg(Regs, RegParamCount, FirstKind, BitWidth,
-                                       Info.IsVarArg, CC);
+    ArgAssignment Assign =
+        Axes.isZ88dkRuntime()
+            ? classifyArgZ88dkRuntime(Regs, Axes, ArgIdx, NumArgs, BitWidth)
+            : classifyArg(Regs, RegParamCount, FirstKind, BitWidth,
+                          Info.IsVarArg, CC);
 
     if (!Assign.InReg) {
       // A builtin helper takes everything in registers by construction;
@@ -1320,7 +1350,8 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
   SmallVector<Register, 4> ArgRegs;
 
   if (!Info.IsVarArg) {
-    for (const ArgInfo &Arg : Info.OrigArgs) {
+    for (unsigned I = 0; I != NumArgs; ++I) {
+      const ArgInfo &Arg = Info.OrigArgs[I];
       if (Arg.Regs.empty())
         continue;
 
@@ -1339,8 +1370,11 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
       if (BitWidth == 0)
         BitWidth = 16;
 
-      ArgAssignment Assign = classifyArg(Regs, RegParamCount, FirstKind,
-                                         BitWidth, Info.IsVarArg, CC);
+      ArgAssignment Assign =
+          Axes.isZ88dkRuntime()
+              ? classifyArgZ88dkRuntime(Regs, Axes, I, NumArgs, BitWidth)
+              : classifyArg(Regs, RegParamCount, FirstKind, BitWidth,
+                            Info.IsVarArg, CC);
       if (Assign.InReg) {
         if (BitWidth <= 32 && Assign.PhysReg2.isValid()) {
           // i32: split into Hi and Lo
@@ -1367,6 +1401,11 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
     MIRBuilder.buildCopy(Regs.IndirectCallReg, Info.Callee.getReg());
     CallMI = MIRBuilder.buildInstr(CallOpc);
   } else {
+    // A math core's i32 operands go through the alternate set.
+    if (Axes.Base == Z80CCBase::Z88dkIMath && StackArgBytes > 0)
+      CallOpc = Axes.HighResult ? Z80::CALL_EXX_HIGH
+                : NumArgs > 2   ? Z80::CALL_EXX_DIVREM
+                                : Z80::CALL_EXX;
     CallMI = MIRBuilder.buildInstr(CallOpc);
     CallMI.add(Info.Callee);
   }
@@ -1580,7 +1619,8 @@ bool Z80CallLoweringCommon::lowerCall(MachineIRBuilder &MIRBuilder,
                         !Info.OrigRet.Flags.empty() &&
                             Info.OrigRet.Flags[0].isZExt());
       } else if (BitWidth <= 16) {
-        MIRBuilder.buildCopy(VReg, Register(Regs.Ret_I16));
+        MIRBuilder.buildCopy(
+            VReg, Register(Axes.HighResult ? Z80::DE : Regs.Ret_I16));
       } else if (BitWidth <= 32) {
         Register LoReg = MRI.createGenericVirtualRegister(LLT::scalar(16));
         Register HiReg = MRI.createGenericVirtualRegister(LLT::scalar(16));
