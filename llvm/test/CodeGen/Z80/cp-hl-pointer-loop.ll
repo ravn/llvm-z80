@@ -1,15 +1,16 @@
-; RUN: llc -mtriple=z80 -O2 -disable-lsr -verify-machineinstrs %s -o - | FileCheck %s
-; RUN: llc -mtriple=z80 -O2 -disable-lsr -stop-after=instruction-select -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ISEL
+; RUN: llc -mtriple=z80 -O2 -verify-machineinstrs %s -o - | FileCheck %s
+; RUN: llc -mtriple=z80 -O2 -stop-after=instruction-select -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ISEL
 
 ; Issue #401: pointer-comparison loops should generate the optimal
 ;   LD A,(BC) ; CP (HL) ; INC HL ; INC BC ; DEC r ; JR NZ
 ; pattern — one pointer in BC (read via LOAD8_IND -> LD A,(BC)), the other
 ; in HL (compared via COMPARE8_IND -> CP (HL)), no accumulator spill, no
-; IX frame. Enabled by the CP (HL) fold in commit 605546e1a4c4.
-;
-; -disable-lsr matches the production autoload-in-c build (see
-; rc700-gensmedet/autoload-in-c/Makefile); without it, LSR transforms
-; the loop into a form the register allocator spills across.
+; IX frame. Enabled by:
+;   - CP (HL) fold in commit 605546e1a4c4
+;   - LSR cost-model hooks (isHardwareLoopProfitable, getNumberOfRegisters,
+;     shouldDropLSRSolutionIfLessProfitable) that pressure LSR to choose
+;     a narrow i8 down-counter + minimal IV set over its wide stride-match
+;     default.
 
 target triple = "z80"
 
