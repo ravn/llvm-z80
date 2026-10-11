@@ -1,7 +1,17 @@
-# Plan: integrate upstream PR llvm-z80/llvm-z80#112 (zlfn's z88dk runtime)
+# Plan: adopt zlfn's PR #112 branch AS the new ravn/main baseline
 
 **Status:** 2026-10-11 analyse. Udarbejdet til udførelse af senere agent
 (Sonnet). Branch-navn: `work/zlfn-z88dk-runtime-integration-20261011`.
+
+**Bruger-instruks 2026-10-11:**
+> "det her bliver den nye main og ny baseline at starte forfra på"
+
+Dette er ikke en "integrer et PR i ravn/main"-opgave. Det er en
+**baseline-replacement**: `upstream/users/zlfn/runtime-4-z88dk`
+bliver den nye ravn/main. Alt ravn-specifikt arbejde der stadig
+er relevant genlægges som patches oven på denne nye baseline.
+Alt der var midlertidige shortcuts omkring det zlfn nu dækker,
+droppes.
 
 ## Baggrund
 
@@ -120,31 +130,49 @@ en intern merge af upstream arbejde ind i ravn/-forken.
    | wc -l` giver ~361 commits (361 fordi PR'en bygger på hele
    `runtime-1/2/3`-stakken, ikke bare `runtime-4` alene).
 
-### Fase 1 — Merge-strategi beslutning (30 min)
+### Fase 1 — Merge-strategi (dikteret af regel, ikke valg)
 
-Tre reelle valg:
+**Durable regel [[feedback_ravn_patches_rebase_onto_zlfn]] (user
+2026-10-11):** ravn's arbejde lægges ALTID oven på zlfn's
+beslutninger. Ikke merge-equals, ikke parallel-implementation.
 
-**A. Merge hele PR-stakken (base = `runtime-1-...`):** Bringer alle
-runtime-infrastruktur-ændringer. Størst conflict-overflade men mest
-konsistent. Rimelig at prøve først.
+**Konsekvens for denne integration:**
 
-**B. Merge kun `runtime-4-z88dk` cherry-pick (6 commits):** Isolerer
-den konkrete PR, men den afhænger af `runtime-3-z88dk-env` som igen
-afhænger af `runtime-2` osv. Cherry-pick vil fejle uden base.
+Zlfn's `users/zlfn/runtime-4-z88dk` er base-truth. Ravn/#396's
+"minimal viable product" z88dk-integration (`cdf7fba`) var en
+interrim-shortcut; den omplaceres eller droppes hvor zlfn's
+infrastruktur erstatter den.
 
-**C. Rebase ravn/#396-ændringer oven på zlfn's stak:** Behold ravn's
-specifikke tilføjelser (asm_memset-register-ABI, +static-frame-opt-out,
-IX-reserve) som patches på toppen af zlfn's rene infrastruktur. Mest
-arbejde men mest kontrollerbar outcome.
+**Procedure:**
 
-**Anbefaling: A først.** Hvis conflicts er trivielle, lav commit.
-Hvis store, falde tilbage til C.
+1. Start fra `upstream/users/zlfn/runtime-4-z88dk` (ikke ravn/main).
+2. Identificer ravn/main-commits der er *unikke* (ikke dækket af
+   zlfn's PR):
+   - #410 C_LINE guard-fiks (`d081b0d`) — unik, cherry-pick
+   - TTI LSR-hooks (`8d909ab`) — unik, cherry-pick
+   - test_26_fixed_point.s og lign. unikke tests — cherry-pick
+   - Alt der overlapper med zlfn's design (fx #396
+     `cdf7fba`-inline-paths i Z80LegalizerInfo.cpp) — DROP, lad
+     zlfn's version stå alene.
+3. Cherry-pick de unikke commits oven på zlfn's branch.
+4. Resolve små conflicts i cherry-pick ved at TILPASSE ravn's patch
+   til zlfn's nye API-shape (ikke vice versa).
 
-### Fase 2 — Udfør merge (60-120 min, afhænger af conflicts)
+**Verb-check:** "cherry-pick ravn's patch ONTO zlfn's branch". Ikke
+"merge zlfn's branch into ravn's main". Hvis retningen føles
+omvendt, er den forkert.
+
+### Fase 2 — Baseline replacement (60-120 min)
 
 ```bash
-git checkout -b work/zlfn-z88dk-runtime-integration-20261011 origin/main
-git merge upstream/users/zlfn/runtime-4-z88dk
+# Branch'en ER zlfn's branch; vi lægger ravn-patches oven på.
+git checkout -b work/zlfn-z88dk-runtime-integration-20261011 \
+    upstream/users/zlfn/runtime-4-z88dk
+
+# Cherry-pick ravn's unikke commits oven på
+git cherry-pick d081b0d       # #410 C_LINE guard
+git cherry-pick 8d909ab       # TTI LSR hooks
+# ... osv. for hver unik ravn-patch
 ```
 
 Forventet conflict-overflade (filer der både ravn/#396 og
