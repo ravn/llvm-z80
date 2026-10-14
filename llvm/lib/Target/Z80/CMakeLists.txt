@@ -92,9 +92,10 @@ add_subdirectory(TargetInfo)
 
 # Z80/SM83 runtime library build.
 # Sources live in compiler-rt/lib/builtins/{z80,sm83}/ following LLVM conventions.
-# Two formats are built:
-#   ELF:  llvm-mc → .o → llvm-ar → .a  (for integrated assembler + lld)
-#   SDCC: sdasz80 → .rel → sdar → .lib (for -fno-integrated-as + sdldz80)
+# Three formats are built:
+#   ELF:   llvm-mc → .o → llvm-ar → .a  (for integrated assembler + lld)
+#   SDCC:  sdasz80 → .rel → sdar → .lib (for -fno-integrated-as + sdldz80)
+#   z88dk: llvm-mc → .asm → z88dk-z80asm → .lib (for the z88dk environment)
 set(Z80_BUILTINS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../compiler-rt/lib/builtins)
 
 function(z80_build_builtins TRIPLE SUBDIR CRT0_ASM RT_DIR SDAS)
@@ -182,7 +183,60 @@ function(z80_build_builtins TRIPLE SUBDIR CRT0_ASM RT_DIR SDAS)
     )
     list(APPEND ALL_RUNTIME_OUTPUTS ${OUT}/${SUBDIR}_rt.lib)
 
+    # The runtime the sdcc environment links after SDCC's own library, without
+    # the functions that library also defines.
+    set(SDCC_RT_RELS ${RT_RELS})
+    foreach(name ceilf floorf memchr memcmp memcpy memmove memset modff strcat
+                 strchr strcmp strcpy strlen strncmp strncpy strnlen)
+      list(REMOVE_ITEM SDCC_RT_RELS ${OUT}/${name}.rel)
+    endforeach()
+    add_custom_command(
+      OUTPUT ${OUT}/${SUBDIR}_sdcc_rt.lib
+      COMMAND ${SDAR} rs ${OUT}/${SUBDIR}_sdcc_rt.lib ${SDCC_RT_RELS}
+      DEPENDS ${SDCC_RT_RELS}
+      COMMENT "Creating ${SUBDIR} runtime archive (SDCC environment)"
+    )
+    list(APPEND ALL_RUNTIME_OUTPUTS ${OUT}/${SUBDIR}_sdcc_rt.lib)
+
     install(FILES ${OUT}/${SUBDIR}_crt0.rel ${OUT}/${SUBDIR}_rt.lib
+                  ${OUT}/${SUBDIR}_sdcc_rt.lib
+            DESTINATION lib/${SUBDIR} COMPONENT Z80Runtime)
+  endif()
+
+  # --- z88dk format (optional) ---
+  # The runtime the z88dk environment links after z88dk's libraries, without
+  # the C library functions, since C calls them as __smallc there. llvm-mc
+  # prints each module in z80asm syntax.
+  find_program(Z88DK_Z80ASM z88dk-z80asm)
+  if(Z88DK_Z80ASM AND TRIPLE STREQUAL "z80")
+    set(Z88DK_OUT ${OUT}/z88dk)
+    set(Z88DK_RT_OBJS "")
+    foreach(src ${RT_SOURCES})
+      get_filename_component(name ${src} NAME_WE)
+      if(name MATCHES "^(bcmp|bzero|ceilf|floorf|fmaxf|fmaximum_numf|fminf|fminimum_numf|fmodf|lrintf|lroundf|memchr|memcmp|memcpy|memmove|memset|modff|rintf|roundf|stpcpy|strcat|strchr|strcmp|strcpy|strlen|strncmp|strncpy|strnlen|truncf)$")
+        continue()
+      endif()
+      set(obj ${Z88DK_OUT}/${name}.o)
+      add_custom_command(
+        OUTPUT ${obj}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${Z88DK_OUT}
+        COMMAND ${LLVM_MC} -triple=z80-unknown-none-z88dk ${src}
+                -o ${Z88DK_OUT}/${name}.asm
+        COMMAND ${Z88DK_Z80ASM} -o=${obj} ${Z88DK_OUT}/${name}.asm
+        DEPENDS ${src} llvm-mc
+        COMMENT "Assembling ${SUBDIR} runtime: ${name}.asm (z88dk)"
+      )
+      list(APPEND Z88DK_RT_OBJS ${obj})
+    endforeach()
+    add_custom_command(
+      OUTPUT ${OUT}/${SUBDIR}_z88dk_rt.lib
+      COMMAND ${Z88DK_Z80ASM} -x=${OUT}/${SUBDIR}_z88dk_rt.lib ${Z88DK_RT_OBJS}
+      DEPENDS ${Z88DK_RT_OBJS}
+      COMMENT "Creating ${SUBDIR} runtime archive (z88dk environment)"
+    )
+    list(APPEND ALL_RUNTIME_OUTPUTS ${OUT}/${SUBDIR}_z88dk_rt.lib)
+
+    install(FILES ${OUT}/${SUBDIR}_z88dk_rt.lib
             DESTINATION lib/${SUBDIR} COMPONENT Z80Runtime)
   endif()
 

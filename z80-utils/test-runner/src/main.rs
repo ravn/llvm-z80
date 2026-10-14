@@ -127,7 +127,11 @@ Usage: z80-test-runner clang [options] [name-filter]
   -native-oracle       Differential vs the host C compiler (env CC, else
                        cc/clang/gcc): flag any test whose Z80 result disagrees
                        with the host's computed value (catches consistently-wrong
-                       values; reference is computed, not a hand-written expect)."
+                       values; reference is computed, not a hand-written expect).
+  -sdcc                Build with the -sdcc triple through sdas and sdld, and
+                       link SDCC's library before <target>_sdcc_rt.lib.
+  -z88dk               Build with the -z88dk triple through z88dk-z80asm, and
+                       link z88dk's libraries."
     );
 }
 
@@ -329,6 +333,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
     let mut verify = false;
     let mut diff_opt = false;
     let mut native_oracle = false;
+    let mut env = clang::Env::Elf;
     let mut pattern = None;
 
     let mut i = 0;
@@ -346,6 +351,8 @@ fn cmd_clang(args: &[String]) -> ExitCode {
             "-verify" => verify = true,
             "-diff-opt" => diff_opt = true,
             "-native-oracle" => native_oracle = true,
+            "-sdcc" => env = clang::Env::Sdcc,
+            "-z88dk" => env = clang::Env::Z88dk,
             s if !s.starts_with('-') => pattern = Some(s.to_string()),
             _ => {}
         }
@@ -364,6 +371,7 @@ fn cmd_clang(args: &[String]) -> ExitCode {
         verify,
         diff_opt,
         native_oracle,
+        env,
         pattern,
     };
 

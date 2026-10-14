@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::config::{OptLevel, Paths, Target};
+use crate::config::{self, OptLevel, Paths, Target};
 use crate::emulator;
 use crate::runtime::{self, ElfRuntime};
 use crate::suite::*;
@@ -40,7 +40,41 @@ pub struct ClangConfig {
     /// Caveat: host `int` is 32-bit vs Z80's 16-bit, so tests relying on 16-bit
     /// `int` wraparound can legitimately differ - triage such hits.
     pub native_oracle: bool,
+    pub env: Env,
     pub pattern: Option<String>,
+}
+
+/// The triple environment a configuration builds in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Env {
+    /// ELF, through the integrated assembler and ld.lld.
+    Elf,
+    /// `-sdcc`, through sdas and sdld, with SDCC's library linked before
+    /// `<target>_sdcc_rt.lib`.
+    Sdcc,
+    /// `-z88dk`, through z88dk-z80asm, with z88dk's libraries and
+    /// `<target>_z88dk_rt.lib`.
+    Z88dk,
+}
+
+/// z88dk's compiler support routines, its 32-bit float library and the C
+/// library of its test target.
+const Z88DK_LIBS: [&str; 3] = ["z80_crt0", "math32", "test_clib"];
+
+/// How a compiled test is linked and loaded.
+enum Toolchain {
+    Elf(ElfRuntime),
+    Sdcc {
+        crt0: PathBuf,
+        rt_lib: PathBuf,
+        sdcc_lib: Option<PathBuf>,
+    },
+    Z88dk {
+        triple: &'static str,
+        crt0: PathBuf,
+        lib: PathBuf,
+        rt_lib: PathBuf,
+    },
 }
 
 impl ClangConfig {
@@ -66,7 +100,21 @@ impl ClangConfig {
     }
 
     fn active_options(&self) -> Vec<&str> {
-        self.extra_flags()
+        let mut options = self.extra_flags();
+        match self.env {
+            Env::Elf => {}
+            // The SDCC toolchain assembles with sdas.
+            Env::Sdcc => {
+                options.push("-sdcc");
+                options.push("-fno-integrated-as");
+            }
+            // The z88dk toolchain assembles with z88dk-z80asm.
+            Env::Z88dk => {
+                options.push("-z88dk");
+                options.push("-fno-integrated-as");
+            }
+        }
+        options
     }
 
     fn tag_suffix(&self) -> String {
@@ -79,6 +127,11 @@ impl ClangConfig {
         }
         if self.inline_runtime {
             s.push_str("_inlrt");
+        }
+        match self.env {
+            Env::Elf => {}
+            Env::Sdcc => s.push_str("_sdcc"),
+            Env::Z88dk => s.push_str("_z88dk"),
         }
         s
     }
@@ -102,16 +155,34 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
     let test_dir = paths.clang_test_dir();
     let clang = paths.clang();
     let mut result = SuiteResult::default();
-    let reg_name = config.target.reg_name();
+    // The z88dk environment's conventions return in HL.
+    let reg_name = if config.env == Env::Z88dk { "HL" } else { config.target.reg_name() };
 
     // Build crt0 + compiler-rt builtin objects once for this run.  The
     // suite is unusable without them, so a failure here aborts every test
     // up front rather than silently producing "_halt symbol not found".
-    let elf_rt = match runtime::ensure_elf(paths, config.target, &clang) {
-        Ok(rt) => rt,
+    let toolchain = match config.env {
+        Env::Elf => runtime::ensure_elf(paths, config.target, &clang).map(Toolchain::Elf),
+        Env::Sdcc => runtime::ensure_sdcc_crt0(paths, config.target).map(|crt0| Toolchain::Sdcc {
+            crt0,
+            rt_lib: paths.sdcc_rt_lib(config.target),
+            sdcc_lib: config::find_sdcc_lib(config.target),
+        }),
+        Env::Z88dk => config.target.z88dk_triple()
+            .ok_or_else(|| "the z88dk environment has no SM83 target".to_string())
+            .and_then(|triple| {
+                let lib = config::find_z88dk_lib()
+                    .ok_or_else(|| "z88dk's lib directory not found".to_string())?;
+                let crt0 = runtime::ensure_z88dk_crt0(paths, config.target, &lib)?;
+                let rt_lib = paths.z88dk_rt_lib(config.target);
+                Ok(Toolchain::Z88dk { triple, crt0, lib, rt_lib })
+            }),
+    };
+    let toolchain = match toolchain {
+        Ok(t) => t,
         Err(e) => {
             let tag = format!("clang_{}_runtime", config.target.triple());
-            result.add(TestResult::fatal(&tag, format!("ELF runtime: {e}")), on_result, reg_name);
+            result.add(TestResult::fatal(&tag, format!("runtime: {e}")), on_result, reg_name);
             return result;
         }
     };
@@ -165,7 +236,7 @@ pub fn run(paths: &Paths, config: &ClangConfig, on_result: &mut OnResult) -> Sui
                 &flags,
                 &test_dir,
                 &source,
-                &elf_rt,
+                &toolchain,
             );
             // Record the observed value for the differential check.
             match &r.outcome {
@@ -277,20 +348,23 @@ fn run_single(
     extra_flags: &[&str],
     work_dir: &PathBuf,
     source: &str,
-    elf_rt: &ElfRuntime,
+    toolchain: &Toolchain,
 ) -> TestResult {
     let tmp_dir = unique_tmp_dir(work_dir);
     let _ = std::fs::create_dir_all(&tmp_dir);
 
-    let test_obj = tmp_dir.join(format!("{tag}.o"));
-    let elf = tmp_dir.join(format!("{tag}.elf"));
-    let bin = tmp_dir.join(format!("{tag}.bin"));
+    let (triple, obj_ext) = match toolchain {
+        Toolchain::Elf(_) => (target.triple(), "o"),
+        Toolchain::Sdcc { .. } => (target.sdcc_triple(), "rel"),
+        Toolchain::Z88dk { triple, .. } => (*triple, "o"),
+    };
+    let test_obj = tmp_dir.join(format!("{tag}.{obj_ext}"));
 
     // Compile to object only — the link step injects crt0 + compiler-rt
     // builtins + linker script explicitly so that _start, _halt, .bss
     // layout, and ___mulhi3 / ___udivhi3 / etc. are all resolved.
     let mut cmd = Command::new(clang.as_os_str());
-    cmd.arg(format!("--target={}", target.triple()));
+    cmd.arg(format!("--target={triple}"));
     cmd.arg(format!("-{}", opt.clang_flag()));
     cmd.arg("-c");
     cmd.arg("-nostdlib");
@@ -315,6 +389,41 @@ fn run_single(
         _ => {}
     }
 
+    let result = match toolchain {
+        Toolchain::Elf(elf_rt) => run_elf(clang, &test_obj, tag, target, &tmp_dir, source, elf_rt),
+        Toolchain::Sdcc { crt0, rt_lib, sdcc_lib } => run_sdcc(
+            &test_obj,
+            tag,
+            target,
+            &tmp_dir,
+            source,
+            crt0,
+            rt_lib,
+            sdcc_lib.as_ref(),
+        ),
+        Toolchain::Z88dk { crt0, lib, rt_lib, .. } => {
+            run_z88dk(&test_obj, tag, target, &tmp_dir, source, crt0, lib, rt_lib)
+        }
+    };
+    // Keep temp files on failure for debugging; clean up on pass.
+    if result.is_pass() {
+        remove_tmp_dir(&tmp_dir);
+    }
+    result
+}
+
+fn run_elf(
+    clang: &PathBuf,
+    test_obj: &PathBuf,
+    tag: &str,
+    target: Target,
+    tmp_dir: &PathBuf,
+    source: &str,
+    elf_rt: &ElfRuntime,
+) -> TestResult {
+    let elf = tmp_dir.join(format!("{tag}.elf"));
+    let bin = tmp_dir.join(format!("{tag}.bin"));
+
     // Link: ld.lld -T <triple>.ld --gc-sections crt0.o test.o builtins/*.o
     let lld = clang.parent().unwrap().join("ld.lld");
     let mut link = Command::new(lld.as_os_str());
@@ -331,12 +440,12 @@ fn run_single(
 
     match run_cmd_timeout(&mut link, COMPILE_TIMEOUT) {
         Err(e) => {
-            remove_tmp_dir(&tmp_dir);
+            remove_tmp_dir(tmp_dir);
             return TestResult::fatal(tag, format!("link {e}"));
         }
         Ok((code, _, stderr)) if code != 0 => {
             let err = extract_error(&stderr);
-            remove_tmp_dir(&tmp_dir);
+            remove_tmp_dir(tmp_dir);
             return TestResult::fatal(tag, format!("link: {err}"));
         }
         _ => {}
@@ -375,11 +484,113 @@ fn run_single(
         None => return TestResult::fatal(tag, "_exitcode symbol not found in ELF"),
     };
     let dump = tmp_dir.join(format!("{tag}.ram"));
-    let result = crate::suite::judge(tag, &bin, target, &halt_addr, result_addr, &dump, source);
-    // Keep temp files on failure for debugging; clean up on pass.
-    if result.is_pass() {
-        remove_tmp_dir(&tmp_dir);
-    }
-    result
+    crate::suite::judge(tag, &bin, target, &halt_addr, result_addr, &dump, source)
 }
 
+fn run_sdcc(
+    test_obj: &PathBuf,
+    tag: &str,
+    target: Target,
+    tmp_dir: &PathBuf,
+    source: &str,
+    crt0: &PathBuf,
+    rt_lib: &PathBuf,
+    sdcc_lib: Option<&PathBuf>,
+) -> TestResult {
+    let out_base = tmp_dir.join(tag);
+    let ihx = out_base.with_extension("ihx");
+    let bin = out_base.with_extension("bin");
+
+    // Link: sdld -m -i <out> crt0.rel test.rel -l <SDCC library> -l <runtime>
+    let mut link = Command::new(target.linker());
+    link.args(["-m", "-i"]);
+    link.arg(&out_base);
+    link.arg(crt0);
+    link.arg(test_obj);
+    if let Some(lib) = sdcc_lib {
+        link.arg("-l").arg(lib);
+    }
+    link.arg("-l").arg(rt_lib);
+    match run_cmd_timeout(&mut link, COMPILE_TIMEOUT) {
+        Err(e) => {
+            remove_tmp_dir(tmp_dir);
+            return TestResult::fatal(tag, format!("link {e}"));
+        }
+        Ok((code, stdout, stderr)) => {
+            let output = format!("{stdout}{stderr}");
+            let problem = runtime::sdld_problem(&output);
+            if code != 0 || !ihx.exists() || problem.is_some() {
+                let err = problem.unwrap_or("link failed").to_string();
+                remove_tmp_dir(tmp_dir);
+                return TestResult::fatal(tag, format!("link: {err}"));
+            }
+        }
+    }
+
+    if let Err(e) = emulator::makebin(&ihx, &bin) {
+        remove_tmp_dir(tmp_dir);
+        return TestResult::fatal(tag, e);
+    }
+
+    let map = out_base.with_extension("map");
+    let halt_addr = match emulator::halt_addr_from_map(&map) {
+        Some(addr) => addr,
+        None => return TestResult::fatal(tag, "_halt symbol not found in map file"),
+    };
+    let result_addr = match emulator::symbol_addr_from_map(&map, "_exitcode") {
+        Some(a) => a,
+        None => return TestResult::fatal(tag, "_exitcode symbol not found in map file"),
+    };
+    let dump = tmp_dir.join(format!("{tag}.ram"));
+    crate::suite::judge(tag, &bin, target, &halt_addr, result_addr, &dump, source)
+}
+
+fn run_z88dk(
+    test_obj: &PathBuf,
+    tag: &str,
+    target: Target,
+    tmp_dir: &PathBuf,
+    source: &str,
+    crt0: &PathBuf,
+    lib: &PathBuf,
+    rt_lib: &PathBuf,
+) -> TestResult {
+    let bin = tmp_dir.join(format!("{tag}.bin"));
+    let map = tmp_dir.join(format!("{tag}.map"));
+
+    // Link: z88dk-z80asm -b -m -o=<bin> crt0.o test.o -L<clibs> -l<library>...
+    // -l<runtime>
+    let mut link = Command::new("z88dk-z80asm");
+    link.args(["-b", "-m"]);
+    link.arg(format!("-o={}", bin.display()));
+    link.arg(crt0);
+    link.arg(test_obj);
+    link.arg(format!("-L{}", lib.join("clibs").display()));
+    for l in Z88DK_LIBS {
+        link.arg(format!("-l{l}"));
+    }
+    link.arg(format!("-l{}", rt_lib.display()));
+    match run_cmd_timeout(&mut link, COMPILE_TIMEOUT) {
+        Err(e) => {
+            remove_tmp_dir(tmp_dir);
+            return TestResult::fatal(tag, format!("link {e}"));
+        }
+        Ok((code, _, stderr)) if code != 0 || !bin.exists() => {
+            let err = extract_error(&stderr);
+            remove_tmp_dir(tmp_dir);
+            return TestResult::fatal(tag, format!("link: {err}"));
+        }
+        _ => {}
+    }
+
+    let halt_addr = match emulator::symbol_addr_from_z80asm_map(&map, "_halt") {
+        Some(a) => format!("0x{a:04X}"),
+        None => return TestResult::fatal(tag, "_halt symbol not found in map file"),
+    };
+    let result_addr = match emulator::symbol_addr_from_z80asm_map(&map, "_exitcode") {
+        Some(a) => a,
+        None => return TestResult::fatal(tag, "_exitcode symbol not found in map file"),
+    };
+    let dump = tmp_dir.join(format!("{tag}.ram"));
+    crate::suite::judge(tag, &bin, target, &halt_addr, result_addr, &dump, source)
+}
