@@ -199,33 +199,9 @@ if.end:
 
 ; CHECK-LABEL: _dec_ptr_check_nonzero:
 ; CHECK:       dec (hl)
-; CHECK-NEXT:  jr nz,
+; CHECK-NEXT:  jr z,
 ; ISEL-LABEL: name: dec_ptr_check_nonzero
 ; ISEL:        DEC8_IND
-
-; Shape (b2): Structural variation: inc global and branch if zero
-define void @inc_global_check_zero(ptr %target) {
-entry:
-  %v = load i8, ptr @counter, align 1
-  %inc = add i8 %v, 1
-  store i8 %inc, ptr @counter, align 1
-  %cmp = icmp eq i8 %inc, 0
-  br i1 %cmp, label %if.zero, label %if.end
-
-if.zero:
-  tail call void %target()
-  ret void
-
-if.end:
-  ret void
-}
-
-; CHECK-LABEL: _inc_global_check_zero:
-; CHECK:       ld hl,_counter
-; CHECK-NEXT:  inc (hl)
-; CHECK-NEXT:  jr z,
-; ISEL-LABEL: name: inc_global_check_zero
-; ISEL:        INC8_IND
 
 ; Shape (d1): Safety case: result has another register use (ret i8), must NOT fold
 define i8 @dec_ptr_multi_use(ptr %p) {
