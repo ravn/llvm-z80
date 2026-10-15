@@ -62,6 +62,8 @@ STATISTIC(NumHLPostIncLoads, "Number of 16-bit HL loads rewritten through HL+");
 STATISTIC(NumSlotForwarded,
           "Number of SM83 SP-relative slot accesses forwarded");
 STATISTIC(NumStoreForwarded, "Number of stores forwarded to a following load");
+STATISTIC(NumSpillPushPopsFolded,
+          "Number of static-frame spill/reload pairs folded to push/pop");
 
 using namespace llvm;
 
@@ -774,6 +776,200 @@ static bool elidePushPopAcrossStretch(MachineBasicBlock &MBB,
     recomputeLivenessFlags(MBB);
   return Changed;
 }
+
+// --- Fold static-frame 16-bit call-crossing spills into push/pop ---
+//
+// WHAT: Replaces 16-bit static frame store/reload pairs around calls with
+//       PUSH/POP pairs when the frame slot is private to this single pair.
+// WHY:  A 16-bit static frame access takes 3-4 bytes (ED 43 / ED 4B / 22 / 2A),
+//       costing 7-8 bytes of code plus 2 bytes of BSS frame space. PUSH and
+//       POP take 1 byte each (2 bytes total), saving 5-6 bytes of code and
+//       eliminating the frame slot access entirely.
+// GOTCHA: LIFO stack ordering must be strictly maintained; all instructions
+//         in the stretch must preserve stack neutrality (SPDepth == 0 at reload).
+//
+// Concrete example (autoload-in-c _fdc_read_result, rom.c:423):
+//   ld (L_fdc_read_result.frame), bc  ; 4B (ED 43 ee 6d)
+//   call _fdc_read_when_ready         ; 3B (CD 7d 60)
+//   ld bc, (L_fdc_read_result.frame)  ; 4B (ED 4B ee 6d)
+//   ->
+//   push bc                           ; 1B (C5)
+//   call _fdc_read_when_ready         ; 3B (CD 7d 60)
+//   pop bc                            ; 1B (C1)
+static unsigned getSpillStorePushOpc(unsigned Opc) {
+  switch (Opc) {
+  case Z80::LD_nnind_BC: return Z80::PUSH_BC;
+  case Z80::LD_nnind_DE: return Z80::PUSH_DE;
+  case Z80::LD_nnind_HL: return Z80::PUSH_HL;
+  default: return 0;
+  }
+}
+
+static unsigned getSpillReloadPopOpc(unsigned Opc) {
+  switch (Opc) {
+  case Z80::LD_BC_nnind: return Z80::POP_BC;
+  case Z80::LD_DE_nnind: return Z80::POP_DE;
+  case Z80::LD_HL_nnind: return Z80::POP_HL;
+  default: return 0;
+  }
+}
+
+static bool isStaticFrameSlot(const MachineOperand &MO) {
+  if (MO.isTargetIndex())
+    return true; // placeholder frame index before resolution
+  if (MO.isGlobal()) {
+    const GlobalValue *GV = MO.getGlobal();
+    // Static frames are allocated as private globals ending in .frame
+    return GV && GV->hasPrivateLinkage() && GV->getName().ends_with(".frame");
+  }
+  return false;
+}
+
+static unsigned countSlotReferences(const MachineFunction &MF,
+                                    const MachineOperand &SlotOp) {
+  unsigned Count = 0;
+  for (const MachineBasicBlock &MBB : MF) {
+    for (const MachineInstr &MI : MBB) {
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isIdenticalTo(SlotOp)) {
+          ++Count;
+          break; // count at most once per instruction
+        }
+      }
+    }
+  }
+  return Count;
+}
+
+static bool isVolatileAccess(const MachineInstr &MI) {
+  return llvm::any_of(MI.memoperands(), [](const MachineMemOperand *MMO) {
+    return MMO->isVolatile();
+  });
+}
+
+static bool foldSpillReloadToPushPop(MachineBasicBlock &MBB,
+                                     const TargetInstrInfo *TII,
+                                     const TargetRegisterInfo *TRI) {
+  MachineFunction &MF = *MBB.getParent();
+  if (MF.getSubtarget<Z80Subtarget>().hasSM83())
+    return false; // SM83 lacks 16-bit absolute store forms
+
+  bool Changed = false;
+  bool IterChanged;
+  do {
+    IterChanged = false;
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+      MachineInstr &StoreMI = *MII;
+      unsigned StorePushOpc = getSpillStorePushOpc(StoreMI.getOpcode());
+      if (!StorePushOpc || StoreMI.getNumOperands() < 1) {
+        ++MII;
+        continue; // skip instructions that are not 16-bit absolute stores
+      }
+
+      if (isVolatileAccess(StoreMI)) {
+        ++MII;
+        continue; // preserve explicit volatile memory operations
+      }
+
+      const MachineOperand &SlotOp = StoreMI.getOperand(0);
+      if (!isStaticFrameSlot(SlotOp)) {
+        ++MII;
+        continue; // do not touch arbitrary global program data
+      }
+
+      // Ensure the slot is referenced only by this store and one reload in the
+      // whole function; otherwise downstream readers need the memory slot.
+      if (countSlotReferences(MF, SlotOp) != 2) {
+        ++MII;
+        continue;
+      }
+
+      // Scan forward in the same block for the matching reload.
+      MachineBasicBlock::iterator ReloadIt = MBB.end();
+      unsigned ReloadPopOpc = 0;
+      int SPDepth = 0;
+      unsigned Budget = 64;
+      bool Safe = true;
+      bool HasCall = false;
+
+      for (auto It = std::next(MII); It != MIE && Budget--; ++It) {
+        MachineInstr &MI = *It;
+
+        // Cannot cross branches, terminators, or inline asm across stack frames.
+        if (MI.isBranch() || MI.isTerminator() || MI.isInlineAsm()) {
+          Safe = false;
+          break;
+        }
+
+        if (MI.isCall())
+          HasCall = true;
+
+        // Check if this instruction touches the candidate slot.
+        bool TouchesSlot = false;
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isIdenticalTo(SlotOp)) {
+            TouchesSlot = true;
+            break;
+          }
+        }
+
+        if (TouchesSlot) {
+          unsigned PopOpc = getSpillReloadPopOpc(MI.getOpcode());
+          if (PopOpc && SPDepth == 0 && !isVolatileAccess(MI)) {
+            ReloadIt = It;
+            ReloadPopOpc = PopOpc;
+            break; // found matching reload with neutral stack depth
+          }
+          Safe = false; // touched with non-zero depth, volatile, or bad op
+          break;
+        }
+
+        // Any explicit read or modify of SP breaks stack-offset assumptions.
+        if (MI.readsRegister(Z80::SP, TRI) ||
+            MI.modifiesRegister(Z80::SP, TRI)) {
+          Safe = false;
+          break;
+        }
+
+        // Track stack adjustments from nested push/pop instructions.
+        SPDepth += TII->getSPAdjust(MI);
+        if (SPDepth < 0) {
+          Safe = false; // popped past the start of this stretch
+          break;
+        }
+      }
+
+      // Only fold if the stretch crosses a call (caller-save spill) with
+      // balanced stack depth.
+      if (!Safe || ReloadIt == MBB.end() || SPDepth != 0 || !HasCall) {
+        ++MII;
+        continue;
+      }
+
+      LLVM_DEBUG(dbgs() << "  Folding spill/reload to push/pop: " << StoreMI
+                        << "  and: " << *ReloadIt);
+
+      DebugLoc StoreDL = StoreMI.getDebugLoc();
+      DebugLoc ReloadDL = ReloadIt->getDebugLoc();
+
+      BuildMI(MBB, StoreMI, StoreDL, TII->get(StorePushOpc));
+      BuildMI(MBB, ReloadIt, ReloadDL, TII->get(ReloadPopOpc));
+
+      MBB.erase(ReloadIt);
+      MII = MBB.erase(MII);
+
+      ++NumSpillPushPopsFolded;
+      IterChanged = true;
+      Changed = true;
+    }
+  } while (IterChanged);
+
+  if (Changed)
+    recomputeLivenessFlags(MBB);
+
+  return Changed;
+}
+
 
 // --- SM83: route (HL) accesses through A for the post-increment form ---
 //
@@ -2256,6 +2452,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     // which is the level that takes those.
     if (!STI.hasSM83() && MF.getFunction().hasMinSize())
       Changed |= materializeIXConstantStores(MBB, TII, TRI);
+    Changed |= foldSpillReloadToPushPop(MBB, TII, TRI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
   }
