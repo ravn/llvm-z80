@@ -777,25 +777,36 @@ static bool elidePushPopAcrossStretch(MachineBasicBlock &MBB,
   return Changed;
 }
 
-// --- Fold static-frame 16-bit call-crossing spills into push/pop ---
+// --- Fold static-frame 16-bit and 8-bit call-crossing spills into push/pop ---
 //
-// WHAT: Replaces 16-bit static frame store/reload pairs around calls with
-//       PUSH/POP pairs when the frame slot is private to this single pair.
+// WHAT: Replaces static frame store/reload pairs around calls with PUSH/POP
+//       pairs when the frame slot is private to this single pair. Handles both
+//       16-bit pairs (BC, DE, HL) and 8-bit registers (B, C, D, E, H, L) whose
+//       sibling register in the 16-bit pair is dead at reload.
 // WHY:  A 16-bit static frame access takes 3-4 bytes (ED 43 / ED 4B / 22 / 2A),
-//       costing 7-8 bytes of code plus 2 bytes of BSS frame space. PUSH and
-//       POP take 1 byte each (2 bytes total), saving 5-6 bytes of code and
-//       eliminating the frame slot access entirely.
+//       costing 7-8 bytes of code plus 2 bytes of BSS frame space. An 8-bit
+//       static frame spill costs 8 bytes (ld a, r; ld (slot), a; call; ld hl, slot;
+//       ld r, (hl)). PUSH and POP take 1 byte each (2 bytes total), saving 5-6 bytes
+//       of code and eliminating the frame slot access entirely.
 // GOTCHA: LIFO stack ordering must be strictly maintained; all instructions
 //         in the stretch must preserve stack neutrality (SPDepth == 0 at reload).
+//         For 8-bit spills, the sibling register (e.g. E when D is spilled) must
+//         be dead after the reload sequence so POP does not clobber live values.
 //
-// Concrete example (autoload-in-c _fdc_read_result, rom.c:423):
-//   ld (L_fdc_read_result.frame), bc  ; 4B (ED 43 ee 6d)
-//   call _fdc_read_when_ready         ; 3B (CD 7d 60)
-//   ld bc, (L_fdc_read_result.frame)  ; 4B (ED 4B ee 6d)
-//   ->
-//   push bc                           ; 1B (C5)
-//   call _fdc_read_when_ready         ; 3B (CD 7d 60)
-//   pop bc                            ; 1B (C1)
+// Concrete examples (autoload-in-c _fdc_read_result, rom.c:423):
+//   16-bit spill of BC:
+//     ld (L_fdc_read_result.frame), bc  ; 4B (ED 43 ee 6d)
+//     call _fdc_read_when_ready         ; 3B (CD 7d 60)
+//     ld bc, (L_fdc_read_result.frame)  ; 4B (ED 4B ee 6d)
+//     -> push bc / pop bc               ; 2B total (saved 6B)
+//
+//   8-bit spill of D (E is dead across call):
+//     ld a, d                           ; 1B (7A)
+//     ld (L_fdc_read_result.frame+2), a ; 3B (32 f0 6d)
+//     call _fdc_read_when_ready         ; 3B (CD 7d 60)
+//     ld hl, L_fdc_read_result.frame+2  ; 3B (21 f0 6d)
+//     ld d, (hl)                        ; 1B (56)
+//     -> push de / pop de               ; 2B total (saved 6B)
 static unsigned getSpillStorePushOpc(unsigned Opc) {
   switch (Opc) {
   case Z80::LD_nnind_BC: return Z80::PUSH_BC;
@@ -847,6 +858,24 @@ static bool isVolatileAccess(const MachineInstr &MI) {
   });
 }
 
+struct Reg8SpillInfo {
+  unsigned PushOpc = 0;
+  unsigned PopOpc = 0;
+  MCPhysReg Sibling = 0;
+};
+
+static Reg8SpillInfo get8BitSpillInfo(MCPhysReg Reg) {
+  switch (Reg) {
+  case Z80::B: return {Z80::PUSH_BC, Z80::POP_BC, Z80::C};
+  case Z80::C: return {Z80::PUSH_BC, Z80::POP_BC, Z80::B};
+  case Z80::D: return {Z80::PUSH_DE, Z80::POP_DE, Z80::E};
+  case Z80::E: return {Z80::PUSH_DE, Z80::POP_DE, Z80::D};
+  case Z80::H: return {Z80::PUSH_HL, Z80::POP_HL, Z80::L};
+  case Z80::L: return {Z80::PUSH_HL, Z80::POP_HL, Z80::H};
+  default: return {0, 0, 0};
+  }
+}
+
 static bool foldSpillReloadToPushPop(MachineBasicBlock &MBB,
                                      const TargetInstrInfo *TII,
                                      const TargetRegisterInfo *TRI) {
@@ -861,12 +890,36 @@ static bool foldSpillReloadToPushPop(MachineBasicBlock &MBB,
     for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
       MachineInstr &StoreMI = *MII;
       unsigned StorePushOpc = getSpillStorePushOpc(StoreMI.getOpcode());
-      if (!StorePushOpc || StoreMI.getNumOperands() < 1) {
-        ++MII;
-        continue; // skip instructions that are not 16-bit absolute stores
+      MachineInstr *PrevMI = nullptr;
+      Reg8SpillInfo R8Info;
+      bool Is8Bit = false;
+
+      if (!StorePushOpc) {
+        // Check for 8-bit store: LD_nnind_A SlotOp preceded by LD_r_r A, SrcReg
+        if (StoreMI.getOpcode() == Z80::LD_nnind_A && StoreMI.getNumOperands() >= 1) {
+          for (auto It = MachineBasicBlock::reverse_iterator(MII); It != MBB.rend(); ++It) {
+            if (It->isDebugInstr())
+              continue;
+            if (It->getOpcode() == Z80::LD_r_r && It->getOperand(0).getReg() == Z80::A) {
+              R8Info = get8BitSpillInfo(It->getOperand(1).getReg());
+              if (R8Info.PushOpc &&
+                  isRegDeadAfter(std::next(MII), MBB, TRI, Z80::A)) {
+                PrevMI = &*It;
+                StorePushOpc = R8Info.PushOpc;
+                Is8Bit = true;
+              }
+            }
+            break;
+          }
+        }
       }
 
-      if (isVolatileAccess(StoreMI)) {
+      if (!StorePushOpc || StoreMI.getNumOperands() < 1) {
+        ++MII;
+        continue; // skip instructions that are not spill stores
+      }
+
+      if (isVolatileAccess(StoreMI) || (Is8Bit && isVolatileAccess(*PrevMI))) {
         ++MII;
         continue; // preserve explicit volatile memory operations
       }
@@ -886,6 +939,7 @@ static bool foldSpillReloadToPushPop(MachineBasicBlock &MBB,
 
       // Scan forward in the same block for the matching reload.
       MachineBasicBlock::iterator ReloadIt = MBB.end();
+      MachineInstr *ReloadNextMI = nullptr;
       unsigned ReloadPopOpc = 0;
       int SPDepth = 0;
       unsigned Budget = 64;
@@ -914,14 +968,56 @@ static bool foldSpillReloadToPushPop(MachineBasicBlock &MBB,
         }
 
         if (TouchesSlot) {
-          unsigned PopOpc = getSpillReloadPopOpc(MI.getOpcode());
-          if (PopOpc && SPDepth == 0 && !isVolatileAccess(MI)) {
-            ReloadIt = It;
-            ReloadPopOpc = PopOpc;
-            break; // found matching reload with neutral stack depth
+          if (Is8Bit) {
+            // Reload for 8-bit:
+            // Case 1: LD_rr_nn HL, Slot followed by LD_r_HLind DstReg, HL
+            // Case 2: LD_A_nnind Slot followed by LD_r_r DstReg, A
+            MCPhysReg SrcReg = PrevMI->getOperand(1).getReg();
+            MachineInstr *NextMI = nullptr;
+            for (auto NIt = std::next(It); NIt != MIE; ++NIt) {
+              if (!NIt->isDebugInstr()) {
+                NextMI = &*NIt;
+                break;
+              }
+            }
+
+            bool Matched = false;
+            if (NextMI && SPDepth == 0 && !isVolatileAccess(MI) &&
+                !isVolatileAccess(*NextMI)) {
+              if (MI.getOpcode() == Z80::LD_rr_nn &&
+                  MI.getOperand(0).getReg() == Z80::HL &&
+                  NextMI->getOpcode() == Z80::LD_r_HLind &&
+                  NextMI->getOperand(0).getReg() == SrcReg) {
+                Matched = true;
+              } else if (MI.getOpcode() == Z80::LD_A_nnind &&
+                         NextMI->getOpcode() == Z80::LD_r_r &&
+                         NextMI->getOperand(0).getReg() == SrcReg &&
+                         NextMI->getOperand(1).getReg() == Z80::A) {
+                Matched = true;
+              }
+            }
+
+            if (Matched) {
+              auto AfterReload = std::next(MachineBasicBlock::iterator(NextMI));
+              if (isRegDeadAfter(AfterReload, MBB, TRI, R8Info.Sibling)) {
+                ReloadIt = It;
+                ReloadNextMI = NextMI;
+                ReloadPopOpc = R8Info.PopOpc;
+                break;
+              }
+            }
+            Safe = false;
+            break;
+          } else {
+            unsigned PopOpc = getSpillReloadPopOpc(MI.getOpcode());
+            if (PopOpc && SPDepth == 0 && !isVolatileAccess(MI)) {
+              ReloadIt = It;
+              ReloadPopOpc = PopOpc;
+              break; // found matching reload with neutral stack depth
+            }
+            Safe = false; // touched with non-zero depth, volatile, or bad op
+            break;
           }
-          Safe = false; // touched with non-zero depth, volatile, or bad op
-          break;
         }
 
         // Any explicit read or modify of SP breaks stack-offset assumptions.
@@ -955,8 +1051,15 @@ static bool foldSpillReloadToPushPop(MachineBasicBlock &MBB,
       BuildMI(MBB, StoreMI, StoreDL, TII->get(StorePushOpc));
       BuildMI(MBB, ReloadIt, ReloadDL, TII->get(ReloadPopOpc));
 
-      MBB.erase(ReloadIt);
-      MII = MBB.erase(MII);
+      if (Is8Bit) {
+        MBB.erase(ReloadNextMI);
+        MBB.erase(ReloadIt);
+        MBB.erase(PrevMI);
+        MII = MBB.erase(MII);
+      } else {
+        MBB.erase(ReloadIt);
+        MII = MBB.erase(MII);
+      }
 
       ++NumSpillPushPopsFolded;
       IterChanged = true;
