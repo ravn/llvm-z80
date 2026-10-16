@@ -147,7 +147,7 @@ bool Z80NonReentrantImpl::run(Module &M) {
   // without stripping, @isr calls CallsExternalNode -> ExternalCallingNode -> @main,
   // falsely marking @main as reachable from multiple contexts.
   CallGraphNode *CallsExternal = CG.getCallsExternalNode();
-  SmallVector<std::pair<CallGraphNode *, CallBase *>, 8> RemovedAsmEdges;
+  SmallVector<std::pair<CallGraphNode *, CallBase *>, 8> RemovedEdges;
   for (auto &P : CG) {
     CallGraphNode *CGN = P.second.get();
     for (auto I = CGN->begin(); I != CGN->end();) {
@@ -156,15 +156,25 @@ bool Z80NonReentrantImpl::run(Module &M) {
         ++I;
         continue;
       }
-      // Skip call records without an instruction reference.
+      // Declarations targeting CallsExternalNode: if the declaration is
+      // noreturn, it never returns to any caller, so it cannot complete a
+      // recursive cycle back to the caller frame.
       if (!I->first || !*I->first) {
+        Function *F = CGN->getFunction();
+        if (F && F->isDeclaration() && F->doesNotReturn()) {
+          RemovedEdges.emplace_back(CGN, nullptr);
+          CGN->removeCallEdge(I);
+          continue;
+        }
         ++I;
         continue;
       }
       auto *CB = dyn_cast<CallBase>(static_cast<Value *>(*I->first));
       // Only strip genuine inline assembly calls, not function pointers.
-      if (CB && CB->isInlineAsm()) {
-        RemovedAsmEdges.emplace_back(CGN, CB);
+      // Also strip noreturn calls: a call that never returns cannot complete
+      // recursion back to the caller's activation.
+      if (CB && (CB->isInlineAsm() || CB->doesNotReturn())) {
+        RemovedEdges.emplace_back(CGN, CB);
         CGN->removeCallEdge(I);
         continue;
       }
@@ -253,8 +263,8 @@ bool Z80NonReentrantImpl::run(Module &M) {
   while (!CallsExternal->empty())
     CallsExternal->removeCallEdge(CallsExternal->begin());
 
-  // Restore the inline asm edges so CallGraph remains intact for downstream.
-  for (auto &P : RemovedAsmEdges)
+  // Restore the stripped edges so CallGraph remains intact for downstream.
+  for (auto &P : RemovedEdges)
     P.first->addCalledFunction(P.second, CallsExternal);
 
   // A function the recursion walk never reached (internal, no callers, its

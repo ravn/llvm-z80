@@ -18,7 +18,7 @@ declare void @external_normal()
 ; CHECK-LABEL: test_external_noreturn:
 ; CHECK-NOT: push ix
 ; CHECK-NOT: dec sp
-; CHECK: ld hl, L_test_external_noreturn.frame
+; CHECK: ld hl,L_test_external_noreturn.frame
 ; CHECK: call _external_exit
 define void @test_external_noreturn() {
   %slot = alloca i8, align 1
@@ -35,7 +35,7 @@ define void @test_external_noreturn() {
 ; CHECK-LABEL: helper_calls_noreturn:
 ; CHECK-NOT: push ix
 ; CHECK-NOT: dec sp
-; CHECK: ld hl, L_helper_calls_noreturn.frame
+; CHECK: ld (L_helper_calls_noreturn.frame),a
 ; CHECK: call _external_exit
 define internal void @helper_calls_noreturn(i8 %val) {
   %slot = alloca i8, align 1
@@ -47,7 +47,7 @@ define internal void @helper_calls_noreturn(i8 %val) {
 ; CHECK-LABEL: caller_of_helper:
 ; CHECK-NOT: push ix
 ; CHECK-NOT: dec sp
-; CHECK: ld hl, L_caller_of_helper.frame
+; CHECK: ld hl,L_caller_of_helper.frame
 ; CHECK: call _helper_calls_noreturn
 define void @caller_of_helper() {
   %slot = alloca i8, align 1
@@ -60,7 +60,7 @@ define void @caller_of_helper() {
 ; CHECK-LABEL: test_indirect_noreturn:
 ; CHECK-NOT: push ix
 ; CHECK-NOT: dec sp
-; CHECK: ld hl, L_test_indirect_noreturn.frame
+; CHECK: ld hl,L_test_indirect_noreturn.frame
 define void @test_indirect_noreturn(ptr %fn) {
   %slot = alloca i8, align 1
   store volatile i8 99, ptr %slot, align 1
@@ -105,7 +105,7 @@ define void @test_external_normal() {
 ; Shape (d) Safety check: static frames are consolidated into L___static_frames.
 ; -----------------------------------------------------------------------------
 ; CHECK: L___static_frames:
-; CHECK-DAG: L_test_external_noreturn.frame = L___static_frames
-; CHECK-DAG: L_caller_of_helper.frame = L___static_frames
-; CHECK-DAG: L_helper_calls_noreturn.frame = L___static_frames
 ; CHECK-DAG: L_test_indirect_noreturn.frame = L___static_frames
+; CHECK-DAG: L_helper_calls_noreturn.frame = L___static_frames+{{[0-9]+}}
+; CHECK-DAG: L_caller_of_helper.frame = L___static_frames+{{[0-9]+}}
+; CHECK-DAG: L_test_external_noreturn.frame = L___static_frames+{{[0-9]+}}
