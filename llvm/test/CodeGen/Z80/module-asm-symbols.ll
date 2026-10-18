@@ -11,4 +11,4 @@ target triple = "z80"
 module asm ".global _foo"
 module asm "_foo = 1"
 
-; CHECK: 00000001 A _foo
+; CHECK: -------- T _foo

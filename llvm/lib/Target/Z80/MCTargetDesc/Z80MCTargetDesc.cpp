@@ -111,6 +111,10 @@ static MCTargetStreamer *createMCAsmTargetStreamer(MCStreamer &S,
   return new Z80TargetAsmStreamer(S, OS);
 }
 
+static MCTargetStreamer *createZ80NullTargetStreamer(MCStreamer &S) {
+  return new MCTargetStreamer(S);
+}
+
 static MCInstrAnalysis *createZ80MCInstrAnalysis(const MCInstrInfo *Info) {
   return new Z80MCInstrAnalysis(Info);
 }
@@ -129,6 +133,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80TargetMC() {
     TargetRegistry::RegisterObjectTargetStreamer(*T,
                                                  createZ80ObjectTargetStreamer);
     TargetRegistry::RegisterAsmTargetStreamer(*T, createMCAsmTargetStreamer);
+    TargetRegistry::RegisterNullTargetStreamer(*T, createZ80NullTargetStreamer);
     TargetRegistry::RegisterMCAsmBackend(*T, createZ80AsmBackend);
   }
 }
