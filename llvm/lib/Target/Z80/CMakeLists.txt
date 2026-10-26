@@ -207,13 +207,20 @@ function(z80_build_builtins TRIPLE SUBDIR CRT0_ASM RT_DIR SDAS)
   # The runtime the z88dk environment links after z88dk's libraries, without
   # the C library functions, since C calls them as __smallc there. llvm-mc
   # prints each module in z80asm syntax.
-  find_program(Z88DK_Z80ASM z88dk-z80asm)
+  find_program(Z88DK_Z80ASM z88dk-z80asm HINTS /Users/ravn/z80/z88dk/bin /home/ravn/z80/z88dk/bin)
   if(Z88DK_Z80ASM AND TRIPLE STREQUAL "z80")
     set(Z88DK_OUT ${OUT}/z88dk)
     set(Z88DK_RT_OBJS "")
     foreach(src ${RT_SOURCES})
       get_filename_component(name ${src} NAME_WE)
-      if(name MATCHES "^(bcmp|bzero|ceilf|floorf|fmaxf|fmaximum_numf|fminf|fminimum_numf|fmodf|lrintf|lroundf|memchr|memcmp|memcpy|memmove|memset|modff|rintf|roundf|stpcpy|strcat|strchr|strcmp|strcpy|strlen|strncmp|strncpy|strnlen|truncf)$")
+      # mulhisi3/muldi3/mulsi3/umulhisi3 added 2026-10-26: all reference
+      # ___umulhi3 but the llvm-mc z88dk-asm backend doesn't emit EXTERN for
+      # it, so z88dk-z80asm fails at assembly time with "undefined symbol".
+      # The symbol IS defined by umulhi3.asm itself, so this is a translator
+      # bug on PR #112, not a missing implementation.  Exclude the four
+      # callers until zlfn resolves.  See
+      # tasks/memory/project_zcc_llvmz80_sdcc_triple_blocker.md.
+      if(name MATCHES "^(bcmp|bzero|ceilf|floorf|fmaxf|fmaximum_numf|fminf|fminimum_numf|fmodf|lrintf|lroundf|memchr|memcmp|memcpy|memmove|memset|modff|rintf|roundf|stpcpy|strcat|strchr|strcmp|strcpy|strlen|strncmp|strncpy|strnlen|truncf|mulhisi3|muldi3|mulsi3|umulhisi3)$")
         continue()
       endif()
       set(obj ${Z88DK_OUT}/${name}.o)
