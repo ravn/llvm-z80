@@ -3943,8 +3943,17 @@ def Z88dkLib : LibcallLibrary<"z88dk",
                       Z80_C>), isZ80Z88dkEnv>;
 
 // The compiler-rt helpers used in the z88dk environment.
+// __umulhi3/__mulhisi3/__umulhisi3/__muldi3 added 2026-10-27 so
+// legalizeMul32 can succeed for (int32)int16 * (int32)int16 (sign-ext ->
+// SMUL_LOHI_I16 -> __mulhisi3), (uint32)uint16 * (uint32)uint16 (zero-ext
+// -> UMUL_LOHI_I16 -> __umulhisi3), and 64-bit multiply (-> __muldi3).
+// Without these the backend bails with "unable to legalize G_MUL (s32)"
+// because the libcall table has no z88dk-env implementation registered.
+// Full-width signed/unsigned 32x32 -> low-32 continues to route to
+// Z88dkLib's l_mulu_32_32x32 (two's complement handles both signs).
 def Z80Z88dkCompilerRt : LibcallLibrary<"compiler-rt",
-  (add Z80MemCalls), isZ80Z88dkEnv>;
+  (add Z80MemCalls,
+       __umulhi3, __mulhisi3, __umulhisi3, __muldi3), isZ80Z88dkEnv>;
 
 // The compiler-rt functions z88dk replaces.
 defvar Z80Z88dkOptOut = [
