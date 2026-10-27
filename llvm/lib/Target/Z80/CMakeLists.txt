@@ -213,14 +213,7 @@ function(z80_build_builtins TRIPLE SUBDIR CRT0_ASM RT_DIR SDAS)
     set(Z88DK_RT_OBJS "")
     foreach(src ${RT_SOURCES})
       get_filename_component(name ${src} NAME_WE)
-      # mulhisi3/muldi3/mulsi3/umulhisi3 added 2026-10-26: all reference
-      # ___umulhi3 but the llvm-mc z88dk-asm backend doesn't emit EXTERN for
-      # it, so z88dk-z80asm fails at assembly time with "undefined symbol".
-      # The symbol IS defined by umulhi3.asm itself, so this is a translator
-      # bug on PR #112, not a missing implementation.  Exclude the four
-      # callers until zlfn resolves.  See
-      # tasks/memory/project_zcc_llvmz80_sdcc_triple_blocker.md.
-      if(name MATCHES "^(bcmp|bzero|ceilf|floorf|fmaxf|fmaximum_numf|fminf|fminimum_numf|fmodf|lrintf|lroundf|memchr|memcmp|memcpy|memmove|memset|modff|rintf|roundf|stpcpy|strcat|strchr|strcmp|strcpy|strlen|strncmp|strncpy|strnlen|truncf|mulhisi3|muldi3|mulsi3|umulhisi3)$")
+      if(name MATCHES "^(bcmp|bzero|ceilf|floorf|fmaxf|fmaximum_numf|fminf|fminimum_numf|fmodf|lrintf|lroundf|memchr|memcmp|memcpy|memmove|memset|modff|rintf|roundf|stpcpy|strcat|strchr|strcmp|strcpy|strlen|strncmp|strncpy|strnlen|truncf)$")
         continue()
       endif()
       set(obj ${Z88DK_OUT}/${name}.o)
