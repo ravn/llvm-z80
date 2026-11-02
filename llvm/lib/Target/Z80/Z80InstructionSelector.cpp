@@ -4039,6 +4039,31 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       return true;
     }
 
+    case Intrinsic::z80_im0:
+    case Intrinsic::z80_im1:
+    case Intrinsic::z80_im2: {
+      // void @llvm.z80.im{0,1,2}()
+      unsigned Opc = IntrinsicID == Intrinsic::z80_im0   ? Z80::IM_0
+                     : IntrinsicID == Intrinsic::z80_im1 ? Z80::IM_1
+                                                         : Z80::IM_2;
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Opc));
+      MI.eraseFromParent();
+      return true;
+    }
+
+    case Intrinsic::z80_set_i: {
+      // void @llvm.z80.set_i(i8 page): LD I,A
+      Register ValueReg = MI.getOperand(1).getReg();
+      if (!RBI.constrainGenericRegister(ValueReg, Z80::GR8RegClass, MRI))
+        return false;
+      // LD_I_A reads A; the copy must not look dead (LD_I_A has Uses = [A]).
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+          .addReg(ValueReg);
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::LD_I_A));
+      MI.eraseFromParent();
+      return true;
+    }
+
     default:
       return false;
     }

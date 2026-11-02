@@ -12,7 +12,7 @@
 ;
 ; C equivalent of the positive module (through the intrinsics):
 ;   void a(void) { volatile char buf[8]; buf[0] = 1; nop(); }
-;   void b(void) { volatile char buf[8]; buf[0] = 2; }
+;   void b(void) { volatile char buf[8]; buf[0] = 2; im2(); set_i(0x40); }
 ;   int main(void) { volatile int v = 1; port_out(5, port_in(4)); di(); ei();
 ;                    a(); b(); halt(); return v; }
 ;   void isr(void) __attribute__((interrupt)) { volatile int v = 7; ei(); }
@@ -24,6 +24,8 @@ declare void @llvm.z80.halt()
 declare void @llvm.z80.di()
 declare void @llvm.z80.ei()
 declare void @llvm.z80.nop()
+declare void @llvm.z80.im2()
+declare void @llvm.z80.set.i(i8)
 
 define void @a() {
   %buf = alloca [8 x i8], align 1
@@ -35,6 +37,8 @@ define void @a() {
 define void @b() {
   %buf = alloca [8 x i8], align 1
   store volatile i8 2, ptr %buf, align 1
+  call void @llvm.z80.im2()
+  call void @llvm.z80.set.i(i8 64)
   ret void
 }
 

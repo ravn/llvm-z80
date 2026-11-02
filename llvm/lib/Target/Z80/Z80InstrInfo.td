@@ -46,7 +46,7 @@ def LD_nnind_A : Inst24<"ld", 0x32, DirectMode> {
 // LD A,I / LD A,R / LD I,A / LD R,A - Special registers (ED prefix)
 def LD_A_I : InstED8<"ld a,i", 0x57>;
 def LD_A_R : InstED8<"ld a,r", 0x5F>;
-def LD_I_A : InstED8<"ld i,a", 0x47>;
+def LD_I_A : InstED8<"ld i,a", 0x47> { let Uses = [A]; }
 def LD_R_A : InstED8<"ld r,a", 0x4F>;
 
 //===----------------------------------------------------------------------===//

@@ -57,6 +57,21 @@ let TargetPrefix = "z80" in {  // All intrinsics start with "llvm.z80."
   def int_z80_ei : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects,
                                       IntrNoCallback]>;
 
+  // Interrupt mode: IM 0 / IM 1 / IM 2
+  // void @llvm.z80.im0(), im1(), im2()
+  def int_z80_im0 : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects,
+                                       IntrNoCallback, IntrWillReturn]>;
+  def int_z80_im1 : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects,
+                                       IntrNoCallback, IntrWillReturn]>;
+  def int_z80_im2 : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects,
+                                       IntrNoCallback, IntrWillReturn]>;
+
+  // Load the interrupt vector base register: LD I,A
+  // void @llvm.z80.set.i(i8 page)   (TableGen turns _ into . in the name)
+  def int_z80_set_i : Intrinsic<[], [llvm_i8_ty],
+                                [IntrNoMem, IntrHasSideEffects, IntrNoCallback,
+                                 IntrWillReturn]>;
+
   // No operation (useful for timing loops)
   // void @llvm.z80.nop()
   def int_z80_nop : Intrinsic<[], [], [IntrNoMem, IntrHasSideEffects,
