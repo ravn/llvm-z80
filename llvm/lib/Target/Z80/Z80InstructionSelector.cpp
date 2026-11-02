@@ -3947,10 +3947,23 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       Register DstReg = MI.getOperand(0).getReg();
       Register PortReg = MI.getOperand(2).getReg();
 
+      if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
+        return false;
+
+      // Constant port: IN A,(n) is 2 bytes and needs no LD C,n.  The upper
+      // address byte (A15-A8) is the contents of A here, B for the (C) form;
+      // it is unspecified for an 8-bit port number either way.
+      if (auto Port = getIConstantVRegVal(PortReg, MRI)) {
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::IN_A_n))
+            .addImm(Port->getZExtValue() & 0xFF);
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), DstReg)
+            .addReg(Z80::A);
+        MI.eraseFromParent();
+        return true;
+      }
+
       // Constrain port register to C
       if (!RBI.constrainGenericRegister(PortReg, Z80::GR8RegClass, MRI))
-        return false;
-      if (!RBI.constrainGenericRegister(DstReg, Z80::GR8RegClass, MRI))
         return false;
 
       // Move port to C if not already there
@@ -3970,10 +3983,21 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       Register PortReg = MI.getOperand(1).getReg();
       Register ValueReg = MI.getOperand(2).getReg();
 
+      if (!RBI.constrainGenericRegister(ValueReg, Z80::GR8RegClass, MRI))
+        return false;
+
+      // Constant port: OUT (n),A is 2 bytes and needs no LD C,n.
+      if (auto Port = getIConstantVRegVal(PortReg, MRI)) {
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::COPY), Z80::A)
+            .addReg(ValueReg);
+        BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(Z80::OUT_n_A))
+            .addImm(Port->getZExtValue() & 0xFF);
+        MI.eraseFromParent();
+        return true;
+      }
+
       // Constrain registers
       if (!RBI.constrainGenericRegister(PortReg, Z80::GR8RegClass, MRI))
-        return false;
-      if (!RBI.constrainGenericRegister(ValueReg, Z80::GR8RegClass, MRI))
         return false;
 
       // Move port to C

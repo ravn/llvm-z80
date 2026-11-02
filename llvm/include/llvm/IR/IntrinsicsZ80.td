@@ -25,7 +25,10 @@
 let TargetPrefix = "z80" in {  // All intrinsics start with "llvm.z80."
 
   // Port I/O intrinsics
-  // These map directly to Z80 IN and OUT instructions
+  // These map directly to Z80 IN and OUT instructions.  The port number is
+  // 8 bits; what is driven on the upper address lines A15-A8 is unspecified
+  // (a constant port selects IN A,(n)/OUT (n),A, which put A there; a
+  // variable port selects IN r,(C)/OUT (C),r, which put B there).
 
   // Read a byte from an I/O port
   // i8 @llvm.z80.in(i8 port)
