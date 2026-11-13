@@ -13,13 +13,13 @@ declare i16 @g3(i16, i16, i16)
 declare i16 @g4(i16, i16, i16, i16)
 declare i16 @g_i32(i16, i16, i32)
 declare i8 @g_i8(i8, i8, i8)
-declare cc128 i16 @g3_cc0(i16, i16, i16)
-declare cc128 i16 @g2_cc0(i16, i16)
-declare cc129 i16 @g3_smallc(i16, i16, i16)
-declare cc129 i16 @g2_smallc(i16, i16)
-declare cc129 i8 @g_i8_smallc(i8, i8, i8)
-declare cc128 i16 @cc0()
-declare cc128 void @cc0v()
+declare cc 241 i16 @g3_cc0(i16, i16, i16)
+declare cc 241 i16 @g2_cc0(i16, i16)
+declare cc 242 i16 @g3_smallc(i16, i16, i16)
+declare cc 242 i16 @g2_smallc(i16, i16)
+declare cc 242 i8 @g_i8_smallc(i8, i8, i8)
+declare cc 241 i16 @cc0()
+declare cc 241 void @cc0v()
 declare void @f(...)
 declare void @llvm.memcpy.p0.p0.i16(ptr, ptr, i16, i1)
 declare void @u(i8)
@@ -364,7 +364,7 @@ define i16 @helper_used(i16 %a, i16 %b) {
 ; __sdcccall(0) returns i16 in HL on Z80 and DE on SM83, unlike the helper.
 ; CHECK-LABEL: _helper_cc0:
 ; CHECK:       call ___mulhi3
-define cc128 i16 @helper_cc0(i16 %a, i16 %b) {
+define cc 241 i16 @helper_cc0(i16 %a, i16 %b) {
   %r = mul i16 %a, %b
   ret i16 %r
 }
@@ -374,7 +374,7 @@ define cc128 i16 @helper_cc0(i16 %a, i16 %b) {
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  jp _cc0v
 define void @void_cc0() {
-  tail call cc128 void @cc0v()
+  tail call cc 241 void @cc0v()
   ret void
 }
 
@@ -442,24 +442,24 @@ define i8 @pass_through_i8(i8 %a, i8 %b, i8 %c) {
 ; CHECK-LABEL: _pass_through_cc0:
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  jp _g3_cc0
-define cc128 i16 @pass_through_cc0(i16 %a, i16 %b, i16 %c) {
-  %r = tail call cc128 i16 @g3_cc0(i16 %a, i16 %b, i16 %c)
+define cc 241 i16 @pass_through_cc0(i16 %a, i16 %b, i16 %c) {
+  %r = tail call cc 241 i16 @g3_cc0(i16 %a, i16 %b, i16 %c)
   ret i16 %r
 }
 
 ; CHECK-LABEL: _pass_through_cc0_fewer:
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  jp _g2_cc0
-define cc128 i16 @pass_through_cc0_fewer(i16 %a, i16 %b, i16 %c) {
-  %r = tail call cc128 i16 @g2_cc0(i16 %a, i16 %b)
+define cc 241 i16 @pass_through_cc0_fewer(i16 %a, i16 %b, i16 %c) {
+  %r = tail call cc 241 i16 @g2_cc0(i16 %a, i16 %b)
   ret i16 %r
 }
 
 ; CHECK-LABEL: _pass_through_smallc:
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  jp _g3_smallc
-define cc129 i16 @pass_through_smallc(i16 %a, i16 %b, i16 %c) {
-  %r = tail call cc129 i16 @g3_smallc(i16 %a, i16 %b, i16 %c)
+define cc 242 i16 @pass_through_smallc(i16 %a, i16 %b, i16 %c) {
+  %r = tail call cc 242 i16 @g3_smallc(i16 %a, i16 %b, i16 %c)
   ret i16 %r
 }
 
@@ -467,8 +467,8 @@ define cc129 i16 @pass_through_smallc(i16 %a, i16 %b, i16 %c) {
 ; CHECK-LABEL: _pass_through_smallc_i8:
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  jp _g_i8_smallc
-define cc129 i8 @pass_through_smallc_i8(i8 %a, i8 %b, i8 %c) {
-  %r = tail call cc129 i8 @g_i8_smallc(i8 %a, i8 %b, i8 %c)
+define cc 242 i8 @pass_through_smallc_i8(i8 %a, i8 %b, i8 %c) {
+  %r = tail call cc 242 i8 @g_i8_smallc(i8 %a, i8 %b, i8 %c)
   ret i8 %r
 }
 
@@ -477,15 +477,15 @@ define cc129 i8 @pass_through_smallc_i8(i8 %a, i8 %b, i8 %c) {
 ; CHECK-LABEL: _pass_through_smallc_last:
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  jp _g2_smallc
-define cc129 i16 @pass_through_smallc_last(i16 %a, i16 %b, i16 %c) {
-  %r = tail call cc129 i16 @g2_smallc(i16 %b, i16 %c)
+define cc 242 i16 @pass_through_smallc_last(i16 %a, i16 %b, i16 %c) {
+  %r = tail call cc 242 i16 @g2_smallc(i16 %b, i16 %c)
   ret i16 %r
 }
 
 ; CHECK-LABEL: _swapped_smallc:
 ; CHECK:       call _g2_smallc
-define cc129 i16 @swapped_smallc(i16 %a, i16 %b) {
-  %r = tail call cc129 i16 @g2_smallc(i16 %b, i16 %a)
+define cc 242 i16 @swapped_smallc(i16 %a, i16 %b) {
+  %r = tail call cc 242 i16 @g2_smallc(i16 %b, i16 %a)
   ret i16 %r
 }
 
@@ -536,7 +536,7 @@ define void @isr() "interrupt" {
 ; CHECK:       %bb.0:
 ; CHECK-NEXT:  call _cc0
 define i16 @ret_mismatch() {
-  %r = tail call cc128 i16 @cc0()
+  %r = tail call cc 241 i16 @cc0()
   ret i16 %r
 }
 

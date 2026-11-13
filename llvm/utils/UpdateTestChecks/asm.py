@@ -433,6 +433,22 @@ def scrub_asm_avr(asm, args):
     return asm
 
 
+# Z80/SM83: ELF format ends with .Lfunc_end, sdász80 format ends with ; -- End function
+ASM_FUNCTION_Z80_RE = re.compile(
+    r'^_?(?P<func>[^:]+):[ \t]*;+[ \t]*@"?(?P=func)"?\n[^:]*?'
+    r"(?P<body>.*?)\n"
+    r"(?:\.Lfunc_end[0-9]+:|\s*;[ \t]+-+[ \t]+End function)\n",
+    flags=(re.M | re.S),
+)
+
+
+def scrub_asm_z80(asm, args):
+    asm = common.SCRUB_WHITESPACE_RE.sub(r" ", asm)
+    asm = string.expandtabs(asm, 2)
+    asm = common.SCRUB_TRAILING_WHITESPACE_RE.sub(r"", asm)
+    return asm
+
+
 def scrub_asm_riscv(asm, args):
     # Scrub runs of whitespace out of the assembly, but leave the leading
     # whitespace in place.
@@ -618,6 +634,8 @@ def get_run_handler(triple):
         "nvptx": (scrub_asm_nvptx, ASM_FUNCTION_NVPTX_RE),
         "loongarch32": (scrub_asm_loongarch, ASM_FUNCTION_LOONGARCH_RE),
         "loongarch64": (scrub_asm_loongarch, ASM_FUNCTION_LOONGARCH_RE),
+        "z80": (scrub_asm_z80, ASM_FUNCTION_Z80_RE),
+        "sm83": (scrub_asm_z80, ASM_FUNCTION_Z80_RE),
     }
     handler = None
     best_prefix = ""

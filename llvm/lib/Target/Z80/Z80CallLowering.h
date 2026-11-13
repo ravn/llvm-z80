@@ -171,7 +171,7 @@ inline Z80CCAxes decodeZ80CC(CallingConv::ID CC) {
 /// The external symbol a call to \p Name in \p CC uses.  z88dk's runtime
 /// routines have assembly names, so they skip the C symbol prefix.
 inline const char *getZ80CalleeName(MachineFunction &MF, const char *Name,
-                                    Z80CC CC) {
+                                    CallingConv::ID CC) {
   if (!decodeZ80CC(CC).isZ88dkRuntime())
     return Name;
   return MF.createExternalSymbolName((Twine("\1") + Name).str());

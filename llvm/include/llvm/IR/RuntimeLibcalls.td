@@ -3961,20 +3961,22 @@ defvar Z80Z88dkOptOut = [
 
 def Z80Z88dkSystemLibrary
     : SystemRuntimeLibrary<isZ80Z88dkEnv,
-    (add LibraryRef<CompilerRtLibgcc, Z80Z88dkOptOut>,
-         Z80Z88dkCompilerRt,
-         Z88dkLib,
-         // math32 defines these names for float, so double has none of them.
-         LibraryRef<Libm, !listconcat([fmodf, fmod],
-                                      !foreach(Name, Z88dkLibmNames,
-                                               !cast<RuntimeLibcallImpl>(Name#"f")),
-                                      !foreach(Name, Z88dkLibmNames,
-                                               !cast<RuntimeLibcallImpl>(Name)))>,
-         LibraryRef<Libc, [memcpy, memmove, memset]>,
-         ExceptionRuntime)> {
+                           ["compiler-rt", "z88dk", "libm", "libc", "unwind"]> {
   // compiler-rt is written for __sdcccall(1).
   let DefaultLibcallCallingConv = Z80_SDCCCALL1;
 }
+
+// z88dk replaces these compiler-rt functions with its own implementations.
+def : LibraryExclusion<"compiler-rt", isZ80Z88dkEnv, Z80Z88dkOptOut>;
+// math32 defines these names for float, so double has none of them.
+def : LibraryExclusion<"libm", isZ80Z88dkEnv,
+                        !listconcat([fmodf, fmod],
+                                    !foreach(Name, Z88dkLibmNames,
+                                             !cast<RuntimeLibcallImpl>(Name#"f")),
+                                    !foreach(Name, Z88dkLibmNames,
+                                             !cast<RuntimeLibcallImpl>(Name)))>;
+// libc memcpy/memmove/memset replaced by Z80MemCalls.
+def : LibraryExclusion<"libc", isZ80Z88dkEnv, [memcpy, memmove, memset]>;
 
 //===----------------------------------------------------------------------===//
 // ZOS Runtime Libcalls

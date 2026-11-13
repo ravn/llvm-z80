@@ -1740,9 +1740,7 @@ bool Z80InstrInfo::expandPostRAPseudoImpl(MachineInstr &MI) const {
         MF,
         TLI.getRequiredLibcallName(LC, IsIY ? "the IY call trampoline"
                                             : "the HL call trampoline"),
-        getZ80CC(TLI.getLibcallImplCallingConv(TLI.getLibcallImpl(LC)),
-                 MF.getTarget().getTargetTriple(), /*IsVarArg=*/false,
-                 /*IsMain=*/false));
+        TLI.getLibcallImplCallingConv(TLI.getLibcallImpl(LC)));
     auto NewMI =
         BuildMI(MBB, MI, DL, get(Z80::CALL_nn)).addExternalSymbol(Name);
     // Copy implicit operands (argument registers)
