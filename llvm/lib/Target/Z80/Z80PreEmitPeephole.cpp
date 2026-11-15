@@ -1375,15 +1375,24 @@ static bool foldScratchAccTransfer(MachineBasicBlock &MBB,
                                   const TargetRegisterInfo *TRI) {
   bool Changed = false;
   for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
-    if (MII->isDebugInstr() || !isLD8(*MII))
+    if (MII->isDebugInstr())
+      continue;
+    bool IsLD8 = isLD8(*MII);
+    bool IsLoadHL = (MII->getOpcode() == Z80::LD_r_HLind);
+    if (!IsLD8 && !IsLoadHL)
+      continue;
+    if (!MII->getOperand(0).isReg())
       continue;
     Register Scratch = MII->getOperand(0).getReg();
-    Register Src = MII->getOperand(1).getReg();
-    if (Scratch == Z80::A || Src == Z80::A || Scratch == Src)
+    if (Scratch == Z80::A)
+      continue;
+    if (IsLD8 && MII->getOperand(1).isReg() &&
+        (MII->getOperand(1).getReg() == Z80::A ||
+         MII->getOperand(1).getReg() == Scratch))
       continue;
 
     MachineInstr *LoadAcc = nullptr;
-    unsigned Budget = 10;
+    unsigned Budget = 15;
     for (auto J = std::next(MII); J != MIE && Budget--; ++J) {
       if (J->isDebugInstr())
         continue;
@@ -1402,9 +1411,7 @@ static bool foldScratchAccTransfer(MachineBasicBlock &MBB,
     if (LoadAcc) {
       auto AfterLoad = std::next(MachineBasicBlock::iterator(LoadAcc));
       if (!Z80::isLiveAt(MBB, AfterLoad, Scratch, TRI)) {
-        BuildMI(MBB, MII, MII->getDebugLoc(), MII->getDesc(), Z80::A)
-            .addReg(Src);
-        MII->eraseFromParent();
+        MII->getOperand(0).setReg(Z80::A);
         LoadAcc->eraseFromParent();
         recomputeLivenessFlags(MBB);
         Changed = true;
