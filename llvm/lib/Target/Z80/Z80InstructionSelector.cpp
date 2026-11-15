@@ -1636,9 +1636,9 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         BaseDef->getOpcode() == TargetOpcode::G_FRAME_INDEX) {
       bool Byte = Bits <= 8;
       if (!RBI.constrainGenericRegister(
-              DstReg, Byte ? Z80::GR8RegClass : Z80::GR16RegClass, MRI))
+              DstReg, Byte ? Z80::GR8RegClass : Z80::Any16RegClass, MRI))
         return false;
-      BuildMI(MBB, MI, DL, TII.get(Byte ? Z80::RELOAD_GR8 : Z80::RELOAD_GR16),
+      BuildMI(MBB, MI, DL, TII.get(Byte ? Z80::RELOAD_GR8 : Z80::RELOAD_ANY16),
               DstReg)
           .addFrameIndex(BaseDef->getOperand(1).getIndex())
           .addImm(*Disp)
@@ -1865,7 +1865,7 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
               }
             }
             if (Safe && It == StoreIt &&
-                RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,
+                RBI.constrainGenericRegister(AddrReg, Z80::HLIRegClass,
                                              MRI)) {
               unsigned Opc = Delta > 0 ? Z80::INC8_IND : Z80::DEC8_IND;
               BuildMI(MBB, MI, DL, TII.get(Opc))
@@ -1948,7 +1948,7 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
             }
           }
           if (Safe && It == StoreIt &&
-              RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,
+              RBI.constrainGenericRegister(AddrReg, Z80::HLIRegClass,
                                            MRI)) {
             unsigned Opc = IsOr ? Z80::SET8_IND : Z80::RES8_IND;
             BuildMI(MBB, MI, DL, TII.get(Opc))
@@ -3027,7 +3027,7 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
         if (RDef && RDef->getOpcode() == TargetOpcode::G_LOAD &&
             MRI.hasOneNonDBGUse(R)) {
           Register AddrReg = RDef->getOperand(1).getReg();
-          if (RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,
+          if (RBI.constrainGenericRegister(AddrReg, Z80::HLIRegClass,
                                            MRI)) {
             RDef->eraseFromParent();
             buildAccOp(MBB, MI, DL, Z80::COMPARE8_IND, Register(), L, MRI)

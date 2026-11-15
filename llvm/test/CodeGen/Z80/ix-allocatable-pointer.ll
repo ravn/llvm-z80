@@ -7,7 +7,7 @@ target triple = "z80"
 define zeroext i8 @parse_packet_ix(ptr %base, i16 %offset, i8 zeroext %len, i8 zeroext %delim, ptr %flags) {
 ; CHECK-LABEL: _parse_packet_ix:
 ; CHECK:       push ix
-; CHECK:       set 7, (ix
+; CHECK:       set 7,(ix+0)
 ; CHECK:       pop ix
 ; CHECK:       ret
 entry:

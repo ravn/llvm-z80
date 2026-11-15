@@ -114,11 +114,13 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Reserve FLAGS: non-allocatable status register for dependency tracking
   Reserved.set(Z80::FLAGS);
 
-  // Always reserve IX and IY (16-bit).
-  // IX is the frame pointer when hasFP, and stack frame code uses it
-  // unconditionally even without FP.
-  // IY is reserved because spilling IY requires HL as a temporary.
-  Reserved.set(Z80::IX);
+  // Reserve IX when it serves as the frame pointer (hasFP), or on SM83.
+  // When hasFP is false on Z80, IX is available as an allocatable 16-bit register
+  // (callee-saved via Z80_CSR).
+  // IY remains reserved for the runtime/OS (CP/M, ZX Spectrum, etc.).
+  const TargetFrameLowering *TFI = getFrameLowering(MF);
+  if (STI.hasSM83() || TFI->hasFP(MF))
+    Reserved.set(Z80::IX);
   Reserved.set(Z80::IY);
 
   // IXH/IXL/IYH/IYL are undocumented Z80 half-index registers.
@@ -154,9 +156,16 @@ BitVector Z80RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
 const TargetRegisterClass *
 Z80RegisterInfo::getLargestLegalSuperClass(const TargetRegisterClass *RC,
                                            const MachineFunction &) const {
-  if (RC->hasSuperClass(&Z80::GR8RegClass))
+  if (RC->hasSuperClassEq(&Z80::GR8RegClass))
     return &Z80::GR8RegClass;
-  if (RC->hasSuperClass(&Z80::Any16RegClass))
+  // GR16 pairs (BC, DE, HL) support subreg splitting and 16-bit ALU.
+  // Any16 includes IX/IY, which lack general ALU and have reserved subregs.
+  // Thus GR16 subclasses must not inflate to Any16.
+  if (RC->hasSuperClassEq(&Z80::GR16RegClass))
+    return &Z80::GR16RegClass;
+  if (RC->hasSuperClassEq(&Z80::HLIRegClass))
+    return &Z80::HLIRegClass;
+  if (RC->hasSuperClassEq(&Z80::Any16RegClass))
     return &Z80::Any16RegClass;
   return RC;
 }

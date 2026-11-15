@@ -1128,29 +1128,49 @@ bool Z80InstrInfo::expandPostRAPseudoImpl(MachineInstr &MI) const {
 
   case Z80::INC8_IND:
   case Z80::DEC8_IND: {
-    assert(MI.getOperand(0).getReg() == Z80::HL &&
-           "INC/DEC8_IND: address must be in HL");
-    unsigned Real =
-        MI.getOpcode() == Z80::INC8_IND ? Z80::INC_HLind : Z80::DEC_HLind;
-    BuildMI(MBB, MI, DL, get(Real)).cloneMemRefs(MI);
+    Register Addr = MI.getOperand(0).getReg();
+    if (Addr == Z80::HL) {
+      unsigned Real =
+          MI.getOpcode() == Z80::INC8_IND ? Z80::INC_HLind : Z80::DEC_HLind;
+      BuildMI(MBB, MI, DL, get(Real)).cloneMemRefs(MI);
+    } else if (Addr == Z80::IX) {
+      unsigned Real =
+          MI.getOpcode() == Z80::INC8_IND ? Z80::INC_IXd : Z80::DEC_IXd;
+      BuildMI(MBB, MI, DL, get(Real)).addImm(0).cloneMemRefs(MI);
+    } else {
+      llvm_unreachable("INC/DEC8_IND: invalid address register");
+    }
     MI.eraseFromParent();
     return true;
   }
 
   case Z80::SET8_IND:
   case Z80::RES8_IND: {
-    assert(MI.getOperand(0).getReg() == Z80::HL &&
-           "SET/RES8_IND: address must be in HL");
+    Register Addr = MI.getOperand(0).getReg();
     unsigned Bit = MI.getOperand(1).getImm() & 7;
-    static const unsigned SetOpcodes[8] = {
-        Z80::SET_0_HLind, Z80::SET_1_HLind, Z80::SET_2_HLind, Z80::SET_3_HLind,
-        Z80::SET_4_HLind, Z80::SET_5_HLind, Z80::SET_6_HLind, Z80::SET_7_HLind};
-    static const unsigned ResOpcodes[8] = {
-        Z80::RES_0_HLind, Z80::RES_1_HLind, Z80::RES_2_HLind, Z80::RES_3_HLind,
-        Z80::RES_4_HLind, Z80::RES_5_HLind, Z80::RES_6_HLind, Z80::RES_7_HLind};
-    unsigned Real = (MI.getOpcode() == Z80::SET8_IND) ? SetOpcodes[Bit]
-                                                      : ResOpcodes[Bit];
-    BuildMI(MBB, MI, DL, get(Real)).cloneMemRefs(MI);
+    if (Addr == Z80::HL) {
+      static const unsigned SetOpcodes[8] = {
+          Z80::SET_0_HLind, Z80::SET_1_HLind, Z80::SET_2_HLind, Z80::SET_3_HLind,
+          Z80::SET_4_HLind, Z80::SET_5_HLind, Z80::SET_6_HLind, Z80::SET_7_HLind};
+      static const unsigned ResOpcodes[8] = {
+          Z80::RES_0_HLind, Z80::RES_1_HLind, Z80::RES_2_HLind, Z80::RES_3_HLind,
+          Z80::RES_4_HLind, Z80::RES_5_HLind, Z80::RES_6_HLind, Z80::RES_7_HLind};
+      unsigned Real = (MI.getOpcode() == Z80::SET8_IND) ? SetOpcodes[Bit]
+                                                        : ResOpcodes[Bit];
+      BuildMI(MBB, MI, DL, get(Real)).cloneMemRefs(MI);
+    } else if (Addr == Z80::IX) {
+      static const unsigned SetIXOpcodes[8] = {
+          Z80::SET_0_IXd, Z80::SET_1_IXd, Z80::SET_2_IXd, Z80::SET_3_IXd,
+          Z80::SET_4_IXd, Z80::SET_5_IXd, Z80::SET_6_IXd, Z80::SET_7_IXd};
+      static const unsigned ResIXOpcodes[8] = {
+          Z80::RES_0_IXd, Z80::RES_1_IXd, Z80::RES_2_IXd, Z80::RES_3_IXd,
+          Z80::RES_4_IXd, Z80::RES_5_IXd, Z80::RES_6_IXd, Z80::RES_7_IXd};
+      unsigned Real = (MI.getOpcode() == Z80::SET8_IND) ? SetIXOpcodes[Bit]
+                                                        : ResIXOpcodes[Bit];
+      BuildMI(MBB, MI, DL, get(Real)).addImm(0).cloneMemRefs(MI);
+    } else {
+      llvm_unreachable("SET/RES8_IND: invalid address register");
+    }
     MI.eraseFromParent();
     return true;
   }

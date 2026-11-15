@@ -773,14 +773,14 @@ let Constraints = "$dst = $lhs", Defs = [FLAGS], mayLoad = true,
 // the HL constraint on the address so post-RA expansion emits the 1-byte
 // 0x34/0x35 memory-direct forms.
 let mayLoad = true, mayStore = true, Defs = [FLAGS] in {
-  def INC8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr)>;
-  def DEC8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr)>;
+  def INC8_IND : Z80Pseudo<(outs), (ins HLI:$addr)>;
+  def DEC8_IND : Z80Pseudo<(outs), (ins HLI:$addr)>;
 }
 
 // SET/RES of a bit in memory at HL. These do NOT touch A or FLAGS.
 let mayLoad = true, mayStore = true in {
-  def SET8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr, imm3:$bit)>;
-  def RES8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr, imm3:$bit)>;
+  def SET8_IND : Z80Pseudo<(outs), (ins HLI:$addr, imm3:$bit)>;
+  def RES8_IND : Z80Pseudo<(outs), (ins HLI:$addr, imm3:$bit)>;
 }
 
 // Load A from a compile-time address: 3-byte LD A,(nn).
