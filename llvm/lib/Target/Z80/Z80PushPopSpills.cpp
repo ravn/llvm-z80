@@ -398,6 +398,182 @@ void Z80PushPopSpills::rewrite(MachineBasicBlock &MBB, const SlotSet &Cands) {
   NumSlots += Cands.size();
 }
 
+// Hoist fixed-stack argument reloads from a loop preheader into its
+// dominating predecessor if the predecessor already reloads from fixed-stack.
+//
+// When generic passes (e.g. MachineSink) sink argument reloads into a loop
+// preheader because they are only used inside the loop, the reloads become
+// separated from earlier argument reloads in the predecessor (e.g. the loop
+// trip-count reload before a zero-check).
+// This forces PEI to emit multiple frame traversals (multiple ADD HL, SP with
+// PUSH HL / POP HL saves).
+//
+// By hoisting the preheader reloads back into the predecessor adjacent to its
+// existing fixed-stack reloads, PEI and PreEmitPeephole can coalesce all
+// contiguous argument reloads into a single ADD HL, SP with sequential INC HL.
+static bool
+hoistPreheaderReloadsIntoPredecessor(MachineFunction &MF,
+                                     const TargetRegisterInfo *TRI) {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  bool Changed = false;
+
+  auto isFixedStackReload = [&](const MachineInstr &MI) {
+    unsigned Opc = MI.getOpcode();
+    if (Opc != Z80::RELOAD_GR8 && Opc != Z80::RELOAD_GR16 &&
+        Opc != Z80::RELOAD_ANY16)
+      return false;
+    if (MI.getNumOperands() < 2 || !MI.getOperand(1).isFI())
+      return false;
+    return MFI.isFixedObjectIndex(MI.getOperand(1).getIndex());
+  };
+
+  for (MachineBasicBlock &MBB : MF) {
+    if (MBB.pred_size() != 1)
+      continue;
+
+    MachineBasicBlock *Pred = *MBB.pred_begin();
+    if (Pred == &MBB || Pred == &MF.front())
+      continue;
+
+    // Find the last fixed-stack reload in Pred.
+    MachineBasicBlock::iterator LastPredReload = Pred->end();
+    for (auto I = Pred->begin(), E = Pred->end(); I != E; ++I) {
+      if (isFixedStackReload(*I))
+        LastPredReload = I;
+    }
+    if (LastPredReload == Pred->end())
+      continue;
+
+    MachineBasicBlock::iterator InsertPt = std::next(LastPredReload);
+
+    // Identify candidate reloads at the beginning of MBB.
+    SmallVector<MachineInstr *, 4> Candidates;
+    for (MachineInstr &MI : MBB) {
+      if (MI.isDebugInstr())
+        continue;
+      if (isFixedStackReload(MI)) {
+        Candidates.push_back(&MI);
+        continue;
+      }
+      // Stop at the first non-reload instruction.
+      break;
+    }
+
+    if (Candidates.empty())
+      continue;
+
+    // Check each candidate for safety.
+    SmallVector<MachineInstr *, 4> ToHoist;
+    for (MachineInstr *MI : Candidates) {
+      if (!MI->getOperand(0).isReg())
+        break;
+      Register DefReg = MI->getOperand(0).getReg();
+      if (!DefReg.isPhysical())
+        break;
+
+      bool Blocked = false;
+
+      // 1. DefReg must not be read or modified in Pred after InsertPt.
+      for (auto It = InsertPt; It != Pred->end(); ++It) {
+        if (It->isDebugInstr())
+          continue;
+        if (It->readsRegister(DefReg, TRI) ||
+            It->modifiesRegister(DefReg, TRI)) {
+          Blocked = true;
+          break;
+        }
+      }
+      if (Blocked)
+        break;
+
+      // 2. DefReg must not be live at the entry of any other successor of Pred.
+      for (MachineBasicBlock *Succ : Pred->successors()) {
+        if (Succ == &MBB)
+          continue;
+        if (Z80::isLiveAt(*Succ, Succ->begin(), DefReg.asMCReg(), TRI)) {
+          Blocked = true;
+          break;
+        }
+      }
+      if (Blocked)
+        break;
+
+      ToHoist.push_back(MI);
+    }
+
+    if (ToHoist.empty())
+      continue;
+
+    // Look for an ADD HL, rr (e.g. ADD HL, DE) in MBB that can also be hoisted
+    // to the beginning of Pred. Hoisting ADD HL, DE before Pred's reloads kills
+    // DE early, allowing PEI to use DE as the temporary pair for reloading
+    // IX/IY without having to spill BC (saving PUSH BC / POP BC).
+    MachineInstr *AddHlMI = nullptr;
+    for (MachineInstr &MI : MBB) {
+      if (MI.isDebugInstr())
+        continue;
+      if (MI.getOpcode() == Z80::ADD_HL_rr && MI.getOperand(0).isReg()) {
+        Register Reg = MI.getOperand(0).getReg();
+        if ((Reg == Z80::DE || Reg == Z80::BC) &&
+            !Z80::isLiveAt(MBB, std::next(MI.getIterator()), Reg, TRI)) {
+          // Check that Reg and HL are live into Pred and flags are not live
+          // at Pred->begin().
+          if (!Z80::isLiveAt(*Pred, Pred->begin(), Z80::FLAGS, TRI)) {
+            bool SuccsSafe = true;
+            for (MachineBasicBlock *Succ : Pred->successors()) {
+              if (Succ == &MBB)
+                continue;
+              if (Z80::isLiveAt(*Succ, Succ->begin(), Reg.asMCReg(), TRI) ||
+                  Z80::isLiveAt(*Succ, Succ->begin(), Z80::HL, TRI)) {
+                SuccsSafe = false;
+                break;
+              }
+            }
+            if (SuccsSafe)
+              AddHlMI = &MI;
+          }
+        }
+        break;
+      }
+    }
+
+    // Do not empty MBB completely, as eliminating a loop preheader can
+    // alter block placement and prevent DJNZ loop counter optimization.
+    unsigned NonTermCount = 0;
+    for (MachineInstr &MI : MBB) {
+      if (!MI.isDebugInstr() && !MI.isTerminator())
+        ++NonTermCount;
+    }
+    unsigned HoistCount = ToHoist.size() + (AddHlMI ? 1 : 0);
+    if (HoistCount >= NonTermCount)
+      continue;
+
+    if (AddHlMI) {
+      Register Reg = AddHlMI->getOperand(0).getReg();
+      Pred->splice(Pred->begin(), &MBB, AddHlMI->getIterator());
+      if (!MBB.isLiveIn(Z80::HL))
+        MBB.addLiveIn(Z80::HL);
+      for (MCSubRegIterator SR(Reg, TRI); SR.isValid(); ++SR) {
+        if (MBB.isLiveIn(*SR))
+          MBB.removeLiveIn(*SR);
+      }
+      if (MBB.isLiveIn(Reg))
+        MBB.removeLiveIn(Reg);
+      Changed = true;
+    }
+
+    for (MachineInstr *MI : ToHoist) {
+      Register DefReg = MI->getOperand(0).getReg();
+      Pred->splice(InsertPt, &MBB, MI->getIterator());
+      if (!MBB.isLiveIn(DefReg))
+        MBB.addLiveIn(DefReg);
+      Changed = true;
+    }
+  }
+
+  return Changed;
+}
+
 // Hoist ADD HL, rr (e.g. ADD HL, DE) before preceding stack argument reloads
 // when rr is killed by the add and reloads do not touch HL, rr, or flags.
 //
@@ -487,7 +663,8 @@ bool Z80PushPopSpills::runOnMachineFunction(MachineFunction &MF) {
   TRI = MF.getSubtarget().getRegisterInfo();
   MFI = &MF.getFrameInfo();
 
-  bool Changed = hoistAddHlBeforeReloads(MF, TRI);
+  bool Changed = hoistPreheaderReloadsIntoPredecessor(MF, TRI);
+  Changed |= hoistAddHlBeforeReloads(MF, TRI);
 
   DenseMap<MachineBasicBlock *, SlotSet> Cands;
   collectCandidates(MF, Cands);

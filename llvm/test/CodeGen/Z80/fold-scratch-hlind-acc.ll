@@ -7,7 +7,7 @@ target triple = "z80"
 
 ; Test that loading a loop invariant through a scratch register and then copying
 ; to accumulator is folded directly into a load into A: ld a, (hl).
-define zeroext i8 @test_fold_scratch_hlind_acc(ptr %base, i16 %offset, i8 zeroext %len, i8 zeroext %delim, ptr %flags) {
+define zeroext i8 @test_fold_scratch_hlind_acc(ptr %base, i16 %offset, i8 zeroext %delim, ptr %flags) {
 ; CHECK-LABEL: _test_fold_scratch_hlind_acc:
 ; CHECK:       ; %for.body.lr.ph
 ; CHECK:         ld a,(hl)
@@ -17,17 +17,13 @@ entry:
   %0 = load volatile i8, ptr @rx_status, align 1
   %1 = and i8 %0, 1
   %tobool.not = icmp eq i8 %1, 0
-  br i1 %tobool.not, label %if.end, label %if.then
+  br i1 %tobool.not, label %for.body.lr.ph, label %if.then
 
 if.then:
   %2 = load i8, ptr @packet_errors, align 1
   %inc = add i8 %2, 1
   store i8 %inc, ptr @packet_errors, align 1
   br label %return
-
-if.end:
-  %cmp.not17 = icmp eq i8 %len, 0
-  br i1 %cmp.not17, label %return, label %for.body.lr.ph
 
 for.body.lr.ph:
   %add.ptr = getelementptr inbounds nuw i8, ptr %base, i16 %offset
@@ -36,7 +32,7 @@ for.body.lr.ph:
 
 for.body:
   %storemerge21 = phi i8 [ %flags.promoted, %for.body.lr.ph ], [ %storemerge, %if.end12 ]
-  %i.020 = phi i8 [ %len, %for.body.lr.ph ], [ %dec, %if.end12 ]
+  %i.020 = phi i8 [ 10, %for.body.lr.ph ], [ %dec, %if.end12 ]
   %matches.019 = phi i8 [ 0, %for.body.lr.ph ], [ %matches.1, %if.end12 ]
   %ptr.018 = phi ptr [ %add.ptr, %for.body.lr.ph ], [ %uglygep, %if.end12 ]
   %4 = load i8, ptr %ptr.018, align 1
@@ -62,6 +58,6 @@ if.end12:
   br i1 %cmp.not, label %return, label %for.body
 
 return:
-  %retval.0 = phi i8 [ 0, %if.then ], [ 0, %if.end ], [ %matches.1, %if.end12 ]
+  %retval.0 = phi i8 [ 0, %if.then ], [ %matches.1, %if.end12 ]
   ret i8 %retval.0
 }

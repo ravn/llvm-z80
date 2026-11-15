@@ -9,12 +9,12 @@ target triple = "z80"
 ; loop invariant is eliminated by hoisting ADD HL, DE before the reloads.
 define zeroext i8 @test_elide_push_pop_bc_preheader(ptr %base, i16 %offset, i8 zeroext %len, i8 zeroext %delim, ptr %flags) {
 ; CHECK-LABEL: _test_elide_push_pop_bc_preheader:
-; CHECK:       ; %for.body.lr.ph
+; CHECK:       ; %if.end
 ; CHECK-NEXT:    add hl,de
 ; CHECK-NOT:     push bc
 ; CHECK:         pop ix
 ; CHECK-NOT:     pop bc
-; CHECK:       .LBB0_{{[0-9]+}}: ; %for.body
+; CHECK:       ; %for.body
 entry:
   %0 = load volatile i8, ptr @rx_status, align 1
   %1 = and i8 %0, 1
