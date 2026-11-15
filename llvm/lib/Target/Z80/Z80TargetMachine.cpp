@@ -55,6 +55,7 @@
 #include "Z80PushPopSpills.h"
 #include "Z80ShiftRotateChain.h"
 #include "Z80StaticFrameAlloc.h"
+#include "Z80StorePhiSink.h"
 #include "Z80TargetObjectFile.h"
 #include "Z80TargetTransformInfo.h"
 
@@ -80,6 +81,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80LowerThreadLocalPass(PR);
   initializeZ80NarrowMemAccessPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
+  initializeZ80StorePhiSinkPass(PR);
   initializeZ80NonReentrantPass(PR);
   initializeZ80StaticFrameAllocPass(PR);
 }
@@ -258,6 +260,7 @@ bool Z80PassConfig::addIRTranslator() {
 
 void Z80PassConfig::addPreLegalizeMachineIR() {
   if (getOptLevel() != CodeGenOptLevel::None) {
+    addPass(createZ80StorePhiSinkPass());
     addPass(createZ80PreLegalizerCombiner());
     addPass(createZ80ShiftRotateChainPass());
   }

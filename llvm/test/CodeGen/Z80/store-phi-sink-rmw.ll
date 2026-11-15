@@ -28,3 +28,49 @@ if.end:
   store i8 %storemerge, ptr %flags, align 1
   ret void
 }
+
+; Test that a loop-carried store of a PHI node is also sunk, eliminating
+; the loop-carried register and emitting in-place operations on IX.
+define void @test_store_phi_loop_rmw(ptr %buf, i8 zeroext %len, i8 zeroext %delim, ptr %flags) {
+; CHECK-LABEL: _test_store_phi_loop_rmw:
+; CHECK:       push ix
+; CHECK:       set 7,(ix+0)
+; CHECK:       inc (ix+0)
+; CHECK-NOT:   ld (ix+0), a
+; CHECK:       pop ix
+; CHECK:       ret
+entry:
+  %cmp.not = icmp eq i8 %len, 0
+  br i1 %cmp.not, label %return, label %for.body.lr.ph
+
+for.body.lr.ph:
+  %flags.promoted = load i8, ptr %flags, align 1
+  br label %for.body
+
+for.body:
+  %ptr = phi ptr [ %buf, %for.body.lr.ph ], [ %ptr.next, %if.end ]
+  %i = phi i8 [ %len, %for.body.lr.ph ], [ %i.dec, %if.end ]
+  %f.carried = phi i8 [ %flags.promoted, %for.body.lr.ph ], [ %storemerge, %if.end ]
+  %val = load i8, ptr %ptr, align 1
+  %cmp = icmp eq i8 %val, %delim
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %f.or = or i8 %f.carried, 128
+  br label %if.end
+
+if.else:
+  %f.inc = add i8 %f.carried, 1
+  br label %if.end
+
+if.end:
+  %storemerge = phi i8 [ %f.inc, %if.else ], [ %f.or, %if.then ]
+  store i8 %storemerge, ptr %flags, align 1
+  %ptr.next = getelementptr inbounds i8, ptr %ptr, i16 1
+  %i.dec = add i8 %i, -1
+  %loop.cond = icmp eq i8 %i.dec, 0
+  br i1 %loop.cond, label %return, label %for.body
+
+return:
+  ret void
+}
