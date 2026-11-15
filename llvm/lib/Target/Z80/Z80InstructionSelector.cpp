@@ -1862,6 +1862,85 @@ bool Z80InstructionSelector::select(MachineInstr &MI) {
       }
     }
 
+    // Fold load/single-bit-or/store or load/single-bit-and/store into
+    // SET b,(HL) or RES b,(HL).
+    if (SrcTy.getSizeInBits() == 8 && MI.hasOneMemOperand()) {
+      const MachineMemOperand &SMMO = **MI.memoperands_begin();
+      MachineInstr *BitOpMI = MRI.getVRegDef(SrcReg);
+      if (SMMO.getAddrSpace() == 0 && !SMMO.isVolatile() && BitOpMI &&
+          BitOpMI->getParent() == &MBB &&
+          (BitOpMI->getOpcode() == TargetOpcode::G_OR ||
+           BitOpMI->getOpcode() == TargetOpcode::G_AND) &&
+          MRI.hasOneNonDBGUse(SrcReg)) {
+        bool IsOr = BitOpMI->getOpcode() == TargetOpcode::G_OR;
+        Register LhsReg = BitOpMI->getOperand(1).getReg();
+        Register RhsReg = BitOpMI->getOperand(2).getReg();
+
+        auto matchLoadBitMask =
+            [&](Register LoadCandidate,
+                Register ConstReg) -> std::pair<MachineInstr *, int> {
+          if (!LoadCandidate.isVirtual() ||
+              !MRI.hasOneNonDBGUse(LoadCandidate))
+            return {nullptr, -1};
+          MachineInstr *LoadMI = MRI.getVRegDef(LoadCandidate);
+          if (!LoadMI || LoadMI->getOpcode() != TargetOpcode::G_LOAD ||
+              LoadMI->getParent() != &MBB ||
+              LoadMI->getOperand(1).getReg() != AddrReg ||
+              !LoadMI->hasOneMemOperand())
+            return {nullptr, -1};
+          const MachineMemOperand &LMMO = **LoadMI->memoperands_begin();
+          if (LMMO.getAddrSpace() != 0 || LMMO.isVolatile())
+            return {nullptr, -1};
+          MachineInstr *CDef = MRI.getVRegDef(ConstReg);
+          if (!CDef || CDef->getOpcode() != TargetOpcode::G_CONSTANT)
+            return {nullptr, -1};
+          uint64_t V = CDef->getOperand(1).getCImm()->getZExtValue() & 0xFF;
+          if (IsOr) {
+            // For G_OR, constant must be single-bit (1 << bit)
+            if (llvm::isPowerOf2_64(V) && V <= 128)
+              return {LoadMI, llvm::countr_zero(V)};
+          } else {
+            // For G_AND, constant must be ~(1 << bit)
+            uint64_t Inv = (~V) & 0xFF;
+            if (llvm::isPowerOf2_64(Inv) && Inv <= 128)
+              return {LoadMI, llvm::countr_zero(Inv)};
+          }
+          return {nullptr, -1};
+        };
+
+        auto [LoadMI, Bit] = matchLoadBitMask(LhsReg, RhsReg);
+        if (!LoadMI)
+          std::tie(LoadMI, Bit) = matchLoadBitMask(RhsReg, LhsReg);
+
+        if (LoadMI && Bit >= 0 && Bit <= 7) {
+          MachineBasicBlock::iterator StoreIt(&MI);
+          auto It = std::next(MachineBasicBlock::iterator(LoadMI));
+          bool Safe = true;
+          for (; It != MBB.end() && It != StoreIt; ++It) {
+            if (It->mayLoadOrStore() || It->hasUnmodeledSideEffects() ||
+                It->getOpcode() == TargetOpcode::LIFETIME_START ||
+                It->getOpcode() == TargetOpcode::LIFETIME_END) {
+              Safe = false;
+              break;
+            }
+          }
+          if (Safe && It == StoreIt &&
+              RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,
+                                           MRI)) {
+            unsigned Opc = IsOr ? Z80::SET8_IND : Z80::RES8_IND;
+            BuildMI(MBB, MI, DL, TII.get(Opc))
+                .addReg(AddrReg)
+                .addImm(Bit)
+                .cloneMergedMemRefs({&MI, LoadMI});
+            LoadMI->eraseFromParent();
+            BitOpMI->eraseFromParent();
+            MI.eraseFromParent();
+            return true;
+          }
+        }
+      }
+    }
+
     // See the matching fold in G_LOAD.
     if (SrcTy.getSizeInBits() == 8 && MI.hasOneMemOperand() &&
         MBB.getParent()->getSubtarget<Z80Subtarget>().hasSM83()) {

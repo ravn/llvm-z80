@@ -774,6 +774,12 @@ let mayLoad = true, mayStore = true, Defs = [FLAGS] in {
   def DEC8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr)>;
 }
 
+// SET/RES of a bit in memory at HL. These do NOT touch A or FLAGS.
+let mayLoad = true, mayStore = true in {
+  def SET8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr, imm3:$bit)>;
+  def RES8_IND : Z80Pseudo<(outs), (ins GR16_HL:$addr, imm3:$bit)>;
+}
+
 // Load A from a compile-time address: 3-byte LD A,(nn).
 // Preferred over loading the address into a pair and using LD A,(BC/DE/HL)
 // (4 bytes total) when the address is a known constant.
