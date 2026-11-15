@@ -34,9 +34,10 @@ if.end:
 define void @test_store_phi_loop_rmw(ptr %buf, i8 zeroext %len, i8 zeroext %delim, ptr %flags) {
 ; CHECK-LABEL: _test_store_phi_loop_rmw:
 ; CHECK:       push ix
-; CHECK:       set 7,(ix+0)
-; CHECK:       inc (ix+0)
+; CHECK-DAG:   set 7,(ix+0)
+; CHECK-DAG:   inc (ix+0)
 ; CHECK-NOT:   ld (ix+0), a
+; CHECK:       djnz
 ; CHECK:       pop ix
 ; CHECK:       ret
 entry:

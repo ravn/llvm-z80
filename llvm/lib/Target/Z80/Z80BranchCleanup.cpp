@@ -39,11 +39,35 @@ STATISTIC(NumCondReturns, "Number of branches folded into RET cc");
 STATISTIC(NumCondTailCalls,
           "Number of branches folded into conditional tail calls");
 STATISTIC(NumJumpsToNext, "Number of jumps to the next block removed");
+STATISTIC(NumInvertedLoopsRotated, "Number of inverted loop latches rotated");
 STATISTIC(NumDJNZFolded, "Number of DEC B + JR NZ folded to DJNZ");
 
 using namespace llvm;
 
 namespace {
+
+static unsigned getOppositeBranchOpcode(unsigned Opc) {
+  switch (Opc) {
+  case Z80::JR_Z_e:
+    return Z80::JR_NZ_e;
+  case Z80::JR_NZ_e:
+    return Z80::JR_Z_e;
+  case Z80::JR_C_e:
+    return Z80::JR_NC_e;
+  case Z80::JR_NC_e:
+    return Z80::JR_C_e;
+  case Z80::JP_Z_nn:
+    return Z80::JP_NZ_nn;
+  case Z80::JP_NZ_nn:
+    return Z80::JP_Z_nn;
+  case Z80::JP_C_nn:
+    return Z80::JP_NC_nn;
+  case Z80::JP_NC_nn:
+    return Z80::JP_C_nn;
+  default:
+    return 0;
+  }
+}
 
 class Z80BranchCleanup : public MachineFunctionPass {
 public:
@@ -272,11 +296,157 @@ static bool foldToDJNZ(MachineBasicBlock &MBB, const Z80InstrInfo &TII,
   return true;
 }
 
+/// Rotate an inverted loop layout produced by MachineBlockPlacement back to
+/// canonical natural order.
+///
+/// WHAT: Reorders basic blocks so that the loop header immediately follows
+/// the preheader (eliding the preheader's unconditional jump) and inverts the
+/// latch branch so it jumps back to the header (enabling DJNZ folding).
+///
+/// WHY: Generic MachineBlockPlacement prioritizes loop back-edge fallthrough
+/// by placing the latch before the header and jumping conditionally to exit on
+/// zero (JR Z exit). On Z80, this inversion costs 4 bytes (2B preheader JR,
+/// 2B exit JR) and prevents DJNZ (which only branches taken on non-zero).
+///
+/// GOTCHA:
+/// - Only rotate when the latch's fallthrough is genuinely the header.
+/// - Ensure all blocks in the tail chain [Header ... LoopTail] belong strictly
+///   to the loop body (no external branches).
+///
+/// WORKED EXAMPLE (from parse_packet_loop in rotate-inverted-loop.ll):
+///   Before:
+///     Preheader (bb.1): ... JR_e bb.4 (Header)
+///     LoopChain1 (bb.2, if.then7): INC B, JR_e bb.3
+///     Latch (bb.3, if.end12): DEC C, INC HL, JR_Z_e bb.7 (Exit) -> fallthrough bb.4
+///     Header (bb.4, for.body): CP (HL), JR_Z_e bb.2 -> fallthrough bb.5
+///     LoopChain2 (bb.5, if.else): INC (IX), JR_e bb.3
+///   After rotating [bb.4, bb.5] right after Preheader:
+///     Preheader (bb.1): ... (JR_e bb.4 removed, falls through to bb.4)
+///     Header (bb.4, for.body): CP (HL), JR_Z_e bb.2 -> fallthrough bb.5
+///     LoopChain2 (bb.5, if.else): INC (IX), JR_e bb.3
+///     LoopChain1 (bb.2, if.then7): INC B, JR_e bb.3
+///     Latch (bb.3, if.end12): DEC C, INC HL, JR_NZ_e bb.4, JR_e bb.7
+static bool rotateInvertedLoops(MachineFunction &MF, const Z80InstrInfo &TII) {
+  bool Changed = false;
+
+  for (auto MBI = MF.begin(), MBE = MF.end(); MBI != MBE; ++MBI) {
+    MachineBasicBlock &Preheader = *MBI;
+
+    // Guard: Preheader must end with an unconditional jump (JR_e or JP_nn).
+    if (Preheader.empty())
+      continue;
+    MachineInstr &PreTerm = Preheader.back();
+    unsigned PreOpc = PreTerm.getOpcode();
+    if (PreOpc != Z80::JR_e && PreOpc != Z80::JP_nn)
+      continue;
+    if (PreTerm.getNumOperands() == 0 || !PreTerm.getOperand(0).isMBB())
+      continue;
+    MachineBasicBlock *Header = PreTerm.getOperand(0).getMBB();
+    // Guard: target must be a different block.
+    if (!Header || Header == &Preheader)
+      continue;
+
+    // Guard: Header must appear strictly after Preheader in layout.
+    if (Header->getNumber() <= Preheader.getNumber())
+      continue;
+
+    // Guard: Header must have at least two predecessors (preheader and latch).
+    if (Header->pred_size() < 2 || !Header->isPredecessor(&Preheader))
+      continue;
+
+    // Guard: Latch must immediately precede Header in layout (fallthrough back-edge).
+    auto HeaderIt = Header->getIterator();
+    if (HeaderIt == MF.begin())
+      continue;
+    MachineBasicBlock *Latch = &*std::prev(HeaderIt);
+    if (!Header->isPredecessor(Latch) || Latch->getNumber() <= Preheader.getNumber())
+      continue;
+
+    // Guard: Latch must fall through to Header as its back-edge.
+    if (!Latch->isLayoutSuccessor(Header))
+      continue;
+
+    // Find the conditional branch in Latch targeting the exit block.
+    MachineInstr *CondBr = nullptr;
+    for (MachineInstr &MI : Latch->terminators()) {
+      if (MI.isConditionalBranch()) {
+        CondBr = &MI;
+        break;
+      }
+    }
+    // Guard: Latch must have a conditional branch to an exit block.
+    if (!CondBr || CondBr->getNumOperands() == 0 || !CondBr->getOperand(0).isMBB())
+      continue;
+
+    MachineBasicBlock *Exit = CondBr->getOperand(0).getMBB();
+    if (Exit == Header)
+      continue;
+
+    unsigned CondOpc = CondBr->getOpcode();
+    unsigned InvertedOpc = getOppositeBranchOpcode(CondOpc);
+    // Guard: branch condition must be invertible.
+    if (!InvertedOpc)
+      continue;
+
+    // Find contiguous tail chain [Header ... LoopTail] belonging to loop body.
+    MachineBasicBlock *LoopTail = Header;
+    auto NextIt = std::next(Header->getIterator());
+    while (NextIt != MF.end()) {
+      MachineBasicBlock *Cand = &*NextIt;
+      bool InLoop = false;
+      for (MachineBasicBlock *Succ : Cand->successors()) {
+        if (Succ == Latch || Succ == Header ||
+            (Succ->getNumber() > Preheader.getNumber() &&
+             Succ->getNumber() <= Latch->getNumber())) {
+          InLoop = true;
+          break;
+        }
+      }
+      if (!InLoop)
+        break;
+      LoopTail = Cand;
+      ++NextIt;
+    }
+
+    // Splice [Header ... LoopTail] to immediately follow Preheader.
+    auto SpliceBegin = Header->getIterator();
+    auto SpliceEnd = std::next(LoopTail->getIterator());
+    auto InsertPt = std::next(Preheader.getIterator());
+
+    MF.splice(InsertPt, SpliceBegin, SpliceEnd);
+    MF.RenumberBlocks();
+
+    // 1. Remove Preheader's unconditional jump (now falls through to Header).
+    PreTerm.eraseFromParent();
+
+    // 2. Invert Latch's branch: jump back to Header on inverted condition.
+    DebugLoc DL = CondBr->getDebugLoc();
+    BuildMI(*Latch, CondBr->getIterator(), DL, TII.get(InvertedOpc))
+        .addMBB(Header);
+    CondBr->eraseFromParent();
+
+    // 3. If Latch does not fall through to Exit, insert unconditional jump to Exit.
+    if (!Latch->isLayoutSuccessor(Exit)) {
+      BuildMI(*Latch, Latch->end(), DL, TII.get(Z80::JR_e))
+          .addMBB(Exit);
+    }
+
+    Changed = true;
+    ++NumInvertedLoopsRotated;
+    break; // Break and let caller handle renumbered loop or next iteration
+  }
+
+  return Changed;
+}
+
 bool Z80BranchCleanup::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
   const auto *TRI = STI.getRegisterInfo();
   bool Changed = false;
+
+  while (rotateInvertedLoops(MF, *TII))
+    Changed = true;
 
   for (MachineBasicBlock &MBB : MF) {
     if (foldToDJNZ(MBB, *TII, TRI)) {
