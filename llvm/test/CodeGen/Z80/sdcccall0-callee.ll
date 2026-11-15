@@ -45,8 +45,7 @@ define void @call_callee() {
 ; CHECK:      ld e,(hl)
 ; CHECK:      inc hl
 ; CHECK:      ld d,(hl)
-; CHECK:      ld hl,#4
-; CHECK:      add hl,sp
+; CHECK:      inc hl
 ; CHECK:      ld c,(hl)
 ; CHECK:      inc hl
 ; CHECK:      ld b,(hl)

@@ -1191,6 +1191,51 @@ static bool reuseLDHLAddress(MachineBasicBlock &MBB, const TargetInstrInfo *TII,
       continue;
     }
 
+    if (Opc == Z80::LD_rr_nn && MI.getOperand(0).getReg() == Z80::HL &&
+        MI.getOperand(1).isImm() && Next != MIE &&
+        Next->getOpcode() == Z80::ADD_HL_SP) {
+      int64_t N = SignExtend64<16>(MI.getOperand(1).getImm() & 0xFFFF);
+      auto AfterAdd = std::next(Next);
+      if (Known && isRegDeadAfter(AfterAdd, MBB, TRI, Z80::FLAGS)) {
+        int64_t D = N - Off;
+        if (D == 0) {
+          LLVM_DEBUG(dbgs() << "  LD HL+ADD HL,SP reuse: erasing both\n");
+          MBB.erase(Next);
+          MII = MBB.erase(MII);
+          ++NumLDHLReused;
+          Changed = true;
+          continue;
+        }
+        if (D == 1 || D == -1) {
+          LLVM_DEBUG(dbgs() << "  LD HL+ADD HL,SP reuse: 1 inc/dec for " << N << "\n");
+          Z80::buildIncDec16(MBB, MII, MI.getDebugLoc(), *TII,
+                             D == 1 ? Z80::INC_rr : Z80::DEC_rr, Z80::HL);
+          MBB.erase(Next);
+          MII = MBB.erase(MII);
+          Off = N;
+          ++NumLDHLReused;
+          Changed = true;
+          continue;
+        }
+        if (D == 2 || D == -2) {
+          LLVM_DEBUG(dbgs() << "  LD HL+ADD HL,SP reuse: 2 inc/dec for " << N << "\n");
+          unsigned IncDec = D == 2 ? Z80::INC_rr : Z80::DEC_rr;
+          Z80::buildIncDec16(MBB, MII, MI.getDebugLoc(), *TII, IncDec, Z80::HL);
+          Z80::buildIncDec16(MBB, MII, MI.getDebugLoc(), *TII, IncDec, Z80::HL);
+          MBB.erase(Next);
+          MII = MBB.erase(MII);
+          Off = N;
+          ++NumLDHLReused;
+          Changed = true;
+          continue;
+        }
+      }
+      Known = true;
+      Off = N;
+      MII = AfterAdd;
+      continue;
+    }
+
     if (isIncDec16(MI, Z80::INC_rr, Z80::HL)) {
       Off += 1;
       MII = Next;
@@ -2270,9 +2315,9 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   // (redundant store elimination keys slot identity on them), so the
   // address-reuse rewrite must not obscure those first.
   for (MachineBasicBlock &MBB : MF) {
+    Changed |= reuseLDHLAddress(MBB, TII, TRI);
     if (STI.hasSM83()) {
       Changed |= hoistLDHLOutOfFlagSave(MBB, TII, TRI);
-      Changed |= reuseLDHLAddress(MBB, TII, TRI);
       // After address reuse: it creates the INC HL neighbors these fuse with.
       Changed |= materializeConstantStores(MBB, TII, TRI);
       Changed |= fusePostIncAccess(MBB, TII, TRI);
