@@ -1298,6 +1298,123 @@ static bool reuseLDHLAddress(MachineBasicBlock &MBB, const TargetInstrInfo *TII,
   return Changed;
 }
 
+static bool hoistLoopInvariantAccLoad(MachineFunction &MF,
+                                     const TargetInstrInfo *TII,
+                                     const TargetRegisterInfo *TRI) {
+  bool Changed = false;
+
+  for (MachineBasicBlock &MBB : MF) {
+    auto FirstIt = MBB.begin();
+    while (FirstIt != MBB.end() && FirstIt->isDebugInstr())
+      ++FirstIt;
+    if (FirstIt == MBB.end())
+      continue;
+
+    Register Src = getLD8Src(*FirstIt, Z80::A);
+    if (!Src.isValid() || Src == Z80::A)
+      continue;
+
+    SmallVector<MachineBasicBlock *, 4> Backedges;
+    SmallVector<MachineBasicBlock *, 4> Preheaders;
+
+    for (MachineBasicBlock *Pred : MBB.predecessors()) {
+      SmallPtrSet<MachineBasicBlock *, 16> Visited;
+      SmallVector<MachineBasicBlock *, 16> Worklist;
+      bool CanReach = false;
+      for (MachineBasicBlock *Succ : MBB.successors()) {
+        if (Succ == &MBB) {
+          if (Pred == &MBB)
+            CanReach = true;
+          continue;
+        }
+        Worklist.push_back(Succ);
+        Visited.insert(Succ);
+      }
+      while (!Worklist.empty()) {
+        MachineBasicBlock *Curr = Worklist.pop_back_val();
+        if (Curr == Pred) {
+          CanReach = true;
+          break;
+        }
+        for (MachineBasicBlock *Succ : Curr->successors()) {
+          if (Succ != &MBB && Visited.insert(Succ).second)
+            Worklist.push_back(Succ);
+        }
+      }
+      if (CanReach)
+        Backedges.push_back(Pred);
+      else
+        Preheaders.push_back(Pred);
+    }
+
+    if (Backedges.empty() || Preheaders.empty())
+      continue;
+
+    SmallPtrSet<MachineBasicBlock *, 16> LoopBlocks;
+    LoopBlocks.insert(&MBB);
+    for (MachineBasicBlock *BE : Backedges)
+      LoopBlocks.insert(BE);
+
+    SmallVector<MachineBasicBlock *, 16> BackwardWorklist(Backedges.begin(), Backedges.end());
+    SmallPtrSet<MachineBasicBlock *, 16> VisitedBack(Backedges.begin(), Backedges.end());
+    VisitedBack.insert(&MBB);
+
+    while (!BackwardWorklist.empty()) {
+      MachineBasicBlock *Curr = BackwardWorklist.pop_back_val();
+      for (MachineBasicBlock *Pred : Curr->predecessors()) {
+        if (VisitedBack.insert(Pred).second) {
+          LoopBlocks.insert(Pred);
+          BackwardWorklist.push_back(Pred);
+        }
+      }
+    }
+
+    bool IsInvariant = true;
+    for (MachineBasicBlock *LBB : LoopBlocks) {
+      for (MachineInstr &MI : *LBB) {
+        if (&MI == &*FirstIt)
+          continue;
+        if (MI.isCall() || MI.isInlineAsm() ||
+            MI.modifiesRegister(Z80::A, TRI) ||
+            MI.modifiesRegister(Src, TRI)) {
+          IsInvariant = false;
+          break;
+        }
+      }
+      if (!IsInvariant)
+        break;
+    }
+
+    if (!IsInvariant)
+      continue;
+
+    for (MachineBasicBlock *PH : Preheaders) {
+      auto TermIt = PH->getFirstTerminator();
+      BuildMI(*PH, TermIt, FirstIt->getDebugLoc(), FirstIt->getDesc(), Z80::A)
+          .addReg(Src);
+      recomputeLivenessFlags(*PH);
+    }
+
+    FirstIt->eraseFromParent();
+
+    // Mark $a as live-in across the entire loop and un-kill $a on loop reads.
+    for (MachineBasicBlock *LBB : LoopBlocks) {
+      if (!LBB->isLiveIn(Z80::A))
+        LBB->addLiveIn(Z80::A);
+      for (MachineInstr &MI : *LBB) {
+        for (MachineOperand &MO : MI.operands()) {
+          if (MO.isReg() && MO.getReg() == Z80::A && MO.isKill())
+            MO.setIsKill(false);
+        }
+      }
+      recomputeLivenessFlags(*LBB);
+    }
+    Changed = true;
+  }
+
+  return Changed;
+}
+
 bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
@@ -2333,6 +2450,8 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
   }
+
+  Changed |= hoistLoopInvariantAccLoad(MF, TII, TRI);
 
   return Changed;
 }
