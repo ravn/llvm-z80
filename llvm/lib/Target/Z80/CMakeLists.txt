@@ -52,6 +52,7 @@ add_llvm_target(Z80CodeGen
   Z80RegisterBankInfo.cpp
   Z80RegisterInfo.cpp
   Z80ShiftRotateChain.cpp
+  Z80SplitDjnzCounters.cpp
   Z80StaticFrameAlloc.cpp
   Z80StorePhiSink.cpp
   Z80Subtarget.cpp

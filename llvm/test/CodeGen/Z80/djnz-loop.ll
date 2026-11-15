@@ -56,12 +56,14 @@ exit:
   ret void
 }
 
-; Case 3 (Control): Decrement of register other than B (e.g. L) must NOT fold to DJNZ.
+; Case 3: Decrement of loop counter passed in another register (e.g. L):
+; Z80SplitDjnzCounters inserts preheader copy to B, enabling DJNZ on Z80.
 define zeroext i8 @dec_l_no_djnz(i8 zeroext %a, i8 zeroext %c_val) {
 ; CHECK-LABEL: _dec_l_no_djnz:
-; CHECK-NOT:   djnz
-; CHECK:       dec
-; CHECK:       jr nz,
+; Z80:         ld b,l
+; Z80:         djnz
+; SM83:        dec {{[e-l]}}
+; SM83:        jr nz,
 entry:
   br label %loop
 

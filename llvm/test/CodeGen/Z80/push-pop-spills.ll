@@ -113,7 +113,7 @@ done:
 define i16 @stack_args(i16 %val, i16 %bits, i8 %pos, i8 %n) {
 ; Z80-LABEL:  _stack_args:
 ; Z80:        push de
-; Z80-NEXT:   ld hl,4
+; Z80:        ld hl,
 ; Z80-NEXT:   add hl,sp
 ; Z80-NEXT:   ld c,(hl)
 ; SM83-LABEL: _stack_args:

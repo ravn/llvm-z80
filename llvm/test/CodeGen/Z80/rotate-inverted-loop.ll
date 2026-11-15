@@ -15,7 +15,7 @@ define zeroext i8 @parse_packet_loop(ptr %base, i16 %offset, i8 zeroext %len, i8
 ; CHECK:       .LBB0_{{[0-9]+}}: ; %for.body
 ; CHECK:       ; %if.end12
 ; CHECK-NOT:     jr z,
-; CHECK:         jr nz,
+; CHECK:         djnz
 entry:
   %cmp.not17 = icmp eq i8 %len, 0
   br i1 %cmp.not17, label %return, label %for.body.lr.ph

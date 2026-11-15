@@ -61,9 +61,8 @@ define i16 @pair_arg(i16 %a) {
 
 ; Z80-LABEL: _count:
 ; Z80:       ld (hl),a
-; Z80-NEXT:  dec c
 ; Z80-NEXT:  inc hl
-; Z80-NEXT:  jr nz,
+; Z80-NEXT:  djnz
 ; The ADD (HL) fold also constrains the pointer to HL on SM83.
 ; SM83-LABEL: _count:
 ; SM83:       ld (hl),a

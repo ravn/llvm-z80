@@ -54,6 +54,7 @@
 #include "Z80PreEmitPeephole.h"
 #include "Z80PushPopSpills.h"
 #include "Z80ShiftRotateChain.h"
+#include "Z80SplitDjnzCounters.h"
 #include "Z80StaticFrameAlloc.h"
 #include "Z80StorePhiSink.h"
 #include "Z80TargetObjectFile.h"
@@ -81,6 +82,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeZ80Target() {
   initializeZ80LowerThreadLocalPass(PR);
   initializeZ80NarrowMemAccessPass(PR);
   initializeZ80ShiftRotateChainPass(PR);
+  initializeZ80SplitDjnzCountersPass(PR);
   initializeZ80StorePhiSinkPass(PR);
   initializeZ80NonReentrantPass(PR);
   initializeZ80StaticFrameAllocPass(PR);
@@ -309,6 +311,9 @@ void Z80PassConfig::addOptimizedRegAlloc() {
     // Run the coalescer twice to coalesce RMW patterns revealed by the first
     // coalesce.
     insertPass(&llvm::TwoAddressInstructionPassID, &llvm::RegisterCoalescerID);
+
+    insertPass(&llvm::MachineSchedulerID,
+               createZ80SplitDjnzCountersPass());
 
     // Re-run Live Intervals after coalescing to renumber the contained values.
     // This can allow constant rematerialization after aggressive coalescing.
