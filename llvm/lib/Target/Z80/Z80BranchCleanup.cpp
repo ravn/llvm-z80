@@ -21,6 +21,7 @@
 
 #include "MCTargetDesc/Z80MCTargetDesc.h"
 #include "Z80.h"
+#include "Z80InstrInfo.h"
 #include "Z80OpcodeUtils.h"
 #include "Z80Subtarget.h"
 
@@ -28,6 +29,7 @@
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 
 #define DEBUG_TYPE "z80-branch-cleanup"
 
@@ -37,6 +39,7 @@ STATISTIC(NumCondReturns, "Number of branches folded into RET cc");
 STATISTIC(NumCondTailCalls,
           "Number of branches folded into conditional tail calls");
 STATISTIC(NumJumpsToNext, "Number of jumps to the next block removed");
+STATISTIC(NumDJNZFolded, "Number of DEC B + JR NZ folded to DJNZ");
 
 using namespace llvm;
 
@@ -171,10 +174,116 @@ static bool removeJumpToNext(MachineBasicBlock &MBB) {
   return true;
 }
 
+/// Fold DEC B + JR NZ, loop into DJNZ loop.
+///
+/// WHAT: Fuses an 8-bit down-counter decrement on B and a following
+/// conditional relative branch (JR NZ) into a single 2-byte DJNZ instruction.
+///
+/// WHY: DJNZ e combines DEC B and JR NZ e into 2 bytes and 13 T-states
+/// (saving 1 byte and 3 T-states per iteration over 1-byte DEC B [4T] +
+/// 2-byte JR NZ [12T]).
+///
+/// GOTCHA:
+/// - Z80 only: SM83 lacks DJNZ, so check !STI.hasSM83().
+/// - DJNZ does NOT modify any flags, whereas DEC B sets all ALU flags except
+///   carry (Z, S, P/V, H, N). Therefore, the fold is only valid if FLAGS is
+///   dead after the branch (both into Target and into the fallthrough block).
+/// - Intervening instructions between DEC B and JR NZ are allowed only if
+///   they have no dependencies on B or FLAGS and no side effects (e.g. INC HL).
+///
+/// WORKED EXAMPLE (from sum_bytes in djnz-loop.ll):
+///   Before:
+///     .LBB0_1:
+///       add a, (hl)
+///       inc hl
+///       dec b           ; 1B, 4T
+///       jr  nz, .LBB0_1 ; 2B, 12T
+///   After:
+///     .LBB0_1:
+///       add a, (hl)
+///       inc hl
+///       djnz .LBB0_1    ; 2B, 13T (saves 1 byte and 3 T-states)
+static bool foldToDJNZ(MachineBasicBlock &MBB, const Z80InstrInfo &TII,
+                       const TargetRegisterInfo *TRI) {
+  // Guard: SM83 lacks the DJNZ instruction entirely.
+  if (MBB.getParent()->getSubtarget<Z80Subtarget>().hasSM83())
+    return false;
+
+  // Find the conditional branch JR NZ.
+  MachineInstr *Branch = nullptr;
+  for (MachineInstr &MI : MBB.terminators()) {
+    if (MI.getOpcode() == Z80::JR_NZ_e) {
+      Branch = &MI;
+      break;
+    }
+  }
+  // Guard: require a JR NZ terminator targeting a basic block.
+  if (!Branch || !Branch->getOperand(0).isMBB())
+    return false;
+
+  MachineBasicBlock *Target = Branch->getOperand(0).getMBB();
+
+  // Guard: target block must not expect live-in FLAGS from the loop latch.
+  if (Target->isLiveIn(Z80::FLAGS))
+    return false;
+
+  // Guard: fallthrough / successor must not read FLAGS left by the loop.
+  if (Z80::isLiveAt(MBB, std::next(Branch->getIterator()), Z80::FLAGS, TRI))
+    return false;
+
+  // Scan backward from Branch to find the matching DEC B.
+  MachineInstr *DecB = nullptr;
+  auto It = Branch->getIterator();
+  while (It != MBB.begin()) {
+    --It;
+    if (It->isDebugInstr())
+      continue;
+
+    // Found DEC B: register operand is B.
+    if (It->getOpcode() == Z80::DEC_r && It->getOperand(0).isReg() &&
+        It->getOperand(0).getReg() == Z80::B) {
+      DecB = &*It;
+      break;
+    }
+
+    // Guard: intervening instructions cannot touch FLAGS (would break compare).
+    if (It->modifiesRegister(Z80::FLAGS, TRI) ||
+        It->readsRegister(Z80::FLAGS, TRI))
+      return false;
+
+    // Guard: intervening instructions cannot read or write B (ordering hazard).
+    if (It->modifiesRegister(Z80::B, TRI) || It->readsRegister(Z80::B, TRI))
+      return false;
+
+    // Guard: calls, terminators, or unmodeled side effects cannot be bypassed.
+    if (It->isCall() || It->isTerminator() || It->hasUnmodeledSideEffects())
+      return false;
+  }
+
+  // Guard: no matching DEC B found in this basic block.
+  if (!DecB)
+    return false;
+
+  // Replace Branch with DJNZ e, and erase DEC B.
+  BuildMI(MBB, Branch, Branch->getDebugLoc(), TII.get(Z80::DJNZ_e))
+      .addMBB(Target);
+  Branch->eraseFromParent();
+  DecB->eraseFromParent();
+  return true;
+}
+
 bool Z80BranchCleanup::runOnMachineFunction(MachineFunction &MF) {
   const auto &STI = MF.getSubtarget<Z80Subtarget>();
   const auto *TII = STI.getInstrInfo();
+  const auto *TRI = STI.getRegisterInfo();
   bool Changed = false;
+
+  for (MachineBasicBlock &MBB : MF) {
+    if (foldToDJNZ(MBB, *TII, TRI)) {
+      ++NumDJNZFolded;
+      Changed = true;
+    }
+  }
 
   for (MachineBasicBlock &MBB : MF) {
     if (foldBranchOver(MBB, *TII, Z80::JP_nn, getCondJPOpcode)) {
