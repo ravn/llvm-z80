@@ -451,8 +451,31 @@ std::optional<Register> Z80InstructionSelector::emitEqualityTest(
       // For branch-fused compares, fold a single-use G_LOAD into CP (HL)
       // to save the separate register load (2 bytes → 1 byte per compare).
       if (FlagsOnly) {
+        auto isFrameLoad = [&](Register R) -> bool {
+          MachineInstr *Def = MRI.getVRegDef(R);
+          if (!Def || Def->getOpcode() != TargetOpcode::G_LOAD)
+            return false;
+          Register Addr = Def->getOperand(1).getReg();
+          MachineInstr *ADef = MRI.getVRegDef(Addr);
+          return ADef && ADef->getOpcode() == TargetOpcode::G_FRAME_INDEX;
+        };
+
+        MachineInstr *LHSDef = MRI.getVRegDef(LHS);
         MachineInstr *RHSDef = MRI.getVRegDef(RHS);
+        bool LHSIsLoad = LHSDef && LHSDef->getOpcode() == TargetOpcode::G_LOAD &&
+                         MRI.hasOneNonDBGUse(LHS);
+        bool RHSIsLoad = RHSDef && RHSDef->getOpcode() == TargetOpcode::G_LOAD &&
+                         MRI.hasOneNonDBGUse(RHS);
+
+        // Prefer folding a non-frame pointer load into CP (HL) over a scalar or
+        // stack/frame load. For equality, LHS == RHS is symmetric.
+        if (LHSIsLoad && (!RHSIsLoad || isFrameLoad(RHS))) {
+          std::swap(LHS, RHS);
+          std::swap(LHSDef, RHSDef);
+        }
+
         if (RHSDef && RHSDef->getOpcode() == TargetOpcode::G_LOAD &&
+            !isFrameLoad(RHS) &&
             MRI.hasOneNonDBGUse(RHS)) {
           Register AddrReg = RHSDef->getOperand(1).getReg();
           if (RBI.constrainGenericRegister(AddrReg, Z80::GR16_HLRegClass,

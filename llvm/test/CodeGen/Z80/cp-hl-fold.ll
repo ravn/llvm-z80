@@ -61,6 +61,22 @@ define i8 @eq_value(i8 zeroext %a, ptr %p) {
   ret i8 %conv
 }
 
+; Equality branch with load on LHS (commuted): the load still folds to CP (HL).
+define void @eq_branch_commuted(i8 zeroext %a, ptr %p) {
+; CHECK-LABEL: eq_branch_commuted:
+; CHECK-NOT:     ld a,(
+; CHECK:         cp (hl)
+; CHECK-NEXT:    jp z,_g
+  %v = load i8, ptr %p, align 1
+  %cmp = icmp eq i8 %v, %a
+  br i1 %cmp, label %then, label %end
+then:
+  tail call void @g()
+  br label %end
+end:
+  ret void
+}
+
 ; Control: the loaded byte is used again after the compare, so it must be
 ; loaded into a register anyway and the fold would only add a second load.
 define i8 @two_uses(i8 zeroext %a, ptr %p) {
