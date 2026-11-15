@@ -1370,6 +1370,51 @@ static bool elidePushDePushHlBeforeAdd(MachineBasicBlock &MBB,
   return Changed;
 }
 
+static bool foldScratchAccTransfer(MachineBasicBlock &MBB,
+                                  const TargetInstrInfo *TII,
+                                  const TargetRegisterInfo *TRI) {
+  bool Changed = false;
+  for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+    if (MII->isDebugInstr() || !isLD8(*MII))
+      continue;
+    Register Scratch = MII->getOperand(0).getReg();
+    Register Src = MII->getOperand(1).getReg();
+    if (Scratch == Z80::A || Src == Z80::A || Scratch == Src)
+      continue;
+
+    MachineInstr *LoadAcc = nullptr;
+    unsigned Budget = 10;
+    for (auto J = std::next(MII); J != MIE && Budget--; ++J) {
+      if (J->isDebugInstr())
+        continue;
+      if (isLD8(*J) && J->getOperand(0).getReg() == Z80::A &&
+          J->getOperand(1).getReg() == Scratch) {
+        LoadAcc = &*J;
+        break;
+      }
+      if (J->isCall() || J->isBranch() || J->isTerminator() ||
+          J->isInlineAsm() || J->modifiesRegister(Scratch, TRI) ||
+          J->readsRegister(Scratch, TRI) || J->modifiesRegister(Z80::A, TRI) ||
+          J->readsRegister(Z80::A, TRI))
+        break;
+    }
+
+    if (LoadAcc) {
+      auto AfterLoad = std::next(MachineBasicBlock::iterator(LoadAcc));
+      if (!Z80::isLiveAt(MBB, AfterLoad, Scratch, TRI)) {
+        BuildMI(MBB, MII, MII->getDebugLoc(), MII->getDesc(), Z80::A)
+            .addReg(Src);
+        MII->eraseFromParent();
+        LoadAcc->eraseFromParent();
+        recomputeLivenessFlags(MBB);
+        Changed = true;
+        break;
+      }
+    }
+  }
+  return Changed;
+}
+
 static bool hoistLoopInvariantAccLoad(MachineFunction &MF,
                                      const TargetInstrInfo *TII,
                                      const TargetRegisterInfo *TRI) {
@@ -1468,6 +1513,22 @@ static bool hoistLoopInvariantAccLoad(MachineFunction &MF,
     }
 
     FirstIt->eraseFromParent();
+
+    bool SrcReadInLoop = false;
+    for (MachineBasicBlock *LBB : LoopBlocks) {
+      for (MachineInstr &MI : *LBB) {
+        if (MI.readsRegister(Src, TRI)) {
+          SrcReadInLoop = true;
+          break;
+        }
+      }
+      if (SrcReadInLoop)
+        break;
+    }
+    if (!SrcReadInLoop) {
+      for (MachineBasicBlock *LBB : LoopBlocks)
+        LBB->removeLiveIn(Src);
+    }
 
     // Mark $a as live-in across the entire loop and un-kill $a on loop reads.
     for (MachineBasicBlock *LBB : LoopBlocks) {
@@ -2525,6 +2586,8 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
   }
 
   Changed |= hoistLoopInvariantAccLoad(MF, TII, TRI);
+  for (MachineBasicBlock &MBB : MF)
+    Changed |= foldScratchAccTransfer(MBB, TII, TRI);
 
   return Changed;
 }
