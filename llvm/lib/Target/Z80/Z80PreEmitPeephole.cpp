@@ -1298,6 +1298,78 @@ static bool reuseLDHLAddress(MachineBasicBlock &MBB, const TargetInstrInfo *TII,
   return Changed;
 }
 
+static bool elidePushDePushHlBeforeAdd(MachineBasicBlock &MBB,
+                                      const TargetInstrInfo *TII,
+                                      const TargetRegisterInfo *TRI) {
+  bool Changed = false;
+  for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE;) {
+    auto Next = std::next(MII);
+    if (MII->getOpcode() != Z80::PUSH_DE) {
+      MII = Next;
+      continue;
+    }
+    auto PushHlIt = Next;
+    while (PushHlIt != MIE && PushHlIt->isDebugInstr())
+      ++PushHlIt;
+    if (PushHlIt == MIE || PushHlIt->getOpcode() != Z80::PUSH_HL) {
+      MII = Next;
+      continue;
+    }
+
+    MachineInstr *PopHl = nullptr;
+    MachineInstr *PopDe = nullptr;
+    MachineInstr *AddHlDe = nullptr;
+    SmallVector<MachineInstr *, 4> StackLoads;
+
+    for (auto J = std::next(PushHlIt); J != MIE; ++J) {
+      if (J->getOpcode() == Z80::POP_HL && !PopHl) {
+        PopHl = &*J;
+        auto J2 = std::next(J);
+        while (J2 != MIE && J2->isDebugInstr())
+          ++J2;
+        if (J2 != MIE && J2->getOpcode() == Z80::POP_DE) {
+          PopDe = &*J2;
+          auto J3 = std::next(J2);
+          while (J3 != MIE && J3->isDebugInstr())
+            ++J3;
+          if (J3 != MIE && J3->getOpcode() == Z80::ADD_HL_rr &&
+              J3->getOperand(0).isReg() &&
+              J3->getOperand(0).getReg() == Z80::DE) {
+            AddHlDe = &*J3;
+            break;
+          }
+        }
+      }
+      if (J->getOpcode() == Z80::LD_rr_nn && J->getOperand(0).isReg() &&
+          J->getOperand(0).getReg() == Z80::HL && J->getOperand(1).isImm()) {
+        StackLoads.push_back(&*J);
+      }
+      if (J->isCall() || J->isBranch() || J->isTerminator())
+        break;
+    }
+
+    if (PopHl && PopDe && AddHlDe) {
+      auto AfterAdd = std::next(MachineBasicBlock::iterator(AddHlDe));
+      if (!Z80::isLiveAt(MBB, AfterAdd, Z80::DE, TRI)) {
+        BuildMI(MBB, PushHlIt, AddHlDe->getDebugLoc(), TII->get(Z80::ADD_HL_rr))
+            .addReg(Z80::DE);
+        for (MachineInstr *MI : StackLoads) {
+          int64_t Disp = MI->getOperand(1).getImm() - 2;
+          MI->getOperand(1).setImm(Disp);
+        }
+        MBB.erase(MII);
+        MBB.erase(PopDe);
+        MBB.erase(AddHlDe);
+        recomputeLivenessFlags(MBB);
+        Changed = true;
+        break;
+      }
+    }
+    MII = Next;
+  }
+  return Changed;
+}
+
 static bool hoistLoopInvariantAccLoad(MachineFunction &MF,
                                      const TargetInstrInfo *TII,
                                      const TargetRegisterInfo *TRI) {
@@ -2449,6 +2521,7 @@ bool Z80PreEmitPeephole::runOnMachineFunction(MachineFunction &MF) {
       Changed |= materializeIXConstantStores(MBB, TII, TRI);
     Changed |= elidePopPushAcrossStretch(MBB, TII, TRI);
     Changed |= elidePushPopAcrossStretch(MBB, TII, TRI);
+    Changed |= elidePushDePushHlBeforeAdd(MBB, TII, TRI);
   }
 
   Changed |= hoistLoopInvariantAccLoad(MF, TII, TRI);
