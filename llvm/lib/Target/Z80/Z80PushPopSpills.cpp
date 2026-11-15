@@ -16,6 +16,7 @@
 
 #include "Z80PushPopSpills.h"
 #include "MCTargetDesc/Z80MCTargetDesc.h"
+#include "Z80InstrInfo.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -397,6 +398,82 @@ void Z80PushPopSpills::rewrite(MachineBasicBlock &MBB, const SlotSet &Cands) {
   NumSlots += Cands.size();
 }
 
+// Hoist ADD HL, rr (e.g. ADD HL, DE) before preceding stack argument reloads
+// when rr is killed by the add and reloads do not touch HL, rr, or flags.
+//
+// Hoisting ADD HL, DE before the reloads kills DE early. This allows PEI's
+// expandReloadGR16SPRelative to use DE as the temporary register pair for
+// loading IX/IY without having to spill BC to the stack (saving PUSH BC / POP BC).
+static bool hoistAddHlBeforeReloads(MachineFunction &MF,
+                                    const TargetRegisterInfo *TRI) {
+  bool Changed = false;
+  for (MachineBasicBlock &MBB : MF) {
+    for (auto MII = MBB.begin(), MIE = MBB.end(); MII != MIE; ++MII) {
+      if (MII->getOpcode() != Z80::ADD_HL_rr)
+        continue;
+      if (!MII->getOperand(0).isReg())
+        continue;
+      Register Reg = MII->getOperand(0).getReg();
+      if (Reg != Z80::DE && Reg != Z80::BC)
+        continue;
+
+      // Check if Reg is killed by ADD_HL_rr (or dead immediately after).
+      auto AfterMI = std::next(MII);
+      if (Z80::isLiveAt(MBB, AfterMI, Reg, TRI))
+        continue;
+
+      // Scan backwards from MII to find the earliest safe insertion point
+      // before reloads.
+      MachineBasicBlock::iterator InsertPt = MII;
+      bool CrossedReload = false;
+      bool Blocked = false;
+
+      for (auto It = MII; It != MBB.begin();) {
+        --It;
+        MachineInstr &Prev = *It;
+        if (Prev.isDebugInstr())
+          continue;
+
+        // If Prev reads or modifies HL or Reg, we cannot hoist past it.
+        if (Prev.modifiesRegister(Z80::HL, TRI) ||
+            Prev.readsRegister(Z80::HL, TRI) ||
+            Prev.modifiesRegister(Reg, TRI) ||
+            Prev.readsRegister(Reg, TRI)) {
+          Blocked = true;
+          break;
+        }
+
+        // If Prev reads flags, ADD_HL_rr clobbers flags so we cannot hoist past it.
+        if (Prev.readsRegister(Z80::FLAGS, TRI)) {
+          Blocked = true;
+          break;
+        }
+
+        // Do not hoist past branches or calls.
+        if (Prev.isBranch() || Prev.isCall() || Prev.isTerminator()) {
+          Blocked = true;
+          break;
+        }
+
+        unsigned Opc = Prev.getOpcode();
+        if (Opc == Z80::RELOAD_GR8 || Opc == Z80::RELOAD_GR16 ||
+            Opc == Z80::RELOAD_ANY16) {
+          CrossedReload = true;
+        }
+
+        InsertPt = It;
+      }
+
+      if (!Blocked && CrossedReload && InsertPt != MII) {
+        MBB.splice(InsertPt, &MBB, MII);
+        Changed = true;
+        break;
+      }
+    }
+  }
+  return Changed;
+}
+
 bool Z80PushPopSpills::runOnMachineFunction(MachineFunction &MF) {
   if (!EnablePushPopSpills || skipFunction(MF.getFunction()))
     return false;
@@ -410,10 +487,11 @@ bool Z80PushPopSpills::runOnMachineFunction(MachineFunction &MF) {
   TRI = MF.getSubtarget().getRegisterInfo();
   MFI = &MF.getFrameInfo();
 
+  bool Changed = hoistAddHlBeforeReloads(MF, TRI);
+
   DenseMap<MachineBasicBlock *, SlotSet> Cands;
   collectCandidates(MF, Cands);
 
-  bool Changed = false;
   for (MachineBasicBlock &MBB : MF) {
     auto It = Cands.find(&MBB);
     if (It == Cands.end() || It->second.empty())
